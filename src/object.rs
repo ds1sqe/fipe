@@ -142,7 +142,7 @@ impl ObjectTrait for Function {
         buf += "(";
         buf += &arguments.join(", ");
         buf += ") {\n";
-        format!("{:?}", self.block);
+        buf += &format!("{}", self.block.to_str());
         buf += "}";
 
         buf

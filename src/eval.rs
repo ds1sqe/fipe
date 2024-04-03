@@ -569,7 +569,7 @@ fn apply_function(
         }));
     }
 
-    let extended_env = extend_function_env(fun.clone(), args);
+    let extended_env = extend_function_env(&fun, args);
 
     if extended_env.is_err() {
         return Err(extended_env.unwrap_err());
@@ -587,10 +587,10 @@ fn apply_function(
 }
 
 fn extend_function_env(
-    fun: Function,
+    fun: &Function,
     args: Vec<Object>,
 ) -> Result<Environ<String>, EvalError> {
-    let opt_rc = &fun.env.upgrade();
+    let opt_rc = fun.env.upgrade();
 
     if opt_rc.is_none() {
         return Err(EvalError::EnvironmentHasDropped);
@@ -602,6 +602,9 @@ fn extend_function_env(
     for (idx, arg) in fun.args.iter().enumerate() {
         env.set(arg.value.clone(), args[idx].clone());
     }
+
+    dbg!("extend_function_env");
+    dbg!(&env);
 
     Ok(Rc::new(RefCell::new(env)))
 }
