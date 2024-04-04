@@ -3,6 +3,8 @@ use std::{
     ptr::NonNull,
 };
 
+use super::errors::BlockError;
+
 pub trait AllocRaw {
     fn alloc<T>(&self, object: T) -> *const T;
 }
@@ -15,14 +17,6 @@ pub struct Block {
 
 pub type BlockPointer = NonNull<u8>;
 pub type BlockSize = usize;
-
-#[derive(Debug)]
-pub enum BlockError {
-    /// block size is not a power of two
-    BadSize(usize),
-    /// Cannot allocate memory
-    OutOfMemory,
-}
 
 impl Block {
     /// create new memory block.
