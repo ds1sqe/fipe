@@ -1,4 +1,6 @@
 pub mod environment;
+pub mod header;
+pub mod types;
 
 use std::{cell::RefCell, fmt::Debug, rc::Weak};
 
@@ -120,9 +122,7 @@ pub struct Function {
 
 impl PartialEq for Function {
     fn eq(&self, other: &Self) -> bool {
-        self.identifier == other.identifier
-            && self.args == other.args
-            && self.block == other.block
+        self.identifier == other.identifier && self.args == other.args && self.block == other.block
     }
 }
 

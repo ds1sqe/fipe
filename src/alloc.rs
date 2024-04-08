@@ -1,7 +1,7 @@
-mod errors;
-mod immix;
-mod ptr;
-mod size;
+pub mod errors;
+pub mod immix;
+pub mod ptr;
+pub mod size;
 
 use std::{mem::size_of, ptr::NonNull};
 
