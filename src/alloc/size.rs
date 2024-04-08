@@ -1,4 +1,4 @@
-use super::constants::{BLOCK_CAPACITY, LINE_SIZE};
+use super::immix::memory::block::{BLOCK_CAPACITY, LINE_SIZE};
 
 // Object size range
 const SMALL_MIN: usize = 1;
