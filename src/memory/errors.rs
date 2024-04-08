@@ -4,12 +4,17 @@ pub enum BlockError {
     BadSize(usize),
     /// Cannot allocate memory
     OutOfMemory,
-}
-
-#[derive(Debug)]
-pub enum BumpError {
     /// Cannot allocate in block
     NoSpaceForAllocation,
     /// Address have overflow
     AddressOverflow,
+}
+
+pub enum AllocError {
+    /// Cannot allocate memory
+    OutOfMemory,
+    /// Size is too big to allocate
+    SizeTooBig,
+    /// Wrapper for block error
+    InternalError(BlockError),
 }
