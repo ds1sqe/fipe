@@ -20,6 +20,7 @@ pub enum SizeClass {
     Large,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SizeClassError {
     TooBig,
 }

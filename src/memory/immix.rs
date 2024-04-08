@@ -1,9 +1,13 @@
+use std::ptr::{write, NonNull};
+use std::slice::from_raw_parts_mut;
 use std::{cell::UnsafeCell, marker::PhantomData};
 
-use std::mem::replace;
+use std::mem::{replace, size_of};
 
-use super::block::{BumpBlock, RawPtr};
+use super::alloc::{alloc_size_of, AllocHeader, AllocObject, AllocRaw, ArraySize, Mark};
+use super::block::{BumpBlock, CstPtr};
 use super::errors::AllocError;
+use super::ptr::RawPtr;
 use super::size::SizeClass;
 
 struct BlockList {
@@ -78,7 +82,7 @@ impl<T> Immix<T> {
         }
     }
 
-    fn find_space(&self, alloc_size: usize, size_class: SizeClass) -> Result<RawPtr, AllocError> {
+    fn find_space(&self, alloc_size: usize, size_class: SizeClass) -> Result<CstPtr, AllocError> {
         let blocks = unsafe { &mut *self.blocks.get() };
 
         if size_class == SizeClass::Large {
@@ -127,8 +131,89 @@ impl<T> Immix<T> {
 
                 space.unwrap()
             }
-        } as RawPtr;
+        } as CstPtr;
 
         Ok(space)
+    }
+}
+
+impl<H: AllocHeader> AllocRaw for Immix<H> {
+    type Header = H;
+
+    fn alloc<T>(&self, object: T) -> Result<RawPtr<T>, AllocError>
+    where
+        T: AllocObject<<Self::Header as AllocHeader>::TypeId>,
+    {
+        let header_size = size_of::<Self::Header>();
+        let object_size = size_of::<T>();
+        let total_size = header_size + object_size;
+
+        let alloc_size = alloc_size_of(total_size);
+        let size_class = SizeClass::from(alloc_size);
+        if size_class.is_err() {
+            return Err(AllocError::SizeTooBig);
+        }
+        let size_class = size_class.unwrap();
+
+        // attempt to allocate space for header and the object
+        let space = self.find_space(alloc_size, size_class)?;
+
+        // instantiate an object header for T, setting the mark bit to allocated
+        let header = Self::Header::new::<T>(object_size as ArraySize, size_class, Mark::Allocated);
+
+        // write the header into the front of the allocated space
+        unsafe {
+            write(space as *mut Self::Header, header);
+        }
+
+        // write the object to space after the header
+        let object_space = unsafe { space.offset(header_size as isize) };
+
+        unsafe {
+            write(object_space as *mut T, object);
+        }
+
+        Ok(RawPtr::new(object_space as *const T))
+    }
+
+    fn alloc_array(&self, size_bytes: ArraySize) -> Result<RawPtr<u8>, AllocError> {
+        let header_size = size_of::<Self::Header>();
+        let total_size = header_size + size_bytes;
+
+        let alloc_size = alloc_size_of(total_size);
+        let size_class = SizeClass::from(alloc_size);
+        if size_class.is_err() {
+            return Err(AllocError::SizeTooBig);
+        }
+        let size_class = size_class.unwrap();
+
+        // attempt to allocate space for header and the object
+        let space = self.find_space(alloc_size, size_class)?;
+
+        let header = Self::Header::new_array(size_bytes, size_class, Mark::Allocated);
+
+        unsafe {
+            write(space as *mut Self::Header, header);
+        }
+
+        let array_space = unsafe { space.offset(header_size as isize) };
+
+        let array = unsafe { from_raw_parts_mut(array_space as *mut u8, size_bytes as usize) };
+
+        for byte in array {
+            *byte = 0;
+        }
+
+        Ok(RawPtr::new(array_space as *const u8))
+    }
+
+    fn get_header(object: NonNull<()>) -> NonNull<Self::Header> {
+        // get header by subtract header size from the object pointer
+        unsafe { NonNull::new_unchecked(object.cast::<Self::Header>().as_ptr().offset(-1)) }
+    }
+
+    fn get_object(header: NonNull<Self::Header>) -> NonNull<()> {
+        // get object by add header size from the header pointer
+        unsafe { NonNull::new_unchecked(header.as_ptr().offset(1).cast::<()>()) }
     }
 }

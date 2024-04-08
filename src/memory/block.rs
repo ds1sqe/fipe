@@ -8,11 +8,7 @@ use super::{
     errors::BlockError,
 };
 
-pub type RawPtr = *const u8;
-
-pub trait AllocRaw {
-    fn alloc<T>(&self, object: T) -> *const T;
-}
+pub type CstPtr = *const u8;
 
 #[derive(Debug)]
 pub struct Block {
@@ -77,9 +73,9 @@ impl Block {
 #[derive(Debug)]
 pub struct BumpBlock {
     /// index of last written object
-    cursor: RawPtr,
+    cursor: CstPtr,
     ///
-    limit: RawPtr,
+    limit: CstPtr,
     /// memory block
     block: Block,
 
@@ -106,7 +102,7 @@ impl BumpBlock {
         Ok(block)
     }
 
-    pub fn inner_alloc(&mut self, alloc_size: usize) -> Result<RawPtr, BlockError> {
+    pub fn inner_alloc(&mut self, alloc_size: usize) -> Result<CstPtr, BlockError> {
         let limit = self.limit as usize;
         let cursor_ptr = self.cursor as usize;
 
@@ -135,8 +131,8 @@ impl BumpBlock {
             // There is no space in block for this allocation
             Err(BlockError::NoSpaceForAllocation)
         } else {
-            self.cursor = next_ptr as RawPtr;
-            Ok(next_ptr as RawPtr)
+            self.cursor = next_ptr as CstPtr;
+            Ok(next_ptr as CstPtr)
         }
     }
 
