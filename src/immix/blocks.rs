@@ -15,6 +15,7 @@
 use std::{
     alloc::{alloc, dealloc, Layout},
     collections::VecDeque,
+    fmt,
     mem::replace,
     ptr::{write, NonNull},
 };
@@ -103,7 +104,6 @@ impl Block {
     }
 }
 
-#[derive(Debug)]
 pub struct BlockMeta {
     lines: *mut u8,
 }
@@ -189,21 +189,43 @@ impl BlockMeta {
         }
     }
 
-    pub fn print_mark_status(&self) {
+    pub fn mark_status_str(&self) -> String {
         unsafe {
+            let mut buf = String::new();
             for idx in 0..LINE_COUNT {
                 let mark = *self.lines.add(idx);
-                print!("{mark}");
+                buf += &format!("{mark}");
                 if (idx + 1) % 8 == 0 {
-                    print!(" ");
+                    buf += &format!(" ");
                 }
                 if (idx + 1) % 64 == 0 {
-                    println!(" {idx}");
+                    buf += &format!(" {idx}\n");
                 }
             }
+            buf
         }
     }
+    pub fn mark_status_vec_str(&self) -> Vec<String> {
+        unsafe {
+            let mut vec = Vec::new();
+            for line in 0..4 {
+                let mut buf = String::new();
 
+                for idx in 0..64 {
+                    let mark = *self.lines.add(line * 64 + idx);
+                    buf += &format!("{mark}");
+                    if (idx + 1) % 8 == 0 {
+                        buf += &format!(" ");
+                    }
+                    if (idx + 1) % 64 == 0 {}
+                }
+                buf += &format!("{}", (line + 1) * 64 - 1);
+                vec.push(buf);
+            }
+
+            vec
+        }
+    }
     pub fn is_maked(&self, idx: usize) -> bool {
         unsafe { *self.as_ref_line_mark(idx) == 1 }
     }
@@ -213,6 +235,18 @@ impl BlockMeta {
     }
     unsafe fn as_ref_line_mark(&self, line: usize) -> &u8 {
         &*self.lines.add(line)
+    }
+}
+
+impl fmt::Debug for BlockMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let vec_str = self.mark_status_vec_str();
+        f.debug_struct("BlockMeta")
+            .field("  0", &vec_str[0])
+            .field(" 64", &vec_str[1])
+            .field("128", &vec_str[2])
+            .field("192", &vec_str[3])
+            .finish()
     }
 }
 
@@ -260,7 +294,6 @@ impl BumpBlock {
             let mark_low = (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
             let mark_high = (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
             self.meta.mark_range(mark_low, mark_high);
-            self.meta.print_mark_status();
             self.cursor = next_ptr as *const u8;
             Ok(next_ptr as *const u8)
         } else {
@@ -345,6 +378,7 @@ impl LargeBlock {
     }
 }
 
+#[derive(Debug)]
 pub struct BlockList {
     pub head: VecDeque<BumpBlock>,
     pub large: Vec<LargeBlock>,
@@ -414,7 +448,9 @@ impl BlockList {
     }
 
     fn large_alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
+        println!("large alloc");
         let size = alloc_size.next_power_of_two();
+        println!("{size}, is pow of 2 ?:{}", size.is_power_of_two());
         let new_large_block = LargeBlock::new(size)?;
         self.large.push(new_large_block);
         Ok(self.large.last().unwrap().as_ptr())

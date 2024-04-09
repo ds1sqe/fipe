@@ -1,4 +1,4 @@
-use dlang::immix::blocks::BumpBlock;
+use dlang::immix::blocks::{BlockList, BumpBlock};
 
 #[test]
 fn test_bumpblock() {
@@ -9,10 +9,7 @@ fn test_bumpblock() {
     for _ in 0..=3 {
         let _ = block.inner_alloc(10000);
     }
-    block.meta.print_mark_status();
-    println!();
     block.meta.unmark_range(130, 230);
-    block.meta.print_mark_status();
 
     for _ in 0..=3 {
         let _ = block.inner_alloc(10000);
@@ -22,4 +19,24 @@ fn test_bumpblock() {
         println!("idx {idx}");
         let _ = block.inner_alloc(100);
     }
+}
+
+#[test]
+fn test_block_list() {
+    let mut bls = BlockList::new();
+    dbg!(&bls);
+    let big_size: usize = (1 << 18) - 1000;
+    let r = bls.alloc(big_size);
+    dbg!(&r, &bls);
+    let r = bls.alloc(1 << 10);
+    dbg!(&r, &bls);
+    let r = bls.alloc(1 << 20);
+    dbg!(&r, &bls);
+    for _ in 0..128 {
+        let _ = bls.alloc(1 << 10);
+    }
+    for _ in 0..128 {
+        let _ = bls.alloc(1 << 13);
+    }
+    dbg!(&bls);
 }
