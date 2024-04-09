@@ -1,12 +1,12 @@
 // Block Layout
 //
 //
-// Addr   Line  |-------128 byte--------|
-// 0x7F00 7F    | MARK BITS             |
-// 0x7E00 7E    |                       |
+// Addr   Line  |-------256 byte--------|
+// 0xFF00 FF    | MARK BITS             |
 // --------------------------------------
-// 0x7D00 7D    | DATA                  |
-// 0x7C00 7C    |                       |
+// 0xFE00 FE    | DATA                  |
+// 0xFD00 7D    |                       |
+// 0xFC00 7C    |                       |
 // ......................................
 //
 // 0x0100 1     |                       |
@@ -20,15 +20,15 @@ use std::{
 
 use super::errors::{AllocError, BlockError};
 
-/// 0x8000  32768 (Byte)
-pub const BLOCK_SIZE: usize = 1 << 15;
-/// 0x80    128   (Byte)
-pub const LINE_SIZE: usize = 1 << 7;
+/// 0x10000  65536 (Byte)
+pub const BLOCK_SIZE: usize = 1 << 16;
+/// 0x100    256   (Byte)
+pub const LINE_SIZE: usize = 1 << 8;
 
-/// 0x100   256
+/// 0x100    256
 pub const LINE_COUNT: usize = BLOCK_SIZE / LINE_SIZE;
 
-//  0x7F00  32512  (Byte)
+//  0xFF00   65280 (Byte)
 pub const BLOCK_CAPACITY: usize = BLOCK_SIZE - LINE_COUNT;
 pub const LINE_MARK_START: usize = BLOCK_CAPACITY;
 
@@ -178,17 +178,31 @@ impl BlockMeta {
     pub fn mark_line(&mut self, idx: usize) {
         unsafe { *self.as_line_mark(idx) = 1 };
     }
-    /// Mark the entire block
-    pub fn mark_block(&mut self, idx: usize) {
-        unsafe { *self.as_block_mark() = 1 };
+    /// Unmark the indexed line
+    pub fn unmark_line(&mut self, idx: usize) {
+        unsafe { *self.as_line_mark(idx) = 0 };
+    }
+    pub fn print_mark_status(&self) {
+        unsafe {
+            for idx in 0..LINE_COUNT {
+                let mark = *self.lines.add(idx);
+                print!("{mark}");
+                if (idx + 1) % 64 == 0 {
+                    println!();
+                }
+            }
+        }
+    }
+
+    pub fn is_maked(&self, idx: usize) -> bool {
+        unsafe { *self.as_ref_line_mark(idx) == 1 }
     }
 
     unsafe fn as_line_mark(&mut self, line: usize) -> &mut u8 {
         &mut *self.lines.add(line)
     }
-
-    unsafe fn as_block_mark(&mut self) -> &mut u8 {
-        &mut *self.lines.add(LINE_COUNT - 1)
+    unsafe fn as_ref_line_mark(&self, line: usize) -> &u8 {
+        &*self.lines.add(line)
     }
 }
 
@@ -247,6 +261,12 @@ impl BumpBlock {
             // There is no space in block for this allocation
             Err(BlockError::NoSpaceForAllocation)
         } else {
+            self.meta.print_mark_status();
+            // celi up to LINE_SIZE
+            let mark_idx = (self.cursor as usize - self.block.as_ptr() as usize) / BLOCK_CAPACITY;
+            dbg!(mark_idx);
+            self.meta.mark_line(mark_idx - 1);
+            self.meta.print_mark_status();
             self.cursor = next_ptr as *const u8;
             Ok(next_ptr as *const u8)
         }
