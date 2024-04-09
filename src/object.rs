@@ -1,5 +1,4 @@
 pub mod environment;
-pub mod header;
 pub mod types;
 
 use std::{cell::RefCell, fmt::Debug, rc::Weak};

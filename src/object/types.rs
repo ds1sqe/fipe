@@ -1,5 +1,3 @@
-use crate::alloc::AllocTypeId;
-
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ObjectType {
     Return,
@@ -9,5 +7,3 @@ pub enum ObjectType {
     Function,
     Array,
 }
-
-impl AllocTypeId for ObjectType {}

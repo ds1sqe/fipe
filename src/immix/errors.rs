@@ -9,3 +9,13 @@ pub enum BlockError {
     /// Address have overflow
     AddressOverflow,
 }
+
+#[derive(Debug)]
+pub enum AllocError {
+    /// Cannot allocate memory
+    OutOfMemory,
+    /// Size is too big to allocate
+    SizeTooBig,
+    /// Wrapper for block error
+    InternalError(BlockError),
+}
