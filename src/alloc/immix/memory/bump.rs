@@ -8,11 +8,11 @@ use super::meta::{BlockMeta, Hole};
 pub struct BumpBlock {
     /// index of last written object
     cursor: CstPtr,
-    ///
+    /// index of limit
     limit: CstPtr,
     /// memory block
     block: Block,
-
+    /// line mark data
     meta: BlockMeta,
 }
 

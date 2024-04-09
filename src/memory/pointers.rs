@@ -1,6 +1,6 @@
 pub mod fat_ptr;
 pub mod tagged_ptr;
-mod value;
+pub mod value;
 
 use std::cell::Cell;
 

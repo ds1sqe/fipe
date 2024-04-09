@@ -25,6 +25,7 @@ impl<T> Tagged<T> for RawPtr<T> {
     }
 }
 
+/// Type tagged pointer which carries type infomation in lowest 2 bits
 pub union TaggedPtr {
     tag: usize,
     number: isize,
