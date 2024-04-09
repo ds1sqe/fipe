@@ -448,9 +448,7 @@ impl BlockList {
     }
 
     fn large_alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
-        println!("large alloc");
         let size = alloc_size.next_power_of_two();
-        println!("{size}, is pow of 2 ?:{}", size.is_power_of_two());
         let new_large_block = LargeBlock::new(size)?;
         self.large.push(new_large_block);
         Ok(self.large.last().unwrap().as_ptr())
