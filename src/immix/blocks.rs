@@ -14,11 +14,16 @@
 
 use std::{
     alloc::{alloc, dealloc, Layout},
+    collections::VecDeque,
     mem::replace,
     ptr::{write, NonNull},
 };
 
-use super::errors::{AllocError, BlockError};
+use super::{
+    errors::{AllocError, BlockError},
+    mark::Mark,
+    size::SizeClass,
+};
 
 /// 0x10000  65536 (Byte)
 pub const BLOCK_SIZE: usize = 1 << 16;
@@ -237,10 +242,7 @@ impl BumpBlock {
         Ok(block)
     }
 
-    pub fn inner_alloc(
-        &mut self,
-        alloc_size: usize,
-    ) -> Result<*const u8, BlockError> {
+    pub fn inner_alloc(&mut self, alloc_size: usize) -> Result<*const u8, BlockError> {
         let cursor_ptr = self.cursor as usize;
         let limit = self.limit as usize;
 
@@ -255,8 +257,7 @@ impl BumpBlock {
         // if next_ptr == limit, we have to find hole next time,
         // and then, next_ptr > limit.
         if next_ptr <= limit {
-            let mark_low =
-                (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
+            let mark_low = (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
             let mark_high = (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
             self.meta.mark_range(mark_low, mark_high);
             self.meta.print_mark_status();
@@ -286,64 +287,135 @@ impl BumpBlock {
     }
 }
 
+#[derive(Debug)]
+pub struct LargeBlock {
+    pub ptr: BlockPointer,
+    pub size: BlockSize,
+    pub mark: Mark,
+}
+impl LargeBlock {
+    /// create new memory block.
+    ///
+    /// # Errors
+    /// This function will return an error if [size] is not a power of two
+    /// or cannot allocate memory
+    ///
+    pub fn new(size: BlockSize) -> Result<Self, BlockError> {
+        if !size.is_power_of_two() {
+            return Err(BlockError::BadSize(size));
+        }
+        Ok(LargeBlock {
+            size,
+            ptr: self::LargeBlock::alloc_block(size)?,
+            mark: Mark::Allocated,
+        })
+    }
+    /// allocate block pointer.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if [size] is not a power of two
+    /// or cannot allocate memory
+    ///
+    /// # Safety
+    /// caller must check [size] is safe
+    ///
+    fn alloc_block(size: BlockSize) -> Result<BlockPointer, BlockError> {
+        unsafe {
+            let layout = Layout::from_size_align_unchecked(size, size);
+            let ptr = alloc(layout);
+            if ptr.is_null() {
+                return Err(BlockError::OutOfMemory);
+            } else {
+                return Ok(NonNull::new_unchecked(ptr));
+            }
+        }
+    }
+
+    pub fn as_ptr(&self) -> *const u8 {
+        self.ptr.as_ptr()
+    }
+
+    pub fn dealloc_block(ptr: BlockPointer, size: BlockSize) {
+        unsafe {
+            let layout = Layout::from_size_align_unchecked(size, size);
+
+            dealloc(ptr.as_ptr(), layout);
+        }
+    }
+}
+
 pub struct BlockList {
-    pub head: Option<BumpBlock>,
-    pub overflow: Option<BumpBlock>,
+    pub head: VecDeque<BumpBlock>,
+    pub large: Vec<LargeBlock>,
     pub rest: Vec<BumpBlock>,
 }
 
 impl BlockList {
     pub fn new() -> BlockList {
         BlockList {
-            head: None,
-            overflow: None,
+            head: VecDeque::new(),
+            large: Vec::new(),
             rest: Vec::new(),
         }
     }
 
-    pub fn overflow_alloc(
-        &mut self,
-        alloc_size: usize,
-    ) -> Result<*const u8, AllocError> {
-        match self.overflow {
-            Some(ref mut overflow) => match overflow.inner_alloc(alloc_size) {
+    pub fn alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
+        let size = SizeClass::from(alloc_size)?;
+        match size {
+            SizeClass::Small | SizeClass::Medium => self.head_alloc(alloc_size),
+            SizeClass::Large => self.large_alloc(alloc_size),
+        }
+    }
+
+    fn head_alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
+        match self.head.is_empty() {
+            false => match self.head[0].inner_alloc(alloc_size) {
                 Ok(space) => Ok(space),
                 Err(__) => {
-                    // current bump block is full
+                    // head[0] bump block is full
+                    if self.head.len() != 1 {
+                        self.rest.push(self.head.pop_front().unwrap());
+                        // recursion
+                        return self.head_alloc(alloc_size);
+                    } else {
+                        let new_bump = BumpBlock::new();
+                        if new_bump.is_err() {
+                            return Err(AllocError::OutOfMemory);
+                        }
+                        let new_bump = new_bump.unwrap();
 
-                    let new_bump = BumpBlock::new();
-                    if new_bump.is_err() {
-                        return Err(AllocError::OutOfMemory);
+                        let previous = replace(&mut self.head[0], new_bump);
+
+                        self.rest.push(previous);
+
+                        let space = self.head[0].inner_alloc(alloc_size);
+
+                        if space.is_err() {
+                            return Err(AllocError::OutOfMemory);
+                        }
+                        Ok(space.unwrap())
                     }
-                    let new_bump = new_bump.unwrap();
-
-                    let previous = replace(overflow, new_bump);
-
-                    self.rest.push(previous);
-
-                    let space = overflow.inner_alloc(alloc_size);
-
-                    if space.is_err() {
-                        return Err(AllocError::OutOfMemory);
-                    }
-                    Ok(space.unwrap())
                 }
             },
-            None => {
-                let overflow = BumpBlock::new();
-                if overflow.is_err() {
+            true => {
+                let new_block = BumpBlock::new();
+                if new_block.is_err() {
                     return Err(AllocError::OutOfMemory);
                 }
-                let mut overflow = overflow.unwrap();
+                let new_block = new_block.unwrap();
 
-                let space = overflow
-                    .inner_alloc(alloc_size)
-                    .expect("We expect this object to fit!");
+                self.head.push_back(new_block);
 
-                self.overflow = Some(overflow);
-
-                Ok(space)
+                // recursion
+                self.head_alloc(alloc_size)
             }
         }
+    }
+
+    fn large_alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
+        let new_large_block = LargeBlock::new(alloc_size)?;
+        self.large.push(new_large_block);
+        Ok(self.large.last().unwrap().as_ptr())
     }
 }

@@ -2,6 +2,7 @@ use std::mem::size_of;
 
 pub mod blocks;
 pub mod errors;
+pub mod mark;
 pub mod rawptr;
 pub mod size;
 /// Align up to double word boundary

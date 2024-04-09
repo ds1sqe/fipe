@@ -1,3 +1,5 @@
+use super::size::SizeClassError;
+
 #[derive(Debug)]
 pub enum BlockError {
     /// block size is not a power of two
@@ -18,4 +20,18 @@ pub enum AllocError {
     SizeTooBig,
     /// Wrapper for block error
     InternalError(BlockError),
+}
+
+impl From<SizeClassError> for AllocError {
+    fn from(value: SizeClassError) -> Self {
+        match value {
+            SizeClassError::TooBig => AllocError::SizeTooBig,
+        }
+    }
+}
+
+impl From<BlockError> for AllocError {
+    fn from(value: BlockError) -> Self {
+        AllocError::InternalError(value)
+    }
 }
