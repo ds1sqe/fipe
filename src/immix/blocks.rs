@@ -32,10 +32,10 @@ pub const LINE_COUNT: usize = BLOCK_SIZE / LINE_SIZE;
 pub const BLOCK_CAPACITY: usize = BLOCK_SIZE - LINE_COUNT;
 pub const LINE_MARK_START: usize = BLOCK_CAPACITY;
 
-//  0xF    15
-pub const ALIGN_WORD: usize = 15;
+//  0xFF     255
+pub const ALIGN_WORD: usize = (1 << 8) - 1;
 
-//  0xFFFF...0
+//  0xFFFF..00
 pub const ALIGN_MASK: usize = !(ALIGN_WORD);
 
 #[derive(Debug)]
@@ -105,8 +105,8 @@ pub struct BlockMeta {
 
 #[derive(Debug)]
 pub struct Hole {
-    pub cursor: usize,
-    pub limit: usize,
+    pub start: usize,
+    pub end: usize,
 }
 
 impl BlockMeta {
@@ -117,54 +117,39 @@ impl BlockMeta {
         meta.reset();
         meta
     }
-    /// search hole downward
-    pub fn find_next_hole(&self, starting_at: usize, alloc_size: usize) -> Option<Hole> {
+
+    /// search hole upward
+    pub fn find_hole(&self, start_byte: usize, alloc_size: usize) -> Option<Hole> {
         // The count of consecutive available holes.
         let mut count = 0;
 
-        let starting_line = starting_at / LINE_SIZE;
+        let starting_line = start_byte / LINE_SIZE;
 
         // celi up to LINE_SIZE
         let lines_required = (alloc_size + LINE_SIZE - 1) / LINE_SIZE;
 
-        let mut end = starting_line;
+        let end = LINE_COUNT;
 
-        for index in (0..starting_line).rev() {
+        for index in starting_line..end {
             let marked = unsafe { *self.lines.add(index) };
 
             if marked == 0 {
                 // Count unmarked lines
                 count += 1;
-
-                if index == 0 && count >= lines_required {
-                    // We reached line zero and
-                    // We have extra space
-                    let cursor = end * LINE_SIZE;
-                    let limit = index * LINE_SIZE;
-                    // cursor >= limit
-                    return Some(Hole { cursor, limit });
-                }
             } else {
-                // This line is marked
-                if count > lines_required {
-                    let cursor = end * LINE_SIZE;
-                    // add 2 to index because,
-                    // 1 for walking back from the current marked line,
-                    // 1 for walking back from the previous conservatively marked line
-                    let limit = (index + 2) * LINE_SIZE;
-                    // cursor >= limit
-                    return Some(Hole { cursor, limit });
+                if count >= lines_required {
+                    // we have found space
+                    let start = index - count;
+                    let end = index;
+                    return Some(Hole { start, end });
                 }
-
                 // There was no consecutive space,
                 // so reset the hole search state.
                 count = 0;
-                end = index;
             }
         }
         None
     }
-
     /// Reset all mark flags to unmarked.
     pub fn reset(&mut self) {
         unsafe {
@@ -178,17 +163,37 @@ impl BlockMeta {
     pub fn mark_line(&mut self, idx: usize) {
         unsafe { *self.as_line_mark(idx) = 1 };
     }
+    /// Mark the range, caller must check low and high is safe
+    pub fn mark_range(&mut self, low: usize, high: usize) {
+        unsafe {
+            for idx in low..=high {
+                *self.lines.add(idx) = 1;
+            }
+        }
+    }
     /// Unmark the indexed line
     pub fn unmark_line(&mut self, idx: usize) {
         unsafe { *self.as_line_mark(idx) = 0 };
     }
+    /// Unmark the range, caller must check low and high is safe
+    pub fn unmark_range(&mut self, low: usize, high: usize) {
+        unsafe {
+            for idx in low..=high {
+                *self.lines.add(idx) = 0;
+            }
+        }
+    }
+
     pub fn print_mark_status(&self) {
         unsafe {
             for idx in 0..LINE_COUNT {
                 let mark = *self.lines.add(idx);
                 print!("{mark}");
+                if (idx + 1) % 8 == 0 {
+                    print!(" ");
+                }
                 if (idx + 1) % 64 == 0 {
-                    println!();
+                    println!(" {idx}");
                 }
             }
         }
@@ -215,7 +220,7 @@ pub struct BumpBlock {
     /// memory block
     block: Block,
     /// line mark data
-    meta: BlockMeta,
+    pub meta: BlockMeta,
 }
 
 impl BumpBlock {
@@ -224,54 +229,52 @@ impl BumpBlock {
         let block_ptr = inner_block.as_ptr();
 
         let block = BumpBlock {
-            cursor: unsafe { block_ptr.add(BLOCK_CAPACITY) },
-            limit: block_ptr,
+            cursor: block_ptr,
+            limit: unsafe { block_ptr.add(BLOCK_CAPACITY) },
             block: inner_block,
             meta: BlockMeta::new(block_ptr),
         };
         Ok(block)
     }
 
-    pub fn inner_alloc(&mut self, alloc_size: usize) -> Result<*const u8, BlockError> {
-        let limit = self.limit as usize;
+    pub fn inner_alloc(
+        &mut self,
+        alloc_size: usize,
+    ) -> Result<*const u8, BlockError> {
         let cursor_ptr = self.cursor as usize;
+        let limit = self.limit as usize;
 
-        let cursor_pos_opt = cursor_ptr.checked_sub(alloc_size);
+        let cursor_pos_opt = cursor_ptr.checked_add(alloc_size);
         if cursor_pos_opt.is_none() {
             return Err(BlockError::AddressOverflow);
         }
         let next_pos = cursor_pos_opt.unwrap();
+        // align up to word boundary
+        let next_ptr = (next_pos + 0xFF) & ALIGN_MASK;
 
-        // align down to word boundary
-        let next_ptr = next_pos & ALIGN_MASK;
-
-        if next_ptr < limit {
-            let block_relative_limit =
-                unsafe { self.limit.sub(self.block.as_ptr() as usize) } as usize;
-            if block_relative_limit > 0 {
-                if let Some(Hole { cursor, limit }) =
-                    self.meta.find_next_hole(block_relative_limit, alloc_size)
-                {
-                    self.cursor = unsafe { self.block.as_ptr().add(cursor) };
-                    self.limit = unsafe { self.block.as_ptr().add(limit) };
-                    return self.inner_alloc(alloc_size);
-                }
-            }
-            // if block_relative_limit <= 0, it means that
-            // There is no space in block for this allocation
-            Err(BlockError::NoSpaceForAllocation)
-        } else {
-            self.meta.print_mark_status();
-            // celi up to LINE_SIZE
-            let mark_idx = (self.cursor as usize - self.block.as_ptr() as usize) / BLOCK_CAPACITY;
-            dbg!(mark_idx);
-            self.meta.mark_line(mark_idx - 1);
+        // if next_ptr == limit, we have to find hole next time,
+        // and then, next_ptr > limit.
+        if next_ptr <= limit {
+            let mark_low =
+                (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
+            let mark_high = (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
+            self.meta.mark_range(mark_low, mark_high);
             self.meta.print_mark_status();
             self.cursor = next_ptr as *const u8;
             Ok(next_ptr as *const u8)
+        } else {
+            // try find hole.
+            if let Some(Hole { start, end }) = self.meta.find_hole(0, alloc_size) {
+                let cursor = start * LINE_SIZE;
+                let limit = end * LINE_SIZE;
+                self.cursor = unsafe { self.block.as_ptr().add(cursor) };
+                self.limit = unsafe { self.block.as_ptr().add(limit) };
+                return self.inner_alloc(alloc_size);
+            }
+            // There is no space in block for this allocation
+            Err(BlockError::NoSpaceForAllocation)
         }
     }
-
     unsafe fn write<T>(&mut self, object: T, offset: usize) -> *const T {
         let ptr = self.block.as_ptr().add(offset) as *mut T;
         write(ptr, object);
@@ -298,7 +301,10 @@ impl BlockList {
         }
     }
 
-    pub fn overflow_alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
+    pub fn overflow_alloc(
+        &mut self,
+        alloc_size: usize,
+    ) -> Result<*const u8, AllocError> {
         match self.overflow {
             Some(ref mut overflow) => match overflow.inner_alloc(alloc_size) {
                 Ok(space) => Ok(space),
