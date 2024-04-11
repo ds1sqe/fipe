@@ -1,5 +1,4 @@
 pub mod environment;
-pub mod types;
 
 use std::fmt::Debug;
 
@@ -121,9 +120,7 @@ pub struct Function {
 
 impl PartialEq for Function {
     fn eq(&self, other: &Self) -> bool {
-        self.identifier == other.identifier
-            && self.args == other.args
-            && self.block == other.block
+        self.identifier == other.identifier && self.args == other.args && self.block == other.block
     }
 }
 

@@ -14,7 +14,7 @@
 
 use std::{
     alloc::{alloc, dealloc, Layout},
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     fmt,
     mem::replace,
     ptr::{write, NonNull},
@@ -252,12 +252,26 @@ impl BlockMeta {
     pub fn is_marked(&self, idx: usize) -> bool {
         unsafe { *self.as_ref_line_mark(idx) == Mark::Marked }
     }
+    pub fn is_unmarked(&self, idx: usize) -> bool {
+        unsafe { *self.as_ref_line_mark(idx) == Mark::Unmarked }
+    }
 
     unsafe fn as_line_mark(&mut self, line: usize) -> &mut Mark {
         &mut *self.lines.add(line)
     }
     unsafe fn as_ref_line_mark(&self, line: usize) -> &Mark {
         &*self.lines.add(line)
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        unsafe {
+            for idx in 0..LINE_COUNT {
+                if !(*self.lines.add(idx) == Mark::Unmarked) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
@@ -299,10 +313,7 @@ impl BumpBlock {
         Ok(block)
     }
 
-    pub fn inner_alloc(
-        &mut self,
-        alloc_size: usize,
-    ) -> Result<(MetaPtr, *const u8), BlockError> {
+    pub fn inner_alloc(&mut self, alloc_size: usize) -> Result<(MetaPtr, *const u8), BlockError> {
         let cursor_ptr = self.cursor as usize;
         let limit = self.limit as usize;
 
@@ -317,8 +328,7 @@ impl BumpBlock {
         // if next_ptr == limit, we have to find hole next time,
         // and then, next_ptr > limit.
         if next_ptr <= limit {
-            let mark_low =
-                (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
+            let mark_low = (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
             let mark_high = (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
             self.meta
                 .set_mark_range(&Mark::Allocated, mark_low, mark_high);
@@ -357,6 +367,10 @@ impl BumpBlock {
 
     pub fn current_hole_size(&self) -> usize {
         self.cursor as usize - self.limit as usize
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        self.meta.is_fresh()
     }
 }
 
@@ -409,32 +423,41 @@ impl LargeBlock {
         self.ptr.as_ptr()
     }
 
-    pub fn dealloc_block(ptr: BlockPointer, size: BlockSize) {
+    pub fn dealloc_block(self) {
         unsafe {
-            let layout = Layout::from_size_align_unchecked(size, size);
+            let layout = Layout::from_size_align_unchecked(self.size, self.size);
 
-            dealloc(ptr.as_ptr(), layout);
+            dealloc(self.ptr.as_ptr(), layout);
         }
     }
 
     pub fn set_mark(&mut self, mark: &Mark) {
         self.mark = *mark;
     }
+
+    pub fn is_marked(&self) -> bool {
+        self.mark == Mark::Marked
+    }
+    pub fn is_unmarked(&self) -> bool {
+        self.mark == Mark::Unmarked
+    }
 }
 
 #[derive(Debug)]
 pub struct BlockList {
     pub head: VecDeque<BumpBlock>,
-    pub large: Vec<LargeBlock>,
-    pub rest: Vec<BumpBlock>,
+    pub large: HashMap<usize, LargeBlock>,
+    pub rest: HashMap<usize, BumpBlock>,
+    count: usize,
 }
 
 impl BlockList {
     pub fn new() -> BlockList {
         BlockList {
             head: VecDeque::new(),
-            large: Vec::new(),
-            rest: Vec::new(),
+            large: HashMap::new(),
+            rest: HashMap::new(),
+            count: 0,
         }
     }
 
@@ -456,7 +479,8 @@ impl BlockList {
                 Err(__) => {
                     // head[0] bump block is full
                     if self.head.len() != 1 {
-                        self.rest.push(self.head.pop_front().unwrap());
+                        self.rest.insert(self.count, self.head.pop_front().unwrap());
+                        self.count += 1;
                         // recursion
                         return self.head_alloc(alloc_size);
                     } else {
@@ -468,7 +492,8 @@ impl BlockList {
 
                         let previous = replace(&mut self.head[0], new_bump);
 
-                        self.rest.push(previous);
+                        self.rest.insert(self.count, previous);
+                        self.count += 1;
 
                         let space = self.head[0].inner_alloc(alloc_size);
 
@@ -501,13 +526,47 @@ impl BlockList {
     fn large_alloc(&mut self, alloc_size: usize) -> Result<PairPtr, AllocError> {
         let size = alloc_size.next_power_of_two();
         let new_large_block = LargeBlock::new(size)?;
-        self.large.push(new_large_block);
+        self.large.insert(self.count, new_large_block);
 
-        let ptr = self.large.last().unwrap().as_ptr();
+        let ptr = self.large.get(&self.count).unwrap().as_ptr();
+        self.count += 1;
         let rst = PairPtr {
             meta: OR::R(RawPtr::new(ptr as *const LargeBlock)),
             data: ptr,
         };
         Ok(rst)
+    }
+
+    fn dealloc_large(&mut self) {
+        let mut drop_list = Vec::new();
+        for (idx, lblk) in self.large.iter() {
+            if lblk.is_unmarked() {
+                drop_list.push(*idx);
+            }
+        }
+
+        for idx in drop_list {
+            let removed = self.large.remove(&idx);
+            removed.unwrap().dealloc_block();
+        }
+    }
+
+    fn recycle(&mut self) {
+        let mut fresh_list = Vec::new();
+
+        for (idx, blk) in self.rest.iter() {
+            if blk.is_fresh() {
+                fresh_list.push(*idx);
+            }
+        }
+
+        for idx in fresh_list {
+            self.head.push_back(self.rest.remove(&idx).unwrap());
+        }
+    }
+
+    pub fn sweep(&mut self) {
+        self.dealloc_large();
+        self.recycle();
     }
 }

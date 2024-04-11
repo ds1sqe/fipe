@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fmt::Debug, hash::Hash};
 
-use crate::immix::ptr::TypedPtr;
+use crate::immix::{mark::Mark, ptr::TypedPtr};
 
-use super::Object;
+use super::{Object, ObjectTrait, ObjectType};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Environment<T: Hash + Eq + PartialEq + Debug>
@@ -29,11 +29,7 @@ impl<T: Hash + Eq + PartialEq + Debug + Clone> Environment<T> {
     }
 
     // set object to environment
-    pub fn set(
-        &mut self,
-        key: T,
-        obj: TypedPtr<Object>,
-    ) -> Option<TypedPtr<Object>> {
+    pub fn set(&mut self, key: T, obj: TypedPtr<Object>) -> Option<TypedPtr<Object>> {
         self.binding.insert(key, obj)
     }
 
@@ -56,14 +52,19 @@ impl<T: Hash + Eq + PartialEq + Debug + Clone> Environment<T> {
             outer: Some(Box::new(outer)),
         }
     }
-}
 
-impl<T> Drop for Environment<T>
-where
-    T: Hash + Eq + PartialEq + Debug + Clone,
-{
-    fn drop(&mut self) {
-        dbg!("Droping..");
-        dbg!(&self);
+    pub fn mark_all(&mut self) {
+        for (_, ptr) in self.binding.iter_mut() {
+            ptr.set_mark(&Mark::Marked);
+
+            let obj = unsafe { &mut (*(ptr.as_ptr()).clone()) };
+            if obj.get_type() == ObjectType::Function {
+                let Object::Function(fun) = obj else {unreachable!()};
+                fun.env.mark_all();
+            }
+        }
+        if self.outer.is_some() {
+            self.outer.as_mut().unwrap().mark_all();
+        }
     }
 }

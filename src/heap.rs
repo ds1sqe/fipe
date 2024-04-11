@@ -43,21 +43,18 @@ impl Heap {
         Ok(RawPtr::new(typed.ptr.data as *const Object))
     }
 
-    pub fn get(
-        env: &mut Environment<String>,
-        key: String,
-    ) -> Option<TypedPtr<Object>> {
+    pub fn get(env: &mut Environment<String>, key: String) -> Option<TypedPtr<Object>> {
         env.get_clone(&key)
     }
 
     /// mark and sweep
-    pub fn run_gc(&mut self) {
+    pub fn run_gc(&mut self, env: &mut Environment<String>) {
         self.obj_immix.unmark_all();
 
         // mark all reachables
-        // self.env.mark_all();
+        env.mark_all();
 
         // manage memory
-        // self.immix.sweep()
+        self.obj_immix.sweep()
     }
 }

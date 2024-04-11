@@ -91,6 +91,16 @@ impl PairPtr {
             },
         }
     }
+    pub fn is_unmarked(&self) -> bool {
+        match &self.meta {
+            OR::L(mptr) => unsafe {
+                return mptr.block.as_ref().meta.is_unmarked(mptr.low);
+            },
+            OR::R(lblk) => unsafe {
+                return lblk.as_ref().is_unmarked();
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,7 +110,7 @@ pub struct TypedPtr<T> {
 }
 
 impl<T> TypedPtr<T> {
-    pub fn as_ptr(self) -> *mut T {
+    pub fn as_ptr(&self) -> *mut T {
         self.ptr.data as *mut T
     }
 

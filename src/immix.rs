@@ -1,10 +1,6 @@
 use std::{collections::HashMap, hash::Hash, marker::PhantomData, mem::size_of};
 
-use self::{
-    blocks::BlockList,
-    errors::ImmixError,
-    ptr::{PairPtr, RawPtr},
-};
+use self::{blocks::BlockList, errors::ImmixError, ptr::PairPtr};
 
 pub mod blocks;
 pub mod errors;
@@ -32,7 +28,7 @@ where
 
 impl<K, V> Immix<K, V>
 where
-    K: Hash + Eq,
+    K: Hash + Eq + Copy,
 {
     pub fn new() -> Self {
         Self {
@@ -60,5 +56,20 @@ where
         for (_, pair) in self.entities.iter_mut() {
             pair.set_mark(&mark::Mark::Unmarked);
         }
+    }
+
+    pub fn sweep(&mut self) {
+        let mut clean_lists = Vec::new();
+        for (key, pair_ptr) in self.entities.iter() {
+            if pair_ptr.is_unmarked() {
+                clean_lists.push(*key);
+            }
+        }
+
+        for tgt in clean_lists {
+            self.entities.remove(&tgt);
+        }
+
+        self.memory.sweep();
     }
 }

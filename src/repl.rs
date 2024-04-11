@@ -1,8 +1,4 @@
-use std::{
-    cell::RefCell,
-    io::{self, BufRead, Write},
-    rc::Rc,
-};
+use std::io::{self, BufRead, Write};
 
 use crate::{
     ast::Nodetrait,
@@ -42,7 +38,11 @@ pub fn start() {
                     buf.clear();
                     continue;
                 }
-
+                if buf == "$rungc\n" {
+                    heap.run_gc(&mut env);
+                    buf.clear();
+                    continue;
+                }
                 let lexer = Lexer::new(buf.clone());
 
                 let mut cloned_lexer = lexer.clone();
