@@ -372,6 +372,10 @@ impl BumpBlock {
     pub fn is_fresh(&self) -> bool {
         self.meta.is_fresh()
     }
+
+    pub fn unmark(&mut self) {
+        self.meta.reset();
+    }
 }
 
 #[derive(Debug)]
@@ -433,6 +437,10 @@ impl LargeBlock {
 
     pub fn set_mark(&mut self, mark: &Mark) {
         self.mark = *mark;
+    }
+
+    pub fn unmark(&mut self) {
+        self.mark = Mark::Unmarked;
     }
 
     pub fn is_marked(&self) -> bool {
@@ -568,5 +576,17 @@ impl BlockList {
     pub fn sweep(&mut self) {
         self.dealloc_large();
         self.recycle();
+    }
+
+    pub fn unmark_all(&mut self) {
+        for (_, lblk) in self.large.iter_mut() {
+            lblk.unmark();
+        }
+        if !self.head.is_empty() {
+            self.head[0].meta.reset();
+        }
+        for (_, blk) in self.rest.iter_mut() {
+            blk.unmark();
+        }
     }
 }

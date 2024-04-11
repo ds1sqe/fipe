@@ -514,11 +514,18 @@ fn eval_call_exp(
     let func = func.unwrap().unwrap();
     match func {
         Object::Function(mut func) => {
-            let args = eval_function_parameters(exp.arguments, heap, &mut func.env);
+            let args = eval_function_parameters(exp.arguments, heap, env);
             if args.is_err() {
                 return Err(args.err().unwrap());
             }
             let args = args.unwrap();
+
+            // enlist self for recursion
+            if func.identifier.is_some() {
+                let ptr = Heap::get(env, func.identifier.clone().unwrap()).unwrap();
+                func.env.set(func.identifier.clone().unwrap(), ptr);
+            }
+
             apply_function(func, args, heap)
         }
         // func is not a function

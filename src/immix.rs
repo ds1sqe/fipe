@@ -53,9 +53,10 @@ where
     }
 
     pub fn unmark_all(&mut self) {
-        for (_, pair) in self.entities.iter_mut() {
-            pair.set_mark(&mark::Mark::Unmarked);
-        }
+        // for (_, pair) in self.entities.iter_mut() {
+        //     pair.set_mark(&mark::Mark::Unmarked);
+        // }
+        self.memory.unmark_all();
     }
 
     pub fn sweep(&mut self) {
