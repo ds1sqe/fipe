@@ -26,7 +26,8 @@ enum Precedence {
     Sum,     // +
     Product, // *
     Prefix,  // -(val) or !(val)
-    Call,    // calling function like func(val)
+    Index,
+    Call, // calling function like func(val)
 }
 
 fn find_precedences(kind: Kind) -> Precedence {
@@ -39,6 +40,7 @@ fn find_precedences(kind: Kind) -> Precedence {
         Kind::LT | Kind::LT_OR_EQ | Kind::GT | Kind::GT_OR_EQ => Precedence::Cmp,
         Kind::Plus | Kind::Minus => Precedence::Sum,
         Kind::Product | Kind::Divide | Kind::Mod => Precedence::Product,
+        Kind::LBRACKET => Precedence::Index,
         Kind::LPAREN => Precedence::Call,
         __ => Precedence::Lowest,
     }
@@ -61,6 +63,7 @@ fn is_infix(kind: &Kind) -> bool {
         | Kind::Bit_And
         | Kind::Or
         | Kind::And
+        | Kind::LBRACKET
         | Kind::LPAREN => true,
         __ => false,
     }
@@ -824,7 +827,17 @@ impl Parser {
                     return Err(errs);
                 }
                 let index = index.ok().unwrap();
-
+                if self.expect_next_is(&Kind::RBRACKET) {
+                } else {
+                    let mut errs: Vec<Box<dyn ParserError>> = Vec::new();
+                    errs.push(Box::new(InfixFunctionError {
+                        detail: "failed to find closing RBRACKET (\"]\") (on parse index)"
+                            .to_string(),
+                        position: self.lexer.get_pos(),
+                        kind: errors::InfixFunctionErrorKind::ParseError,
+                    }));
+                    return Err(errs);
+                }
                 Ok(Expression::IndexExpression(IndexExpression {
                     token,
                     left: Box::new(left),
