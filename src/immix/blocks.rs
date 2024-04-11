@@ -105,7 +105,7 @@ impl Block {
 }
 
 pub struct BlockMeta {
-    lines: *mut u8,
+    lines: *mut Mark,
 }
 
 #[derive(Debug)]
@@ -117,7 +117,7 @@ pub struct Hole {
 impl BlockMeta {
     pub fn new(block_ptr: *const u8) -> BlockMeta {
         let mut meta = BlockMeta {
-            lines: unsafe { block_ptr.add(LINE_MARK_START) as *mut u8 },
+            lines: unsafe { block_ptr.add(LINE_MARK_START) as *mut Mark },
         };
         meta.reset();
         meta
@@ -138,7 +138,7 @@ impl BlockMeta {
         for index in starting_line..end {
             let marked = unsafe { *self.lines.add(index) };
 
-            if marked == 0 {
+            if marked == Mark::Unmarked {
                 // Count unmarked lines
                 count += 1;
             } else {
@@ -159,32 +159,44 @@ impl BlockMeta {
     pub fn reset(&mut self) {
         unsafe {
             for idx in 0..LINE_COUNT {
-                *self.lines.add(idx) = 0;
+                *self.lines.add(idx) = Mark::Unmarked;
             }
         }
     }
 
     /// Mark the indexed line
     pub fn mark_line(&mut self, idx: usize) {
-        unsafe { *self.as_line_mark(idx) = 1 };
+        unsafe { *self.as_line_mark(idx) = Mark::Marked };
     }
     /// Mark the range, caller must check low and high is safe
     pub fn mark_range(&mut self, low: usize, high: usize) {
         unsafe {
             for idx in low..=high {
-                *self.lines.add(idx) = 1;
+                *self.lines.add(idx) = Mark::Marked;
             }
         }
     }
     /// Unmark the indexed line
     pub fn unmark_line(&mut self, idx: usize) {
-        unsafe { *self.as_line_mark(idx) = 0 };
+        unsafe { *self.as_line_mark(idx) = Mark::Unmarked };
     }
     /// Unmark the range, caller must check low and high is safe
     pub fn unmark_range(&mut self, low: usize, high: usize) {
         unsafe {
             for idx in low..=high {
-                *self.lines.add(idx) = 0;
+                *self.lines.add(idx) = Mark::Unmarked;
+            }
+        }
+    }
+    /// Set mark the indexed line
+    pub fn set_mark_line(&mut self, mark: &Mark, idx: usize) {
+        unsafe { *self.as_line_mark(idx) = *mark };
+    }
+    /// Set mark the range, caller must check low and high is safe
+    pub fn set_mark_range(&mut self, mark: &Mark, low: usize, high: usize) {
+        unsafe {
+            for idx in low..=high {
+                *self.lines.add(idx) = *mark;
             }
         }
     }
@@ -193,8 +205,13 @@ impl BlockMeta {
         unsafe {
             let mut buf = String::new();
             for idx in 0..LINE_COUNT {
-                let mark = *self.lines.add(idx);
-                buf += &format!("{mark}");
+                let mark = self.lines.add(idx);
+                let flag = match *mark {
+                    Mark::Unmarked => '-',
+                    Mark::Allocated => 'A',
+                    Mark::Marked => 'M',
+                };
+                buf += &format!("{flag}");
                 if (idx + 1) % 8 == 0 {
                     buf += &format!(" ");
                 }
@@ -212,8 +229,13 @@ impl BlockMeta {
                 let mut buf = String::new();
 
                 for idx in 0..64 {
-                    let mark = *self.lines.add(line * 64 + idx);
-                    buf += &format!("{mark}");
+                    let mark = self.lines.add(line * 64 + idx);
+                    let flag = match *mark {
+                        Mark::Unmarked => '-',
+                        Mark::Allocated => 'A',
+                        Mark::Marked => 'M',
+                    };
+                    buf += &format!("{flag}");
                     if (idx + 1) % 8 == 0 {
                         buf += &format!(" ");
                     }
@@ -226,14 +248,14 @@ impl BlockMeta {
             vec
         }
     }
-    pub fn is_maked(&self, idx: usize) -> bool {
-        unsafe { *self.as_ref_line_mark(idx) == 1 }
+    pub fn is_marked(&self, idx: usize) -> bool {
+        unsafe { *self.as_ref_line_mark(idx) == Mark::Marked }
     }
 
-    unsafe fn as_line_mark(&mut self, line: usize) -> &mut u8 {
+    unsafe fn as_line_mark(&mut self, line: usize) -> &mut Mark {
         &mut *self.lines.add(line)
     }
-    unsafe fn as_ref_line_mark(&self, line: usize) -> &u8 {
+    unsafe fn as_ref_line_mark(&self, line: usize) -> &Mark {
         &*self.lines.add(line)
     }
 }
@@ -276,7 +298,10 @@ impl BumpBlock {
         Ok(block)
     }
 
-    pub fn inner_alloc(&mut self, alloc_size: usize) -> Result<*const u8, BlockError> {
+    pub fn inner_alloc(
+        &mut self,
+        alloc_size: usize,
+    ) -> Result<*const u8, BlockError> {
         let cursor_ptr = self.cursor as usize;
         let limit = self.limit as usize;
 
@@ -291,9 +316,11 @@ impl BumpBlock {
         // if next_ptr == limit, we have to find hole next time,
         // and then, next_ptr > limit.
         if next_ptr <= limit {
-            let mark_low = (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
+            let mark_low =
+                (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
             let mark_high = (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
-            self.meta.mark_range(mark_low, mark_high);
+            self.meta
+                .set_mark_range(&Mark::Allocated, mark_low, mark_high);
             self.cursor = next_ptr as *const u8;
             Ok(next_ptr as *const u8)
         } else {
