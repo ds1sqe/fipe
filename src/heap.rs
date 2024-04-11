@@ -9,6 +9,7 @@ use crate::{
     object::{environment::Environment, Object},
 };
 
+#[derive(Debug)]
 pub struct Heap {
     obj_immix: Immix<usize, Object>,
     // env_immix: Immix<usize, Environment<String>>,
@@ -31,6 +32,7 @@ impl Heap {
         obj: Object,
     ) -> Result<RawPtr<Object>, ImmixError> {
         let ptr = self.obj_immix.alloc(self.count, obj)?;
+        self.count += 1;
         let typed: TypedPtr<Object> = TypedPtr {
             ptr,
             tag: PhantomData,

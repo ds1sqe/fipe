@@ -20,6 +20,7 @@ pub fn alloc_size_of(object_size: usize) -> usize {
     (object_size + (align - 1)) & !(align - 1)
 }
 
+#[derive(Debug)]
 pub struct Immix<K, V>
 where
     K: Hash + Eq,

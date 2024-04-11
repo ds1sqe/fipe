@@ -32,8 +32,15 @@ pub fn start() {
         io::stdout().flush().unwrap();
         match stdin.read_line(&mut buf) {
             Ok(_) => {
-                if buf == "printenv\n" {
+                if buf == "$env\n" {
                     dbg!(&env);
+                    buf.clear();
+                    continue;
+                }
+                if buf == "$heap\n" {
+                    dbg!(&heap);
+                    buf.clear();
+                    continue;
                 }
 
                 let lexer = Lexer::new(buf.clone());
