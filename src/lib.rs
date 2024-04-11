@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod eval;
+pub mod heap;
 pub mod immix;
 pub mod lexer;
 pub mod object;

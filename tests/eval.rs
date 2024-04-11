@@ -1,11 +1,10 @@
-use std::{cell::RefCell, rc::Rc};
-
 use dlang::{
     ast::Nodetrait,
     eval::{
         errors::{ArgumentsLength, EvalError},
         evaluate,
     },
+    heap::Heap,
     lexer,
     object::{environment::Environment, Int, Object, ObjectTrait, ObjectType},
     parser,
@@ -46,9 +45,10 @@ fn test_eval(input: String) -> Result<Option<Object>, EvalError> {
     let mut parser = parser::Parser::new(lex);
     let prog = parser.parse().unwrap();
 
-    let mut env = Rc::new(RefCell::new(Environment::new()));
+    let mut heap = Heap::new();
+    let mut env = Environment::new();
 
-    evaluate(prog.to_node(), &mut env)
+    evaluate(prog.to_node(), &mut heap, &mut env)
 }
 
 fn test_integer_object_with_result(
@@ -96,7 +96,11 @@ fn test_eval_integer_expression() {
     }
 }
 
-fn test_bool_object_with_result(idx: usize, expect: bool, res: Result<Option<Object>, EvalError>) {
+fn test_bool_object_with_result(
+    idx: usize,
+    expect: bool,
+    res: Result<Option<Object>, EvalError>,
+) {
     let res = res.unwrap().unwrap();
 
     match res {
@@ -235,7 +239,11 @@ fn test_eval_if_expression() {
     }
 }
 
-fn test_error_with_result(idx: usize, expect: EvalError, res: Result<Option<Object>, EvalError>) {
+fn test_error_with_result(
+    idx: usize,
+    expect: EvalError,
+    res: Result<Option<Object>, EvalError>,
+) {
     let err = res.err().unwrap();
 
     if err != expect {
@@ -337,7 +345,11 @@ fn test_eval_errors() {
     }
 }
 
-fn test_let_stm_with_result(idx: usize, expect: Object, res: Result<Option<Object>, EvalError>) {
+fn test_let_stm_with_result(
+    idx: usize,
+    expect: Object,
+    res: Result<Option<Object>, EvalError>,
+) {
     let obj = res.unwrap().unwrap();
 
     if obj.to_str() != expect.to_str() {
@@ -364,7 +376,11 @@ fn test_let_expression() {
     }
 }
 
-fn test_function_with_result(idx: usize, expect: Object, res: Result<Option<Object>, EvalError>) {
+fn test_function_with_result(
+    idx: usize,
+    expect: Object,
+    res: Result<Option<Object>, EvalError>,
+) {
     let obj = res.unwrap().unwrap();
 
     if obj.to_str() != expect.to_str() {

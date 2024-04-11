@@ -1,4 +1,4 @@
-use std::ptr::NonNull;
+use std::{marker::PhantomData, ptr::NonNull};
 
 use super::{
     blocks::{BumpBlock, LargeBlock},
@@ -56,20 +56,20 @@ impl<T: Sized> PartialEq for RawPtr<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OR<L, R> {
     L(L),
     R(R),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MetaPtr {
     pub low: usize,
     pub high: usize,
     pub block: NonNull<BumpBlock>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PairPtr {
     pub meta: OR<MetaPtr, RawPtr<LargeBlock>>,
     pub data: *const u8,
@@ -90,5 +90,21 @@ impl PairPtr {
                 lblk.as_mut().set_mark(mark);
             },
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypedPtr<T> {
+    pub ptr: PairPtr,
+    pub tag: PhantomData<T>,
+}
+
+impl<T> TypedPtr<T> {
+    pub fn as_ptr(self) -> *mut T {
+        self.ptr.data as *mut T
+    }
+
+    pub fn set_mark(&mut self, mark: &Mark) {
+        self.ptr.set_mark(mark)
     }
 }

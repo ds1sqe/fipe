@@ -41,7 +41,7 @@ where
         }
     }
 
-    pub fn alloc(&mut self, key: K, val: V) -> Result<RawPtr<V>, ImmixError> {
+    pub fn alloc(&mut self, key: K, val: V) -> Result<PairPtr, ImmixError> {
         if !self.entities.contains_key(&key) {
             let ptr = self.memory.alloc(size_of::<V>())?;
 
@@ -49,9 +49,7 @@ where
             unsafe { std::ptr::write(ptr.data as *mut V, val) }
             self.entities.insert(key, ptr);
 
-            let raw_ptr = RawPtr::new(ptr.data as *const V);
-
-            Ok(raw_ptr)
+            Ok(ptr)
         } else {
             Err(ImmixError::DuplicatedKey)
         }

@@ -7,6 +7,7 @@ use std::{
 use crate::{
     ast::Nodetrait,
     eval::evaluate,
+    heap::Heap,
     lexer::Lexer,
     object::{environment::Environment, ObjectTrait},
     parser::Parser,
@@ -18,7 +19,8 @@ pub fn start() {
     let mut buf = String::new();
     let mut stdin = io::stdin().lock(); // We get `Stdin` here.
 
-    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut env = Environment::new();
+    let mut heap = Heap::new();
 
     let debug_lexer = false;
     let debug_parser = false;
@@ -32,8 +34,6 @@ pub fn start() {
             Ok(_) => {
                 if buf == "printenv\n" {
                     dbg!(&env);
-                    dbg!(Rc::weak_count(&env));
-                    dbg!(Rc::strong_count(&env));
                 }
 
                 let lexer = Lexer::new(buf.clone());
@@ -61,7 +61,7 @@ pub fn start() {
 
                 if program.is_ok() {
                     let program = program.unwrap();
-                    let result = evaluate(program.to_node(), &env);
+                    let result = evaluate(program.to_node(), &mut heap, &mut env);
 
                     if debug_evaluator {
                         println!("Debug Output (Eval) >> {:?}", result);

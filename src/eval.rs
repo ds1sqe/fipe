@@ -1,18 +1,14 @@
 pub mod errors;
 
-use std::rc::Rc;
-
-use std::cell::RefCell;
-
 use crate::{
     ast::{
         CallExpression, Expression, IfExpression, IndexExpression, InfixExpression,
         Node, Nodetrait, PrefixExpression, Program, Statement,
     },
+    heap::Heap,
     object::{
-        environment::{Environ, Environment},
-        is_same_type, Array, Bool, Function, Int, Object, ObjectTrait, ObjectType,
-        Return, StringObject,
+        environment::Environment, is_same_type, Array, Bool, Function, Int, Object,
+        ObjectTrait, ObjectType, Return, StringObject,
     },
     token::Kind,
 };
@@ -21,23 +17,25 @@ use self::errors::{ArgumentsLength, EvalError, IndexErrorDetail};
 
 pub fn evaluate(
     node: Node,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
     match node {
-        Node::Program(pro) => eval_program(pro, env),
-        Node::Statement(stm) => eval_stm(stm, env),
-        Node::Expression(exp) => eval_exp(exp, env),
+        Node::Program(pro) => eval_program(pro, heap, env),
+        Node::Statement(stm) => eval_stm(stm, heap, env),
+        Node::Expression(exp) => eval_exp(exp, heap, env),
     }
 }
 
 fn eval_program(
     pro: Program,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
     let mut result: Result<Option<Object>, EvalError> = Err(EvalError::BlankResult);
 
     for stm in pro.statements {
-        result = eval_stm(stm, env);
+        result = eval_stm(stm, heap, env);
 
         match result.clone() {
             Ok(opt) => match opt {
@@ -65,7 +63,8 @@ fn eval_program(
 
 fn eval_stm(
     stm: Statement,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
     match stm {
         Statement::LetStatement(stm) => {
@@ -75,7 +74,7 @@ fn eval_stm(
                 return Err(EvalError::LetStatementValueIsNone);
             }
 
-            let result = eval_exp(stm.value.clone().unwrap(), env);
+            let result = eval_exp(stm.value.clone().unwrap(), heap, env);
             if result.is_ok() {
                 let value = result.unwrap();
                 if value.is_some() {
@@ -85,11 +84,15 @@ fn eval_stm(
                     if obj.get_type() == ObjectType::Function {
                         let Object::Function(mut fun) = obj else {unreachable!()};
                         fun.identifier = Some(ident.clone().value);
-                        env.borrow_mut()
-                            .set(ident.clone().value, Object::Function(fun));
+                        heap.enlist(
+                            env,
+                            ident.clone().value,
+                            Object::Function(fun),
+                        )?;
+
                     // if obj is not a function,
                     } else {
-                        env.borrow_mut().set(ident.clone().value, obj);
+                        heap.enlist(env, ident.clone().value, obj)?;
                     }
 
                     return Ok(None);
@@ -103,7 +106,7 @@ fn eval_stm(
         Statement::ExpressionStatement(stm) => {
             let exp = stm.expression.unwrap();
 
-            eval_exp(exp, env)
+            eval_exp(exp, heap, env)
         }
 
         Statement::BlockStatement(stm) => {
@@ -112,13 +115,13 @@ fn eval_stm(
             let mut result: Result<Option<Object>, EvalError>;
 
             // clone outer-context here
-            let env = Rc::new(RefCell::new(Environment::new_inner(env)));
+            let mut env = Environment::capture(env);
 
             // initialize result to prepare case of blank block
             result = Ok(None);
 
             for stm in stms {
-                result = eval_stm(stm, &env);
+                result = eval_stm(stm, heap, &mut env);
                 // this is clone for prenventing falty error of move
                 match result.clone() {
                     Err(_) => {
@@ -151,7 +154,7 @@ fn eval_stm(
             if stm.value.is_none() {
                 return Ok(Some(Object::Return(Return { value: None })));
             }
-            let val = eval_exp(stm.value.unwrap(), env);
+            let val = eval_exp(stm.value.unwrap(), heap, env);
             if val.is_err() {
                 return val;
             }
@@ -170,14 +173,15 @@ fn eval_stm(
 
 fn eval_exp(
     exp: Expression,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
     match exp {
         Expression::Identifier(id_exp) => {
             let key = id_exp.value;
-            let obj = env.borrow().get_clone(&key);
-            if obj.is_some() {
-                Ok(obj)
+            let obj_ptr = Heap::get(env, key.clone());
+            if obj_ptr.is_some() {
+                unsafe { Ok(Some((*obj_ptr.unwrap().as_ptr()).clone())) }
             } else {
                 // identifier not found
                 Err(EvalError::IdentifierNotFound(key.clone()))
@@ -199,16 +203,17 @@ fn eval_exp(
                 args: func.parameters,
                 block: func.body,
                 // have to clone to catch the current lexical environment
-                env: Rc::downgrade(&env),
+                env: Environment::capture(&env),
             };
 
             // if this function have identifier, bind to environment
             if func.ident.is_some() {
                 fun.identifier = Some(func.ident.as_ref().unwrap().to_str());
-                env.borrow_mut().set(
+                heap.enlist(
+                    env,
                     func.ident.unwrap().to_str(),
                     Object::Function(fun.clone()),
-                );
+                )?;
             }
             Ok(Some(Object::Function(fun)))
         }
@@ -217,7 +222,7 @@ fn eval_exp(
             let mut elements = Vec::new();
 
             for exp in arr.elements {
-                let obj = eval_exp(exp, env);
+                let obj = eval_exp(exp, heap, env);
                 if obj.is_err() {
                     return obj;
                 }
@@ -229,20 +234,21 @@ fn eval_exp(
             Ok(Some(Object::Array(Array { elements })))
         }
 
-        Expression::InfixExpression(exp) => eval_infix_exp(exp, env),
-        Expression::PrefixExpression(exp) => eval_prefix_exp(exp, env),
-        Expression::IfExpression(exp) => eval_if_exp(exp, env),
-        Expression::CallExpression(exp) => eval_call_exp(exp, env),
-        Expression::IndexExpression(exp) => eval_index_exp(exp, env),
+        Expression::InfixExpression(exp) => eval_infix_exp(exp, heap, env),
+        Expression::PrefixExpression(exp) => eval_prefix_exp(exp, heap, env),
+        Expression::IfExpression(exp) => eval_if_exp(exp, heap, env),
+        Expression::CallExpression(exp) => eval_call_exp(exp, heap, env),
+        Expression::IndexExpression(exp) => eval_index_exp(exp, heap, env),
     }
 }
 
 fn eval_infix_exp(
     exp: InfixExpression,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
     // check left, right is valid
-    let left = eval_exp(*exp.left, env);
+    let left = eval_exp(*exp.left, heap, env);
     if left.is_err() {
         return left;
     }
@@ -252,7 +258,7 @@ fn eval_infix_exp(
     }
     let left = left.unwrap();
 
-    let right = eval_exp(*exp.right, env);
+    let right = eval_exp(*exp.right, heap, env);
     if right.is_err() {
         return right;
     }
@@ -415,12 +421,13 @@ fn eval_infix_string_exp(
 
 fn eval_prefix_exp(
     exp: PrefixExpression,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
     let operator = exp.token.kind;
 
     // evaluate first
-    let result = eval_exp(*exp.right.clone(), env);
+    let result = eval_exp(*exp.right.clone(), heap, env);
 
     if result.is_err() {
         return result;
@@ -484,9 +491,10 @@ fn eval_prefix_bool_exp(operator: Kind, right: Bool) -> Result<Object, EvalError
 
 fn eval_if_exp(
     exp: IfExpression,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
-    let condition_val = eval_exp(*exp.condition, env);
+    let condition_val = eval_exp(*exp.condition, heap, env);
     if condition_val.is_err() {
         return condition_val;
     };
@@ -500,10 +508,14 @@ fn eval_if_exp(
     let Object::Bool(flag) = object else { return Err(EvalError::NotABoolean(object))};
 
     if flag.value {
-        return eval_stm(Statement::BlockStatement(exp.consequence), env);
+        return eval_stm(Statement::BlockStatement(exp.consequence), heap, env);
     }
     if exp.alternative.is_some() {
-        return eval_stm(Statement::BlockStatement(exp.alternative.unwrap()), env);
+        return eval_stm(
+            Statement::BlockStatement(exp.alternative.unwrap()),
+            heap,
+            env,
+        );
     }
 
     Ok(None)
@@ -511,9 +523,10 @@ fn eval_if_exp(
 
 fn eval_call_exp(
     exp: CallExpression,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
-    let func = eval_exp(*exp.function, env);
+    let func = eval_exp(*exp.function, heap, env);
 
     if func.is_err() {
         return Err(func.err().unwrap());
@@ -524,12 +537,12 @@ fn eval_call_exp(
     let func = func.unwrap().unwrap();
     match func {
         Object::Function(func) => {
-            let args = eval_function_parameters(exp.arguments, env);
+            let args = eval_function_parameters(exp.arguments, heap, env);
             if args.is_err() {
                 return Err(args.err().unwrap());
             }
             let args = args.unwrap();
-            apply_function(func, args)
+            apply_function(func, args, heap)
         }
         // func is not a function
         obj => Err(EvalError::NotAFunction(obj)),
@@ -538,12 +551,13 @@ fn eval_call_exp(
 
 fn eval_function_parameters(
     args: Vec<Expression>,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Vec<Object>, EvalError> {
     let mut result: Vec<Object> = Vec::new();
 
     for (_, arg) in args.iter().enumerate() {
-        let evaluated = eval_exp(arg.clone(), env);
+        let evaluated = eval_exp(arg.clone(), heap, env);
 
         if evaluated.is_err() {
             return Err(evaluated.err().unwrap());
@@ -561,6 +575,7 @@ fn eval_function_parameters(
 fn apply_function(
     fun: Function,
     args: Vec<Object>,
+    heap: &mut Heap,
 ) -> Result<Option<Object>, EvalError> {
     if args.len() != fun.args.len() {
         return Err(EvalError::FunctionArgLengthNotMatched(ArgumentsLength {
@@ -569,14 +584,17 @@ fn apply_function(
         }));
     }
 
-    let extended_env = extend_function_env(&fun, args);
+    let mut extended_env = extend_function_env(&fun, args, heap);
 
     if extended_env.is_err() {
         return Err(extended_env.unwrap_err());
     }
 
-    let evaluated =
-        eval_stm(Statement::BlockStatement(fun.block), &extended_env.unwrap());
+    let evaluated = eval_stm(
+        Statement::BlockStatement(fun.block),
+        heap,
+        &mut extended_env.unwrap(),
+    );
 
     if evaluated.is_err() {
         return evaluated;
@@ -589,24 +607,19 @@ fn apply_function(
 fn extend_function_env(
     fun: &Function,
     args: Vec<Object>,
-) -> Result<Environ<String>, EvalError> {
-    let opt_rc = fun.env.upgrade();
-
-    if opt_rc.is_none() {
-        return Err(EvalError::EnvironmentHasDropped);
-    }
-
-    let mut env = Environment::new_inner(&opt_rc.clone().unwrap());
+    heap: &mut Heap,
+) -> Result<Environment<String>, EvalError> {
+    let mut env = Environment::capture(&fun.env);
 
     // bind given args(object) to fun's parameters(ident)
     for (idx, arg) in fun.args.iter().enumerate() {
-        env.set(arg.value.clone(), args[idx].clone());
+        heap.enlist(&mut env, arg.value.clone(), args[idx].clone());
     }
 
     dbg!("extend_function_env");
     dbg!(&env);
 
-    Ok(Rc::new(RefCell::new(env)))
+    Ok(env)
 }
 /// unwrap return value to object.
 /// if given obj is not a return value, don't do anything
@@ -627,9 +640,10 @@ fn unwrap_return_value(obj: Option<Object>) -> Option<Object> {
 
 fn eval_index_exp(
     exp: IndexExpression,
-    env: &Environ<String>,
+    heap: &mut Heap,
+    env: &mut Environment<String>,
 ) -> Result<Option<Object>, EvalError> {
-    let left_rst = eval_exp(*exp.left, env);
+    let left_rst = eval_exp(*exp.left, heap, env);
 
     if left_rst.is_err() {
         return left_rst;
@@ -643,7 +657,7 @@ fn eval_index_exp(
         return Err(EvalError::NotArray);
     }
 
-    let index_rst = eval_exp(*exp.index, env);
+    let index_rst = eval_exp(*exp.index, heap, env);
     if index_rst.is_err() {
         return index_rst;
     }

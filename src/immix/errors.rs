@@ -1,6 +1,6 @@
 use super::size::SizeClassError;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum BlockError {
     /// block size is not a power of two
     BadSize(usize),
@@ -12,7 +12,7 @@ pub enum BlockError {
     AddressOverflow,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AllocError {
     /// Cannot allocate memory
     OutOfMemory,
@@ -36,7 +36,7 @@ impl From<BlockError> for AllocError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ImmixError {
     /// Key already exist
     DuplicatedKey,

@@ -1,7 +1,7 @@
 pub mod environment;
 pub mod types;
 
-use std::{cell::RefCell, fmt::Debug, rc::Weak};
+use std::fmt::Debug;
 
 use crate::ast::{BlockStatement, Identifier, Nodetrait};
 
@@ -116,12 +116,14 @@ pub struct Function {
     pub identifier: Option<String>,
     pub args: Vec<Identifier>,
     pub block: BlockStatement,
-    pub env: Weak<RefCell<Environment<String>>>,
+    pub env: Environment<String>,
 }
 
 impl PartialEq for Function {
     fn eq(&self, other: &Self) -> bool {
-        self.identifier == other.identifier && self.args == other.args && self.block == other.block
+        self.identifier == other.identifier
+            && self.args == other.args
+            && self.block == other.block
     }
 }
 

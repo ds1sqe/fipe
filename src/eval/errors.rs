@@ -1,5 +1,6 @@
 use crate::{
     ast::Expression,
+    immix::{errors::ImmixError, Immix},
     object::{Object, ObjectType},
     token::Kind,
 };
@@ -45,6 +46,8 @@ pub enum EvalError {
 
     InvalidBoolInfixOperation(Kind),
     InvalidBoolPrefixOperation(Kind),
+
+    MemoryError(ImmixError),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,4 +60,10 @@ pub struct ArgumentsLength {
 pub struct IndexErrorDetail {
     pub array_length: usize,
     pub called_with: usize,
+}
+
+impl From<ImmixError> for EvalError {
+    fn from(value: ImmixError) -> Self {
+        Self::MemoryError(value)
+    }
 }
