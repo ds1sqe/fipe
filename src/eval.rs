@@ -2,13 +2,13 @@ pub mod errors;
 
 use crate::{
     ast::{
-        CallExpression, Expression, IfExpression, IndexExpression, InfixExpression,
-        Node, Nodetrait, PrefixExpression, Program, Statement,
+        CallExpression, Expression, IfExpression, IndexExpression, InfixExpression, Node,
+        Nodetrait, PrefixExpression, Program, Statement,
     },
     heap::Heap,
     object::{
-        environment::Environment, is_same_type, Array, Bool, Function, Int, Object,
-        ObjectTrait, ObjectType, Return, StringObject,
+        environment::Environment, is_same_type, Array, Bool, Function, Int, Object, ObjectTrait,
+        ObjectType, Return, StringObject,
     },
     token::Kind,
 };
@@ -84,11 +84,7 @@ fn eval_stm(
                     if obj.get_type() == ObjectType::Function {
                         let Object::Function(mut fun) = obj else {unreachable!()};
                         fun.identifier = Some(ident.clone().value);
-                        heap.enlist(
-                            env,
-                            ident.clone().value,
-                            Object::Function(fun),
-                        )?;
+                        heap.enlist(env, ident.clone().value, Object::Function(fun))?;
 
                     // if obj is not a function,
                     } else {
@@ -187,12 +183,8 @@ fn eval_exp(
                 Err(EvalError::IdentifierNotFound(key.clone()))
             }
         }
-        Expression::IntegerLiteral(lit) => {
-            Ok(Some(Object::Int(Int { value: lit.value })))
-        }
-        Expression::BooleanLiteral(lit) => {
-            Ok(Some(Object::Bool(Bool { value: lit.value })))
-        }
+        Expression::IntegerLiteral(lit) => Ok(Some(Object::Int(Int { value: lit.value }))),
+        Expression::BooleanLiteral(lit) => Ok(Some(Object::Bool(Bool { value: lit.value }))),
         Expression::StringLiteral(lit) => {
             Ok(Some(Object::String(StringObject { value: lit.value })))
         }
@@ -304,20 +296,13 @@ fn eval_infix_exp(
             let result = Some(result.unwrap());
             Ok(result)
         }
-        ObjectType::Array | ObjectType::Function | ObjectType::Return => {
-            Err(EvalError::InvalidInfixOperationTarget(
-                left.get_type(),
-                exp.operator.kind,
-            ))
-        }
+        ObjectType::Array | ObjectType::Function | ObjectType::Return => Err(
+            EvalError::InvalidInfixOperationTarget(left.get_type(), exp.operator.kind),
+        ),
     }
 }
 
-fn eval_infix_int_exp(
-    left: Int,
-    operator: Kind,
-    right: Int,
-) -> Result<Object, EvalError> {
+fn eval_infix_int_exp(left: Int, operator: Kind, right: Int) -> Result<Object, EvalError> {
     match operator {
         Kind::Plus => {
             let value = left.value + right.value;
@@ -370,11 +355,7 @@ fn eval_infix_int_exp(
     }
 }
 
-fn eval_infix_bool_exp(
-    left: Bool,
-    operator: Kind,
-    right: Bool,
-) -> Result<Object, EvalError> {
+fn eval_infix_bool_exp(left: Bool, operator: Kind, right: Bool) -> Result<Object, EvalError> {
     match operator {
         Kind::And | Kind::Bit_And => Ok(Object::Bool(Bool {
             value: left.value && right.value,
@@ -458,13 +439,9 @@ fn eval_prefix_exp(
             }
             Ok(Some(result.unwrap()))
         }
-        ObjectType::Array
-        | ObjectType::Function
-        | ObjectType::Return
-        | ObjectType::String => Err(EvalError::InvalidPrefixOperationTarget(
-            obj.get_type(),
-            operator,
-        )),
+        ObjectType::Array | ObjectType::Function | ObjectType::Return | ObjectType::String => Err(
+            EvalError::InvalidPrefixOperationTarget(obj.get_type(), operator),
+        ),
     }
 }
 
@@ -536,8 +513,8 @@ fn eval_call_exp(
     }
     let func = func.unwrap().unwrap();
     match func {
-        Object::Function(func) => {
-            let args = eval_function_parameters(exp.arguments, heap, env);
+        Object::Function(mut func) => {
+            let args = eval_function_parameters(exp.arguments, heap, &mut func.env);
             if args.is_err() {
                 return Err(args.err().unwrap());
             }
@@ -584,7 +561,7 @@ fn apply_function(
         }));
     }
 
-    let mut extended_env = extend_function_env(&fun, args, heap);
+    let extended_env = extend_function_env(&fun, args, heap);
 
     if extended_env.is_err() {
         return Err(extended_env.unwrap_err());
@@ -613,11 +590,8 @@ fn extend_function_env(
 
     // bind given args(object) to fun's parameters(ident)
     for (idx, arg) in fun.args.iter().enumerate() {
-        heap.enlist(&mut env, arg.value.clone(), args[idx].clone());
+        let _ = heap.enlist(&mut env, arg.value.clone(), args[idx].clone());
     }
-
-    dbg!("extend_function_env");
-    dbg!(&env);
 
     Ok(env)
 }
