@@ -23,6 +23,7 @@ use std::{
 use super::{
     errors::{AllocError, BlockError},
     mark::Mark,
+    ptr::{MetaPtr, PairPtr, RawPtr, OR},
     size::SizeClass,
 };
 
@@ -301,7 +302,7 @@ impl BumpBlock {
     pub fn inner_alloc(
         &mut self,
         alloc_size: usize,
-    ) -> Result<*const u8, BlockError> {
+    ) -> Result<(MetaPtr, *const u8), BlockError> {
         let cursor_ptr = self.cursor as usize;
         let limit = self.limit as usize;
 
@@ -321,8 +322,20 @@ impl BumpBlock {
             let mark_high = (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
             self.meta
                 .set_mark_range(&Mark::Allocated, mark_low, mark_high);
+            let cursor = self.cursor;
             self.cursor = next_ptr as *const u8;
-            Ok(next_ptr as *const u8)
+
+            let self_ptr = NonNull::new(self);
+            if self_ptr.is_none() {
+                // TODO: change err
+                return Err(BlockError::OutOfMemory);
+            }
+            let ptr = MetaPtr {
+                low: mark_low,
+                high: mark_high,
+                block: self_ptr.unwrap(),
+            };
+            Ok((ptr, cursor as *const u8))
         } else {
             // try find hole.
             if let Some(Hole { start, end }) = self.meta.find_hole(0, alloc_size) {
@@ -403,6 +416,10 @@ impl LargeBlock {
             dealloc(ptr.as_ptr(), layout);
         }
     }
+
+    pub fn set_mark(&mut self, mark: &Mark) {
+        self.mark = *mark;
+    }
 }
 
 #[derive(Debug)]
@@ -421,7 +438,7 @@ impl BlockList {
         }
     }
 
-    pub fn alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
+    pub fn alloc(&mut self, alloc_size: usize) -> Result<PairPtr, AllocError> {
         let size = SizeClass::from(alloc_size)?;
         match size {
             SizeClass::Small | SizeClass::Medium => self.head_alloc(alloc_size),
@@ -429,10 +446,13 @@ impl BlockList {
         }
     }
 
-    fn head_alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
+    fn head_alloc(&mut self, alloc_size: usize) -> Result<PairPtr, AllocError> {
         match self.head.is_empty() {
             false => match self.head[0].inner_alloc(alloc_size) {
-                Ok(space) => Ok(space),
+                Ok((meta_ptr, cursor)) => Ok(PairPtr {
+                    meta: OR::L(meta_ptr),
+                    data: cursor,
+                }),
                 Err(__) => {
                     // head[0] bump block is full
                     if self.head.len() != 1 {
@@ -455,7 +475,11 @@ impl BlockList {
                         if space.is_err() {
                             return Err(AllocError::OutOfMemory);
                         }
-                        Ok(space.unwrap())
+                        let space = space.unwrap();
+                        Ok(PairPtr {
+                            meta: OR::L(space.0),
+                            data: space.1,
+                        })
                     }
                 }
             },
@@ -474,10 +498,16 @@ impl BlockList {
         }
     }
 
-    fn large_alloc(&mut self, alloc_size: usize) -> Result<*const u8, AllocError> {
+    fn large_alloc(&mut self, alloc_size: usize) -> Result<PairPtr, AllocError> {
         let size = alloc_size.next_power_of_two();
         let new_large_block = LargeBlock::new(size)?;
         self.large.push(new_large_block);
-        Ok(self.large.last().unwrap().as_ptr())
+
+        let ptr = self.large.last().unwrap().as_ptr();
+        let rst = PairPtr {
+            meta: OR::R(RawPtr::new(ptr as *const LargeBlock)),
+            data: ptr,
+        };
+        Ok(rst)
     }
 }

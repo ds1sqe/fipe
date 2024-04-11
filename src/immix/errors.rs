@@ -35,3 +35,17 @@ impl From<BlockError> for AllocError {
         AllocError::InternalError(value)
     }
 }
+
+#[derive(Debug)]
+pub enum ImmixError {
+    /// Key already exist
+    DuplicatedKey,
+    /// Wrapper for alloc error
+    InternalError(AllocError),
+}
+
+impl From<AllocError> for ImmixError {
+    fn from(value: AllocError) -> Self {
+        ImmixError::InternalError(value)
+    }
+}

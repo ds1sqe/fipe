@@ -1,5 +1,11 @@
 use std::ptr::NonNull;
 
+use super::{
+    blocks::{BumpBlock, LargeBlock},
+    mark::Mark,
+};
+
+#[derive(Debug)]
 pub struct RawPtr<T: Sized> {
     ptr: NonNull<T>,
 }
@@ -47,5 +53,42 @@ impl<T: Sized> Copy for RawPtr<T> {}
 impl<T: Sized> PartialEq for RawPtr<T> {
     fn eq(&self, other: &RawPtr<T>) -> bool {
         self.ptr == other.ptr
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum OR<L, R> {
+    L(L),
+    R(R),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MetaPtr {
+    pub low: usize,
+    pub high: usize,
+    pub block: NonNull<BumpBlock>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PairPtr {
+    pub meta: OR<MetaPtr, RawPtr<LargeBlock>>,
+    pub data: *const u8,
+}
+
+impl PairPtr {
+    pub fn set_mark(&mut self, mark: &Mark) {
+        match &mut self.meta {
+            OR::L(mptr) => {
+                unsafe {
+                    mptr.block
+                        .as_mut()
+                        .meta
+                        .set_mark_range(mark, mptr.low, mptr.high)
+                };
+            }
+            OR::R(lblk) => unsafe {
+                lblk.as_mut().set_mark(mark);
+            },
+        }
     }
 }
