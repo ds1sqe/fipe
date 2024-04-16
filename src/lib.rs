@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod bytecode;
 pub mod eval;
 pub mod heap;
 pub mod immix;
