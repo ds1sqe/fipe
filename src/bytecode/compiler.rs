@@ -35,7 +35,6 @@ impl Compiler {
         for stm in src.statements {
             self.compile_stm(&stm)
         }
-
         None
     }
 

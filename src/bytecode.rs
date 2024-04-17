@@ -1,5 +1,8 @@
 pub mod compiler;
+pub mod instruction;
+pub mod instructions;
 pub mod op;
+pub mod opcode;
 
 use crate::object::{Object, ObjectTrait};
 
