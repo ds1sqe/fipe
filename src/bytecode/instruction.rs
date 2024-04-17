@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use super::opcode::OpCode;
 
 /// ARG_SIZE
@@ -67,5 +69,60 @@ impl Instruction {
             Instruction::JEQ { idx: _ } => OpCode::JEQ,
             Instruction::JNEQ { idx: _ } => OpCode::JNEQ,
         }
+    }
+
+    pub fn as_byte(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        match self {
+            Instruction::PUSH
+            | Instruction::POP
+            | Instruction::ADD
+            | Instruction::SUB
+            | Instruction::PRODUCT
+            | Instruction::DIVIDE
+            | Instruction::MOD
+            | Instruction::BANG
+            | Instruction::NEG
+            | Instruction::CGT
+            | Instruction::CLT
+            | Instruction::CEQ
+            | Instruction::CNEQ => buf.push(self.opcode() as u8),
+            Instruction::CONST { idx } => {
+                buf.push(self.opcode() as u8);
+                buf.write_all(&idx.to_ne_bytes()).unwrap()
+            }
+            Instruction::JMP { idx } | Instruction::JEQ { idx } | Instruction::JNEQ { idx } => {
+                buf.push(self.opcode() as u8);
+                buf.write_all(&idx.to_ne_bytes()).unwrap()
+            }
+        }
+
+        buf
+    }
+
+    pub fn to_string(&self) -> String {
+        let mut buf = String::new();
+
+        match self {
+            Instruction::PUSH => buf += "PUSH",
+            Instruction::POP => buf += "POP",
+            Instruction::CONST { idx } => buf += &format!("CONST\t\t{idx}"),
+            Instruction::ADD => buf += "ADD",
+            Instruction::SUB => buf += "SUB",
+            Instruction::PRODUCT => buf += "PRODUCT",
+            Instruction::DIVIDE => buf += "DIVIDE",
+            Instruction::MOD => buf += "MOD",
+            Instruction::BANG => buf += "BANG",
+            Instruction::NEG => buf += "NEG",
+            Instruction::CGT => buf += "CGT",
+            Instruction::CLT => buf += "CLT",
+            Instruction::CEQ => buf += "CEQ",
+            Instruction::CNEQ => buf += "CNEQ",
+            Instruction::JMP { idx } => buf += &format!("JMP\t\t{idx}"),
+            Instruction::JEQ { idx } => buf += &format!("JEQ\t\t{idx}"),
+            Instruction::JNEQ { idx } => buf += &format!("JNEQ\t\t{idx}"),
+        }
+
+        buf
     }
 }

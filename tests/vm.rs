@@ -1,6 +1,5 @@
 use dlang::{
-    bytecode::compiler::Compiler, lexer::Lexer, object::Object, parser::Parser,
-    test::Tests, vm::VM,
+    bytecode::compiler::Compiler, lexer::Lexer, object::Object, parser::Parser, test::Tests, vm::VM,
 };
 
 #[test]
@@ -35,11 +34,12 @@ fn test_vm_integer_operation() {
         comp.compile(program);
         let bytecode = comp.bytecode();
 
+        println!("Bytecode\n{}", bytecode.to_string());
+
         let mut vm = VM::new(bytecode);
 
         while vm.is_runable() {
             vm.run_single();
-            println!("{}", vm.to_string())
         }
 
         let rst = vm.top().unwrap();

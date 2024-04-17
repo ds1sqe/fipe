@@ -1,14 +1,14 @@
 use crate::{
-    bytecode::{op::OP, Bytecode},
+    bytecode::{instruction::Instruction, instructions::Instructions, Bytecode},
     object::{Int, Object, ObjectTrait, ObjectType},
 };
 
 pub struct VM {
     stack: Vec<Object>,
     constants: Vec<Object>,
-    instructions: Vec<OP>,
+    instructions: Instructions,
 
-    pc: usize,
+    ic: usize,
 }
 
 impl VM {
@@ -17,19 +17,20 @@ impl VM {
             stack: Vec::new(),
             constants: code.constants,
             instructions: code.instructions,
-            pc: 0,
+            ic: 0,
         }
     }
 
     pub fn run_single(&mut self) {
-        match self.instructions[self.pc] {
-            OP::PUSH => todo!(),
-            OP::POP => todo!(),
-            OP::CONST { idx } => {
+        let ins = self.instructions.read_instruction(self.ic);
+        match &ins {
+            Instruction::PUSH => todo!(),
+            Instruction::POP => todo!(),
+            Instruction::CONST { idx } => {
                 // load constants into stack
-                self.stack.push(self.constants[idx].clone())
+                self.stack.push(self.constants[*idx].clone())
             }
-            OP::ADD => {
+            Instruction::ADD => {
                 let left = self.stack.pop().unwrap();
                 let right = self.stack.pop().unwrap();
 
@@ -47,7 +48,7 @@ impl VM {
                     }
                 }
             }
-            OP::SUB => {
+            Instruction::SUB => {
                 let left = self.stack.pop().unwrap();
                 let right = self.stack.pop().unwrap();
 
@@ -63,7 +64,7 @@ impl VM {
                     }
                 }
             }
-            OP::PRODUCT => {
+            Instruction::PRODUCT => {
                 let left = self.stack.pop().unwrap();
                 let right = self.stack.pop().unwrap();
 
@@ -79,7 +80,7 @@ impl VM {
                     }
                 }
             }
-            OP::DIVIDE => {
+            Instruction::DIVIDE => {
                 let left = self.stack.pop().unwrap();
                 let right = self.stack.pop().unwrap();
 
@@ -95,7 +96,7 @@ impl VM {
                     }
                 }
             }
-            OP::MOD => {
+            Instruction::MOD => {
                 let left = self.stack.pop().unwrap();
                 let right = self.stack.pop().unwrap();
 
@@ -113,7 +114,7 @@ impl VM {
                     }
                 }
             }
-            OP::BANG => {
+            Instruction::BANG => {
                 let right = self.stack.pop().unwrap();
                 if right.get_type() == ObjectType::Bool {
                     let Object::Bool(mut right) = right else {unreachable!()};
@@ -123,7 +124,7 @@ impl VM {
                     // emit error
                 }
             }
-            OP::NEG => {
+            Instruction::NEG => {
                 let right = self.stack.pop().unwrap();
                 if right.get_type() == ObjectType::Int {
                     let Object::Int(mut right) = right else {unreachable!()};
@@ -133,19 +134,19 @@ impl VM {
                     // emit error
                 }
             }
-            OP::CGT => todo!(),
-            OP::CLT => todo!(),
-            OP::CEQ => todo!(),
-            OP::CNEQ => todo!(),
-            OP::JMP => todo!(),
-            OP::JEQ { idx } => todo!(),
-            OP::JNEQ { idx } => todo!(),
+            Instruction::CGT => todo!(),
+            Instruction::CLT => todo!(),
+            Instruction::CEQ => todo!(),
+            Instruction::CNEQ => todo!(),
+            Instruction::JMP { idx } => todo!(),
+            Instruction::JEQ { idx } => todo!(),
+            Instruction::JNEQ { idx } => todo!(),
         }
-        self.pc += 1;
+        self.ic += ins.opcode().length();
     }
 
     pub fn is_runable(&self) -> bool {
-        self.pc < self.instructions.len()
+        self.ic < self.instructions.length()
     }
 
     pub fn top(&self) -> Option<&Object> {
@@ -162,15 +163,7 @@ impl VM {
         }
 
         buf += "\nINSTRUCTIONS\n";
-        for (idx, ins) in self.instructions.iter().enumerate() {
-            if idx == self.pc {
-                buf += &format!("{:*>6}\t\t", idx);
-            } else {
-                buf += &format!("{:0>6}\t\t", idx);
-            }
-            buf += &ins.to_string();
-            buf += "\n";
-        }
+        buf += &self.instructions.to_string();
 
         buf += "\nSTACK\n";
         for (idx, ins) in self.stack.iter().enumerate() {

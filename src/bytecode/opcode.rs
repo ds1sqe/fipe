@@ -1,6 +1,7 @@
 use super::instruction::{CONST, JUMP, NO_ARG};
 
 /// Raw opcode
+#[derive(Debug)]
 pub enum OpCode {
     PUSH,
     POP,

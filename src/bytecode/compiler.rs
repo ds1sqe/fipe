@@ -1,26 +1,26 @@
 use crate::{
     ast::{
         ArrayLiteral, BlockStatement, BooleanLiteral, CallExpression, Expression,
-        ExpressionStatement, FunctionLiteral, Identifier, IfExpression,
-        IndexExpression, InfixExpression, IntegerLiteral, LetStatement,
-        PrefixExpression, Program, ReturnStatement, Statement, StringLiteral,
+        ExpressionStatement, FunctionLiteral, Identifier, IfExpression, IndexExpression,
+        InfixExpression, IntegerLiteral, LetStatement, PrefixExpression, Program, ReturnStatement,
+        Statement, StringLiteral,
     },
     object::{Int, Object},
     token::Kind,
 };
 
-use super::{op::OP, Bytecode};
+use super::{instruction::Instruction, instructions::Instructions, Bytecode};
 
 pub struct Compiler {
     constants: Vec<Object>,
-    instructions: Vec<OP>,
+    instructions: Instructions,
 }
 
 impl Compiler {
     pub fn new() -> Self {
         Self {
             constants: Vec::new(),
-            instructions: Vec::new(),
+            instructions: Instructions::new(),
         }
     }
 
@@ -74,7 +74,7 @@ impl Compiler {
     fn compile_integer_literal(&mut self, lit: &IntegerLiteral) {
         let int = Object::Int(Int { value: lit.value });
         self.constants.push(int);
-        self.emit(OP::CONST {
+        self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
         })
     }
@@ -86,8 +86,8 @@ impl Compiler {
         self.compile_exp(&exp.right);
 
         match exp.token.kind {
-            Kind::Bang => self.emit(OP::BANG),
-            Kind::Minus => self.emit(OP::NEG),
+            Kind::Bang => self.emit(Instruction::BANG),
+            Kind::Minus => self.emit(Instruction::NEG),
             __not_matched => {
                 // emit error
             }
@@ -99,11 +99,11 @@ impl Compiler {
 
         match &exp.operator.kind {
             Kind::Assign => todo!(),
-            Kind::Plus => self.emit(OP::ADD),
-            Kind::Minus => self.emit(OP::SUB),
-            Kind::Product => self.emit(OP::PRODUCT),
-            Kind::Divide => self.emit(OP::DIVIDE),
-            Kind::Mod => self.emit(OP::MOD),
+            Kind::Plus => self.emit(Instruction::ADD),
+            Kind::Minus => self.emit(Instruction::SUB),
+            Kind::Product => self.emit(Instruction::PRODUCT),
+            Kind::Divide => self.emit(Instruction::DIVIDE),
+            Kind::Mod => self.emit(Instruction::MOD),
             Kind::LT => todo!(),
             Kind::LT_OR_EQ => todo!(),
             Kind::GT => todo!(),
@@ -123,7 +123,7 @@ impl Compiler {
     fn compile_call_exp(&mut self, exp: &CallExpression) {}
     fn compile_index_exp(&mut self, exp: &IndexExpression) {}
 
-    fn emit(&mut self, op: OP) {
-        self.instructions.push(op)
+    fn emit(&mut self, ins: Instruction) {
+        self.instructions.add_instruction(ins)
     }
 }

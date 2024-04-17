@@ -1,23 +1,22 @@
 pub mod compiler;
 pub mod instruction;
 pub mod instructions;
-pub mod op;
 pub mod opcode;
 
 use crate::object::{Object, ObjectTrait};
 
-use self::op::OP;
+use self::instructions::Instructions;
 
 pub struct Bytecode {
     pub constants: Vec<Object>,
-    pub instructions: Vec<OP>,
+    pub instructions: Instructions,
 }
 
 impl Bytecode {
     pub fn new() -> Self {
         Self {
             constants: Vec::new(),
-            instructions: Vec::new(),
+            instructions: Instructions::new(),
         }
     }
 
@@ -31,11 +30,8 @@ impl Bytecode {
         }
 
         buf += "\nINSTRUCTIONS\n";
-        for (idx, ins) in self.instructions.iter().enumerate() {
-            buf += &format!("{:0>6}\t\t", idx);
-            buf += &ins.to_string();
-            buf += "\n";
-        }
+
+        buf += &self.instructions.to_string();
 
         buf
     }
