@@ -14,9 +14,15 @@ pub enum OpCode {
     BANG,
     NEG,
     CGT,
+    CGTE,
     CLT,
+    CLTE,
     CEQ,
     CNEQ,
+    AND,
+    OR,
+    BAND,
+    BOR,
     JMP,
     JEQ,
     JNEQ,
@@ -35,9 +41,15 @@ impl OpCode {
             | OpCode::BANG
             | OpCode::NEG
             | OpCode::CGT
+            | OpCode::CGTE
             | OpCode::CLT
+            | OpCode::CLTE
             | OpCode::CEQ
-            | OpCode::CNEQ => return &NO_ARG.arg_size,
+            | OpCode::CNEQ
+            | OpCode::AND
+            | OpCode::OR
+            | OpCode::BAND
+            | OpCode::BOR => return &NO_ARG.arg_size,
 
             OpCode::CONST => return &CONST.arg_size,
 
@@ -56,9 +68,15 @@ impl OpCode {
             | OpCode::BANG
             | OpCode::NEG
             | OpCode::CGT
+            | OpCode::CGTE
             | OpCode::CLT
+            | OpCode::CLTE
             | OpCode::CEQ
-            | OpCode::CNEQ => return NO_ARG.length,
+            | OpCode::CNEQ
+            | OpCode::AND
+            | OpCode::OR
+            | OpCode::BAND
+            | OpCode::BOR => return NO_ARG.length,
 
             OpCode::CONST => return CONST.length,
 

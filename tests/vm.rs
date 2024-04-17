@@ -53,3 +53,75 @@ fn test_vm_integer_operation() {
         }
     }
 }
+
+#[test]
+fn test_vm_bool_operation() {
+    let mut tests: Tests<bool> = Tests::new();
+    tests.add(("true", true));
+    tests.add(("false", false));
+
+    tests.add(("1 < 2", true));
+    tests.add(("1 > 2", false));
+    tests.add(("1 < 1", false));
+    tests.add(("1 > 1", false));
+
+    tests.add(("1 <= 2", true));
+    tests.add(("1 >= 2", false));
+    tests.add(("1 <= 1", true));
+    tests.add(("1 >= 1", true));
+
+    tests.add(("1 == 1", true));
+    tests.add(("1 != 1", false));
+    tests.add(("1 == 2", false));
+    tests.add(("1 != 2", true));
+
+    tests.add(("true == true", true));
+    tests.add(("false == false", true));
+    tests.add(("true == false", false));
+    tests.add(("true != false", true));
+    tests.add(("false != true", true));
+
+    tests.add(("(1 < 2) == true", true));
+    tests.add(("(1 < 2) == false", false));
+    tests.add(("(1 > 2) == true", false));
+    tests.add(("(1 > 2) == false", true));
+
+    tests.add(("!true", false));
+    tests.add(("!false", true));
+    tests.add(("!!true", true));
+    tests.add(("!!false", false));
+
+    tests.add(("\"Hello\"==\"Hello\"", true));
+    tests.add(("\"Hello\"==\"World\"", false));
+
+    for (idx, test) in tests.cases.iter().enumerate() {
+        println!("Testing {:03}", idx);
+        println!("Input: {}", test.input);
+        println!("expect: {}", test.expect);
+
+        let lexer = Lexer::new(test.input.clone());
+        let program = Parser::new(lexer).parse().unwrap();
+
+        let mut comp = Compiler::new();
+        comp.compile(program);
+        let bytecode = comp.bytecode();
+
+        println!("Bytecode\n{}", bytecode.to_string());
+
+        let mut vm = VM::new(bytecode);
+
+        while vm.is_runable() {
+            vm.run_single();
+        }
+
+        let rst = vm.top().unwrap();
+        match rst {
+            Object::Bool(obj) => {
+                assert!(obj.value == test.expect)
+            }
+            not_bool => {
+                panic!("{:?} is not a bool", not_bool);
+            }
+        }
+    }
+}

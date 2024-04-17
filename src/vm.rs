@@ -1,6 +1,6 @@
 use crate::{
     bytecode::{instruction::Instruction, instructions::Instructions, Bytecode},
-    object::{Int, Object, ObjectTrait, ObjectType},
+    object::{Bool, Int, Object, ObjectTrait, ObjectType, StringObject},
 };
 
 pub struct VM {
@@ -30,7 +30,22 @@ impl VM {
                 // load constants into stack
                 self.stack.push(self.constants[*idx].clone())
             }
-            Instruction::ADD => {
+
+            Instruction::ADD
+            | Instruction::SUB
+            | Instruction::PRODUCT
+            | Instruction::DIVIDE
+            | Instruction::MOD
+            | Instruction::CGT
+            | Instruction::CGTE
+            | Instruction::CLT
+            | Instruction::CLTE
+            | Instruction::CEQ
+            | Instruction::CNEQ
+            | Instruction::AND
+            | Instruction::OR
+            | Instruction::BAND
+            | Instruction::BOR => {
                 let left = self.stack.pop().unwrap();
                 let right = self.stack.pop().unwrap();
 
@@ -39,81 +54,100 @@ impl VM {
                         let Object::Int(left) = left else {unreachable!()};
                         let Object::Int(right) = right else {unreachable!()};
 
-                        let rst = Object::Int(Int {
-                            value: left.value + right.value,
-                        });
+                        match &ins {
+                            Instruction::ADD
+                            | Instruction::SUB
+                            | Instruction::PRODUCT
+                            | Instruction::DIVIDE
+                            | Instruction::MOD
+                            | Instruction::BAND
+                            | Instruction::BOR => {
+                                let value = match &ins {
+                                    Instruction::ADD => left.value + right.value,
+                                    Instruction::SUB => left.value - right.value,
+                                    Instruction::PRODUCT => left.value * right.value,
+                                    Instruction::DIVIDE => left.value / right.value,
+                                    Instruction::MOD => left.value % right.value,
+                                    Instruction::BAND => left.value & right.value,
+                                    Instruction::BOR => left.value | right.value,
+                                    __ => {
+                                        unreachable!()
+                                    }
+                                };
+                                let rst = Object::Int(Int { value });
+                                self.stack.push(rst);
+                            }
+                            Instruction::CGT
+                            | Instruction::CGTE
+                            | Instruction::CLT
+                            | Instruction::CLTE
+                            | Instruction::CEQ
+                            | Instruction::CNEQ => {
+                                let value = match &ins {
+                                    Instruction::CGT => left.value > right.value,
+                                    Instruction::CGTE => left.value >= right.value,
+                                    Instruction::CLT => left.value < right.value,
+                                    Instruction::CLTE => left.value <= right.value,
+                                    Instruction::CEQ => left.value == right.value,
+                                    Instruction::CNEQ => left.value != right.value,
+                                    __ => {
+                                        unreachable!()
+                                    }
+                                };
+                                let rst = Object::Bool(Bool { value });
+                                self.stack.push(rst);
+                            }
+                            __ => {
+                                unreachable!()
+                            }
+                        }
+                    } else if left.get_type() == ObjectType::Bool {
+                        let Object::Bool(left) = left else {unreachable!()};
+                        let Object::Bool(right) = right else {unreachable!()};
+                        let value = match &ins {
+                            Instruction::AND => left.value && right.value,
+                            Instruction::OR => left.value || right.value,
+                            Instruction::CEQ => left.value == right.value,
+                            Instruction::CNEQ => left.value != right.value,
+                            __ => {
+                                unreachable!()
+                            }
+                        };
+                        let rst = Object::Bool(Bool { value });
                         self.stack.push(rst);
                     } else if left.get_type() == ObjectType::String {
-                        todo!()
+                        let Object::String(left) = left else {unreachable!()};
+                        let Object::String(right) = right else {unreachable!()};
+
+                        match &ins {
+                            Instruction::ADD => {
+                                let rst = Object::String(StringObject {
+                                    value: left.value + &right.value,
+                                });
+                                self.stack.push(rst);
+                            }
+                            Instruction::CEQ => {
+                                let rst = Object::Bool(Bool {
+                                    value: left.value == right.value,
+                                });
+                                self.stack.push(rst);
+                            }
+                            Instruction::CNEQ => {
+                                let rst = Object::Bool(Bool {
+                                    value: left.value != right.value,
+                                });
+                                self.stack.push(rst);
+                            }
+                            __ => {
+                                unreachable!()
+                            }
+                        }
                     }
+                } else {
+                    // emit error
                 }
             }
-            Instruction::SUB => {
-                let left = self.stack.pop().unwrap();
-                let right = self.stack.pop().unwrap();
 
-                if left.get_type() == right.get_type() {
-                    if left.get_type() == ObjectType::Int {
-                        let Object::Int(left) = left else {unreachable!()};
-                        let Object::Int(right) = right else {unreachable!()};
-
-                        let rst = Object::Int(Int {
-                            value: left.value - right.value,
-                        });
-                        self.stack.push(rst);
-                    }
-                }
-            }
-            Instruction::PRODUCT => {
-                let left = self.stack.pop().unwrap();
-                let right = self.stack.pop().unwrap();
-
-                if left.get_type() == right.get_type() {
-                    if left.get_type() == ObjectType::Int {
-                        let Object::Int(left) = left else {unreachable!()};
-                        let Object::Int(right) = right else {unreachable!()};
-
-                        let rst = Object::Int(Int {
-                            value: left.value * right.value,
-                        });
-                        self.stack.push(rst)
-                    }
-                }
-            }
-            Instruction::DIVIDE => {
-                let left = self.stack.pop().unwrap();
-                let right = self.stack.pop().unwrap();
-
-                if left.get_type() == right.get_type() {
-                    if left.get_type() == ObjectType::Int {
-                        let Object::Int(left) = left else {unreachable!()};
-                        let Object::Int(right) = right else {unreachable!()};
-
-                        let rst = Object::Int(Int {
-                            value: left.value / right.value,
-                        });
-                        self.stack.push(rst)
-                    }
-                }
-            }
-            Instruction::MOD => {
-                let left = self.stack.pop().unwrap();
-                let right = self.stack.pop().unwrap();
-
-                if left.get_type() == right.get_type() {
-                    if left.get_type() == ObjectType::Int {
-                        let Object::Int(left) = left else {unreachable!()};
-                        let Object::Int(right) = right else {unreachable!()};
-
-                        let rst = Object::Int(Int {
-                            value: left.value % right.value,
-                        });
-                        self.stack.push(rst)
-                    } else if left.get_type() == ObjectType::String {
-                        todo!()
-                    }
-                }
-            }
             Instruction::BANG => {
                 let right = self.stack.pop().unwrap();
                 if right.get_type() == ObjectType::Bool {
@@ -134,10 +168,7 @@ impl VM {
                     // emit error
                 }
             }
-            Instruction::CGT => todo!(),
-            Instruction::CLT => todo!(),
-            Instruction::CEQ => todo!(),
-            Instruction::CNEQ => todo!(),
+
             Instruction::JMP { idx } => todo!(),
             Instruction::JEQ { idx } => todo!(),
             Instruction::JNEQ { idx } => todo!(),

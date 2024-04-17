@@ -40,9 +40,15 @@ pub enum Instruction {
     BANG,
     NEG,
     CGT,
+    CGTE,
     CLT,
+    CLTE,
     CEQ,
     CNEQ,
+    AND,
+    OR,
+    BAND,
+    BOR,
     JMP { idx: usize },
     JEQ { idx: usize },
     JNEQ { idx: usize },
@@ -62,9 +68,15 @@ impl Instruction {
             Instruction::BANG => OpCode::BANG,
             Instruction::NEG => OpCode::NEG,
             Instruction::CGT => OpCode::CGT,
+            Instruction::CGTE => OpCode::CGTE,
             Instruction::CLT => OpCode::CLT,
+            Instruction::CLTE => OpCode::CLTE,
             Instruction::CEQ => OpCode::CEQ,
             Instruction::CNEQ => OpCode::CNEQ,
+            Instruction::AND => OpCode::AND,
+            Instruction::OR => OpCode::OR,
+            Instruction::BAND => OpCode::BAND,
+            Instruction::BOR => OpCode::BOR,
             Instruction::JMP { idx: _ } => OpCode::JMP,
             Instruction::JEQ { idx: _ } => OpCode::JEQ,
             Instruction::JNEQ { idx: _ } => OpCode::JNEQ,
@@ -84,9 +96,15 @@ impl Instruction {
             | Instruction::BANG
             | Instruction::NEG
             | Instruction::CGT
+            | Instruction::CGTE
             | Instruction::CLT
+            | Instruction::CLTE
             | Instruction::CEQ
-            | Instruction::CNEQ => buf.push(self.opcode() as u8),
+            | Instruction::CNEQ
+            | Instruction::AND
+            | Instruction::OR
+            | Instruction::BAND
+            | Instruction::BOR => buf.push(self.opcode() as u8),
             Instruction::CONST { idx } => {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&idx.to_ne_bytes()).unwrap()
@@ -115,9 +133,15 @@ impl Instruction {
             Instruction::BANG => buf += "BANG",
             Instruction::NEG => buf += "NEG",
             Instruction::CGT => buf += "CGT",
+            Instruction::CGTE => buf += "CGTE",
             Instruction::CLT => buf += "CLT",
+            Instruction::CLTE => buf += "CLTE",
             Instruction::CEQ => buf += "CEQ",
             Instruction::CNEQ => buf += "CNEQ",
+            Instruction::AND => buf += "AND",
+            Instruction::OR => buf += "OR",
+            Instruction::BAND => buf += "BAND",
+            Instruction::BOR => buf += "BOR",
             Instruction::JMP { idx } => buf += &format!("JMP\t\t{idx}"),
             Instruction::JEQ { idx } => buf += &format!("JEQ\t\t{idx}"),
             Instruction::JNEQ { idx } => buf += &format!("JNEQ\t\t{idx}"),

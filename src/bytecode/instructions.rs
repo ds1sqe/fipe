@@ -72,10 +72,15 @@ impl Instructions {
                 OpCode::BANG => Instruction::BANG,
                 OpCode::NEG => Instruction::NEG,
                 OpCode::CGT => Instruction::CGT,
+                OpCode::CGTE => Instruction::CGTE,
                 OpCode::CLT => Instruction::CLT,
+                OpCode::CLTE => Instruction::CLTE,
                 OpCode::CEQ => Instruction::CEQ,
                 OpCode::CNEQ => Instruction::CNEQ,
-
+                OpCode::AND => Instruction::AND,
+                OpCode::OR => Instruction::OR,
+                OpCode::BAND => Instruction::BAND,
+                OpCode::BOR => Instruction::BOR,
                 one_args => {
                     let idx = std::ptr::read(self.byte.as_ptr().add(offset + 1) as *const usize);
 

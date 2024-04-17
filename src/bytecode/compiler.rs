@@ -5,7 +5,7 @@ use crate::{
         InfixExpression, IntegerLiteral, LetStatement, PrefixExpression, Program, ReturnStatement,
         Statement, StringLiteral,
     },
-    object::{Int, Object},
+    object::{Bool, Int, Object, StringObject},
     token::Kind,
 };
 
@@ -51,8 +51,8 @@ impl Compiler {
         match exp {
             Expression::Identifier(exp) => self.compile_identifier_exp(exp),
             Expression::IntegerLiteral(lit) => self.compile_integer_literal(lit),
-            Expression::BooleanLiteral(_) => todo!(),
-            Expression::StringLiteral(_) => todo!(),
+            Expression::BooleanLiteral(lit) => self.compile_bool_literal(lit),
+            Expression::StringLiteral(lit) => self.compile_string_literal(lit),
             Expression::FunctionLiteral(_) => todo!(),
             Expression::ArrayLiteral(_) => todo!(),
             Expression::InfixExpression(exp) => self.compile_infix_exp(exp),
@@ -78,8 +78,22 @@ impl Compiler {
             idx: self.constants.len() - 1,
         })
     }
-    fn compile_bool_literal(&mut self, lit: &BooleanLiteral) {}
-    fn compile_string_literal(&mut self, lit: &StringLiteral) {}
+    fn compile_bool_literal(&mut self, lit: &BooleanLiteral) {
+        let boolean = Object::Bool(Bool { value: lit.value });
+        self.constants.push(boolean);
+        self.emit(Instruction::CONST {
+            idx: self.constants.len() - 1,
+        })
+    }
+    fn compile_string_literal(&mut self, lit: &StringLiteral) {
+        let str = Object::String(StringObject {
+            value: lit.value.clone(),
+        });
+        self.constants.push(str);
+        self.emit(Instruction::CONST {
+            idx: self.constants.len() - 1,
+        })
+    }
     fn compile_function_literal(&mut self, lit: &FunctionLiteral) {}
     fn compile_array_literal(&mut self, lit: &ArrayLiteral) {}
     fn compile_prefix_exp(&mut self, exp: &PrefixExpression) {
@@ -104,16 +118,16 @@ impl Compiler {
             Kind::Product => self.emit(Instruction::PRODUCT),
             Kind::Divide => self.emit(Instruction::DIVIDE),
             Kind::Mod => self.emit(Instruction::MOD),
-            Kind::LT => todo!(),
-            Kind::LT_OR_EQ => todo!(),
-            Kind::GT => todo!(),
-            Kind::GT_OR_EQ => todo!(),
-            Kind::EQ => todo!(),
-            Kind::NOT_EQ => todo!(),
-            Kind::And => todo!(),
-            Kind::Or => todo!(),
-            Kind::Bit_And => todo!(),
-            Kind::Bit_Or => todo!(),
+            Kind::LT => self.emit(Instruction::CLT),
+            Kind::LT_OR_EQ => self.emit(Instruction::CLTE),
+            Kind::GT => self.emit(Instruction::CGT),
+            Kind::GT_OR_EQ => self.emit(Instruction::CGTE),
+            Kind::EQ => self.emit(Instruction::CEQ),
+            Kind::NOT_EQ => self.emit(Instruction::CNEQ),
+            Kind::And => self.emit(Instruction::AND),
+            Kind::Or => self.emit(Instruction::OR),
+            Kind::Bit_And => self.emit(Instruction::BAND),
+            Kind::Bit_Or => self.emit(Instruction::BOR),
             __not_matched => {
                 // emit error
             }
