@@ -57,7 +57,7 @@ impl Compiler {
             Expression::FunctionLiteral(_) => todo!(),
             Expression::ArrayLiteral(_) => todo!(),
             Expression::InfixExpression(exp) => self.compile_infix_exp(exp),
-            Expression::PrefixExpression(_) => todo!(),
+            Expression::PrefixExpression(exp) => self.compile_prefix_exp(exp),
             Expression::IfExpression(_) => todo!(),
             Expression::CallExpression(_) => todo!(),
             Expression::IndexExpression(_) => todo!(),
@@ -83,7 +83,17 @@ impl Compiler {
     fn compile_string_literal(&mut self, lit: &StringLiteral) {}
     fn compile_function_literal(&mut self, lit: &FunctionLiteral) {}
     fn compile_array_literal(&mut self, lit: &ArrayLiteral) {}
-    fn compile_prefix_exp(&mut self, exp: &PrefixExpression) {}
+    fn compile_prefix_exp(&mut self, exp: &PrefixExpression) {
+        self.compile_exp(&exp.right);
+
+        match exp.token.kind {
+            Kind::Bang => self.emit(OP::BANG),
+            Kind::Minus => self.emit(OP::NEG),
+            __not_matched => {
+                // emit error
+            }
+        }
+    }
     fn compile_infix_exp(&mut self, exp: &InfixExpression) {
         self.compile_exp(&exp.right);
         self.compile_exp(&exp.left);
