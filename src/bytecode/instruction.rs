@@ -32,6 +32,8 @@ pub enum Instruction {
     PUSH,
     POP,
     CONST { idx: usize },
+    DEFGLB { idx: usize },
+    GETGLB { idx: usize },
     ADD,
     SUB,
     PRODUCT,
@@ -62,6 +64,8 @@ impl Instruction {
             Instruction::PUSH => OpCode::PUSH,
             Instruction::POP => OpCode::POP,
             Instruction::CONST { idx: _ } => OpCode::CONST,
+            Instruction::DEFGLB { idx: _ } => OpCode::DEFGLB,
+            Instruction::GETGLB { idx: _ } => OpCode::GETGLB,
             Instruction::ADD => OpCode::ADD,
             Instruction::SUB => OpCode::SUB,
             Instruction::PRODUCT => OpCode::PRODUCT,
@@ -109,7 +113,9 @@ impl Instruction {
             | Instruction::OR
             | Instruction::BAND
             | Instruction::BOR => buf.push(self.opcode() as u8),
-            Instruction::CONST { idx } => {
+            Instruction::CONST { idx }
+            | Instruction::DEFGLB { idx }
+            | Instruction::GETGLB { idx } => {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&idx.to_ne_bytes()).unwrap()
             }
@@ -133,6 +139,9 @@ impl Instruction {
             Instruction::PUSH => buf += "PUSH",
             Instruction::POP => buf += "POP",
             Instruction::CONST { idx } => buf += &format!("CONST\t\t{idx}"),
+            Instruction::DEFGLB { idx } => buf += &format!("DEFGLB\t\t{idx}"),
+            Instruction::GETGLB { idx } => buf += &format!("GETGLB\t\t{idx}"),
+
             Instruction::ADD => buf += "ADD",
             Instruction::SUB => buf += "SUB",
             Instruction::PRODUCT => buf += "PRODUCT",

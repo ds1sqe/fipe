@@ -3,9 +3,12 @@ use crate::{
     object::{Bool, Int, Object, ObjectTrait, ObjectType, StringObject},
 };
 
+const GLOBAL_SIZE: usize = 1 << 8;
+
 pub struct VM {
     stack: Vec<Object>,
     constants: Vec<Object>,
+    global: Vec<Object>,
     instructions: Instructions,
 
     ic: usize,
@@ -17,6 +20,7 @@ impl VM {
             stack: Vec::new(),
             constants: code.constants,
             instructions: code.instructions,
+            global: Vec::with_capacity(GLOBAL_SIZE),
             ic: 0,
         }
     }
@@ -29,6 +33,18 @@ impl VM {
             Instruction::CONST { idx } => {
                 // load constants into stack
                 self.stack.push(self.constants[*idx].clone())
+            }
+            Instruction::DEFGLB { idx } => {
+                // define global variable
+                if *idx < self.global.len() {
+                    self.global[*idx] = self.stack.pop().unwrap();
+                } else {
+                    self.global.push(self.stack.pop().unwrap());
+                }
+            }
+            Instruction::GETGLB { idx } => {
+                // get global variable
+                self.stack.push(self.global[*idx].clone())
             }
 
             Instruction::ADD

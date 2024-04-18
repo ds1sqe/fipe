@@ -107,6 +107,8 @@ impl Instructions {
 
                     match one_args {
                         OpCode::CONST => Instruction::CONST { idx },
+                        OpCode::DEFGLB => Instruction::DEFGLB { idx },
+                        OpCode::GETGLB => Instruction::GETGLB { idx },
                         OpCode::JMP => Instruction::JMP { idx },
                         OpCode::JIS => Instruction::JIS { idx },
                         OpCode::JNS => Instruction::JNS { idx },

@@ -9,11 +9,15 @@ use crate::{
     token::Kind,
 };
 
-use super::{instruction::Instruction, instructions::Instructions, Bytecode};
+use super::{
+    instruction::Instruction, instructions::Instructions, symbol::SymbolTable,
+    Bytecode,
+};
 
 pub struct Compiler {
     constants: Vec<Object>,
     instructions: Instructions,
+    symbol_table: SymbolTable,
 }
 
 impl Compiler {
@@ -21,6 +25,7 @@ impl Compiler {
         Self {
             constants: Vec::new(),
             instructions: Instructions::new(),
+            symbol_table: SymbolTable::new(),
         }
     }
 
@@ -66,7 +71,13 @@ impl Compiler {
     fn compile_expression_stm(&mut self, stm: &ExpressionStatement) {
         self.compile_exp(&stm.expression.as_ref().unwrap())
     }
-    fn compile_let_stm(&mut self, stm: &LetStatement) {}
+    fn compile_let_stm(&mut self, stm: &LetStatement) {
+        self.compile_exp(&stm.value.clone().unwrap());
+
+        let idx = self.symbol_table.define_global(&stm.identifier.value);
+
+        self.emit(Instruction::DEFGLB { idx });
+    }
     fn compile_return_stm(&mut self, stm: &ReturnStatement) {}
     fn compile_block_stm(&mut self, stm: &BlockStatement) {
         for statement in &stm.statements {
@@ -74,7 +85,16 @@ impl Compiler {
         }
     }
 
-    fn compile_identifier_exp(&mut self, exp: &Identifier) {}
+    fn compile_identifier_exp(&mut self, exp: &Identifier) {
+        let rst = self.symbol_table.get_global(&exp.value);
+        if rst.is_some() {
+            let idx = rst.unwrap().index;
+            self.emit(Instruction::GETGLB { idx });
+        } else {
+            // emit error
+            todo!();
+        }
+    }
     fn compile_integer_literal(&mut self, lit: &IntegerLiteral) {
         let int = Object::Int(Int { value: lit.value });
         self.constants.push(int);

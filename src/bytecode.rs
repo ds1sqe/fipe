@@ -2,6 +2,7 @@ pub mod compiler;
 pub mod instruction;
 pub mod instructions;
 pub mod opcode;
+mod symbol;
 
 use crate::object::{Object, ObjectTrait};
 

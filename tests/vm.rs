@@ -188,3 +188,41 @@ fn test_vm_jump_operation() {
         }
     }
 }
+
+#[test]
+fn test_vm_let_stm_operation() {
+    let mut tests: Tests<i64> = Tests::new();
+
+    tests.add(("let foo = 5; foo * 5", 25));
+
+    for (idx, test) in tests.cases.iter().enumerate() {
+        println!("Testing {:03}", idx);
+        println!("Input: {}", test.input);
+        println!("expect: {}", test.expect);
+
+        let lexer = Lexer::new(test.input.clone());
+        let program = Parser::new(lexer).parse().unwrap();
+
+        let mut comp = Compiler::new();
+        comp.compile(program);
+        let bytecode = comp.bytecode();
+
+        println!("Bytecode\n{}", bytecode.to_string());
+
+        let mut vm = VM::new(bytecode);
+
+        while vm.is_runable() {
+            vm.run_single();
+        }
+
+        let rst = vm.top().unwrap();
+        match rst {
+            Object::Int(int) => {
+                assert!(int.value == test.expect)
+            }
+            not_int => {
+                panic!("{:?} is not a int", not_int);
+            }
+        }
+    }
+}

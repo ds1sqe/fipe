@@ -6,6 +6,8 @@ pub enum OpCode {
     PUSH,
     POP,
     CONST,
+    DEFGLB,
+    GETGLB,
     ADD,
     SUB,
     PRODUCT,
@@ -53,7 +55,9 @@ impl OpCode {
             | OpCode::BAND
             | OpCode::BOR => return &NO_ARG.arg_size,
 
-            OpCode::CONST => return &CONST.arg_size,
+            OpCode::CONST | OpCode::DEFGLB | OpCode::GETGLB => {
+                return &CONST.arg_size
+            }
 
             OpCode::JMP
             | OpCode::JIS
@@ -84,7 +88,7 @@ impl OpCode {
             | OpCode::BAND
             | OpCode::BOR => return NO_ARG.length,
 
-            OpCode::CONST => return CONST.length,
+            OpCode::CONST | OpCode::DEFGLB | OpCode::GETGLB => return CONST.length,
 
             OpCode::JMP
             | OpCode::JIS
