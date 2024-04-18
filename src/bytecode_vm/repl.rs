@@ -1,48 +1,27 @@
 use std::io::{self, BufRead, Write};
 
-use crate::{
-    ast::Nodetrait,
-    eval::evaluate,
-    heap::Heap,
-    lexer::Lexer,
-    object::{environment::Environment, ObjectTrait},
-    parser::Parser,
-    token::Kind,
-};
+use crate::{lexer::Lexer, parser::Parser, token::Kind};
+
+use super::{bytecode::compiler::Compiler, vm::VM};
 const PROMPT: &str = "-> ";
 
 pub fn start() {
     let mut buf = String::new();
     let mut stdin = io::stdin().lock(); // We get `Stdin` here.
 
-    let mut env = Environment::new();
-    let mut heap = Heap::new();
-
     let debug_lexer = false;
     let debug_parser = false;
-    let debug_evaluator = false;
     let show_error = true;
+
+    let show_stack = true;
+    let show_instruction = true;
+    let run_single_cycle = true;
 
     loop {
         io::stdout().lock().write_all(PROMPT.as_bytes()).unwrap();
         io::stdout().flush().unwrap();
         match stdin.read_line(&mut buf) {
             Ok(_) => {
-                if buf == "$env\n" {
-                    dbg!(&env);
-                    buf.clear();
-                    continue;
-                }
-                if buf == "$heap\n" {
-                    dbg!(&heap);
-                    buf.clear();
-                    continue;
-                }
-                if buf == "$rungc\n" {
-                    heap.run_gc(&mut env);
-                    buf.clear();
-                    continue;
-                }
                 let lexer = Lexer::new(buf.clone());
 
                 let mut cloned_lexer = lexer.clone();
@@ -68,22 +47,30 @@ pub fn start() {
 
                 if program.is_ok() {
                     let program = program.unwrap();
-                    let result = evaluate(program.to_node(), &mut heap, &mut env);
+                    let mut comp = Compiler::new();
+                    comp.compile(program);
+                    let mut vm = VM::new(comp.bytecode());
+                    buf.clear();
+                    println!("Intitial state:{}", vm.to_string());
 
-                    if debug_evaluator {
-                        println!("Debug Output (Eval) >> {:?}", result);
-                    }
+                    loop {
+                        match stdin.read_line(&mut buf) {
+                            Ok(_) => {
+                                if buf == "exit" {
+                                    break;
+                                }
+                                if !vm.is_runable() {
+                                    break;
+                                }
+                                vm.run_single();
 
-                    if result.is_ok() {
-                        let eval = result.unwrap();
-                        if eval.is_some() {
-                            let val = eval.unwrap();
-                            println!("{}", val.to_str());
+                                println!("{}", vm.to_string());
+                            }
+                            Err(err) => {
+                                println!("Error occured during reading stdin");
+                                println!("{:?}", err);
+                            }
                         }
-                    } else if show_error {
-                        println!("!!!> ERROR OCCURED <!!!");
-                        println!(">> ERROR DETAIL ");
-                        println!("{:?}", result.err().unwrap());
                     }
                 } else {
                     if show_error {

@@ -1,15 +1,15 @@
 use dlang::{
     ast::Nodetrait,
-    eval::{
-        errors::{ArgumentsLength, EvalError},
-        evaluate,
-    },
     heap::Heap,
     lexer,
     object::{environment::Environment, Int, Object, ObjectTrait, ObjectType},
     parser,
     test::Tests,
     token::Kind,
+    treewalker::eval::{
+        errors::{ArgumentsLength, EvalError},
+        evaluate,
+    },
 };
 
 fn test_eval(input: String) -> Result<Option<Object>, EvalError> {

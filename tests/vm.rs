@@ -1,10 +1,10 @@
 use dlang::{
-    bytecode::compiler::Compiler,
+    bytecode_vm::bytecode::compiler::Compiler,
+    bytecode_vm::vm::VM,
     lexer::Lexer,
     object::{Array, Int, Object},
     parser::Parser,
     test::Tests,
-    vm::VM,
 };
 
 #[test]

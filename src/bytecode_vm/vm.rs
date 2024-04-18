@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
-
-use crate::{
-    bytecode::{instruction::Instruction, instructions::Instructions, Bytecode},
-    object::{Array, Bool, Int, Object, ObjectTrait, ObjectType, StringObject},
+use super::bytecode::{
+    instruction::Instruction, instructions::Instructions, Bytecode,
+};
+use crate::object::{
+    Array, Bool, Int, Object, ObjectTrait, ObjectType, StringObject,
 };
 
 const GLOBAL_SIZE: usize = 1 << 8;
