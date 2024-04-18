@@ -53,9 +53,18 @@ pub fn start() {
                     buf.clear();
                     println!("Intitial state:{}", vm.to_string());
 
+                    println!("Commands:");
+                    println!("\tpressing enter: excute next cycle.");
+                    println!("\t          exit: terminate");
+
                     loop {
                         match stdin.read_line(&mut buf) {
                             Ok(_) => {
+                                // HACK: clear screen
+                                println!("\n\n\n\n\n\n\n\n\n");
+                                println!("\n\n\n\n\n\n\n\n\n");
+                                println!("\n\n\n\n\n\n\n\n\n");
+                                println!("\n\n\n\n\n\n\n\n\n");
                                 if buf == "exit" {
                                     break;
                                 }
@@ -72,6 +81,9 @@ pub fn start() {
                             }
                         }
                     }
+
+                    println!("VM Terminated.");
+                    println!("Please give new input.");
                 } else {
                     if show_error {
                         println!("!!!> ERROR OCCURED <!!!");

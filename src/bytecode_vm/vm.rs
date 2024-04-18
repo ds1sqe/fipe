@@ -267,17 +267,16 @@ impl VM {
 
     pub fn to_string(&self) -> String {
         let mut buf = String::new();
-        buf += "\nCONSTS\n";
+        buf += &format!("IC : {}\n", self.ic);
+        buf += "CONSTS\n";
         for (idx, cons) in self.constants.iter().enumerate() {
             buf += &format!("{:0>6}\t\t", idx);
             buf += &cons.to_str();
             buf += "\n";
         }
 
-        buf += &format!("\nIC : {}", self.ic);
-
         buf += "\nINSTRUCTIONS\n";
-        buf += &self.instructions.to_string();
+        buf += &self.instructions.to_string_with_highlight(self.ic);
 
         buf += "\nSTACK\n";
         for (idx, ins) in self.stack.iter().enumerate() {

@@ -45,6 +45,24 @@ impl Instructions {
 
         buf
     }
+    pub fn to_string_with_highlight(&self, hidx: usize) -> String {
+        let mut buf = String::new();
+        let mut idx = 0;
+
+        while idx < self.len {
+            let ins = self.read_instruction(idx);
+            if idx == hidx {
+                buf += &format!(">>{:0>5}\t\t", idx);
+            } else {
+                buf += &format!("{:0>5}\t\t", idx);
+            }
+            buf += &ins.to_string();
+            buf += "\n";
+            idx += ins.opcode().length();
+        }
+
+        buf
+    }
 
     /// add new instruction at the end.
     /// return new Instruction's offset
