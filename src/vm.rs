@@ -1,6 +1,8 @@
+use std::collections::VecDeque;
+
 use crate::{
     bytecode::{instruction::Instruction, instructions::Instructions, Bytecode},
-    object::{Bool, Int, Object, ObjectTrait, ObjectType, StringObject},
+    object::{Array, Bool, Int, Object, ObjectTrait, ObjectType, StringObject},
 };
 
 const GLOBAL_SIZE: usize = 1 << 8;
@@ -217,6 +219,19 @@ impl VM {
             }
             Instruction::JEQ { idx } => todo!(),
             Instruction::JNEQ { idx } => todo!(),
+            Instruction::ARRAY { count } => {
+                let mut elements = Vec::with_capacity(*count);
+                let stack_len = self.stack.len();
+
+                for offset in (1..=*count).rev() {
+                    elements.push(self.stack[stack_len - offset].clone())
+                }
+                self.stack.truncate(stack_len - count);
+
+                let array = Object::Array(Array { elements });
+
+                self.stack.push(array);
+            }
         }
         self.ic += ins.opcode().length();
     }

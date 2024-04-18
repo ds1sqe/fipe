@@ -1,6 +1,10 @@
 use dlang::{
-    bytecode::compiler::Compiler, lexer::Lexer, object::Object, parser::Parser,
-    test::Tests, vm::VM,
+    bytecode::compiler::Compiler,
+    lexer::Lexer,
+    object::{Array, Int, Object},
+    parser::Parser,
+    test::Tests,
+    vm::VM,
 };
 
 #[test]
@@ -219,6 +223,81 @@ fn test_vm_let_stm_operation() {
         match rst {
             Object::Int(int) => {
                 assert!(int.value == test.expect)
+            }
+            not_int => {
+                panic!("{:?} is not a int", not_int);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_vm_array_creation() {
+    let mut tests: Tests<Option<Array>> = Tests::new();
+
+    tests.add((
+        "[1,2,3,4,5]",
+        Some(Array {
+            elements: vec![
+                Object::Int(Int { value: 1 }),
+                Object::Int(Int { value: 2 }),
+                Object::Int(Int { value: 3 }),
+                Object::Int(Int { value: 4 }),
+                Object::Int(Int { value: 5 }),
+            ],
+        }),
+    ));
+    tests.add((
+        "[10-2,20-2,30-2,40-2,50-2]",
+        Some(Array {
+            elements: vec![
+                Object::Int(Int { value: 8 }),
+                Object::Int(Int { value: 18 }),
+                Object::Int(Int { value: 28 }),
+                Object::Int(Int { value: 38 }),
+                Object::Int(Int { value: 48 }),
+            ],
+        }),
+    ));
+    tests.add((
+        "[1 * 2,2 * 3,3*4,4*5,5*6]",
+        Some(Array {
+            elements: vec![
+                Object::Int(Int { value: 2 }),
+                Object::Int(Int { value: 6 }),
+                Object::Int(Int { value: 12 }),
+                Object::Int(Int { value: 20 }),
+                Object::Int(Int { value: 30 }),
+            ],
+        }),
+    ));
+
+    for (idx, test) in tests.cases.iter().enumerate() {
+        println!("Testing {:03}", idx);
+        println!("Input: {}", test.input);
+        println!("expect: {:?}", test.expect);
+
+        let lexer = Lexer::new(test.input.clone());
+        let program = Parser::new(lexer).parse().unwrap();
+
+        let mut comp = Compiler::new();
+        comp.compile(program);
+        let bytecode = comp.bytecode();
+
+        println!("Bytecode\n{}", bytecode.to_string());
+
+        let mut vm = VM::new(bytecode);
+
+        while vm.is_runable() {
+            vm.run_single();
+        }
+
+        println!("VM STACK:\n {}", vm.stack_to_string());
+
+        let rst = vm.top().unwrap();
+        match rst {
+            Object::Array(arr) => {
+                assert!(*arr == test.expect.clone().unwrap())
             }
             not_int => {
                 panic!("{:?} is not a int", not_int);

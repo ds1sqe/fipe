@@ -114,6 +114,7 @@ impl Instructions {
                         OpCode::JNS => Instruction::JNS { idx },
                         OpCode::JEQ => Instruction::JEQ { idx },
                         OpCode::JNEQ => Instruction::JNEQ { idx },
+                        OpCode::ARRAY => Instruction::ARRAY { count: idx },
                         not_matched => {
                             panic!("Has to be unreachable {:?}", not_matched);
                         }

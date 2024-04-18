@@ -59,7 +59,7 @@ impl Compiler {
             Expression::BooleanLiteral(lit) => self.compile_bool_literal(lit),
             Expression::StringLiteral(lit) => self.compile_string_literal(lit),
             Expression::FunctionLiteral(_) => todo!(),
-            Expression::ArrayLiteral(_) => todo!(),
+            Expression::ArrayLiteral(lit) => self.compile_array_literal(lit),
             Expression::InfixExpression(exp) => self.compile_infix_exp(exp),
             Expression::PrefixExpression(exp) => self.compile_prefix_exp(exp),
             Expression::IfExpression(exp) => self.compile_if_exp(exp),
@@ -119,7 +119,16 @@ impl Compiler {
         });
     }
     fn compile_function_literal(&mut self, lit: &FunctionLiteral) {}
-    fn compile_array_literal(&mut self, lit: &ArrayLiteral) {}
+
+    fn compile_array_literal(&mut self, lit: &ArrayLiteral) {
+        for el in lit.elements.iter() {
+            self.compile_exp(el);
+        }
+        self.emit(Instruction::ARRAY {
+            count: lit.elements.len(),
+        });
+    }
+
     fn compile_prefix_exp(&mut self, exp: &PrefixExpression) {
         self.compile_exp(&exp.right);
 

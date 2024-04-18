@@ -56,6 +56,7 @@ pub enum Instruction {
     JNS { idx: usize },
     JEQ { idx: usize },
     JNEQ { idx: usize },
+    ARRAY { count: usize },
 }
 
 impl Instruction {
@@ -88,6 +89,7 @@ impl Instruction {
             Instruction::JNS { idx: _ } => OpCode::JNS,
             Instruction::JEQ { idx: _ } => OpCode::JEQ,
             Instruction::JNEQ { idx: _ } => OpCode::JNEQ,
+            Instruction::ARRAY { count: _ } => OpCode::ARRAY,
         }
     }
 
@@ -119,6 +121,11 @@ impl Instruction {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&idx.to_ne_bytes()).unwrap()
             }
+            Instruction::ARRAY { count } => {
+                buf.push(self.opcode() as u8);
+                buf.write_all(&count.to_ne_bytes()).unwrap()
+            }
+
             Instruction::JMP { idx }
             | Instruction::JIS { idx }
             | Instruction::JNS { idx }
@@ -164,6 +171,7 @@ impl Instruction {
             Instruction::JNS { idx } => buf += &format!("JNS\t\t{idx}"),
             Instruction::JEQ { idx } => buf += &format!("JEQ\t\t{idx}"),
             Instruction::JNEQ { idx } => buf += &format!("JNEQ\t\t{idx}"),
+            Instruction::ARRAY { count } => buf += &format!("ARRAY\t\t{count}"),
         }
 
         buf

@@ -30,6 +30,7 @@ pub enum OpCode {
     JNS,
     JEQ,
     JNEQ,
+    ARRAY,
 }
 
 impl OpCode {
@@ -55,7 +56,7 @@ impl OpCode {
             | OpCode::BAND
             | OpCode::BOR => return &NO_ARG.arg_size,
 
-            OpCode::CONST | OpCode::DEFGLB | OpCode::GETGLB => {
+            OpCode::CONST | OpCode::DEFGLB | OpCode::GETGLB | OpCode::ARRAY => {
                 return &CONST.arg_size
             }
 
@@ -88,7 +89,9 @@ impl OpCode {
             | OpCode::BAND
             | OpCode::BOR => return NO_ARG.length,
 
-            OpCode::CONST | OpCode::DEFGLB | OpCode::GETGLB => return CONST.length,
+            OpCode::CONST | OpCode::DEFGLB | OpCode::GETGLB | OpCode::ARRAY => {
+                return CONST.length
+            }
 
             OpCode::JMP
             | OpCode::JIS
