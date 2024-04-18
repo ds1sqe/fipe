@@ -232,6 +232,27 @@ impl VM {
 
                 self.stack.push(array);
             }
+            Instruction::INDEX => {
+                let idx = self.stack.pop().unwrap();
+
+                if idx.get_type() == ObjectType::Int {
+                    let Object::Int(int) = idx else {
+                    unreachable!()
+                    };
+
+                    let tgt = self.stack.pop().unwrap();
+                    if tgt.get_type() == ObjectType::Array {
+                        let Object::Array(arr) = tgt else {
+                    unreachable!()
+                    };
+                        self.stack.push(arr.elements[int.value as usize].clone());
+                    } else {
+                        // emit error
+                    }
+                } else {
+                    // emit error
+                }
+            }
         }
         self.ic += ins.opcode().length();
     }
@@ -252,6 +273,8 @@ impl VM {
             buf += &cons.to_str();
             buf += "\n";
         }
+
+        buf += &format!("\nIC : {}", self.ic);
 
         buf += "\nINSTRUCTIONS\n";
         buf += &self.instructions.to_string();

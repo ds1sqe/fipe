@@ -305,3 +305,46 @@ fn test_vm_array_creation() {
         }
     }
 }
+
+#[test]
+fn test_vm_array_index() {
+    let mut tests: Tests<i64> = Tests::new();
+
+    tests.add(("let arr = [1,2,3,4,5];\narr[3]", 4));
+    tests.add(("[10-2,20-2,30-2,40-2,50-2][2]", 28));
+    tests.add(("[10-2,20-2,30-2,40-2,50-2][2+1]", 38));
+    tests.add(("[1 * 2,2 * 3,3*4,4*5,5*6][0+2]", 12));
+
+    for (idx, test) in tests.cases.iter().enumerate() {
+        println!("Testing {:03}", idx);
+        println!("Input: {}", test.input);
+        println!("expect: {:?}", test.expect);
+
+        let lexer = Lexer::new(test.input.clone());
+        let program = Parser::new(lexer).parse().unwrap();
+
+        let mut comp = Compiler::new();
+        comp.compile(program);
+        let bytecode = comp.bytecode();
+
+        println!("Bytecode\n{}", bytecode.to_string());
+
+        let mut vm = VM::new(bytecode);
+
+        while vm.is_runable() {
+            vm.run_single();
+        }
+
+        println!("VM STACK:\n {}", vm.stack_to_string());
+
+        let rst = vm.top().unwrap();
+        match rst {
+            Object::Int(int) => {
+                assert!(int.value == test.expect)
+            }
+            not_int => {
+                panic!("{:?} is not a int", not_int);
+            }
+        }
+    }
+}

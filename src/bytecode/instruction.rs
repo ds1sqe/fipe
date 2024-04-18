@@ -57,6 +57,7 @@ pub enum Instruction {
     JEQ { idx: usize },
     JNEQ { idx: usize },
     ARRAY { count: usize },
+    INDEX,
 }
 
 impl Instruction {
@@ -90,6 +91,7 @@ impl Instruction {
             Instruction::JEQ { idx: _ } => OpCode::JEQ,
             Instruction::JNEQ { idx: _ } => OpCode::JNEQ,
             Instruction::ARRAY { count: _ } => OpCode::ARRAY,
+            Instruction::INDEX => OpCode::INDEX,
         }
     }
 
@@ -114,7 +116,8 @@ impl Instruction {
             | Instruction::AND
             | Instruction::OR
             | Instruction::BAND
-            | Instruction::BOR => buf.push(self.opcode() as u8),
+            | Instruction::BOR
+            | Instruction::INDEX => buf.push(self.opcode() as u8),
             Instruction::CONST { idx }
             | Instruction::DEFGLB { idx }
             | Instruction::GETGLB { idx } => {
@@ -172,6 +175,7 @@ impl Instruction {
             Instruction::JEQ { idx } => buf += &format!("JEQ\t\t{idx}"),
             Instruction::JNEQ { idx } => buf += &format!("JNEQ\t\t{idx}"),
             Instruction::ARRAY { count } => buf += &format!("ARRAY\t\t{count}"),
+            Instruction::INDEX => buf += &format!("INDEX"),
         }
 
         buf

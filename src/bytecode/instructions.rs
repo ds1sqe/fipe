@@ -100,6 +100,8 @@ impl Instructions {
                 OpCode::OR => Instruction::OR,
                 OpCode::BAND => Instruction::BAND,
                 OpCode::BOR => Instruction::BOR,
+                OpCode::INDEX => Instruction::INDEX,
+
                 one_args => {
                     let idx = std::ptr::read(
                         self.byte.as_ptr().add(offset + 1) as *const usize

@@ -64,7 +64,7 @@ impl Compiler {
             Expression::PrefixExpression(exp) => self.compile_prefix_exp(exp),
             Expression::IfExpression(exp) => self.compile_if_exp(exp),
             Expression::CallExpression(_) => todo!(),
-            Expression::IndexExpression(_) => todo!(),
+            Expression::IndexExpression(exp) => self.compile_index_exp(exp),
         }
     }
 
@@ -203,7 +203,12 @@ impl Compiler {
         }
     }
     fn compile_call_exp(&mut self, exp: &CallExpression) {}
-    fn compile_index_exp(&mut self, exp: &IndexExpression) {}
+    fn compile_index_exp(&mut self, exp: &IndexExpression) {
+        self.compile_exp(&exp.left);
+        self.compile_exp(&exp.index);
+
+        self.emit(Instruction::INDEX);
+    }
 
     fn emit(&mut self, ins: Instruction) -> usize {
         self.instructions.add_instruction(ins)
