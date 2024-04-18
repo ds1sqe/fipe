@@ -65,7 +65,9 @@ impl VM {
                                 let value = match &ins {
                                     Instruction::ADD => left.value + right.value,
                                     Instruction::SUB => left.value - right.value,
-                                    Instruction::PRODUCT => left.value * right.value,
+                                    Instruction::PRODUCT => {
+                                        left.value * right.value
+                                    }
                                     Instruction::DIVIDE => left.value / right.value,
                                     Instruction::MOD => left.value % right.value,
                                     Instruction::BAND => left.value & right.value,
@@ -169,7 +171,34 @@ impl VM {
                 }
             }
 
-            Instruction::JMP { idx } => todo!(),
+            Instruction::JMP { idx } => {
+                self.ic = *idx;
+                return;
+            }
+            Instruction::JIS { idx } => {
+                let sign = self.stack.pop().unwrap();
+                if sign.get_type() == ObjectType::Bool {
+                    let Object::Bool(sign) = sign else {unreachable!()};
+                    if sign.value {
+                        self.ic = *idx;
+                        return;
+                    }
+                } else {
+                    // emit error
+                }
+            }
+            Instruction::JNS { idx } => {
+                let sign = self.stack.pop().unwrap();
+                if sign.get_type() == ObjectType::Bool {
+                    let Object::Bool(sign) = sign else {unreachable!()};
+                    if !sign.value {
+                        self.ic = *idx;
+                        return;
+                    }
+                } else {
+                    // emit error
+                }
+            }
             Instruction::JEQ { idx } => todo!(),
             Instruction::JNEQ { idx } => todo!(),
         }
@@ -196,6 +225,18 @@ impl VM {
         buf += "\nINSTRUCTIONS\n";
         buf += &self.instructions.to_string();
 
+        buf += "\nSTACK\n";
+        for (idx, ins) in self.stack.iter().enumerate() {
+            buf += &format!("{:0>6}\t\t", idx);
+            buf += &ins.to_str();
+            buf += "\n";
+        }
+
+        buf
+    }
+
+    pub fn stack_to_string(&self) -> String {
+        let mut buf = String::new();
         buf += "\nSTACK\n";
         for (idx, ins) in self.stack.iter().enumerate() {
             buf += &format!("{:0>6}\t\t", idx);

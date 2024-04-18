@@ -1,5 +1,6 @@
 use dlang::{
-    bytecode::compiler::Compiler, lexer::Lexer, object::Object, parser::Parser, test::Tests, vm::VM,
+    bytecode::compiler::Compiler, lexer::Lexer, object::Object, parser::Parser,
+    test::Tests, vm::VM,
 };
 
 #[test]
@@ -121,6 +122,68 @@ fn test_vm_bool_operation() {
             }
             not_bool => {
                 panic!("{:?} is not a bool", not_bool);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_vm_jump_operation() {
+    let mut tests: Tests<Option<i64>> = Tests::new();
+
+    tests.add(("if (true) { 10 } else { 20 }", Some(10)));
+    tests.add(("if (false) { 10 } else { 20 }", Some(20)));
+    tests.add(("if (true) { 10 }", Some(10)));
+    tests.add(("if (false) { 10 }", None));
+    tests.add(("if (10<20) { 1 }", Some(1)));
+    tests.add(("if (10<=20) { 2 }", Some(2)));
+    tests.add(("if (10>20) { 3 }", None));
+    tests.add(("if (10>=20) { 4 }", None));
+    tests.add(("if (10==10) { 5 }", Some(5)));
+    tests.add(("if (10!=10) { 6 }", None));
+    tests.add((
+        "if ( if ( 20 > 0 ) {true} else { false }) {
+            if ( 30 > 100) { 200 } else { 300 } 
+         } else {
+            if ( 20 > 10 ) { -200 } else { 100 }
+         }",
+        Some(300),
+    ));
+
+    for (idx, test) in tests.cases.iter().enumerate() {
+        println!("Testing {:03}", idx);
+        println!("Input: {}", test.input);
+        println!("expect: {:?}", test.expect);
+
+        let lexer = Lexer::new(test.input.clone());
+        let program = Parser::new(lexer).parse().unwrap();
+
+        let mut comp = Compiler::new();
+        comp.compile(program);
+        let bytecode = comp.bytecode();
+
+        println!("Bytecode\n{}", bytecode.to_string());
+
+        let mut vm = VM::new(bytecode);
+
+        while vm.is_runable() {
+            vm.run_single();
+        }
+
+        println!("{}", vm.stack_to_string());
+
+        let rst = vm.top();
+        match rst {
+            Some(obj) => match obj {
+                Object::Int(int) => {
+                    assert!(int.value == test.expect.unwrap())
+                }
+                not_int => {
+                    panic!("{:?} is not a int", not_int);
+                }
+            },
+            None => {
+                assert!(test.expect.is_none())
             }
         }
     }

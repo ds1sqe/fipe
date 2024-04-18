@@ -1,9 +1,9 @@
 use crate::{
     ast::{
         ArrayLiteral, BlockStatement, BooleanLiteral, CallExpression, Expression,
-        ExpressionStatement, FunctionLiteral, Identifier, IfExpression, IndexExpression,
-        InfixExpression, IntegerLiteral, LetStatement, PrefixExpression, Program, ReturnStatement,
-        Statement, StringLiteral,
+        ExpressionStatement, FunctionLiteral, Identifier, IfExpression,
+        IndexExpression, InfixExpression, IntegerLiteral, LetStatement,
+        PrefixExpression, Program, ReturnStatement, Statement, StringLiteral,
     },
     object::{Bool, Int, Object, StringObject},
     token::Kind,
@@ -57,7 +57,7 @@ impl Compiler {
             Expression::ArrayLiteral(_) => todo!(),
             Expression::InfixExpression(exp) => self.compile_infix_exp(exp),
             Expression::PrefixExpression(exp) => self.compile_prefix_exp(exp),
-            Expression::IfExpression(_) => todo!(),
+            Expression::IfExpression(exp) => self.compile_if_exp(exp),
             Expression::CallExpression(_) => todo!(),
             Expression::IndexExpression(_) => todo!(),
         }
@@ -68,7 +68,11 @@ impl Compiler {
     }
     fn compile_let_stm(&mut self, stm: &LetStatement) {}
     fn compile_return_stm(&mut self, stm: &ReturnStatement) {}
-    fn compile_block_stm(&mut self, stm: &BlockStatement) {}
+    fn compile_block_stm(&mut self, stm: &BlockStatement) {
+        for statement in &stm.statements {
+            self.compile_stm(statement);
+        }
+    }
 
     fn compile_identifier_exp(&mut self, exp: &Identifier) {}
     fn compile_integer_literal(&mut self, lit: &IntegerLiteral) {
@@ -76,14 +80,14 @@ impl Compiler {
         self.constants.push(int);
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
-        })
+        });
     }
     fn compile_bool_literal(&mut self, lit: &BooleanLiteral) {
         let boolean = Object::Bool(Bool { value: lit.value });
         self.constants.push(boolean);
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
-        })
+        });
     }
     fn compile_string_literal(&mut self, lit: &StringLiteral) {
         let str = Object::String(StringObject {
@@ -92,7 +96,7 @@ impl Compiler {
         self.constants.push(str);
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
-        })
+        });
     }
     fn compile_function_literal(&mut self, lit: &FunctionLiteral) {}
     fn compile_array_literal(&mut self, lit: &ArrayLiteral) {}
@@ -104,8 +108,9 @@ impl Compiler {
             Kind::Minus => self.emit(Instruction::NEG),
             __not_matched => {
                 // emit error
+                todo!()
             }
-        }
+        };
     }
     fn compile_infix_exp(&mut self, exp: &InfixExpression) {
         self.compile_exp(&exp.right);
@@ -130,14 +135,55 @@ impl Compiler {
             Kind::Bit_Or => self.emit(Instruction::BOR),
             __not_matched => {
                 // emit error
+                todo!()
             }
+        };
+    }
+    fn compile_if_exp(&mut self, exp: &IfExpression) {
+        self.compile_exp(&exp.condition);
+        let jump_consequence = self.emit(Instruction::JNS { idx: 0 });
+        self.compile_stm(&Statement::BlockStatement(exp.consequence.clone()));
+
+        if exp.alternative.is_some() {
+            let jump_alternative = self.emit(Instruction::JMP { idx: 0 });
+
+            self.update(
+                Instruction::JNS {
+                    idx: self.next_offset(),
+                },
+                jump_consequence,
+            );
+
+            self.compile_stm(&Statement::BlockStatement(
+                exp.alternative.clone().unwrap(),
+            ));
+
+            self.update(
+                Instruction::JMP {
+                    idx: self.next_offset(),
+                },
+                jump_alternative,
+            );
+        } else {
+            self.update(
+                Instruction::JNS {
+                    idx: self.next_offset(),
+                },
+                jump_consequence,
+            );
         }
     }
-    fn compile_if_exp(&mut self, exp: &IfExpression) {}
     fn compile_call_exp(&mut self, exp: &CallExpression) {}
     fn compile_index_exp(&mut self, exp: &IndexExpression) {}
 
-    fn emit(&mut self, ins: Instruction) {
+    fn emit(&mut self, ins: Instruction) -> usize {
         self.instructions.add_instruction(ins)
+    }
+    fn update(&mut self, ins: Instruction, offset: usize) {
+        self.instructions.update_instruction(ins, offset)
+    }
+
+    fn next_offset(&self) -> usize {
+        self.instructions.length()
     }
 }

@@ -50,6 +50,8 @@ pub enum Instruction {
     BAND,
     BOR,
     JMP { idx: usize },
+    JIS { idx: usize },
+    JNS { idx: usize },
     JEQ { idx: usize },
     JNEQ { idx: usize },
 }
@@ -78,6 +80,8 @@ impl Instruction {
             Instruction::BAND => OpCode::BAND,
             Instruction::BOR => OpCode::BOR,
             Instruction::JMP { idx: _ } => OpCode::JMP,
+            Instruction::JIS { idx: _ } => OpCode::JIS,
+            Instruction::JNS { idx: _ } => OpCode::JNS,
             Instruction::JEQ { idx: _ } => OpCode::JEQ,
             Instruction::JNEQ { idx: _ } => OpCode::JNEQ,
         }
@@ -109,7 +113,11 @@ impl Instruction {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&idx.to_ne_bytes()).unwrap()
             }
-            Instruction::JMP { idx } | Instruction::JEQ { idx } | Instruction::JNEQ { idx } => {
+            Instruction::JMP { idx }
+            | Instruction::JIS { idx }
+            | Instruction::JNS { idx }
+            | Instruction::JEQ { idx }
+            | Instruction::JNEQ { idx } => {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&idx.to_ne_bytes()).unwrap()
             }
@@ -143,6 +151,8 @@ impl Instruction {
             Instruction::BAND => buf += "BAND",
             Instruction::BOR => buf += "BOR",
             Instruction::JMP { idx } => buf += &format!("JMP\t\t{idx}"),
+            Instruction::JIS { idx } => buf += &format!("JIS\t\t{idx}"),
+            Instruction::JNS { idx } => buf += &format!("JNS\t\t{idx}"),
             Instruction::JEQ { idx } => buf += &format!("JEQ\t\t{idx}"),
             Instruction::JNEQ { idx } => buf += &format!("JNEQ\t\t{idx}"),
         }

@@ -24,6 +24,8 @@ pub enum OpCode {
     BAND,
     BOR,
     JMP,
+    JIS,
+    JNS,
     JEQ,
     JNEQ,
 }
@@ -53,7 +55,11 @@ impl OpCode {
 
             OpCode::CONST => return &CONST.arg_size,
 
-            OpCode::JMP | OpCode::JEQ | OpCode::JNEQ => return &JUMP.arg_size,
+            OpCode::JMP
+            | OpCode::JIS
+            | OpCode::JNS
+            | OpCode::JEQ
+            | OpCode::JNEQ => return &JUMP.arg_size,
         }
     }
     pub fn length(&self) -> usize {
@@ -80,7 +86,11 @@ impl OpCode {
 
             OpCode::CONST => return CONST.length,
 
-            OpCode::JMP | OpCode::JEQ | OpCode::JNEQ => return JUMP.length,
+            OpCode::JMP
+            | OpCode::JIS
+            | OpCode::JNS
+            | OpCode::JEQ
+            | OpCode::JNEQ => return JUMP.length,
         }
     }
 }

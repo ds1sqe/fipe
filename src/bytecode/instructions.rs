@@ -46,20 +46,39 @@ impl Instructions {
         buf
     }
 
-    pub fn add_instruction(&mut self, ins: Instruction) {
+    /// add new instruction at the end.
+    /// return new Instruction's offset
+    pub fn add_instruction(&mut self, ins: Instruction) -> usize {
         if self.len + ins.opcode().length() > self.cap {
             self.grow();
         }
         unsafe {
-            std::ptr::copy(ins.as_byte().as_ptr(), self.cursor, ins.opcode().length());
+            std::ptr::copy(
+                ins.as_byte().as_ptr(),
+                self.cursor,
+                ins.opcode().length(),
+            );
             self.cursor = self.cursor.add(ins.opcode().length());
         }
+        let offset = self.len;
         self.len += ins.opcode().length();
+        offset
+    }
+
+    pub fn update_instruction(&mut self, ins: Instruction, offset: usize) {
+        unsafe {
+            std::ptr::copy(
+                ins.as_byte().as_ptr(),
+                self.byte.as_ptr().add(offset),
+                ins.opcode().length(),
+            );
+        }
     }
 
     pub fn read_instruction(&self, offset: usize) -> Instruction {
         unsafe {
-            let opcode = std::ptr::read(self.byte.as_ptr().add(offset) as *const OpCode);
+            let opcode =
+                std::ptr::read(self.byte.as_ptr().add(offset) as *const OpCode);
 
             match opcode {
                 OpCode::PUSH => Instruction::PUSH,
@@ -82,11 +101,15 @@ impl Instructions {
                 OpCode::BAND => Instruction::BAND,
                 OpCode::BOR => Instruction::BOR,
                 one_args => {
-                    let idx = std::ptr::read(self.byte.as_ptr().add(offset + 1) as *const usize);
+                    let idx = std::ptr::read(
+                        self.byte.as_ptr().add(offset + 1) as *const usize
+                    );
 
                     match one_args {
                         OpCode::CONST => Instruction::CONST { idx },
                         OpCode::JMP => Instruction::JMP { idx },
+                        OpCode::JIS => Instruction::JIS { idx },
+                        OpCode::JNS => Instruction::JNS { idx },
                         OpCode::JEQ => Instruction::JEQ { idx },
                         OpCode::JNEQ => Instruction::JNEQ { idx },
                         not_matched => {
@@ -112,7 +135,8 @@ impl Instructions {
 
         let old_layout = Layout::array::<u8>(self.cap).unwrap();
         let old_ptr = self.byte.as_ptr() as *mut u8;
-        let new_ptr = unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) };
+        let new_ptr =
+            unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) };
 
         self.byte = match NonNull::new(new_ptr as *mut u8) {
             Some(p) => p,
