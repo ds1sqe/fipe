@@ -24,7 +24,7 @@ pub struct Compiler {
     scopes: Vec<Scope>,
     scope_idx: usize,
     instructions: Instructions,
-    symbol_table: SymbolTable,
+    symbol_table: Option<SymbolTable>,
 }
 
 impl Compiler {
@@ -35,7 +35,7 @@ impl Compiler {
             scopes: Vec::new(),
             scope_idx: 0,
             instructions: Instructions::new(),
-            symbol_table: SymbolTable::new(),
+            symbol_table: Some(SymbolTable::new()),
         }
     }
 
@@ -84,7 +84,11 @@ impl Compiler {
     fn compile_let_stm(&mut self, stm: &LetStatement) {
         self.compile_exp(&stm.value.clone().unwrap());
 
-        let idx = self.symbol_table.define_global(&stm.identifier.value);
+        let idx = self
+            .symbol_table
+            .as_mut()
+            .unwrap()
+            .define_global(&stm.identifier.value);
 
         self.emit(Instruction::DEFGLB { idx });
     }
@@ -96,7 +100,7 @@ impl Compiler {
     }
 
     fn compile_identifier_exp(&mut self, exp: &Identifier) {
-        let rst = self.symbol_table.get_global(&exp.value);
+        let rst = self.symbol_table.as_mut().unwrap().get_global(&exp.value);
         if rst.is_some() {
             let idx = rst.unwrap().index;
             self.emit(Instruction::GETGLB { idx });
@@ -230,4 +234,16 @@ impl Compiler {
     fn next_offset(&self) -> usize {
         self.instructions.length()
     }
+
+    fn enter_scope(&mut self) {
+        let new_scope = Scope {
+            instructions: Instructions::new(),
+        };
+        self.scopes.push(new_scope);
+        self.scope_idx += 1;
+
+        self.symbol_table =
+            Some(SymbolTable::enclose(self.symbol_table.take().unwrap()));
+    }
+    fn leave_scope(&mut self) {}
 }
