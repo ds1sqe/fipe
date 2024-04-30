@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+#[derive(PartialEq)]
 pub enum Scope {
     Global,
     Local,
@@ -11,9 +12,15 @@ pub struct Symbol {
     pub index: usize,
 }
 
+impl Symbol {
+    pub fn is_global(&self) -> bool {
+        self.scope == Scope::Global
+    }
+}
+
 pub struct SymbolTable {
     table: HashMap<String, Symbol>,
-    len: usize,
+    pub len: usize,
     outer: Option<Box<SymbolTable>>,
 }
 
@@ -34,28 +41,16 @@ impl SymbolTable {
         }
     }
 
-    pub fn define_global(&mut self, name: &String) -> usize {
-        self.table.insert(
-            name.clone(),
-            Symbol {
-                name: name.clone(),
-                scope: Scope::Global,
-                index: self.len,
-            },
-        );
-        let len = self.len;
-
-        self.len = self.table.len();
-
-        len
+    pub fn get_outer(&mut self) -> Self {
+        *self.outer.take().unwrap()
     }
 
-    pub fn get_global(&self, name: &String) -> Option<&Symbol> {
-        self.table.get(name)
+    pub fn is_global(&self) -> bool {
+        self.outer.is_none()
     }
 
     pub fn define(&mut self, name: &String) -> usize {
-        let scope = if self.outer.is_none() {
+        let scope = if self.is_global() {
             Scope::Global
         } else {
             Scope::Local

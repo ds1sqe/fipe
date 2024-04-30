@@ -2,7 +2,7 @@ use std::{alloc, alloc::Layout, ptr::NonNull};
 
 use super::{instruction::Instruction, opcode::OpCode};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Instructions {
     byte: NonNull<u8>,
     cursor: *mut u8,

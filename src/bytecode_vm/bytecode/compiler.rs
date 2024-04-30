@@ -5,7 +5,7 @@ use crate::{
         IndexExpression, InfixExpression, IntegerLiteral, LetStatement,
         PrefixExpression, Program, ReturnStatement, Statement, StringLiteral,
     },
-    object::{Bool, Int, Object, StringObject},
+    object::{Bool, CompiledFunction, Int, Object, StringObject},
     token::Kind,
 };
 
@@ -23,7 +23,6 @@ pub struct Compiler {
 
     scopes: Vec<Scope>,
     scope_idx: usize,
-    instructions: Instructions,
     symbol_table: Option<SymbolTable>,
 }
 
@@ -34,15 +33,18 @@ impl Compiler {
 
             scopes: Vec::new(),
             scope_idx: 0,
-            instructions: Instructions::new(),
+
             symbol_table: Some(SymbolTable::new()),
         }
     }
 
     pub fn bytecode(self) -> Bytecode {
+        if self.scope_idx != 0 {
+            // emit error (have to be 0 which means main-global )
+        }
         Bytecode {
-            constants: self.constants,
-            instructions: self.instructions,
+            constants: self.constants.clone(),
+            instructions: self.current_scope().instructions.clone(),
         }
     }
 
@@ -68,12 +70,12 @@ impl Compiler {
             Expression::IntegerLiteral(lit) => self.compile_integer_literal(lit),
             Expression::BooleanLiteral(lit) => self.compile_bool_literal(lit),
             Expression::StringLiteral(lit) => self.compile_string_literal(lit),
-            Expression::FunctionLiteral(_) => todo!(),
+            Expression::FunctionLiteral(lit) => self.compile_function_literal(lit),
             Expression::ArrayLiteral(lit) => self.compile_array_literal(lit),
             Expression::InfixExpression(exp) => self.compile_infix_exp(exp),
             Expression::PrefixExpression(exp) => self.compile_prefix_exp(exp),
             Expression::IfExpression(exp) => self.compile_if_exp(exp),
-            Expression::CallExpression(_) => todo!(),
+            Expression::CallExpression(exp) => self.compile_call_exp(exp),
             Expression::IndexExpression(exp) => self.compile_index_exp(exp),
         }
     }
@@ -88,9 +90,13 @@ impl Compiler {
             .symbol_table
             .as_mut()
             .unwrap()
-            .define_global(&stm.identifier.value);
+            .define(&stm.identifier.value);
 
-        self.emit(Instruction::DEFGLB { idx });
+        if self.symbol_table.as_ref().unwrap().is_global() {
+            self.emit(Instruction::DEFGLB { idx });
+        } else {
+            self.emit(Instruction::DEFLCL { idx });
+        }
     }
     fn compile_return_stm(&mut self, stm: &ReturnStatement) {}
     fn compile_block_stm(&mut self, stm: &BlockStatement) {
@@ -100,10 +106,14 @@ impl Compiler {
     }
 
     fn compile_identifier_exp(&mut self, exp: &Identifier) {
-        let rst = self.symbol_table.as_mut().unwrap().get_global(&exp.value);
+        let rst = self.symbol_table.as_mut().unwrap().resolve(&exp.value);
         if rst.is_some() {
             let idx = rst.unwrap().index;
-            self.emit(Instruction::GETGLB { idx });
+            if rst.unwrap().is_global() {
+                self.emit(Instruction::GETGLB { idx });
+            } else {
+                self.emit(Instruction::GETLCL { idx });
+            }
         } else {
             // emit error
             todo!();
@@ -132,7 +142,30 @@ impl Compiler {
             idx: self.constants.len() - 1,
         });
     }
-    fn compile_function_literal(&mut self, lit: &FunctionLiteral) {}
+    fn compile_function_literal(&mut self, lit: &FunctionLiteral) {
+        self.enter_scope();
+
+        for param in &lit.parameters {
+            self.symbol_table.as_mut().unwrap().define(&param.value);
+        }
+
+        self.compile_block_stm(&lit.body);
+
+        let local_len = self.symbol_table.as_ref().unwrap().len;
+        let body_scope = self.leave_scope();
+
+        let compiled_function = CompiledFunction {
+            arg_len: lit.parameters.len(),
+            local_len,
+            instructions: body_scope.instructions,
+        };
+
+        self.constants
+            .push(Object::CompiledFunction(compiled_function));
+        self.emit(Instruction::CONST {
+            idx: self.constants.len() - 1,
+        });
+    }
 
     fn compile_array_literal(&mut self, lit: &ArrayLiteral) {
         for el in lit.elements.iter() {
@@ -216,7 +249,18 @@ impl Compiler {
             );
         }
     }
-    fn compile_call_exp(&mut self, exp: &CallExpression) {}
+    fn compile_call_exp(&mut self, exp: &CallExpression) {
+        self.compile_exp(&exp.function);
+
+        for arg in &exp.arguments {
+            self.compile_exp(arg)
+        }
+
+        self.emit(Instruction::CALL {
+            arg_len: exp.arguments.len(),
+        });
+    }
+
     fn compile_index_exp(&mut self, exp: &IndexExpression) {
         self.compile_exp(&exp.left);
         self.compile_exp(&exp.index);
@@ -225,16 +269,19 @@ impl Compiler {
     }
 
     fn emit(&mut self, ins: Instruction) -> usize {
-        self.instructions.add_instruction(ins)
+        self.current_scope_mut().instructions.add_instruction(ins)
     }
     fn update(&mut self, ins: Instruction, offset: usize) {
-        self.instructions.update_instruction(ins, offset)
+        self.current_scope_mut()
+            .instructions
+            .update_instruction(ins, offset)
     }
 
     fn next_offset(&self) -> usize {
-        self.instructions.length()
+        self.current_scope().instructions.length()
     }
 
+    /// create new scope and enclose current `self.symbol_table`
     fn enter_scope(&mut self) {
         let new_scope = Scope {
             instructions: Instructions::new(),
@@ -245,5 +292,23 @@ impl Compiler {
         self.symbol_table =
             Some(SymbolTable::enclose(self.symbol_table.take().unwrap()));
     }
-    fn leave_scope(&mut self) {}
+
+    /// Leave [`Scope`] of this [`Compiler`]
+    /// and return previous [`Scope`]
+    ///
+    /// # Panics
+    ///
+    /// Panics if scopes length below 1 ( len < 1 )
+    fn leave_scope(&mut self) -> Scope {
+        self.symbol_table = Some(self.symbol_table.as_mut().unwrap().get_outer());
+        self.scope_idx -= 1;
+        self.scopes.pop().unwrap()
+    }
+    fn current_scope(&self) -> &Scope {
+        &self.scopes[self.scope_idx]
+    }
+
+    fn current_scope_mut(&mut self) -> &mut Scope {
+        &mut self.scopes[self.scope_idx]
+    }
 }

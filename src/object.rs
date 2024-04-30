@@ -2,7 +2,10 @@ pub mod environment;
 
 use std::fmt::Debug;
 
-use crate::ast::{BlockStatement, Identifier, Nodetrait};
+use crate::{
+    ast::{BlockStatement, Identifier, Nodetrait},
+    bytecode_vm::bytecode::instructions::Instructions,
+};
 
 use self::environment::Environment;
 
@@ -13,6 +16,7 @@ pub enum Object {
     Bool(Bool),
     String(StringObject),
     Function(Function),
+    CompiledFunction(CompiledFunction),
     Array(Array),
 }
 
@@ -23,6 +27,7 @@ pub enum ObjectType {
     Bool,
     String,
     Function,
+    CompiledFunction,
     Array,
 }
 
@@ -40,6 +45,7 @@ impl ObjectTrait for Object {
             Object::Function(x) => x.get_type(),
             Object::String(x) => x.get_type(),
             Object::Array(x) => x.get_type(),
+            Object::CompiledFunction(x) => x.get_type(),
         }
     }
 
@@ -51,6 +57,7 @@ impl ObjectTrait for Object {
             Object::String(x) => x.to_str(),
             Object::Function(x) => x.to_str(),
             Object::Array(x) => x.to_str(),
+            Object::CompiledFunction(x) => x.to_str(),
         };
         inner
     }
@@ -168,6 +175,28 @@ impl ObjectTrait for Array {
         buf += "[";
         buf += &elements_buf.join(", ");
         buf += "]";
+
+        buf
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledFunction {
+    pub instructions: Instructions,
+    pub local_len: usize,
+    pub arg_len: usize,
+}
+
+impl ObjectTrait for CompiledFunction {
+    fn get_type(&self) -> ObjectType {
+        ObjectType::CompiledFunction
+    }
+    fn to_str(&self) -> String {
+        let mut buf = String::new();
+        buf += "CompiledFunction\n";
+        buf += &format!("local_len={},arg_len={}", self.local_len, self.arg_len);
+        buf += &self.instructions.to_string();
+        buf += "\n";
 
         buf
     }
