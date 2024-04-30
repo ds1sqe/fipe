@@ -28,12 +28,15 @@ pub const JUMP: Definition = Definition {
     arg_size: &ARG_OFFSET,
 };
 
+#[derive(Debug)]
 pub enum Instruction {
     PUSH,
     POP,
     CONST { idx: usize },
     DEFGLB { idx: usize },
     GETGLB { idx: usize },
+    DEFLCL { idx: usize },
+    GETLCL { idx: usize },
     ADD,
     SUB,
     PRODUCT,
@@ -58,6 +61,7 @@ pub enum Instruction {
     JNEQ { idx: usize },
     ARRAY { count: usize },
     INDEX,
+    CALL { arg_len: usize },
 }
 
 impl Instruction {
@@ -68,6 +72,8 @@ impl Instruction {
             Instruction::CONST { idx: _ } => OpCode::CONST,
             Instruction::DEFGLB { idx: _ } => OpCode::DEFGLB,
             Instruction::GETGLB { idx: _ } => OpCode::GETGLB,
+            Instruction::DEFLCL { idx: _ } => OpCode::DEFLCL,
+            Instruction::GETLCL { idx: _ } => OpCode::GETLCL,
             Instruction::ADD => OpCode::ADD,
             Instruction::SUB => OpCode::SUB,
             Instruction::PRODUCT => OpCode::PRODUCT,
@@ -92,6 +98,7 @@ impl Instruction {
             Instruction::JNEQ { idx: _ } => OpCode::JNEQ,
             Instruction::ARRAY { count: _ } => OpCode::ARRAY,
             Instruction::INDEX => OpCode::INDEX,
+            Instruction::CALL { arg_len: _ } => OpCode::CALL,
         }
     }
 
@@ -120,7 +127,9 @@ impl Instruction {
             | Instruction::INDEX => buf.push(self.opcode() as u8),
             Instruction::CONST { idx }
             | Instruction::DEFGLB { idx }
-            | Instruction::GETGLB { idx } => {
+            | Instruction::GETGLB { idx }
+            | Instruction::DEFLCL { idx }
+            | Instruction::GETLCL { idx } => {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&idx.to_ne_bytes()).unwrap()
             }
@@ -137,6 +146,11 @@ impl Instruction {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&idx.to_ne_bytes()).unwrap()
             }
+
+            Instruction::CALL { arg_len } => {
+                buf.push(self.opcode() as u8);
+                buf.write_all(&arg_len.to_ne_bytes()).unwrap()
+            }
         }
 
         buf
@@ -151,6 +165,8 @@ impl Instruction {
             Instruction::CONST { idx } => buf += &format!("CONST\t\t{idx}"),
             Instruction::DEFGLB { idx } => buf += &format!("DEFGLB\t\t{idx}"),
             Instruction::GETGLB { idx } => buf += &format!("GETGLB\t\t{idx}"),
+            Instruction::DEFLCL { idx } => buf += &format!("DEFLCL\t\t{idx}"),
+            Instruction::GETLCL { idx } => buf += &format!("GETLCL\t\t{idx}"),
 
             Instruction::ADD => buf += "ADD",
             Instruction::SUB => buf += "SUB",
@@ -176,6 +192,7 @@ impl Instruction {
             Instruction::JNEQ { idx } => buf += &format!("JNEQ\t\t{idx}"),
             Instruction::ARRAY { count } => buf += &format!("ARRAY\t\t{count}"),
             Instruction::INDEX => buf += &format!("INDEX"),
+            Instruction::CALL { arg_len } => buf += &format!("CALL\t\t{arg_len}"),
         }
 
         buf

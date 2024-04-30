@@ -14,8 +14,15 @@ use super::{
     Bytecode,
 };
 
+struct Scope {
+    instructions: Instructions,
+}
+
 pub struct Compiler {
     constants: Vec<Object>,
+
+    scopes: Vec<Scope>,
+    scope_idx: usize,
     instructions: Instructions,
     symbol_table: SymbolTable,
 }
@@ -24,6 +31,9 @@ impl Compiler {
     pub fn new() -> Self {
         Self {
             constants: Vec::new(),
+
+            scopes: Vec::new(),
+            scope_idx: 0,
             instructions: Instructions::new(),
             symbol_table: SymbolTable::new(),
         }

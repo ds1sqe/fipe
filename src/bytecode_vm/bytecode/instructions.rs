@@ -10,7 +10,7 @@ pub struct Instructions {
     len: usize,
 }
 
-const SIZE: usize = 1 << 16;
+const SIZE: usize = 1 << 8;
 
 impl Instructions {
     pub fn new() -> Self {
@@ -121,20 +121,23 @@ impl Instructions {
                 OpCode::INDEX => Instruction::INDEX,
 
                 one_args => {
-                    let idx = std::ptr::read(
+                    let arg_1 = std::ptr::read(
                         self.byte.as_ptr().add(offset + 1) as *const usize
                     );
 
                     match one_args {
-                        OpCode::CONST => Instruction::CONST { idx },
-                        OpCode::DEFGLB => Instruction::DEFGLB { idx },
-                        OpCode::GETGLB => Instruction::GETGLB { idx },
-                        OpCode::JMP => Instruction::JMP { idx },
-                        OpCode::JIS => Instruction::JIS { idx },
-                        OpCode::JNS => Instruction::JNS { idx },
-                        OpCode::JEQ => Instruction::JEQ { idx },
-                        OpCode::JNEQ => Instruction::JNEQ { idx },
-                        OpCode::ARRAY => Instruction::ARRAY { count: idx },
+                        OpCode::CONST => Instruction::CONST { idx: arg_1 },
+                        OpCode::DEFGLB => Instruction::DEFGLB { idx: arg_1 },
+                        OpCode::GETGLB => Instruction::GETGLB { idx: arg_1 },
+                        OpCode::DEFLCL => Instruction::DEFLCL { idx: arg_1 },
+                        OpCode::GETLCL => Instruction::GETLCL { idx: arg_1 },
+                        OpCode::JMP => Instruction::JMP { idx: arg_1 },
+                        OpCode::JIS => Instruction::JIS { idx: arg_1 },
+                        OpCode::JNS => Instruction::JNS { idx: arg_1 },
+                        OpCode::JEQ => Instruction::JEQ { idx: arg_1 },
+                        OpCode::JNEQ => Instruction::JNEQ { idx: arg_1 },
+                        OpCode::ARRAY => Instruction::ARRAY { count: arg_1 },
+                        OpCode::CALL => Instruction::CALL { arg_len: arg_1 },
                         not_matched => {
                             panic!("Has to be unreachable {:?}", not_matched);
                         }

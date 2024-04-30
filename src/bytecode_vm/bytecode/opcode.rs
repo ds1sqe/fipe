@@ -6,8 +6,14 @@ pub enum OpCode {
     PUSH,
     POP,
     CONST,
+    /// Define global
     DEFGLB,
+    /// Get global
     GETGLB,
+    /// Define local
+    DEFLCL,
+    /// Get local
+    GETLCL,
     ADD,
     SUB,
     PRODUCT,
@@ -21,17 +27,24 @@ pub enum OpCode {
     CLTE,
     CEQ,
     CNEQ,
+    /// Logical AND
     AND,
+    /// Logical OR
     OR,
+    /// Bit AND
     BAND,
+    /// Bit OR
     BOR,
     JMP,
+    /// jump if state
     JIS,
+    /// jump if not state
     JNS,
     JEQ,
     JNEQ,
     ARRAY,
     INDEX,
+    CALL,
 }
 
 impl OpCode {
@@ -60,6 +73,9 @@ impl OpCode {
             OpCode::CONST
             | OpCode::DEFGLB
             | OpCode::GETGLB
+            | OpCode::DEFLCL
+            | OpCode::GETLCL
+            | OpCode::CALL
             | OpCode::ARRAY
             | OpCode::INDEX => return &CONST.arg_size,
 
@@ -95,6 +111,9 @@ impl OpCode {
             OpCode::CONST
             | OpCode::DEFGLB
             | OpCode::GETGLB
+            | OpCode::DEFLCL
+            | OpCode::GETLCL
+            | OpCode::CALL
             | OpCode::ARRAY
             | OpCode::INDEX => return CONST.length,
 

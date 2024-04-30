@@ -253,6 +253,9 @@ impl VM {
                     // emit error
                 }
             }
+            not_implemented => {
+                panic!("not implemented instruction {:?}", not_implemented);
+            }
         }
         self.ic += ins.opcode().length();
     }

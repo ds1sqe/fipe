@@ -14,6 +14,7 @@ pub struct Symbol {
 pub struct SymbolTable {
     table: HashMap<String, Symbol>,
     len: usize,
+    outer: Option<Box<SymbolTable>>,
 }
 
 impl SymbolTable {
@@ -21,6 +22,15 @@ impl SymbolTable {
         Self {
             table: HashMap::new(),
             len: 0,
+            outer: None,
+        }
+    }
+
+    pub fn enclose(outer: Self) -> Self {
+        Self {
+            table: HashMap::new(),
+            len: 0,
+            outer: Some(Box::new(outer)),
         }
     }
 
@@ -42,5 +52,36 @@ impl SymbolTable {
 
     pub fn get_global(&self, name: &String) -> Option<&Symbol> {
         self.table.get(name)
+    }
+
+    pub fn define(&mut self, name: &String) -> usize {
+        let scope = if self.outer.is_none() {
+            Scope::Global
+        } else {
+            Scope::Local
+        };
+        self.table.insert(
+            name.clone(),
+            Symbol {
+                name: name.clone(),
+                scope,
+                index: self.len,
+            },
+        );
+        let len = self.len;
+
+        self.len = self.table.len();
+
+        len
+    }
+
+    pub fn resolve(&self, name: &String) -> Option<&Symbol> {
+        let rst = self.table.get(name);
+        if rst.is_none() {
+            if self.outer.is_some() {
+                return self.outer.as_ref().unwrap().resolve(name);
+            }
+        }
+        rst
     }
 }
