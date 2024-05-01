@@ -13,9 +13,10 @@ mod frame;
 const GLOBAL_SIZE: usize = 1 << 8;
 
 const FRAME_SIZE: usize = 1 << 10;
+const STACK_SIZE: usize = 1 << 10;
 
 pub struct VM {
-    stack: Vec<Object>,
+    stack: [Option<Object>; STACK_SIZE],
     /// stack pointer
     sp: usize,
 
@@ -36,10 +37,13 @@ impl VM {
         };
         let main_frame = Frame::new(main_func, 0);
 
-        let frames = vec![main_frame];
+        let mut frames = Vec::with_capacity(FRAME_SIZE);
+        frames.push(main_frame);
+
+        const STACK_INIT: Option<Object> = None;
 
         Self {
-            stack: Vec::new(),
+            stack: [STACK_INIT; STACK_SIZE],
             sp: 0,
 
             constants: code.constants,
@@ -57,21 +61,35 @@ impl VM {
             Instruction::POP => todo!(),
             Instruction::CONST { idx } => {
                 // load constants into stack
-                self.stack.push(self.constants[*idx].clone());
+                self.push_stack(self.constants[*idx].clone());
                 self.sp += 1;
             }
             Instruction::DEFGLB { idx } => {
                 // define global variable
                 if *idx < self.global.len() {
-                    self.global[*idx] = self.stack.pop().unwrap();
+                    self.global[*idx] = self.pop_stack().unwrap();
                 } else {
-                    self.global.push(self.stack.pop().unwrap());
+                    let obj = self.pop_stack().unwrap();
+                    self.global.push(obj);
                 }
                 self.sp -= 1;
             }
             Instruction::GETGLB { idx } => {
                 // get global variable
-                self.stack.push(self.global[*idx].clone());
+                self.push_stack(self.global[*idx].clone());
+                self.sp += 1;
+            }
+            Instruction::DEFLCL { idx } => {
+                // define local variable
+                let offset = self.current_frame().bp() + idx;
+                self.stack[offset] = Some(self.pop_stack().unwrap());
+                self.sp -= 1;
+            }
+            Instruction::GETLCL { idx } => {
+                // get local variable
+                let offset = self.current_frame().bp() + idx;
+
+                self.push_stack(self.stack[offset].clone().unwrap());
                 self.sp += 1;
             }
 
@@ -90,8 +108,8 @@ impl VM {
             | Instruction::OR
             | Instruction::BAND
             | Instruction::BOR => {
-                let left = self.stack.pop().unwrap();
-                let right = self.stack.pop().unwrap();
+                let left = self.pop_stack().unwrap();
+                let right = self.pop_stack().unwrap();
 
                 if left.get_type() == right.get_type() {
                     if left.get_type() == ObjectType::Int {
@@ -121,7 +139,7 @@ impl VM {
                                     }
                                 };
                                 let rst = Object::Int(Int { value });
-                                self.stack.push(rst);
+                                self.push_stack(rst);
                             }
                             Instruction::CGT
                             | Instruction::CGTE
@@ -141,7 +159,7 @@ impl VM {
                                     }
                                 };
                                 let rst = Object::Bool(Bool { value });
-                                self.stack.push(rst);
+                                self.push_stack(rst);
                             }
                             __ => {
                                 unreachable!()
@@ -160,7 +178,7 @@ impl VM {
                             }
                         };
                         let rst = Object::Bool(Bool { value });
-                        self.stack.push(rst);
+                        self.push_stack(rst);
                     } else if left.get_type() == ObjectType::String {
                         let Object::String(left) = left else {unreachable!()};
                         let Object::String(right) = right else {unreachable!()};
@@ -170,19 +188,19 @@ impl VM {
                                 let rst = Object::String(StringObject {
                                     value: left.value + &right.value,
                                 });
-                                self.stack.push(rst);
+                                self.push_stack(rst);
                             }
                             Instruction::CEQ => {
                                 let rst = Object::Bool(Bool {
                                     value: left.value == right.value,
                                 });
-                                self.stack.push(rst);
+                                self.push_stack(rst);
                             }
                             Instruction::CNEQ => {
                                 let rst = Object::Bool(Bool {
                                     value: left.value != right.value,
                                 });
-                                self.stack.push(rst);
+                                self.push_stack(rst);
                             }
                             __ => {
                                 unreachable!()
@@ -195,21 +213,21 @@ impl VM {
             }
 
             Instruction::BANG => {
-                let right = self.stack.pop().unwrap();
+                let right = self.pop_stack().unwrap();
                 if right.get_type() == ObjectType::Bool {
                     let Object::Bool(mut right) = right else {unreachable!()};
                     right.value = !right.value;
-                    self.stack.push(Object::Bool(right))
+                    self.push_stack(Object::Bool(right))
                 } else {
                     // emit error
                 }
             }
             Instruction::NEG => {
-                let right = self.stack.pop().unwrap();
+                let right = self.pop_stack().unwrap();
                 if right.get_type() == ObjectType::Int {
                     let Object::Int(mut right) = right else {unreachable!()};
                     right.value = -right.value;
-                    self.stack.push(Object::Int(right))
+                    self.push_stack(Object::Int(right))
                 } else {
                     // emit error
                 }
@@ -220,7 +238,7 @@ impl VM {
                 return;
             }
             Instruction::JIS { idx } => {
-                let sign = self.stack.pop().unwrap();
+                let sign = self.pop_stack().unwrap();
                 if sign.get_type() == ObjectType::Bool {
                     let Object::Bool(sign) = sign else {unreachable!()};
                     if sign.value {
@@ -232,7 +250,7 @@ impl VM {
                 }
             }
             Instruction::JNS { idx } => {
-                let sign = self.stack.pop().unwrap();
+                let sign = self.pop_stack().unwrap();
                 if sign.get_type() == ObjectType::Bool {
                     let Object::Bool(sign) = sign else {unreachable!()};
                     if !sign.value {
@@ -247,31 +265,30 @@ impl VM {
             Instruction::JNEQ { idx } => todo!(),
             Instruction::ARRAY { count } => {
                 let mut elements = Vec::with_capacity(*count);
-                let stack_len = self.stack.len();
 
                 for offset in (1..=*count).rev() {
-                    elements.push(self.stack[stack_len - offset].clone())
+                    elements.push(self.stack[self.sp - offset].clone().unwrap())
                 }
-                self.stack.truncate(stack_len - count);
+                self.sp -= count;
 
                 let array = Object::Array(Array { elements });
 
-                self.stack.push(array);
+                self.push_stack(array);
             }
             Instruction::INDEX => {
-                let idx = self.stack.pop().unwrap();
+                let idx = self.pop_stack().unwrap();
 
                 if idx.get_type() == ObjectType::Int {
                     let Object::Int(int) = idx else {
                     unreachable!()
                     };
 
-                    let tgt = self.stack.pop().unwrap();
+                    let tgt = self.pop_stack().unwrap();
                     if tgt.get_type() == ObjectType::Array {
                         let Object::Array(arr) = tgt else {
                     unreachable!()
                     };
-                        self.stack.push(arr.elements[int.value as usize].clone());
+                        self.push_stack(arr.elements[int.value as usize].clone());
                     } else {
                         // emit error
                     }
@@ -281,8 +298,18 @@ impl VM {
             }
             Instruction::CALL { arg_len } => {
                 self.current_frame_mut().add_ic(ins.opcode().length());
-                //
+                self.call(*arg_len);
                 return;
+            }
+            Instruction::RETN => {
+                let popped_frame = self.pop_frame();
+                self.sp = popped_frame.bp() - 1
+            }
+            Instruction::RETV => {
+                let value = self.pop_stack().unwrap();
+                let popped_frame = self.pop_frame();
+                self.sp = popped_frame.bp() - 1;
+                self.push_stack(value);
             }
             not_implemented => {
                 panic!("not implemented instruction {:?}", not_implemented);
@@ -295,8 +322,8 @@ impl VM {
         self.current_frame().is_runnable()
     }
 
-    pub fn top(&self) -> Option<&Object> {
-        self.stack.last()
+    pub fn top(&self) -> &Option<Object> {
+        &self.stack[self.sp]
     }
 
     pub fn to_string(&self) -> String {
@@ -317,9 +344,14 @@ impl VM {
         }
 
         buf += "\nSTACK\n";
-        for (idx, ins) in self.stack.iter().enumerate() {
+        for idx in 0..self.sp {
+            let obj = &self.stack[idx];
             buf += &format!("{:0>6}\t\t", idx);
-            buf += &ins.to_str();
+            if obj.is_none() {
+                buf += "NONE"
+            } else {
+                buf += &obj.as_ref().unwrap().to_str();
+            }
             buf += "\n";
         }
 
@@ -329,13 +361,29 @@ impl VM {
     pub fn stack_to_string(&self) -> String {
         let mut buf = String::new();
         buf += "\nSTACK\n";
-        for (idx, ins) in self.stack.iter().enumerate() {
+        for idx in 0..self.sp {
+            let obj = &self.stack[idx];
             buf += &format!("{:0>6}\t\t", idx);
-            buf += &ins.to_str();
+            if obj.is_none() {
+                buf += "NONE"
+            } else {
+                buf += &obj.as_ref().unwrap().to_str();
+            }
             buf += "\n";
         }
-
         buf
+    }
+    fn push_stack(&mut self, obj: Object) {
+        if self.sp >= STACK_SIZE {
+            panic!("STACK OVERFLOW: {}", self.stack_to_string())
+        }
+        self.sp += 1;
+        self.stack[self.sp - 1] = Some(obj);
+    }
+
+    fn pop_stack(&mut self) -> Option<Object> {
+        self.sp -= 1;
+        self.stack[self.sp + 1].take()
     }
 
     fn current_frame(&self) -> &Frame {
@@ -355,7 +403,7 @@ impl VM {
     }
 
     fn call(&mut self, arg_len: usize) {
-        let Object::CompiledFunction(fun) = self.stack[self.sp - arg_len].to_owned() else {
+        let Object::CompiledFunction(fun) = self.stack[self.sp - arg_len].take().unwrap() else {
             unreachable!()
         };
 
@@ -366,6 +414,8 @@ impl VM {
         let local_len = fun.local_len;
 
         let new_frame = Frame::new(fun, self.sp - arg_len);
+
+        self.push_frame(new_frame);
 
         self.sp = new_bp + local_len
     }

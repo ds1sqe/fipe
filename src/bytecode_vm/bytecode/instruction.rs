@@ -32,11 +32,21 @@ pub const JUMP: Definition = Definition {
 pub enum Instruction {
     PUSH,
     POP,
-    CONST { idx: usize },
-    DEFGLB { idx: usize },
-    GETGLB { idx: usize },
-    DEFLCL { idx: usize },
-    GETLCL { idx: usize },
+    CONST {
+        idx: usize,
+    },
+    DEFGLB {
+        idx: usize,
+    },
+    GETGLB {
+        idx: usize,
+    },
+    DEFLCL {
+        idx: usize,
+    },
+    GETLCL {
+        idx: usize,
+    },
     ADD,
     SUB,
     PRODUCT,
@@ -54,14 +64,32 @@ pub enum Instruction {
     OR,
     BAND,
     BOR,
-    JMP { idx: usize },
-    JIS { idx: usize },
-    JNS { idx: usize },
-    JEQ { idx: usize },
-    JNEQ { idx: usize },
-    ARRAY { count: usize },
+    JMP {
+        idx: usize,
+    },
+    JIS {
+        idx: usize,
+    },
+    JNS {
+        idx: usize,
+    },
+    JEQ {
+        idx: usize,
+    },
+    JNEQ {
+        idx: usize,
+    },
+    ARRAY {
+        count: usize,
+    },
     INDEX,
-    CALL { arg_len: usize },
+    CALL {
+        arg_len: usize,
+    },
+    /// Return
+    RETN,
+    /// Return with value
+    RETV,
 }
 
 impl Instruction {
@@ -99,6 +127,8 @@ impl Instruction {
             Instruction::ARRAY { count: _ } => OpCode::ARRAY,
             Instruction::INDEX => OpCode::INDEX,
             Instruction::CALL { arg_len: _ } => OpCode::CALL,
+            Instruction::RETN => OpCode::RETN,
+            Instruction::RETV => OpCode::RETV,
         }
     }
 
@@ -124,7 +154,9 @@ impl Instruction {
             | Instruction::OR
             | Instruction::BAND
             | Instruction::BOR
-            | Instruction::INDEX => buf.push(self.opcode() as u8),
+            | Instruction::INDEX
+            | Instruction::RETN
+            | Instruction::RETV => buf.push(self.opcode() as u8),
             Instruction::CONST { idx }
             | Instruction::DEFGLB { idx }
             | Instruction::GETGLB { idx }
@@ -193,6 +225,8 @@ impl Instruction {
             Instruction::ARRAY { count } => buf += &format!("ARRAY\t\t{count}"),
             Instruction::INDEX => buf += &format!("INDEX"),
             Instruction::CALL { arg_len } => buf += &format!("CALL\t\t{arg_len}"),
+            Instruction::RETN => buf += "RETN",
+            Instruction::RETV => buf += "RETV",
         }
 
         buf

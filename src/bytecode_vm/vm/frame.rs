@@ -29,10 +29,10 @@ impl Frame {
         self.ic += tgt
     }
 
-    pub fn cur_ic(&self) -> usize {
+    pub fn ic(&self) -> usize {
         self.ic
     }
-    pub fn cur_bp(&self) -> usize {
+    pub fn bp(&self) -> usize {
         self.bp
     }
 

@@ -45,6 +45,10 @@ pub enum OpCode {
     ARRAY,
     INDEX,
     CALL,
+    /// Return
+    RETN,
+    /// Return with value
+    RETV,
 }
 
 impl OpCode {
@@ -68,7 +72,9 @@ impl OpCode {
             | OpCode::AND
             | OpCode::OR
             | OpCode::BAND
-            | OpCode::BOR => return &NO_ARG.arg_size,
+            | OpCode::BOR
+            | OpCode::RETN
+            | OpCode::RETV => return &NO_ARG.arg_size,
 
             OpCode::CONST
             | OpCode::DEFGLB
@@ -106,7 +112,9 @@ impl OpCode {
             | OpCode::AND
             | OpCode::OR
             | OpCode::BAND
-            | OpCode::BOR => return NO_ARG.length,
+            | OpCode::BOR
+            | OpCode::RETN
+            | OpCode::RETV => return NO_ARG.length,
 
             OpCode::CONST
             | OpCode::DEFGLB

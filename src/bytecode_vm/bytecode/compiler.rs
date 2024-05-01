@@ -28,10 +28,15 @@ pub struct Compiler {
 
 impl Compiler {
     pub fn new() -> Self {
+        let mut scopes = Vec::new();
+        scopes.push(Scope {
+            instructions: Instructions::new(),
+        });
+
         Self {
             constants: Vec::new(),
 
-            scopes: Vec::new(),
+            scopes,
             scope_idx: 0,
 
             symbol_table: Some(SymbolTable::new()),

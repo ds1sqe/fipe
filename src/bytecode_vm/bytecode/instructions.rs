@@ -10,7 +10,7 @@ pub struct Instructions {
     len: usize,
 }
 
-const SIZE: usize = 1 << 8;
+const SIZE: usize = 1 << 11;
 
 impl Instructions {
     pub fn new() -> Self {
@@ -119,6 +119,8 @@ impl Instructions {
                 OpCode::BAND => Instruction::BAND,
                 OpCode::BOR => Instruction::BOR,
                 OpCode::INDEX => Instruction::INDEX,
+                OpCode::RETN => Instruction::RETN,
+                OpCode::RETV => Instruction::RETV,
 
                 one_args => {
                     let arg_1 = std::ptr::read(

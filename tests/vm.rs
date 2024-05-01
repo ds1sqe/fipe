@@ -47,7 +47,7 @@ fn test_vm_integer_operation() {
             vm.run_single();
         }
 
-        let rst = vm.top().unwrap();
+        let rst = vm.top().as_ref().unwrap();
         match rst {
             Object::Int(int) => {
                 assert!(int.value == test.expect)
@@ -119,7 +119,7 @@ fn test_vm_bool_operation() {
             vm.run_single();
         }
 
-        let rst = vm.top().unwrap();
+        let rst = vm.top().as_ref().unwrap();
         match rst {
             Object::Bool(obj) => {
                 assert!(obj.value == test.expect)
@@ -219,7 +219,7 @@ fn test_vm_let_stm_operation() {
             vm.run_single();
         }
 
-        let rst = vm.top().unwrap();
+        let rst = vm.top().as_ref().unwrap();
         match rst {
             Object::Int(int) => {
                 assert!(int.value == test.expect)
@@ -294,7 +294,7 @@ fn test_vm_array_creation() {
 
         println!("VM STACK:\n {}", vm.stack_to_string());
 
-        let rst = vm.top().unwrap();
+        let rst = vm.top().as_ref().unwrap();
         match rst {
             Object::Array(arr) => {
                 assert!(*arr == test.expect.clone().unwrap())
@@ -337,7 +337,7 @@ fn test_vm_array_index() {
 
         println!("VM STACK:\n {}", vm.stack_to_string());
 
-        let rst = vm.top().unwrap();
+        let rst = vm.top().as_ref().unwrap();
         match rst {
             Object::Int(int) => {
                 assert!(int.value == test.expect)
