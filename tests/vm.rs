@@ -48,6 +48,7 @@ fn test_vm_integer_operation() {
         }
 
         let rst = vm.top().as_ref().unwrap();
+        println!("VM STACK:\n {}", vm.stack_to_string());
         match rst {
             Object::Int(int) => {
                 assert!(int.value == test.expect)
@@ -120,6 +121,7 @@ fn test_vm_bool_operation() {
         }
 
         let rst = vm.top().as_ref().unwrap();
+        println!("VM STACK:\n {}", vm.stack_to_string());
         match rst {
             Object::Bool(obj) => {
                 assert!(obj.value == test.expect)

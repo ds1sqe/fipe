@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum Scope {
     Global,
     Local,
 }
 
+#[derive(Debug)]
 pub struct Symbol {
     name: String,
     scope: Scope,
@@ -18,6 +19,7 @@ impl Symbol {
     }
 }
 
+#[derive(Debug)]
 pub struct SymbolTable {
     table: HashMap<String, Symbol>,
     pub len: usize,

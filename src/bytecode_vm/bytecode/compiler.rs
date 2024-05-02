@@ -14,10 +14,12 @@ use super::{
     Bytecode,
 };
 
+#[derive(Debug, Clone)]
 struct Scope {
     instructions: Instructions,
 }
 
+#[derive(Debug)]
 pub struct Compiler {
     constants: Vec<Object>,
 
@@ -46,6 +48,7 @@ impl Compiler {
     pub fn bytecode(self) -> Bytecode {
         if self.scope_idx != 0 {
             // emit error (have to be 0 which means main-global )
+            panic!("scope is not 0")
         }
         Bytecode {
             constants: self.constants.clone(),

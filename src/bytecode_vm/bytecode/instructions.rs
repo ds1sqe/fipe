@@ -174,13 +174,14 @@ impl Instructions {
     }
 }
 
-impl Drop for Instructions {
-    fn drop(&mut self) {
-        unsafe {
-            alloc::dealloc(
-                self.byte.as_ptr() as *mut u8,
-                Layout::array::<u8>(self.cap).unwrap(),
-            );
-        }
-    }
-}
+// impl Drop for Instructions {
+//     fn drop(&mut self) {
+//         dbg!("drop...", &self);
+//         unsafe {
+//             alloc::dealloc(
+//                 self.byte.as_ptr() as *mut u8,
+//                 Layout::array::<u8>(self.cap).unwrap(),
+//             );
+//         }
+//     }
+// }

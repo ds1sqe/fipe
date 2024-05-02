@@ -13,7 +13,7 @@ mod frame;
 const GLOBAL_SIZE: usize = 1 << 8;
 
 const FRAME_SIZE: usize = 1 << 10;
-const STACK_SIZE: usize = 1 << 10;
+const STACK_SIZE: usize = 1 << 11;
 
 pub struct VM {
     stack: [Option<Object>; STACK_SIZE],
@@ -62,7 +62,6 @@ impl VM {
             Instruction::CONST { idx } => {
                 // load constants into stack
                 self.push_stack(self.constants[*idx].clone());
-                self.sp += 1;
             }
             Instruction::DEFGLB { idx } => {
                 // define global variable
@@ -72,25 +71,21 @@ impl VM {
                     let obj = self.pop_stack().unwrap();
                     self.global.push(obj);
                 }
-                self.sp -= 1;
             }
             Instruction::GETGLB { idx } => {
                 // get global variable
                 self.push_stack(self.global[*idx].clone());
-                self.sp += 1;
             }
             Instruction::DEFLCL { idx } => {
                 // define local variable
                 let offset = self.current_frame().bp() + idx;
                 self.stack[offset] = Some(self.pop_stack().unwrap());
-                self.sp -= 1;
             }
             Instruction::GETLCL { idx } => {
                 // get local variable
                 let offset = self.current_frame().bp() + idx;
 
                 self.push_stack(self.stack[offset].clone().unwrap());
-                self.sp += 1;
             }
 
             Instruction::ADD
@@ -323,7 +318,7 @@ impl VM {
     }
 
     pub fn top(&self) -> &Option<Object> {
-        &self.stack[self.sp]
+        &self.stack[self.sp - 1]
     }
 
     pub fn to_string(&self) -> String {
@@ -343,17 +338,7 @@ impl VM {
             buf += &frame.to_string();
         }
 
-        buf += "\nSTACK\n";
-        for idx in 0..self.sp {
-            let obj = &self.stack[idx];
-            buf += &format!("{:0>6}\t\t", idx);
-            if obj.is_none() {
-                buf += "NONE"
-            } else {
-                buf += &obj.as_ref().unwrap().to_str();
-            }
-            buf += "\n";
-        }
+        buf += &self.stack_to_string();
 
         buf
     }
@@ -361,9 +346,15 @@ impl VM {
     pub fn stack_to_string(&self) -> String {
         let mut buf = String::new();
         buf += "\nSTACK\n";
-        for idx in 0..self.sp {
+        for idx in 0..self.sp + 5 {
             let obj = &self.stack[idx];
-            buf += &format!("{:0>6}\t\t", idx);
+            if idx < self.sp {
+                buf += &format!("{:->6}\t\t", idx);
+            } else if idx == self.sp {
+                buf += &format!("{:0>6}\t\t", idx);
+            } else {
+                buf += &format!("{:+>6}\t\t", idx);
+            }
             if obj.is_none() {
                 buf += "NONE"
             } else {
@@ -383,7 +374,7 @@ impl VM {
 
     fn pop_stack(&mut self) -> Option<Object> {
         self.sp -= 1;
-        self.stack[self.sp + 1].take()
+        self.stack[self.sp].take()
     }
 
     fn current_frame(&self) -> &Frame {

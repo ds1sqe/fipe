@@ -8,6 +8,7 @@ use crate::object::{Object, ObjectTrait};
 
 use self::instructions::Instructions;
 
+#[derive(Debug)]
 pub struct Bytecode {
     pub constants: Vec<Object>,
     pub instructions: Instructions,
