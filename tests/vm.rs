@@ -248,7 +248,7 @@ fn test_vm_array_index() {
 }
 
 #[test]
-fn test_vm_function_no_arg() {
+fn test_vm_function() {
     let mut tests: Tests<Option<Object>> = Tests::new();
 
     tests.add((
@@ -288,13 +288,6 @@ fun() * fun()
         Some(Object::Int(Int { value: 225 })),
     ));
 
-    run_vm_test(tests)
-}
-
-#[test]
-fn test_vm_function_with_arg() {
-    let mut tests: Tests<Option<Object>> = Tests::new();
-
     tests.add((
         "
 let add = fn(a,b) { a + b }; add(10,20)
@@ -306,6 +299,49 @@ let add = fn(a,b) { a + b }; add(10,20)
 let add = fn(a,b) { a + b }; add(add(10,20),add(30,40))
 ",
         Some(Object::Int(Int { value: 100 })),
+    ));
+    tests.add((
+        "
+let args = fn(a, b, c) { a; b; c };
+args(24, 25, 26)
+",
+        Some(Object::Int(Int { value: 26 })),
+    ));
+
+    tests.add((
+        "
+fn local(a,b) { let value = 20; let foo = 40; return (a + b) * (value + foo); } local(3,7)
+",
+        Some(Object::Int(Int { value: 600 })),
+    ));
+
+    tests.add((
+        "
+let sum = fn(a, b) {
+  let c = a + b;
+  c
+};
+let outer = fn() {
+  sum(1, 2) + sum(3, 4);
+};
+outer()
+",
+        Some(Object::Int(Int { value: 10 })),
+    ));
+
+    tests.add((
+        "
+let globalNum = 10;
+let sum = fn(a, b) {
+  let c = a + b;
+  c + globalNum;
+};
+let outer = fn() {
+  sum(1, 2) + sum(3, 4) + globalNum;
+};
+outer() + globalNum
+",
+        Some(Object::Int(Int { value: 50 })),
     ));
 
     run_vm_test(tests)

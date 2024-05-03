@@ -195,6 +195,20 @@ impl Compiler {
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
         });
+
+        if lit.ident.is_some() {
+            let idx = self
+                .symbol_table
+                .as_mut()
+                .unwrap()
+                .define(&lit.ident.as_ref().unwrap().value);
+
+            if self.symbol_table.as_ref().unwrap().is_global() {
+                self.emit(Instruction::DEFGLB { idx });
+            } else {
+                self.emit(Instruction::DEFLCL { idx });
+            }
+        }
     }
 
     fn compile_array_literal(&mut self, lit: &ArrayLiteral) {
@@ -342,11 +356,14 @@ impl Compiler {
         self.last_instruction = None;
     }
 
+    /// Update last_instruction if (ins_info.instruction == ins) || (ins_info.instruction == with)
+    ///
+    /// returns true if have changed instruction
     fn update_last_instruction_if(&mut self, ins: Instruction, with: Instruction) -> bool {
         if self
             .last_instruction
             .as_ref()
-            .is_some_and(|ins_info| ins_info.instruction == ins)
+            .is_some_and(|ins_info| (ins_info.instruction == ins) || (ins_info.instruction == with))
         {
             let pos = self.last_instruction.as_ref().unwrap().pos;
             self.update(with.clone(), pos);
