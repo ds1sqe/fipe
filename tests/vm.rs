@@ -46,9 +46,9 @@ fn test_vm_integer_operation() {
         while vm.is_runable() {
             vm.run_single();
         }
+        println!("VM STACK:\n {}", vm.stack_to_string());
 
         let rst = vm.top().as_ref().unwrap();
-        println!("VM STACK:\n {}", vm.stack_to_string());
         match rst {
             Object::Int(int) => {
                 assert!(int.value == test.expect)
@@ -120,8 +120,8 @@ fn test_vm_bool_operation() {
             vm.run_single();
         }
 
-        let rst = vm.top().as_ref().unwrap();
         println!("VM STACK:\n {}", vm.stack_to_string());
+        let rst = vm.top().as_ref().unwrap();
         match rst {
             Object::Bool(obj) => {
                 assert!(obj.value == test.expect)

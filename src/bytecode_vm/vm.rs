@@ -1,11 +1,8 @@
 use self::frame::Frame;
 
-use super::bytecode::{
-    instruction::Instruction, instructions::Instructions, Bytecode,
-};
+use super::bytecode::{instruction::Instruction, instructions::Instructions, Bytecode};
 use crate::object::{
-    Array, Bool, CompiledFunction, Int, Object, ObjectTrait, ObjectType,
-    StringObject,
+    Array, Bool, CompiledFunction, Int, Object, ObjectTrait, ObjectType, StringObject,
 };
 
 mod frame;
@@ -16,8 +13,9 @@ const FRAME_SIZE: usize = 1 << 10;
 const STACK_SIZE: usize = 1 << 11;
 
 pub struct VM {
+    /// stack[0] have reserved for inner representation of "NONE"
     stack: [Option<Object>; STACK_SIZE],
-    /// stack pointer
+    /// stack pointer, postion of last written object.
     sp: usize,
 
     constants: Vec<Object>,
@@ -122,9 +120,7 @@ impl VM {
                                 let value = match &ins {
                                     Instruction::ADD => left.value + right.value,
                                     Instruction::SUB => left.value - right.value,
-                                    Instruction::PRODUCT => {
-                                        left.value * right.value
-                                    }
+                                    Instruction::PRODUCT => left.value * right.value,
                                     Instruction::DIVIDE => left.value / right.value,
                                     Instruction::MOD => left.value % right.value,
                                     Instruction::BAND => left.value & right.value,
@@ -262,7 +258,7 @@ impl VM {
                 let mut elements = Vec::with_capacity(*count);
 
                 for offset in (1..=*count).rev() {
-                    elements.push(self.stack[self.sp - offset].clone().unwrap())
+                    elements.push(self.stack[self.sp + 1 - offset].clone().unwrap())
                 }
                 self.sp -= count;
 
@@ -318,7 +314,7 @@ impl VM {
     }
 
     pub fn top(&self) -> &Option<Object> {
-        &self.stack[self.sp - 1]
+        &self.stack[self.sp]
     }
 
     pub fn to_string(&self) -> String {
@@ -369,12 +365,12 @@ impl VM {
             panic!("STACK OVERFLOW: {}", self.stack_to_string())
         }
         self.sp += 1;
-        self.stack[self.sp - 1] = Some(obj);
+        self.stack[self.sp] = Some(obj);
     }
 
     fn pop_stack(&mut self) -> Option<Object> {
         self.sp -= 1;
-        self.stack[self.sp].take()
+        self.stack[self.sp + 1].take()
     }
 
     fn current_frame(&self) -> &Frame {
