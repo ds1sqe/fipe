@@ -252,6 +252,10 @@ impl Parser {
         if expression.is_err() {
             return Err(expression.err().unwrap());
         }
+        if self.peek_next_is(&Kind::Semicolon) {
+            // consume Semicolon
+            self.next();
+        }
         Ok(ExpressionStatement {
             token,
             expression: Some(expression.unwrap()),
@@ -812,11 +816,10 @@ impl Parser {
             }
             Kind::LBRACKET => {
                 let token = self.cur_token.clone();
-                let cur_precedence = self.cur_precedence();
 
                 self.next();
 
-                let index = self.parse_expression(cur_precedence);
+                let index = self.parse_expression(Precedence::Lowest);
                 if index.is_err() {
                     let mut errs: Vec<Box<dyn ParserError>> = index.err().unwrap();
                     errs.push(Box::new(InfixFunctionError {

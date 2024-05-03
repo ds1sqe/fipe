@@ -11,8 +11,8 @@ pub enum Node {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
-    LetStatement(LetStatement),
     ExpressionStatement(ExpressionStatement),
+    LetStatement(LetStatement),
     ReturnStatement(ReturnStatement),
     BlockStatement(BlockStatement),
 }
