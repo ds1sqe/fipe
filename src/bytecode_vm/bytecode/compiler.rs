@@ -1,18 +1,15 @@
 use crate::{
     ast::{
         ArrayLiteral, BlockStatement, BooleanLiteral, CallExpression, Expression,
-        ExpressionStatement, FunctionLiteral, Identifier, IfExpression,
-        IndexExpression, InfixExpression, IntegerLiteral, LetStatement,
-        PrefixExpression, Program, ReturnStatement, Statement, StringLiteral,
+        ExpressionStatement, FunctionLiteral, Identifier, IfExpression, IndexExpression,
+        InfixExpression, IntegerLiteral, LetStatement, PrefixExpression, Program, ReturnStatement,
+        Statement, StringLiteral,
     },
     object::{Bool, CompiledFunction, Int, Object, StringObject},
     token::Kind,
 };
 
-use super::{
-    instruction::Instruction, instructions::Instructions, symbol::SymbolTable,
-    Bytecode,
-};
+use super::{instruction::Instruction, instructions::Instructions, symbol::SymbolTable, Bytecode};
 
 #[derive(Debug, Clone)]
 struct Scope {
@@ -106,7 +103,17 @@ impl Compiler {
             self.emit(Instruction::DEFLCL { idx });
         }
     }
-    fn compile_return_stm(&mut self, stm: &ReturnStatement) {}
+    fn compile_return_stm(&mut self, stm: &ReturnStatement) {
+        match &stm.value {
+            Some(exp) => {
+                self.compile_exp(exp);
+                self.emit(Instruction::RETV);
+            }
+            None => {
+                self.emit(Instruction::RETN);
+            }
+        }
+    }
     fn compile_block_stm(&mut self, stm: &BlockStatement) {
         for statement in &stm.statements {
             self.compile_stm(statement);
@@ -124,7 +131,7 @@ impl Compiler {
             }
         } else {
             // emit error
-            todo!();
+            panic!("Identifier not found!!! {:?}", &exp);
         }
     }
     fn compile_integer_literal(&mut self, lit: &IntegerLiteral) {
@@ -238,9 +245,7 @@ impl Compiler {
                 jump_consequence,
             );
 
-            self.compile_stm(&Statement::BlockStatement(
-                exp.alternative.clone().unwrap(),
-            ));
+            self.compile_stm(&Statement::BlockStatement(exp.alternative.clone().unwrap()));
 
             self.update(
                 Instruction::JMP {
@@ -259,6 +264,22 @@ impl Compiler {
     }
     fn compile_call_exp(&mut self, exp: &CallExpression) {
         self.compile_exp(&exp.function);
+
+        // expected instruction
+        // 000 Function
+        // 001 DEFLCC local 1
+        // 002 DEFLCC local 2
+        // 003 DEFLCC arg 1
+        // 004 DEFLCC arg 2
+        // 005 CALL
+
+        // expected stack
+        // 000 Function
+        // 001 local 1
+        // 002 local 2
+        // 003 arg 1
+        // 004 arg 2
+        // 005 LOCAL STACK
 
         for arg in &exp.arguments {
             self.compile_exp(arg)
@@ -297,8 +318,7 @@ impl Compiler {
         self.scopes.push(new_scope);
         self.scope_idx += 1;
 
-        self.symbol_table =
-            Some(SymbolTable::enclose(self.symbol_table.take().unwrap()));
+        self.symbol_table = Some(SymbolTable::enclose(self.symbol_table.take().unwrap()));
     }
 
     /// Leave [`Scope`] of this [`Compiler`]
