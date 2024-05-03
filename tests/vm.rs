@@ -290,3 +290,23 @@ fun() * fun()
 
     run_vm_test(tests)
 }
+
+#[test]
+fn test_vm_function_with_arg() {
+    let mut tests: Tests<Option<Object>> = Tests::new();
+
+    tests.add((
+        "
+let add = fn(a,b) { a + b }; add(10,20)
+",
+        Some(Object::Int(Int { value: 30 })),
+    ));
+    tests.add((
+        "
+let add = fn(a,b) { a + b }; add(add(10,20),add(30,40))
+",
+        Some(Object::Int(Int { value: 100 })),
+    ));
+
+    run_vm_test(tests)
+}

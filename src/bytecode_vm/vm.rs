@@ -297,13 +297,13 @@ impl VM {
             }
             Instruction::RETN => {
                 let popped_frame = self.pop_frame();
-                self.sp = popped_frame.bp() - 1;
+                self.sp = popped_frame.bp() - 2;
                 return;
             }
             Instruction::RETV => {
                 let value = self.pop_stack().unwrap();
                 let popped_frame = self.pop_frame();
-                self.sp = popped_frame.bp() - 1;
+                self.sp = popped_frame.bp() - 2;
                 self.push_stack(value);
                 return;
             }
@@ -382,12 +382,12 @@ impl VM {
     }
 
     fn pop_stack(&mut self) -> Option<Object> {
-        // TODO: Find better way to representation of None
         if self.sp > 0 {
             let result = self.stack[self.sp].clone();
             self.sp -= 1;
             return result;
         } else {
+            // TODO: Find better way to representation of None
             self.stack[self.sp + 1] = None;
             return None;
         }
@@ -410,20 +410,20 @@ impl VM {
     }
 
     fn call(&mut self, arg_len: usize) {
-        let Object::CompiledFunction(fun) = self.stack[self.sp - arg_len].take().unwrap() else {
+        let Object::CompiledFunction(fun) = self.stack[self.sp - arg_len].clone().unwrap() else {
             unreachable!()
         };
 
         if arg_len != fun.arg_len {
             // emit error
         }
-        let new_bp = self.sp - arg_len;
+        let new_bp = self.sp + 1 - arg_len;
         let local_len = fun.local_len;
 
-        let new_frame = Frame::new(fun, self.sp - arg_len);
+        let new_frame = Frame::new(fun, new_bp);
 
         self.push_frame(new_frame);
 
-        self.sp = new_bp + local_len
+        self.sp = new_bp + local_len - 1;
     }
 }
