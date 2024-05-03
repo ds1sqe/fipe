@@ -1,8 +1,9 @@
 use self::frame::Frame;
 
 use super::bytecode::{instruction::Instruction, instructions::Instructions, Bytecode};
-use crate::object::{
-    Array, Bool, CompiledFunction, Int, Object, ObjectTrait, ObjectType, StringObject,
+use crate::{
+    object::{Array, Bool, CompiledFunction, Int, Object, ObjectTrait, ObjectType, StringObject},
+    utils::add_pad,
 };
 
 mod frame;
@@ -56,7 +57,9 @@ impl VM {
         let ins = self.current_frame().rext_instruction();
         match &ins {
             Instruction::PUSH => todo!(),
-            Instruction::POP => todo!(),
+            Instruction::POP => {
+                self.pop_stack();
+            }
             Instruction::CONST { idx } => {
                 // load constants into stack
                 self.push_stack(self.constants[*idx].clone());
@@ -294,27 +297,21 @@ impl VM {
             }
             Instruction::RETN => {
                 let popped_frame = self.pop_frame();
-                self.sp = popped_frame.bp() - 1
+                self.sp = popped_frame.bp() - 1;
+                return;
             }
             Instruction::RETV => {
                 let value = self.pop_stack().unwrap();
                 let popped_frame = self.pop_frame();
                 self.sp = popped_frame.bp() - 1;
                 self.push_stack(value);
+                return;
             }
             not_implemented => {
                 panic!("not implemented instruction {:?}", not_implemented);
             }
         }
         self.current_frame_mut().add_ic(ins.opcode().length());
-    }
-
-    pub fn is_runable(&self) -> bool {
-        self.current_frame().is_runnable()
-    }
-
-    pub fn top(&self) -> &Option<Object> {
-        &self.stack[self.sp]
     }
 
     pub fn to_string(&self) -> String {
@@ -354,23 +351,46 @@ impl VM {
             if obj.is_none() {
                 buf += "NONE"
             } else {
-                buf += &obj.as_ref().unwrap().to_str();
+                let obj = obj.as_ref().unwrap();
+                if obj.get_type() == ObjectType::CompiledFunction {
+                    buf += &add_pad(&obj.to_str(), "\t")
+                } else {
+                    buf += &obj.to_str();
+                }
             }
             buf += "\n";
         }
         buf
     }
+
+    pub fn is_runable(&self) -> bool {
+        self.current_frame().is_runnable()
+    }
+
+    pub fn top(&self) -> &Option<Object> {
+        &self.stack[self.sp]
+    }
+    pub fn last_pop(&self) -> &Option<Object> {
+        &self.stack[self.sp + 1]
+    }
     fn push_stack(&mut self, obj: Object) {
         if self.sp >= STACK_SIZE {
             panic!("STACK OVERFLOW: {}", self.stack_to_string())
         }
+        self.stack[self.sp + 1] = Some(obj);
         self.sp += 1;
-        self.stack[self.sp] = Some(obj);
     }
 
     fn pop_stack(&mut self) -> Option<Object> {
-        self.sp -= 1;
-        self.stack[self.sp + 1].take()
+        // TODO: Find better way to representation of None
+        if self.sp > 0 {
+            let result = self.stack[self.sp].clone();
+            self.sp -= 1;
+            return result;
+        } else {
+            self.stack[self.sp + 1] = None;
+            return None;
+        }
     }
 
     fn current_frame(&self) -> &Frame {

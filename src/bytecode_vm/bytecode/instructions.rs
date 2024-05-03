@@ -45,6 +45,7 @@ impl Instructions {
 
         buf
     }
+
     pub fn to_string_with_highlight(&self, hidx: usize) -> String {
         let mut buf = String::new();
         let mut idx = 0;
@@ -71,11 +72,7 @@ impl Instructions {
             self.grow();
         }
         unsafe {
-            std::ptr::copy(
-                ins.as_byte().as_ptr(),
-                self.cursor,
-                ins.opcode().length(),
-            );
+            std::ptr::copy(ins.as_byte().as_ptr(), self.cursor, ins.opcode().length());
             self.cursor = self.cursor.add(ins.opcode().length());
         }
         let offset = self.len;
@@ -93,10 +90,16 @@ impl Instructions {
         }
     }
 
+    pub fn remove_instruction(&mut self, new_len: usize) {
+        unsafe {
+            self.cursor = self.byte.as_ptr().add(new_len);
+        }
+        self.len = new_len;
+    }
+
     pub fn read_instruction(&self, offset: usize) -> Instruction {
         unsafe {
-            let opcode =
-                std::ptr::read(self.byte.as_ptr().add(offset) as *const OpCode);
+            let opcode = std::ptr::read(self.byte.as_ptr().add(offset) as *const OpCode);
 
             match opcode {
                 OpCode::PUSH => Instruction::PUSH,
@@ -123,9 +126,7 @@ impl Instructions {
                 OpCode::RETV => Instruction::RETV,
 
                 one_args => {
-                    let arg_1 = std::ptr::read(
-                        self.byte.as_ptr().add(offset + 1) as *const usize
-                    );
+                    let arg_1 = std::ptr::read(self.byte.as_ptr().add(offset + 1) as *const usize);
 
                     match one_args {
                         OpCode::CONST => Instruction::CONST { idx: arg_1 },
@@ -163,8 +164,7 @@ impl Instructions {
 
         let old_layout = Layout::array::<u8>(self.cap).unwrap();
         let old_ptr = self.byte.as_ptr() as *mut u8;
-        let new_ptr =
-            unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) };
+        let new_ptr = unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) };
 
         self.byte = match NonNull::new(new_ptr as *mut u8) {
             Some(p) => p,

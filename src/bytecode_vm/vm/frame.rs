@@ -1,6 +1,4 @@
-use crate::{
-    bytecode_vm::bytecode::instruction::Instruction, object::CompiledFunction,
-};
+use crate::{bytecode_vm::bytecode::instruction::Instruction, object::CompiledFunction};
 
 pub struct Frame {
     fun: CompiledFunction,
@@ -42,7 +40,7 @@ impl Frame {
 
     pub fn to_string(&self) -> String {
         let mut buf = String::new();
-        buf += &format!("<FRAME> IC : {}\n", self.ic);
+        buf += &format!("<FRAME> IC : {}, BP : {}\n", self.ic, self.bp);
         buf += "\nINSTRUCTIONS\n";
         buf += &self.fun.instructions.to_string_with_highlight(self.ic);
 

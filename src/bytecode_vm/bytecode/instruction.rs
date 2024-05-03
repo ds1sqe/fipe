@@ -28,7 +28,7 @@ pub const JUMP: Definition = Definition {
     arg_size: &ARG_OFFSET,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     PUSH,
     POP,

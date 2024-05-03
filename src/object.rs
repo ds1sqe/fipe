@@ -5,6 +5,7 @@ use std::fmt::Debug;
 use crate::{
     ast::{BlockStatement, Identifier, Nodetrait},
     bytecode_vm::bytecode::instructions::Instructions,
+    utils::add_pad,
 };
 
 use self::environment::Environment;
@@ -192,8 +193,12 @@ impl ObjectTrait for CompiledFunction {
     fn to_str(&self) -> String {
         let mut buf = String::new();
         buf += "CompiledFunction\n";
-        buf += &format!("local_len={},arg_len={}", self.local_len, self.arg_len);
-        buf += &self.instructions.to_string();
+        buf += &format!(
+            ">\tlocal_len={}, arg_len={}\n",
+            self.local_len, self.arg_len
+        );
+        buf += ">\tFuntion's Instructions\n";
+        buf += &add_pad(&self.instructions.to_string(), ">\t");
         buf += "\n";
 
         buf

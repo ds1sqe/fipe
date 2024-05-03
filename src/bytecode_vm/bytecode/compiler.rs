@@ -17,12 +17,20 @@ struct Scope {
 }
 
 #[derive(Debug)]
+struct InstructionInfo {
+    instruction: Instruction,
+    pos: usize,
+}
+
+#[derive(Debug)]
 pub struct Compiler {
     constants: Vec<Object>,
 
     scopes: Vec<Scope>,
     scope_idx: usize,
     symbol_table: Option<SymbolTable>,
+
+    last_instruction: Option<InstructionInfo>,
 }
 
 impl Compiler {
@@ -39,6 +47,8 @@ impl Compiler {
             scope_idx: 0,
 
             symbol_table: Some(SymbolTable::new()),
+
+            last_instruction: None,
         }
     }
 
@@ -86,7 +96,8 @@ impl Compiler {
     }
 
     fn compile_expression_stm(&mut self, stm: &ExpressionStatement) {
-        self.compile_exp(&stm.expression.as_ref().unwrap())
+        self.compile_exp(&stm.expression.as_ref().unwrap());
+        self.emit(Instruction::POP);
     }
     fn compile_let_stm(&mut self, stm: &LetStatement) {
         self.compile_exp(&stm.value.clone().unwrap());
@@ -166,6 +177,10 @@ impl Compiler {
 
         self.compile_block_stm(&lit.body);
 
+        if !self.update_last_instruction_if(Instruction::POP, Instruction::RETV) {
+            self.emit(Instruction::RETN);
+        }
+
         let local_len = self.symbol_table.as_ref().unwrap().len;
         let body_scope = self.leave_scope();
 
@@ -235,6 +250,8 @@ impl Compiler {
         let jump_consequence = self.emit(Instruction::JNS { idx: 0 });
         self.compile_stm(&Statement::BlockStatement(exp.consequence.clone()));
 
+        self.remove_last_instruction_if(Instruction::POP);
+
         if exp.alternative.is_some() {
             let jump_alternative = self.emit(Instruction::JMP { idx: 0 });
 
@@ -246,6 +263,7 @@ impl Compiler {
             );
 
             self.compile_stm(&Statement::BlockStatement(exp.alternative.clone().unwrap()));
+            self.remove_last_instruction_if(Instruction::POP);
 
             self.update(
                 Instruction::JMP {
@@ -274,7 +292,7 @@ impl Compiler {
         // 005 CALL
 
         // expected stack
-        // 000 Function
+        // 000 Function (bp)
         // 001 local 1
         // 002 local 2
         // 003 arg 1
@@ -298,12 +316,59 @@ impl Compiler {
     }
 
     fn emit(&mut self, ins: Instruction) -> usize {
-        self.current_scope_mut().instructions.add_instruction(ins)
+        let pos = self
+            .current_scope_mut()
+            .instructions
+            .add_instruction(ins.clone());
+
+        self.last_instruction = Some(InstructionInfo {
+            instruction: ins,
+            pos,
+        });
+
+        pos
     }
     fn update(&mut self, ins: Instruction, offset: usize) {
         self.current_scope_mut()
             .instructions
             .update_instruction(ins, offset)
+    }
+
+    fn remove_last_instruction(&mut self) {
+        let new_length = self.last_instruction.as_ref().unwrap().pos;
+        self.current_scope_mut()
+            .instructions
+            .remove_instruction(new_length);
+        self.last_instruction = None;
+    }
+
+    fn update_last_instruction_if(&mut self, ins: Instruction, with: Instruction) -> bool {
+        if self
+            .last_instruction
+            .as_ref()
+            .is_some_and(|ins_info| ins_info.instruction == ins)
+        {
+            let pos = self.last_instruction.as_ref().unwrap().pos;
+            self.update(with.clone(), pos);
+            self.last_instruction = Some(InstructionInfo {
+                instruction: with,
+                pos,
+            });
+
+            return true;
+        }
+        false
+    }
+
+    fn remove_last_instruction_if(&mut self, ins: Instruction) {
+        if self
+            .last_instruction
+            .as_ref()
+            .is_some_and(|ins_info| ins_info.instruction == ins)
+        {
+            self.remove_last_instruction();
+            //self.update(,self.last_instruction.unwrap().pos)
+        }
     }
 
     fn next_offset(&self) -> usize {

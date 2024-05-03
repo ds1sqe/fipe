@@ -28,7 +28,7 @@ fn run_vm_test(tests: Tests<Option<Object>>) {
         }
         println!("VM STACK:\n {}", vm.stack_to_string());
 
-        let rst = vm.top().as_ref();
+        let rst = vm.last_pop().as_ref();
 
         match rst {
             Some(obj) => {
@@ -167,6 +167,14 @@ fn test_vm_let_stm_operation() {
     let mut tests: Tests<Option<Object>> = Tests::new();
 
     tests.add(("let foo = 5; foo * 5", Some(Object::Int(Int { value: 25 }))));
+    tests.add((
+        "let foo = 5; let bar = 5; bar * foo * 5",
+        Some(Object::Int(Int { value: 125 })),
+    ));
+    tests.add((
+        "let foo = 5; let bar = 5; let some_val = bar * foo * 5; some_val",
+        Some(Object::Int(Int { value: 125 })),
+    ));
 
     run_vm_test(tests)
 }
@@ -234,6 +242,50 @@ fn test_vm_array_index() {
     tests.add((
         "[1 * 2,2 * 3,3*4,4*5,5*6][0+2]",
         Some(Object::Int(Int { value: 12 })),
+    ));
+
+    run_vm_test(tests)
+}
+
+#[test]
+fn test_vm_function_no_arg() {
+    let mut tests: Tests<Option<Object>> = Tests::new();
+
+    tests.add((
+        "
+let no_return = fn() { };no_return() no_return() no_return() no_return()
+",
+        None,
+    ));
+
+    tests.add((
+        "
+let fun = fn() { 10 + 20 };
+fun()
+",
+        Some(Object::Int(Int { value: 30 })),
+    ));
+    tests.add((
+        "
+let ten = fn() { 5 + 5 }; let five = fn() { 2 + 3 }; ten() + five()
+",
+        Some(Object::Int(Int { value: 15 })),
+    ));
+    tests.add((
+        "
+let ten = fn() { 5 + 5 }; let five = fn() { 2 + 3 }; ten() * five() * ten()
+",
+        Some(Object::Int(Int { value: 500 })),
+    ));
+
+    tests.add((
+        "
+let five = fn() { 2 + 3 };
+let ten = fn() { 5 + 5 };
+let fun = fn() { return five() + ten(); };
+fun() * fun()
+",
+        Some(Object::Int(Int { value: 225 })),
     ));
 
     run_vm_test(tests)
