@@ -222,7 +222,7 @@ impl ObjectTrait for ClosureFunction {
     fn to_str(&self) -> String {
         let mut buf = String::new();
         buf += "Closure\n";
-        buf += ">Free variables\n";
+        buf += &format!(">Free variables, len:{}\n", self.free.len());
         for (idx, obj) in self.free.iter().enumerate() {
             buf += &format!("{idx}->{}\n", &obj.to_str());
         }

@@ -248,7 +248,7 @@ fn test_vm_array_index() {
 }
 
 #[test]
-fn test_vm_function() {
+fn test_vm_function_not_closure() {
     let mut tests: Tests<Option<Object>> = Tests::new();
 
     tests.add((
@@ -352,12 +352,14 @@ fn test_vm_function_closure() {
 
     tests.add((
         "
-let new_adder = fn (a,b) {
-    return fn(c) {a+b+c}
-};
+let new_adder = fn (a) { fn(b) {a+b}}; let adder = new_adder(1); adder(2)
+",
+        Some(Object::Int(Int { value: 3 })),
+    ));
 
-let adder = new_adder(1,2);
-adder(3)
+    tests.add((
+        "
+let new_adder = fn (a,b) { return fn(c) {a+b+c} }; let adder = new_adder(1,2); adder(3)
 ",
         Some(Object::Int(Int { value: 6 })),
     ));

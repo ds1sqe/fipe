@@ -86,12 +86,12 @@ impl VM {
             }
             Instruction::DEFLCL { idx } => {
                 // define local variable
-                let offset = self.current_frame().bp() + idx;
+                let offset = self.current_frame().bp() + 1 + idx;
                 self.stack[offset] = Some(self.pop_stack().unwrap());
             }
             Instruction::GETLCL { idx } => {
                 // get local variable
-                let offset = self.current_frame().bp() + idx;
+                let offset = self.current_frame().bp() + 1 + idx;
 
                 self.push_stack(self.stack[offset].clone().unwrap());
             }
@@ -308,13 +308,13 @@ impl VM {
             }
             Instruction::RETN => {
                 let popped_frame = self.pop_frame();
-                self.sp = popped_frame.bp() - 2;
+                self.sp = popped_frame.bp() - 1;
                 return;
             }
             Instruction::RETV => {
                 let value = self.pop_stack().unwrap();
                 let popped_frame = self.pop_frame();
-                self.sp = popped_frame.bp() - 2;
+                self.sp = popped_frame.bp() - 1;
                 self.push_stack(value);
                 return;
             }
@@ -448,13 +448,14 @@ impl VM {
         if arg_len != cl.fun.arg_len {
             // emit error
         }
-        let new_bp = self.sp + 1 - arg_len;
+        // postion of function
+        let new_bp = self.sp - arg_len;
         let local_len = cl.fun.local_len;
 
         let new_frame = Frame::new(cl, new_bp);
 
         self.push_frame(new_frame);
 
-        self.sp = new_bp + local_len - 1;
+        self.sp = new_bp + local_len;
     }
 }

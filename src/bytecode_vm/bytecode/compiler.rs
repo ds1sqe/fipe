@@ -172,10 +172,20 @@ impl Compiler {
     fn compile_function_literal(&mut self, lit: &FunctionLiteral) {
         self.enter_scope();
 
+        // Instruction example
+
+        // parameters
+        // 001 GETLCL 0 (param1)
+        // 002 GETLCL 1 (param2)
         for param in &lit.parameters {
             self.symbol_table.as_mut().unwrap().define(&param.value);
         }
 
+        // parameters
+        // 003 DEFLCL 2 (local1)
+        // 004 DEFLCL 3 (local2)
+        // 005 GETLCL 3 (local2)
+        // 006 GETLCL 2 (local1)
         self.compile_block_stm(&lit.body);
 
         if !self.update_last_instruction_if(Instruction::POP, Instruction::RETV) {
@@ -184,12 +194,15 @@ impl Compiler {
 
         let free_syms = self.symbol_table.as_ref().unwrap().get_free();
 
+        let local_len = self.symbol_table.as_ref().unwrap().len;
+        let body_scope = self.leave_scope();
+        // free variable (local variable of outer function)
+        // 007 GETFREE 0 (free1)
+        // 008 GETFREE 1 (free2)
+
         for free in free_syms.iter() {
             self.load_symbol(free);
         }
-
-        let local_len = self.symbol_table.as_ref().unwrap().len;
-        let body_scope = self.leave_scope();
 
         let compiled_function = CompiledFunction {
             arg_len: lit.parameters.len(),
@@ -306,21 +319,25 @@ impl Compiler {
     fn compile_call_exp(&mut self, exp: &CallExpression) {
         self.compile_exp(&exp.function);
 
-        // expected instruction
+        // example of instruction
         // 000 Function
-        // 001 DEFLCC local 1
-        // 002 DEFLCC local 2
-        // 003 DEFLCC arg 1
-        // 004 DEFLCC arg 2
-        // 005 CALL
+        // 001 GETLCC arg 1
+        // 002 GETLCC arg 2
+        // 003 GETLCC local 1
+        // 004 GETLCC local 2
+        // 005 GETFREE free1
+        // 006 GETFREE free2
+        // 007 CALL
 
         // expected stack
         // 000 Function (bp)
-        // 001 local 1
-        // 002 local 2
-        // 003 arg 1
-        // 004 arg 2
-        // 005 LOCAL STACK
+        // 001 arg 1
+        // 002 arg 2
+        // 003 local 1
+        // 004 local 2
+        // 005 free1
+        // 006 free2
+        // 007 LOCAL STACK
 
         for arg in &exp.arguments {
             self.compile_exp(arg)
