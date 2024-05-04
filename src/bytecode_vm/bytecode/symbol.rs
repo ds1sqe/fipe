@@ -5,6 +5,7 @@ pub enum Scope {
     Global,
     Local,
     Free,
+    Function,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +28,7 @@ impl Symbol {
 #[derive(Debug)]
 pub struct SymbolTable {
     table: HashMap<String, Symbol>,
+    // length of local symbol
     pub len: usize,
     outer: Option<Box<SymbolTable>>,
     free: Vec<Symbol>,
@@ -75,7 +77,7 @@ impl SymbolTable {
         );
         let len = self.len;
 
-        self.len = self.table.len();
+        self.len += 1;
 
         len
     }
@@ -91,6 +93,16 @@ impl SymbolTable {
 
         self.table.insert(sym.name.clone(), symbol.clone());
         symbol
+    }
+
+    pub fn define_function_name(&mut self, name: &String) -> Symbol {
+        let func_sym = Symbol {
+            name: name.clone(),
+            scope: Scope::Function,
+            index: 0,
+        };
+        self.table.insert(name.clone(), func_sym.clone());
+        func_sym
     }
 
     pub fn get_free(&self) -> Vec<Symbol> {

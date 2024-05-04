@@ -99,6 +99,12 @@ impl VM {
                 // get local variable
                 self.push_stack(self.current_frame().get_closure_ref().free[*idx].clone());
             }
+            Instruction::GETCUR => {
+                // push current function to stack
+                self.push_stack(Object::Closure(
+                    self.current_frame().get_closure_ref().clone(),
+                ));
+            }
 
             Instruction::ADD
             | Instruction::SUB

@@ -378,8 +378,102 @@ let adder_1 = new_adder(1,2);
 let adder_2 = adder_1(4);
 let result = adder_2(6);
 result
+
+
 ",
         Some(Object::Int(Int { value: 13 })),
+    ));
+
+    tests.add((
+        "let new_closure = fn(a, b) {
+let one = fn() { a; };
+let two = fn() { b; };
+fn() { one() + two(); };
+};
+let closure = new_closure(9, 90);
+closure();",
+        Some(Object::Int(Int { value: 99 })),
+    ));
+
+    tests.add((
+        "
+let a = 1;
+let new_adder_outer = fn(b) {
+    fn(c) {
+        fn(d) { a + b + c + d }
+    }
+};
+let new_adder_inner = new_adder_outer(2);
+let adder = new_adder_inner(3);
+adder(4);
+",
+        Some(Object::Int(Int {
+            value: 1 + 2 + 3 + 4, //  10
+        })),
+    ));
+
+    run_vm_test(tests)
+}
+
+#[test]
+fn test_vm_function_recursive() {
+    let mut tests: Tests<Option<Object>> = Tests::new();
+
+    tests.add((
+        "
+let count_down = fn(x) {
+    if (x == 0) {
+        return 0;
+    } else {
+        return count_down(x - 1);
+    }
+};
+count_down(10);
+
+",
+        Some(Object::Int(Int { value: 0 })),
+    ));
+
+    tests.add((
+        "
+let count_down = fn(x) {
+    if (x == 0) {
+        return 0;
+    } else {
+        return count_down(x - 1);
+    }
+};
+
+let wrapper = fn() {
+    count_down(10)
+};
+
+wrapper()
+
+",
+        Some(Object::Int(Int { value: 0 })),
+    ));
+
+    tests.add((
+        "
+
+
+let wrapper = fn() {
+    let count_down = fn(x) {
+        if (x == 0) {
+            return 0;
+        } else {
+            return count_down(x - 1);
+        }
+    };
+
+    count_down(10)
+};
+
+wrapper()
+
+",
+        Some(Object::Int(Int { value: 0 })),
     ));
 
     run_vm_test(tests)

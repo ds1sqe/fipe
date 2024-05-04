@@ -106,6 +106,8 @@ pub enum Instruction {
         /// free variable length
         free: usize,
     },
+    /// Get current function
+    GETCUR,
 }
 
 impl Instruction {
@@ -119,6 +121,7 @@ impl Instruction {
             Instruction::DEFLCL { idx: _ } => OpCode::DEFLCL,
             Instruction::GETLCL { idx: _ } => OpCode::GETLCL,
             Instruction::GETFREE { idx: _ } => OpCode::GETFREE,
+            Instruction::GETCUR => OpCode::GETCUR,
             Instruction::ADD => OpCode::ADD,
             Instruction::SUB => OpCode::SUB,
             Instruction::PRODUCT => OpCode::PRODUCT,
@@ -174,7 +177,8 @@ impl Instruction {
             | Instruction::BOR
             | Instruction::INDEX
             | Instruction::RETN
-            | Instruction::RETV => buf.push(self.opcode() as u8),
+            | Instruction::RETV
+            | Instruction::GETCUR => buf.push(self.opcode() as u8),
             Instruction::CONST { idx }
             | Instruction::DEFGLB { idx }
             | Instruction::GETGLB { idx }
@@ -225,6 +229,7 @@ impl Instruction {
             Instruction::DEFLCL { idx } => buf += &format!("DEFLCL\t\t{idx}"),
             Instruction::GETLCL { idx } => buf += &format!("GETLCL\t\t{idx}"),
             Instruction::GETFREE { idx } => buf += &format!("GETFREE\t\t{idx}"),
+            Instruction::GETCUR => buf += "GETCUR",
 
             Instruction::ADD => buf += "ADD",
             Instruction::SUB => buf += "SUB",

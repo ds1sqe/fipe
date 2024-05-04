@@ -105,13 +105,13 @@ impl Compiler {
         self.emit(Instruction::POP);
     }
     fn compile_let_stm(&mut self, stm: &LetStatement) {
-        self.compile_exp(&stm.value.clone().unwrap());
-
         let idx = self
             .symbol_table
             .as_mut()
             .unwrap()
             .define(&stm.identifier.value);
+
+        self.compile_exp(&stm.value.clone().unwrap());
 
         if self.symbol_table.as_ref().unwrap().is_global() {
             self.emit(Instruction::DEFGLB { idx });
@@ -172,6 +172,13 @@ impl Compiler {
     fn compile_function_literal(&mut self, lit: &FunctionLiteral) {
         self.enter_scope();
 
+        if lit.ident.is_some() {
+            self.symbol_table
+                .as_mut()
+                .unwrap()
+                .define_function_name(&lit.ident.as_ref().unwrap().value);
+        }
+
         // Instruction example
 
         // parameters
@@ -218,13 +225,13 @@ impl Compiler {
             free: free_syms.len(),
         });
 
-        if lit.ident.is_some() {
+        // if function has identifier and have't let bind
+        if lit.ident.is_some() && !lit.is_let_bind {
             let idx = self
                 .symbol_table
                 .as_mut()
                 .unwrap()
                 .define(&lit.ident.as_ref().unwrap().value);
-
             if self.symbol_table.as_ref().unwrap().is_global() {
                 self.emit(Instruction::DEFGLB { idx });
             } else {
@@ -453,6 +460,7 @@ impl Compiler {
             symbol::Scope::Global => Instruction::GETGLB { idx: sym.index },
             symbol::Scope::Local => Instruction::GETLCL { idx: sym.index },
             symbol::Scope::Free => Instruction::GETFREE { idx: sym.index },
+            symbol::Scope::Function => Instruction::GETCUR,
         };
 
         self.emit(inst);

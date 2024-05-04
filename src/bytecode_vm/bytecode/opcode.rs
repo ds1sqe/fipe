@@ -52,6 +52,8 @@ pub enum OpCode {
     RETV,
     /// Create a closure
     CLOSURE,
+    /// Get current function
+    GETCUR,
 }
 
 impl OpCode {
@@ -77,7 +79,8 @@ impl OpCode {
             | OpCode::BAND
             | OpCode::BOR
             | OpCode::RETN
-            | OpCode::RETV => return &NO_ARG.arg_size,
+            | OpCode::RETV
+            | OpCode::GETCUR => return &NO_ARG.arg_size,
 
             OpCode::CONST
             | OpCode::DEFGLB
@@ -118,7 +121,8 @@ impl OpCode {
             | OpCode::BAND
             | OpCode::BOR
             | OpCode::RETN
-            | OpCode::RETV => return NO_ARG.length,
+            | OpCode::RETV
+            | OpCode::GETCUR => return NO_ARG.length,
 
             OpCode::CONST
             | OpCode::DEFGLB

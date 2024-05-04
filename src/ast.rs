@@ -224,6 +224,7 @@ pub struct FunctionLiteral {
     pub ident: Option<Identifier>,
     pub parameters: Vec<Identifier>,
     pub body: BlockStatement,
+    pub is_let_bind: bool,
 }
 
 impl Nodetrait for FunctionLiteral {

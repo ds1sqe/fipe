@@ -124,6 +124,7 @@ impl Instructions {
                 OpCode::INDEX => Instruction::INDEX,
                 OpCode::RETN => Instruction::RETN,
                 OpCode::RETV => Instruction::RETV,
+                OpCode::GETCUR => Instruction::GETCUR,
 
                 has_argument => {
                     let arg_1 = std::ptr::read(self.byte.as_ptr().add(offset + 1) as *const usize);
