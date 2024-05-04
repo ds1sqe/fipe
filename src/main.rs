@@ -1,6 +1,9 @@
 use std::env;
 
-use dlang::{bytecode_vm, treewalker};
+use dlang::{
+    benchmark::{benchmark, benchmark_long},
+    bytecode_vm, treewalker,
+};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -9,12 +12,16 @@ fn main() {
         println!("Please choose run option");
         println!("mode=bytecode\t\t-> will launch bytecode-vm");
         println!("mode=treewalker\t\t-> will launch treewalker");
+        println!("mode=benchmark\t\t-> will launch a benchmark");
         return;
     } else {
         if args[1] == "mode=bytecode" {
             bytecode_vm::repl::start()
         } else if args[1] == "mode=treewalker" {
             treewalker::repl::start()
+        } else if args[1] == "mode=benchmark" {
+            benchmark();
+            benchmark_long();
         } else {
             println!("Invalid option: {}", args[1]);
         }
