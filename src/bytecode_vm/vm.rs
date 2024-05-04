@@ -2,7 +2,10 @@ use self::frame::Frame;
 
 use super::bytecode::{instruction::Instruction, instructions::Instructions, Bytecode};
 use crate::{
-    object::{Array, Bool, CompiledFunction, Int, Object, ObjectTrait, ObjectType, StringObject},
+    object::{
+        Array, Bool, ClosureFunction, CompiledFunction, Int, Object, ObjectTrait, ObjectType,
+        StringObject,
+    },
     utils::add_pad,
 };
 
@@ -34,7 +37,11 @@ impl VM {
             local_len: 0,
             arg_len: 0,
         };
-        let main_frame = Frame::new(main_func, 0);
+        let main_closure = ClosureFunction {
+            fun: main_func,
+            free: Vec::new(),
+        };
+        let main_frame = Frame::new(main_closure, 0);
 
         let mut frames = Vec::with_capacity(FRAME_SIZE);
         frames.push(main_frame);
@@ -87,6 +94,10 @@ impl VM {
                 let offset = self.current_frame().bp() + idx;
 
                 self.push_stack(self.stack[offset].clone().unwrap());
+            }
+            Instruction::GETFREE { idx } => {
+                // get local variable
+                self.push_stack(self.current_frame().get_closure_ref().free[*idx].clone());
             }
 
             Instruction::ADD
@@ -307,6 +318,9 @@ impl VM {
                 self.push_stack(value);
                 return;
             }
+            Instruction::CLOSURE { idx, free } => {
+                self.make_closure(*idx, *free);
+            }
             not_implemented => {
                 panic!("not implemented instruction {:?}", not_implemented);
             }
@@ -409,18 +423,35 @@ impl VM {
         self.frames.pop().unwrap()
     }
 
+    fn make_closure(&mut self, fn_idx: usize, free_len: usize) {
+        let Object::CompiledFunction(compiled_func ) = self.constants[fn_idx].clone() else {unreachable!()};
+
+        let mut closure = ClosureFunction {
+            fun: compiled_func,
+            free: Vec::with_capacity(free_len),
+        };
+
+        for idx in 0..free_len {
+            closure
+                .free
+                .push(self.stack[self.sp + 1 - free_len + idx].clone().unwrap())
+        }
+
+        self.push_stack(Object::Closure(closure))
+    }
+
     fn call(&mut self, arg_len: usize) {
-        let Object::CompiledFunction(fun) = self.stack[self.sp - arg_len].clone().unwrap() else {
+        let Object::Closure(cl) = self.stack[self.sp - arg_len].clone().unwrap() else {
             unreachable!()
         };
 
-        if arg_len != fun.arg_len {
+        if arg_len != cl.fun.arg_len {
             // emit error
         }
         let new_bp = self.sp + 1 - arg_len;
-        let local_len = fun.local_len;
+        let local_len = cl.fun.local_len;
 
-        let new_frame = Frame::new(fun, new_bp);
+        let new_frame = Frame::new(cl, new_bp);
 
         self.push_frame(new_frame);
 

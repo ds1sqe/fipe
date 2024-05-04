@@ -1,23 +1,23 @@
-use crate::{bytecode_vm::bytecode::instruction::Instruction, object::CompiledFunction};
+use crate::{bytecode_vm::bytecode::instruction::Instruction, object::ClosureFunction};
 
 pub struct Frame {
-    fun: CompiledFunction,
+    cf: ClosureFunction,
     bp: usize,
     /// instruction pointer
     ic: usize,
 }
 
 impl Frame {
-    pub fn new(fun: CompiledFunction, base_ptr: usize) -> Self {
+    pub fn new(fun: ClosureFunction, base_ptr: usize) -> Self {
         Self {
-            fun,
+            cf: fun,
             bp: base_ptr,
             ic: 0,
         }
     }
 
     pub fn rext_instruction(&self) -> Instruction {
-        self.fun.instructions.read_instruction(self.ic)
+        self.cf.fun.instructions.read_instruction(self.ic)
     }
 
     pub fn set_ic(&mut self, tgt: usize) {
@@ -35,14 +35,18 @@ impl Frame {
     }
 
     pub fn is_runnable(&self) -> bool {
-        self.ic < self.fun.instructions.length()
+        self.ic < self.cf.fun.instructions.length()
+    }
+
+    pub fn get_closure_ref(&self) -> &ClosureFunction {
+        &self.cf
     }
 
     pub fn to_string(&self) -> String {
         let mut buf = String::new();
         buf += &format!("<FRAME> IC : {}, BP : {}\n", self.ic, self.bp);
         buf += "\nINSTRUCTIONS\n";
-        buf += &self.fun.instructions.to_string_with_highlight(self.ic);
+        buf += &self.cf.fun.instructions.to_string_with_highlight(self.ic);
 
         buf
     }

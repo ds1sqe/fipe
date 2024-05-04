@@ -346,3 +346,39 @@ outer() + globalNum
 
     run_vm_test(tests)
 }
+#[test]
+fn test_vm_function_closure() {
+    let mut tests: Tests<Option<Object>> = Tests::new();
+
+    tests.add((
+        "
+let new_adder = fn (a,b) {
+    return fn(c) {a+b+c}
+};
+
+let adder = new_adder(1,2);
+adder(3)
+",
+        Some(Object::Int(Int { value: 6 })),
+    ));
+
+    tests.add((
+        "
+let new_adder = fn (one,two) {
+    let three = one + two;
+    fn(four) {
+        let seven = three + four;
+        fn(six) { six + seven };
+    }
+};
+
+let adder_1 = new_adder(1,2);
+let adder_2 = adder_1(4);
+let result = adder_2(6);
+result
+",
+        Some(Object::Int(Int { value: 13 })),
+    ));
+
+    run_vm_test(tests)
+}

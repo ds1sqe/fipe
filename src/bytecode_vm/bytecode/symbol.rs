@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Scope {
     Global,
     Local,
+    Free,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Symbol {
     name: String,
     scope: Scope,
@@ -17,6 +18,10 @@ impl Symbol {
     pub fn is_global(&self) -> bool {
         self.scope == Scope::Global
     }
+
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
 }
 
 #[derive(Debug)]
@@ -24,6 +29,7 @@ pub struct SymbolTable {
     table: HashMap<String, Symbol>,
     pub len: usize,
     outer: Option<Box<SymbolTable>>,
+    free: Vec<Symbol>,
 }
 
 impl SymbolTable {
@@ -32,6 +38,7 @@ impl SymbolTable {
             table: HashMap::new(),
             len: 0,
             outer: None,
+            free: Vec::new(),
         }
     }
 
@@ -40,6 +47,7 @@ impl SymbolTable {
             table: HashMap::new(),
             len: 0,
             outer: Some(Box::new(outer)),
+            free: Vec::new(),
         }
     }
 
@@ -72,13 +80,42 @@ impl SymbolTable {
         len
     }
 
-    pub fn resolve(&self, name: &String) -> Option<&Symbol> {
+    fn define_free(&mut self, sym: &Symbol) -> Symbol {
+        self.free.push(sym.clone());
+
+        let symbol = Symbol {
+            name: sym.name.clone(),
+            scope: Scope::Free,
+            index: self.free.len() - 1,
+        };
+
+        self.table.insert(sym.name.clone(), symbol.clone());
+        symbol
+    }
+
+    pub fn get_free(&self) -> Vec<Symbol> {
+        self.free.clone()
+    }
+
+    pub fn resolve(&mut self, name: &String) -> Option<Symbol> {
         let rst = self.table.get(name);
-        if rst.is_none() {
+        if rst.is_some() {
+            return Some(rst.unwrap().clone());
+        } else {
             if self.outer.is_some() {
-                return self.outer.as_ref().unwrap().resolve(name);
+                // find symbol in self.outer
+                let outer_rst = self.outer.as_mut().unwrap().resolve(name);
+                if outer_rst.is_some() {
+                    if outer_rst.as_ref().unwrap().scope == Scope::Global {
+                        return outer_rst;
+                    } else {
+                        // outer local symbol means it's a free variable
+                        let free = self.define_free(&outer_rst.as_ref().unwrap().clone());
+                        return Some(free);
+                    }
+                }
             }
         }
-        rst
+        None
     }
 }

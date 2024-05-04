@@ -1,4 +1,4 @@
-use super::instruction::{CONST, JUMP, NO_ARG};
+use super::instruction::{CLOSURE, CONST, JUMP, NO_ARG};
 
 /// Raw opcode
 #[derive(Debug)]
@@ -14,6 +14,7 @@ pub enum OpCode {
     DEFLCL,
     /// Get local
     GETLCL,
+    GETFREE,
     ADD,
     SUB,
     PRODUCT,
@@ -49,6 +50,8 @@ pub enum OpCode {
     RETN,
     /// Return with value
     RETV,
+    /// Create a closure
+    CLOSURE,
 }
 
 impl OpCode {
@@ -81,15 +84,16 @@ impl OpCode {
             | OpCode::GETGLB
             | OpCode::DEFLCL
             | OpCode::GETLCL
+            | OpCode::GETFREE
             | OpCode::CALL
             | OpCode::ARRAY
             | OpCode::INDEX => return &CONST.arg_size,
 
-            OpCode::JMP
-            | OpCode::JIS
-            | OpCode::JNS
-            | OpCode::JEQ
-            | OpCode::JNEQ => return &JUMP.arg_size,
+            OpCode::JMP | OpCode::JIS | OpCode::JNS | OpCode::JEQ | OpCode::JNEQ => {
+                return &JUMP.arg_size
+            }
+
+            OpCode::CLOSURE => return &CLOSURE.arg_size,
         }
     }
     pub fn length(&self) -> usize {
@@ -121,15 +125,16 @@ impl OpCode {
             | OpCode::GETGLB
             | OpCode::DEFLCL
             | OpCode::GETLCL
+            | OpCode::GETFREE
             | OpCode::CALL
             | OpCode::ARRAY
             | OpCode::INDEX => return CONST.length,
 
-            OpCode::JMP
-            | OpCode::JIS
-            | OpCode::JNS
-            | OpCode::JEQ
-            | OpCode::JNEQ => return JUMP.length,
+            OpCode::JMP | OpCode::JIS | OpCode::JNS | OpCode::JEQ | OpCode::JNEQ => {
+                return JUMP.length
+            }
+
+            OpCode::CLOSURE => return CLOSURE.length,
         }
     }
 }

@@ -19,6 +19,7 @@ pub enum Object {
     Function(Function),
     CompiledFunction(CompiledFunction),
     Array(Array),
+    Closure(ClosureFunction),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +31,7 @@ pub enum ObjectType {
     Function,
     CompiledFunction,
     Array,
+    Closure,
 }
 
 pub trait ObjectTrait {
@@ -47,6 +49,7 @@ impl ObjectTrait for Object {
             Object::String(x) => x.get_type(),
             Object::Array(x) => x.get_type(),
             Object::CompiledFunction(x) => x.get_type(),
+            Object::Closure(x) => x.get_type(),
         }
     }
 
@@ -59,6 +62,7 @@ impl ObjectTrait for Object {
             Object::Function(x) => x.to_str(),
             Object::Array(x) => x.to_str(),
             Object::CompiledFunction(x) => x.to_str(),
+            Object::Closure(x) => x.to_str(),
         };
         inner
     }
@@ -200,6 +204,30 @@ impl ObjectTrait for CompiledFunction {
         buf += ">\tFuntion's Instructions\n";
         buf += &add_pad(&self.instructions.to_string(), ">\t");
         buf += "\n";
+
+        buf
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClosureFunction {
+    pub fun: CompiledFunction,
+    pub free: Vec<Object>,
+}
+
+impl ObjectTrait for ClosureFunction {
+    fn get_type(&self) -> ObjectType {
+        ObjectType::CompiledFunction
+    }
+    fn to_str(&self) -> String {
+        let mut buf = String::new();
+        buf += "Closure\n";
+        buf += ">Free variables\n";
+        for (idx, obj) in self.free.iter().enumerate() {
+            buf += &format!("{idx}->{}\n", &obj.to_str());
+        }
+        buf += ">Inner Function\n";
+        buf += &self.fun.to_str();
 
         buf
     }

@@ -9,7 +9,12 @@ use crate::{
     token::Kind,
 };
 
-use super::{instruction::Instruction, instructions::Instructions, symbol::SymbolTable, Bytecode};
+use super::{
+    instruction::Instruction,
+    instructions::Instructions,
+    symbol::{self, Symbol, SymbolTable},
+    Bytecode,
+};
 
 #[derive(Debug, Clone)]
 struct Scope {
@@ -134,12 +139,8 @@ impl Compiler {
     fn compile_identifier_exp(&mut self, exp: &Identifier) {
         let rst = self.symbol_table.as_mut().unwrap().resolve(&exp.value);
         if rst.is_some() {
-            let idx = rst.unwrap().index;
-            if rst.unwrap().is_global() {
-                self.emit(Instruction::GETGLB { idx });
-            } else {
-                self.emit(Instruction::GETLCL { idx });
-            }
+            let sym = rst.unwrap();
+            self.load_symbol(&sym);
         } else {
             // emit error
             panic!("Identifier not found!!! {:?}", &exp);
@@ -181,6 +182,12 @@ impl Compiler {
             self.emit(Instruction::RETN);
         }
 
+        let free_syms = self.symbol_table.as_ref().unwrap().get_free();
+
+        for free in free_syms.iter() {
+            self.load_symbol(free);
+        }
+
         let local_len = self.symbol_table.as_ref().unwrap().len;
         let body_scope = self.leave_scope();
 
@@ -192,8 +199,10 @@ impl Compiler {
 
         self.constants
             .push(Object::CompiledFunction(compiled_function));
-        self.emit(Instruction::CONST {
+
+        self.emit(Instruction::CLOSURE {
             idx: self.constants.len() - 1,
+            free: free_syms.len(),
         });
 
         if lit.ident.is_some() {
@@ -420,5 +429,15 @@ impl Compiler {
 
     fn current_scope_mut(&mut self) -> &mut Scope {
         &mut self.scopes[self.scope_idx]
+    }
+
+    fn load_symbol(&mut self, sym: &Symbol) {
+        let inst = match sym.scope() {
+            symbol::Scope::Global => Instruction::GETGLB { idx: sym.index },
+            symbol::Scope::Local => Instruction::GETLCL { idx: sym.index },
+            symbol::Scope::Free => Instruction::GETFREE { idx: sym.index },
+        };
+
+        self.emit(inst);
     }
 }
