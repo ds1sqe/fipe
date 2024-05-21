@@ -6,6 +6,7 @@ use super::opcode::OpCode;
 const ARG_NONE: [usize; 0] = [];
 const ARG_CONST: [usize; 1] = [8];
 const ARG_OFFSET: [usize; 1] = [8];
+const ARG_CLOSURE: [usize; 2] = [8, 8];
 
 /// Definition of instruction's length and arg
 pub struct Definition {
@@ -28,6 +29,11 @@ pub const JUMP: Definition = Definition {
     arg_size: &ARG_OFFSET,
 };
 
+pub const CLOSURE: Definition = Definition {
+    length: 1 + 8 + 8,
+    arg_size: &ARG_CLOSURE,
+};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     PUSH,
@@ -45,6 +51,9 @@ pub enum Instruction {
         idx: usize,
     },
     GETLCL {
+        idx: usize,
+    },
+    GETFREE {
         idx: usize,
     },
     ADD,
@@ -90,6 +99,15 @@ pub enum Instruction {
     RETN,
     /// Return with value
     RETV,
+    ///Create a closure
+    CLOSURE {
+        /// index of constant function
+        idx: usize,
+        /// free variable length
+        free: usize,
+    },
+    /// Get current function
+    GETCUR,
 }
 
 impl Instruction {
@@ -102,6 +120,8 @@ impl Instruction {
             Instruction::GETGLB { idx: _ } => OpCode::GETGLB,
             Instruction::DEFLCL { idx: _ } => OpCode::DEFLCL,
             Instruction::GETLCL { idx: _ } => OpCode::GETLCL,
+            Instruction::GETFREE { idx: _ } => OpCode::GETFREE,
+            Instruction::GETCUR => OpCode::GETCUR,
             Instruction::ADD => OpCode::ADD,
             Instruction::SUB => OpCode::SUB,
             Instruction::PRODUCT => OpCode::PRODUCT,
@@ -129,6 +149,7 @@ impl Instruction {
             Instruction::CALL { arg_len: _ } => OpCode::CALL,
             Instruction::RETN => OpCode::RETN,
             Instruction::RETV => OpCode::RETV,
+            Instruction::CLOSURE { idx: _, free: _ } => OpCode::CLOSURE,
         }
     }
 
@@ -156,12 +177,14 @@ impl Instruction {
             | Instruction::BOR
             | Instruction::INDEX
             | Instruction::RETN
-            | Instruction::RETV => buf.push(self.opcode() as u8),
+            | Instruction::RETV
+            | Instruction::GETCUR => buf.push(self.opcode() as u8),
             Instruction::CONST { idx }
             | Instruction::DEFGLB { idx }
             | Instruction::GETGLB { idx }
             | Instruction::DEFLCL { idx }
-            | Instruction::GETLCL { idx } => {
+            | Instruction::GETLCL { idx }
+            | Instruction::GETFREE { idx } => {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&idx.to_ne_bytes()).unwrap()
             }
@@ -183,6 +206,12 @@ impl Instruction {
                 buf.push(self.opcode() as u8);
                 buf.write_all(&arg_len.to_ne_bytes()).unwrap()
             }
+
+            Instruction::CLOSURE { idx, free } => {
+                buf.push(self.opcode() as u8);
+                buf.write_all(&idx.to_ne_bytes()).unwrap();
+                buf.write_all(&free.to_ne_bytes()).unwrap();
+            }
         }
 
         buf
@@ -199,6 +228,8 @@ impl Instruction {
             Instruction::GETGLB { idx } => buf += &format!("GETGLB\t\t{idx}"),
             Instruction::DEFLCL { idx } => buf += &format!("DEFLCL\t\t{idx}"),
             Instruction::GETLCL { idx } => buf += &format!("GETLCL\t\t{idx}"),
+            Instruction::GETFREE { idx } => buf += &format!("GETFREE\t\t{idx}"),
+            Instruction::GETCUR => buf += "GETCUR",
 
             Instruction::ADD => buf += "ADD",
             Instruction::SUB => buf += "SUB",
@@ -227,6 +258,7 @@ impl Instruction {
             Instruction::CALL { arg_len } => buf += &format!("CALL\t\t{arg_len}"),
             Instruction::RETN => buf += "RETN",
             Instruction::RETV => buf += "RETV",
+            Instruction::CLOSURE { idx, free } => buf += &format!("CLOSURE\t\t{idx}\t{free}"),
         }
 
         buf

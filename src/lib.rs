@@ -8,5 +8,6 @@ pub mod parser;
 pub mod token;
 pub mod treewalker;
 
+pub mod benchmark;
 pub mod test;
 pub mod utils;

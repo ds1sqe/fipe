@@ -9,7 +9,12 @@ use crate::{
     token::Kind,
 };
 
-use super::{instruction::Instruction, instructions::Instructions, symbol::SymbolTable, Bytecode};
+use super::{
+    instruction::Instruction,
+    instructions::Instructions,
+    symbol::{self, Symbol, SymbolTable},
+    Bytecode,
+};
 
 #[derive(Debug, Clone)]
 struct Scope {
@@ -100,13 +105,13 @@ impl Compiler {
         self.emit(Instruction::POP);
     }
     fn compile_let_stm(&mut self, stm: &LetStatement) {
-        self.compile_exp(&stm.value.clone().unwrap());
-
         let idx = self
             .symbol_table
             .as_mut()
             .unwrap()
             .define(&stm.identifier.value);
+
+        self.compile_exp(&stm.value.clone().unwrap());
 
         if self.symbol_table.as_ref().unwrap().is_global() {
             self.emit(Instruction::DEFGLB { idx });
@@ -134,12 +139,8 @@ impl Compiler {
     fn compile_identifier_exp(&mut self, exp: &Identifier) {
         let rst = self.symbol_table.as_mut().unwrap().resolve(&exp.value);
         if rst.is_some() {
-            let idx = rst.unwrap().index;
-            if rst.unwrap().is_global() {
-                self.emit(Instruction::GETGLB { idx });
-            } else {
-                self.emit(Instruction::GETLCL { idx });
-            }
+            let sym = rst.unwrap();
+            self.load_symbol(&sym);
         } else {
             // emit error
             panic!("Identifier not found!!! {:?}", &exp);
@@ -171,18 +172,44 @@ impl Compiler {
     fn compile_function_literal(&mut self, lit: &FunctionLiteral) {
         self.enter_scope();
 
+        if lit.ident.is_some() {
+            self.symbol_table
+                .as_mut()
+                .unwrap()
+                .define_function_name(&lit.ident.as_ref().unwrap().value);
+        }
+
+        // Instruction example
+
+        // parameters
+        // 001 GETLCL 0 (param1)
+        // 002 GETLCL 1 (param2)
         for param in &lit.parameters {
             self.symbol_table.as_mut().unwrap().define(&param.value);
         }
 
+        // parameters
+        // 003 DEFLCL 2 (local1)
+        // 004 DEFLCL 3 (local2)
+        // 005 GETLCL 3 (local2)
+        // 006 GETLCL 2 (local1)
         self.compile_block_stm(&lit.body);
 
         if !self.update_last_instruction_if(Instruction::POP, Instruction::RETV) {
             self.emit(Instruction::RETN);
         }
 
+        let free_syms = self.symbol_table.as_ref().unwrap().get_free();
+
         let local_len = self.symbol_table.as_ref().unwrap().len;
         let body_scope = self.leave_scope();
+        // free variable (local variable of outer function)
+        // 007 GETFREE 0 (free1)
+        // 008 GETFREE 1 (free2)
+
+        for free in free_syms.iter() {
+            self.load_symbol(free);
+        }
 
         let compiled_function = CompiledFunction {
             arg_len: lit.parameters.len(),
@@ -192,17 +219,19 @@ impl Compiler {
 
         self.constants
             .push(Object::CompiledFunction(compiled_function));
-        self.emit(Instruction::CONST {
+
+        self.emit(Instruction::CLOSURE {
             idx: self.constants.len() - 1,
+            free: free_syms.len(),
         });
 
-        if lit.ident.is_some() {
+        // if function has identifier and have't let bind
+        if lit.ident.is_some() && !lit.is_let_bind {
             let idx = self
                 .symbol_table
                 .as_mut()
                 .unwrap()
                 .define(&lit.ident.as_ref().unwrap().value);
-
             if self.symbol_table.as_ref().unwrap().is_global() {
                 self.emit(Instruction::DEFGLB { idx });
             } else {
@@ -297,21 +326,25 @@ impl Compiler {
     fn compile_call_exp(&mut self, exp: &CallExpression) {
         self.compile_exp(&exp.function);
 
-        // expected instruction
+        // example of instruction
         // 000 Function
-        // 001 DEFLCC local 1
-        // 002 DEFLCC local 2
-        // 003 DEFLCC arg 1
-        // 004 DEFLCC arg 2
-        // 005 CALL
+        // 001 GETLCC arg 1
+        // 002 GETLCC arg 2
+        // 003 GETLCC local 1
+        // 004 GETLCC local 2
+        // 005 GETFREE free1
+        // 006 GETFREE free2
+        // 007 CALL
 
         // expected stack
         // 000 Function (bp)
-        // 001 local 1
-        // 002 local 2
-        // 003 arg 1
-        // 004 arg 2
-        // 005 LOCAL STACK
+        // 001 arg 1
+        // 002 arg 2
+        // 003 local 1
+        // 004 local 2
+        // 005 free1
+        // 006 free2
+        // 007 LOCAL STACK
 
         for arg in &exp.arguments {
             self.compile_exp(arg)
@@ -420,5 +453,16 @@ impl Compiler {
 
     fn current_scope_mut(&mut self) -> &mut Scope {
         &mut self.scopes[self.scope_idx]
+    }
+
+    fn load_symbol(&mut self, sym: &Symbol) {
+        let inst = match sym.scope() {
+            symbol::Scope::Global => Instruction::GETGLB { idx: sym.index },
+            symbol::Scope::Local => Instruction::GETLCL { idx: sym.index },
+            symbol::Scope::Free => Instruction::GETFREE { idx: sym.index },
+            symbol::Scope::Function => Instruction::GETCUR,
+        };
+
+        self.emit(inst);
     }
 }

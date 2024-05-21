@@ -165,7 +165,7 @@ fn test_function_literal() {
          return hello;
          };"
         .to_string(),
-        "let hey = fn() {let hello = true;return hello;};".to_string(),
+        "let hey = fn hey() {let hello = true;return hello;};".to_string(),
     ));
     for (input, expect) in tests {
         let lexer = Lexer::new(input.clone());

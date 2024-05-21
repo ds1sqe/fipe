@@ -200,7 +200,20 @@ impl Parser {
         if self.peek_next().kind == Kind::Assign {
             self.next(); // cur_token will be = (assign)
             self.next(); // cur_token will be rightside of =
-            stm.value = self.parse_expression(Precedence::Lowest).ok()
+            let value = self.parse_expression(Precedence::Lowest).ok();
+            if value.is_none() {
+                return Err(errors::ParseError {
+                    detail: "error occured while parsing let statement's value".to_string(),
+                    position: self.lexer.get_pos(),
+                });
+            }
+            if let Some(Expression::FunctionLiteral(mut lit)) = value {
+                lit.ident = Some(stm.identifier.clone());
+                lit.is_let_bind = true;
+                stm.value = Some(Expression::FunctionLiteral(lit));
+            } else {
+                stm.value = value
+            }
         }
 
         if !self.expect_next_is(&Kind::Semicolon) {
@@ -530,6 +543,7 @@ impl Parser {
             ident,
             parameters,
             body,
+            is_let_bind: false,
         })
     }
 

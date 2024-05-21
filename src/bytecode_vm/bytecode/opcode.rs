@@ -1,4 +1,4 @@
-use super::instruction::{CONST, JUMP, NO_ARG};
+use super::instruction::{CLOSURE, CONST, JUMP, NO_ARG};
 
 /// Raw opcode
 #[derive(Debug)]
@@ -14,6 +14,7 @@ pub enum OpCode {
     DEFLCL,
     /// Get local
     GETLCL,
+    GETFREE,
     ADD,
     SUB,
     PRODUCT,
@@ -49,6 +50,10 @@ pub enum OpCode {
     RETN,
     /// Return with value
     RETV,
+    /// Create a closure
+    CLOSURE,
+    /// Get current function
+    GETCUR,
 }
 
 impl OpCode {
@@ -74,22 +79,24 @@ impl OpCode {
             | OpCode::BAND
             | OpCode::BOR
             | OpCode::RETN
-            | OpCode::RETV => return &NO_ARG.arg_size,
+            | OpCode::RETV
+            | OpCode::GETCUR => return &NO_ARG.arg_size,
 
             OpCode::CONST
             | OpCode::DEFGLB
             | OpCode::GETGLB
             | OpCode::DEFLCL
             | OpCode::GETLCL
+            | OpCode::GETFREE
             | OpCode::CALL
             | OpCode::ARRAY
             | OpCode::INDEX => return &CONST.arg_size,
 
-            OpCode::JMP
-            | OpCode::JIS
-            | OpCode::JNS
-            | OpCode::JEQ
-            | OpCode::JNEQ => return &JUMP.arg_size,
+            OpCode::JMP | OpCode::JIS | OpCode::JNS | OpCode::JEQ | OpCode::JNEQ => {
+                return &JUMP.arg_size
+            }
+
+            OpCode::CLOSURE => return &CLOSURE.arg_size,
         }
     }
     pub fn length(&self) -> usize {
@@ -114,22 +121,24 @@ impl OpCode {
             | OpCode::BAND
             | OpCode::BOR
             | OpCode::RETN
-            | OpCode::RETV => return NO_ARG.length,
+            | OpCode::RETV
+            | OpCode::GETCUR => return NO_ARG.length,
 
             OpCode::CONST
             | OpCode::DEFGLB
             | OpCode::GETGLB
             | OpCode::DEFLCL
             | OpCode::GETLCL
+            | OpCode::GETFREE
             | OpCode::CALL
             | OpCode::ARRAY
             | OpCode::INDEX => return CONST.length,
 
-            OpCode::JMP
-            | OpCode::JIS
-            | OpCode::JNS
-            | OpCode::JEQ
-            | OpCode::JNEQ => return JUMP.length,
+            OpCode::JMP | OpCode::JIS | OpCode::JNS | OpCode::JEQ | OpCode::JNEQ => {
+                return JUMP.length
+            }
+
+            OpCode::CLOSURE => return CLOSURE.length,
         }
     }
 }

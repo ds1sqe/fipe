@@ -124,16 +124,18 @@ impl Instructions {
                 OpCode::INDEX => Instruction::INDEX,
                 OpCode::RETN => Instruction::RETN,
                 OpCode::RETV => Instruction::RETV,
+                OpCode::GETCUR => Instruction::GETCUR,
 
-                one_args => {
+                has_argument => {
                     let arg_1 = std::ptr::read(self.byte.as_ptr().add(offset + 1) as *const usize);
 
-                    match one_args {
+                    match has_argument {
                         OpCode::CONST => Instruction::CONST { idx: arg_1 },
                         OpCode::DEFGLB => Instruction::DEFGLB { idx: arg_1 },
                         OpCode::GETGLB => Instruction::GETGLB { idx: arg_1 },
                         OpCode::DEFLCL => Instruction::DEFLCL { idx: arg_1 },
                         OpCode::GETLCL => Instruction::GETLCL { idx: arg_1 },
+                        OpCode::GETFREE => Instruction::GETFREE { idx: arg_1 },
                         OpCode::JMP => Instruction::JMP { idx: arg_1 },
                         OpCode::JIS => Instruction::JIS { idx: arg_1 },
                         OpCode::JNS => Instruction::JNS { idx: arg_1 },
@@ -141,6 +143,16 @@ impl Instructions {
                         OpCode::JNEQ => Instruction::JNEQ { idx: arg_1 },
                         OpCode::ARRAY => Instruction::ARRAY { count: arg_1 },
                         OpCode::CALL => Instruction::CALL { arg_len: arg_1 },
+                        OpCode::CLOSURE => {
+                            let arg_2 = std::ptr::read(
+                                self.byte.as_ptr().add(offset + 1 + 8) as *const usize
+                            );
+
+                            Instruction::CLOSURE {
+                                idx: arg_1,
+                                free: arg_2,
+                            }
+                        }
                         not_matched => {
                             panic!("Has to be unreachable {:?}", not_matched);
                         }
