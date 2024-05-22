@@ -47,7 +47,7 @@ pub fn start() {
 
                 if program.is_ok() {
                     let program = program.unwrap();
-                    let mut comp = Compiler::new();
+                    let mut comp = Compiler::create();
                     comp.compile(program);
                     let mut vm = VM::new(comp.bytecode());
                     buf.clear();

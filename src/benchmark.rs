@@ -39,7 +39,7 @@ fibonacci(25);
     let parsed_time = start_time.elapsed();
     println!("parse_time : {:?}", parsed_time);
 
-    let mut comp = Compiler::new();
+    let mut comp = Compiler::create();
 
     let compile_start = Instant::now();
 
@@ -104,7 +104,7 @@ fibonacci(30);
     let parsed_time = start_time.elapsed();
     println!("parse_time : {:?}", parsed_time);
 
-    let mut comp = Compiler::new();
+    let mut comp = Compiler::create();
 
     let compile_start = Instant::now();
 
@@ -140,4 +140,3 @@ fibonacci(30);
         eval_time.as_secs_f64() / vm_time.as_secs_f64()
     );
 }
-

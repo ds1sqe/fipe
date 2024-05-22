@@ -10,14 +10,19 @@ use crate::{
 };
 
 use super::{
+    errors::CompileError,
     instruction::Instruction,
     instructions::Instructions,
     symbol::{self, Symbol, SymbolTable},
     Bytecode,
 };
 
+const SUCCESS: Result<bool, CompileError> = Ok(true);
+
+/// Hold current function's instructions
 #[derive(Debug, Clone)]
 struct Scope {
+    /// current function's instructions
     instructions: Instructions,
 }
 
@@ -29,23 +34,47 @@ struct InstructionInfo {
 
 #[derive(Debug)]
 pub struct Compiler {
+    /// constants of Program
     constants: Vec<Object>,
 
+    /// stack memory of function's instruction aka [`Scope`]
     scopes: Vec<Scope>,
+
+    /// index of current_function's scope
     scope_idx: usize,
+
+    /// symbol_table which holds symbol
     symbol_table: Option<SymbolTable>,
 
+    /// last written instruction's information
     last_instruction: Option<InstructionInfo>,
 }
 
 impl Compiler {
-    pub fn new() -> Self {
+    /// Creates a new [`Compiler`].
+    ///
+    /// # Panics
+    ///
+    /// May Panics if OOM
+    ///
+    /// # Errors [`CompileError::CreationFailed`]
+    ///
+    /// This function will return an error if inner instructions creation
+    /// have failed
+    pub fn create() -> Result<Self, CompileError> {
         let mut scopes = Vec::new();
-        scopes.push(Scope {
-            instructions: Instructions::new(),
-        });
+        let inst_rst = Instructions::create();
+        if inst_rst.is_err() {
+            return Err(CompileError::CreationFailed(inst_rst.unwrap_err()));
+        }
+        scopes.push(
+            // this Scope is will be main function
+            Scope {
+                instructions: inst_rst.unwrap(),
+            },
+        );
 
-        Self {
+        Ok(Self {
             constants: Vec::new(),
 
             scopes,
@@ -54,28 +83,44 @@ impl Compiler {
             symbol_table: Some(SymbolTable::new()),
 
             last_instruction: None,
-        }
+        })
     }
 
-    pub fn bytecode(self) -> Bytecode {
+    /// Generate bytecode as compile result
+    ///
+    /// # Errors [`CompileError::NotFinishedInMain`]
+    ///
+    /// This function will return an error if
+    /// scope_idx is not 0 ( it means that compiling had not ended in main )
+    pub fn bytecode(self) -> Result<Bytecode, CompileError> {
         if self.scope_idx != 0 {
-            // emit error (have to be 0 which means main-global )
-            panic!("scope is not 0")
+            return Err(CompileError::NotFinishedInMain);
         }
-        Bytecode {
+        Ok(Bytecode {
             constants: self.constants.clone(),
             instructions: self.current_scope().instructions.clone(),
-        }
+        })
     }
 
-    pub fn compile(&mut self, src: Program) -> Option<()> {
+    /// compile given src: Program
+    ///
+    /// # Errors [`CompileError`]
+    ///
+    /// This function will return an error if inner function failed.
+    ///
+    /// if have successfully compiled, returns Ok(True)
+    pub fn compile(&mut self, src: Program) -> Result<bool, CompileError> {
         for stm in src.statements {
-            self.compile_stm(&stm)
+            match self.compile_stm(&stm) {
+                Err(e) => return Err(e),
+                Ok(_) => (),
+            }
         }
-        None
+
+        SUCCESS
     }
 
-    fn compile_stm(&mut self, stm: &Statement) {
+    fn compile_stm(&mut self, stm: &Statement) -> Result<bool, CompileError> {
         match stm {
             Statement::ExpressionStatement(stm) => self.compile_expression_stm(stm),
             Statement::LetStatement(stm) => self.compile_let_stm(stm),
@@ -84,7 +129,7 @@ impl Compiler {
         }
     }
 
-    fn compile_exp(&mut self, exp: &Expression) {
+    fn compile_exp(&mut self, exp: &Expression) -> Result<bool, CompileError> {
         match exp {
             Expression::Identifier(exp) => self.compile_identifier_exp(exp),
             Expression::IntegerLiteral(lit) => self.compile_integer_literal(lit),
@@ -100,67 +145,99 @@ impl Compiler {
         }
     }
 
-    fn compile_expression_stm(&mut self, stm: &ExpressionStatement) {
-        self.compile_exp(&stm.expression.as_ref().unwrap());
+    fn compile_expression_stm(&mut self, stm: &ExpressionStatement) -> Result<bool, CompileError> {
+        self.compile_exp(&stm.expression.as_ref().unwrap())?;
         self.emit(Instruction::POP);
+        SUCCESS
     }
-    fn compile_let_stm(&mut self, stm: &LetStatement) {
+
+    fn compile_let_stm(&mut self, stm: &LetStatement) -> Result<bool, CompileError> {
         let idx = self
             .symbol_table
             .as_mut()
             .unwrap()
             .define(&stm.identifier.value);
 
-        self.compile_exp(&stm.value.clone().unwrap());
+        self.compile_exp(&stm.value.clone().unwrap())?;
 
         if self.symbol_table.as_ref().unwrap().is_global() {
             self.emit(Instruction::DEFGLB { idx });
         } else {
             self.emit(Instruction::DEFLCL { idx });
         }
+
+        SUCCESS
     }
-    fn compile_return_stm(&mut self, stm: &ReturnStatement) {
+    fn compile_return_stm(&mut self, stm: &ReturnStatement) -> Result<bool, CompileError> {
         match &stm.value {
             Some(exp) => {
-                self.compile_exp(exp);
+                self.compile_exp(exp)?;
                 self.emit(Instruction::RETV);
             }
             None => {
                 self.emit(Instruction::RETN);
             }
         }
+        SUCCESS
     }
-    fn compile_block_stm(&mut self, stm: &BlockStatement) {
+    fn compile_block_stm(&mut self, stm: &BlockStatement) -> Result<bool, CompileError> {
         for statement in &stm.statements {
-            self.compile_stm(statement);
+            self.compile_stm(statement)?;
         }
+        SUCCESS
     }
 
-    fn compile_identifier_exp(&mut self, exp: &Identifier) {
+    /// Compile given identifier expression.
+    /// try to find a symbol with given identifier,
+    /// and if have found, emit load symbol instruction.
+    ///
+    /// # Errors [CompileError::IdentifierNotFound]
+    /// This function will return an error if identifier not found on [`self.symbol_table`]
+    fn compile_identifier_exp(&mut self, exp: &Identifier) -> Result<bool, CompileError> {
         let rst = self.symbol_table.as_mut().unwrap().resolve(&exp.value);
         if rst.is_some() {
             let sym = rst.unwrap();
             self.load_symbol(&sym);
+
+            SUCCESS
         } else {
-            // emit error
-            panic!("Identifier not found!!! {:?}", &exp);
+            Err(CompileError::IdentifierNotFound(exp.clone()))
         }
     }
-    fn compile_integer_literal(&mut self, lit: &IntegerLiteral) {
+
+    /// Compile given IntegerLiteral
+    ///
+    /// # Errors TODO: add appropriate error
+    ///
+    /// This function will return an error if .
+    fn compile_integer_literal(&mut self, lit: &IntegerLiteral) -> Result<bool, CompileError> {
         let int = Object::Int(Int { value: lit.value });
         self.constants.push(int);
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
         });
+
+        SUCCESS
     }
-    fn compile_bool_literal(&mut self, lit: &BooleanLiteral) {
+
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_bool_literal(&mut self, lit: &BooleanLiteral) -> Result<bool, CompileError> {
         let boolean = Object::Bool(Bool { value: lit.value });
         self.constants.push(boolean);
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
         });
     }
-    fn compile_string_literal(&mut self, lit: &StringLiteral) {
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_string_literal(&mut self, lit: &StringLiteral) -> Result<bool, CompileError> {
         let str = Object::String(StringObject {
             value: lit.value.clone(),
         });
@@ -169,7 +246,16 @@ impl Compiler {
             idx: self.constants.len() - 1,
         });
     }
-    fn compile_function_literal(&mut self, lit: &FunctionLiteral) {
+    /// .
+    ///
+    /// # Panics
+    ///
+    /// Panics if .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_function_literal(&mut self, lit: &FunctionLiteral) -> Result<bool, CompileError> {
         self.enter_scope();
 
         if lit.ident.is_some() {
@@ -240,7 +326,12 @@ impl Compiler {
         }
     }
 
-    fn compile_array_literal(&mut self, lit: &ArrayLiteral) {
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_array_literal(&mut self, lit: &ArrayLiteral) -> Result<bool, CompileError> {
         for el in lit.elements.iter() {
             self.compile_exp(el);
         }
@@ -249,7 +340,12 @@ impl Compiler {
         });
     }
 
-    fn compile_prefix_exp(&mut self, exp: &PrefixExpression) {
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_prefix_exp(&mut self, exp: &PrefixExpression) -> Result<bool, CompileError> {
         self.compile_exp(&exp.right);
 
         match exp.token.kind {
@@ -261,7 +357,12 @@ impl Compiler {
             }
         };
     }
-    fn compile_infix_exp(&mut self, exp: &InfixExpression) {
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_infix_exp(&mut self, exp: &InfixExpression) -> Result<bool, CompileError> {
         self.compile_exp(&exp.right);
         self.compile_exp(&exp.left);
 
@@ -288,7 +389,16 @@ impl Compiler {
             }
         };
     }
-    fn compile_if_exp(&mut self, exp: &IfExpression) {
+    /// .
+    ///
+    /// # Panics
+    ///
+    /// Panics if .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_if_exp(&mut self, exp: &IfExpression) -> Result<bool, CompileError> {
         self.compile_exp(&exp.condition);
         let jump_consequence = self.emit(Instruction::JNS { idx: 0 });
         self.compile_stm(&Statement::BlockStatement(exp.consequence.clone()));
@@ -323,7 +433,12 @@ impl Compiler {
             );
         }
     }
-    fn compile_call_exp(&mut self, exp: &CallExpression) {
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_call_exp(&mut self, exp: &CallExpression) -> Result<bool, CompileError> {
         self.compile_exp(&exp.function);
 
         // example of instruction
@@ -355,13 +470,19 @@ impl Compiler {
         });
     }
 
-    fn compile_index_exp(&mut self, exp: &IndexExpression) {
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if .
+    fn compile_index_exp(&mut self, exp: &IndexExpression) -> Result<bool, CompileError> {
         self.compile_exp(&exp.left);
         self.compile_exp(&exp.index);
 
         self.emit(Instruction::INDEX);
     }
 
+    /// .
     fn emit(&mut self, ins: Instruction) -> usize {
         let pos = self
             .current_scope_mut()
@@ -375,12 +496,18 @@ impl Compiler {
 
         pos
     }
+    /// .
     fn update(&mut self, ins: Instruction, offset: usize) {
         self.current_scope_mut()
             .instructions
             .update_instruction(ins, offset)
     }
 
+    /// Returns the remove last instruction of this [`Compiler`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if .
     fn remove_last_instruction(&mut self) {
         let new_length = self.last_instruction.as_ref().unwrap().pos;
         self.current_scope_mut()
@@ -410,6 +537,11 @@ impl Compiler {
         false
     }
 
+    /// .
+    ///
+    /// # Panics
+    ///
+    /// Panics if .
     fn remove_last_instruction_if(&mut self, ins: Instruction) {
         if self
             .last_instruction
@@ -421,6 +553,7 @@ impl Compiler {
         }
     }
 
+    /// Returns the next offset of this [`Compiler`].
     fn next_offset(&self) -> usize {
         self.current_scope().instructions.length()
     }
@@ -428,7 +561,7 @@ impl Compiler {
     /// create new scope and enclose current `self.symbol_table`
     fn enter_scope(&mut self) {
         let new_scope = Scope {
-            instructions: Instructions::new(),
+            instructions: Instructions::create(),
         };
         self.scopes.push(new_scope);
         self.scope_idx += 1;
@@ -447,14 +580,17 @@ impl Compiler {
         self.scope_idx -= 1;
         self.scopes.pop().unwrap()
     }
+    /// Returns a reference to the current scope of this [`Compiler`].
     fn current_scope(&self) -> &Scope {
         &self.scopes[self.scope_idx]
     }
 
+    /// Returns a mutable reference to the current scope of this [`Compiler`].
     fn current_scope_mut(&mut self) -> &mut Scope {
         &mut self.scopes[self.scope_idx]
     }
 
+    /// .
     fn load_symbol(&mut self, sym: &Symbol) {
         let inst = match sym.scope() {
             symbol::Scope::Global => Instruction::GETGLB { idx: sym.index },

@@ -86,12 +86,20 @@ impl VM {
             }
             Instruction::DEFLCL { idx } => {
                 // define local variable
-                let offset = self.current_frame().bp() + 1 + idx;
+                let offset = ({
+                    let this = &self.current_frame();
+                    this.bp
+                }) + 1
+                    + idx;
                 self.stack[offset] = Some(self.pop_stack().unwrap());
             }
             Instruction::GETLCL { idx } => {
                 // get local variable
-                let offset = self.current_frame().bp() + 1 + idx;
+                let offset = ({
+                    let this = &self.current_frame();
+                    this.bp
+                }) + 1
+                    + idx;
 
                 self.push_stack(self.stack[offset].clone().unwrap());
             }
@@ -126,8 +134,12 @@ impl VM {
 
                 if left.get_type() == right.get_type() {
                     if left.get_type() == ObjectType::Int {
-                        let Object::Int(left) = left else {unreachable!()};
-                        let Object::Int(right) = right else {unreachable!()};
+                        let Object::Int(left) = left else {
+                            unreachable!()
+                        };
+                        let Object::Int(right) = right else {
+                            unreachable!()
+                        };
 
                         match &ins {
                             Instruction::ADD
@@ -177,8 +189,12 @@ impl VM {
                             }
                         }
                     } else if left.get_type() == ObjectType::Bool {
-                        let Object::Bool(left) = left else {unreachable!()};
-                        let Object::Bool(right) = right else {unreachable!()};
+                        let Object::Bool(left) = left else {
+                            unreachable!()
+                        };
+                        let Object::Bool(right) = right else {
+                            unreachable!()
+                        };
                         let value = match &ins {
                             Instruction::AND => left.value && right.value,
                             Instruction::OR => left.value || right.value,
@@ -191,8 +207,12 @@ impl VM {
                         let rst = Object::Bool(Bool { value });
                         self.push_stack(rst);
                     } else if left.get_type() == ObjectType::String {
-                        let Object::String(left) = left else {unreachable!()};
-                        let Object::String(right) = right else {unreachable!()};
+                        let Object::String(left) = left else {
+                            unreachable!()
+                        };
+                        let Object::String(right) = right else {
+                            unreachable!()
+                        };
 
                         match &ins {
                             Instruction::ADD => {
@@ -226,7 +246,9 @@ impl VM {
             Instruction::BANG => {
                 let right = self.pop_stack().unwrap();
                 if right.get_type() == ObjectType::Bool {
-                    let Object::Bool(mut right) = right else {unreachable!()};
+                    let Object::Bool(mut right) = right else {
+                        unreachable!()
+                    };
                     right.value = !right.value;
                     self.push_stack(Object::Bool(right))
                 } else {
@@ -236,7 +258,9 @@ impl VM {
             Instruction::NEG => {
                 let right = self.pop_stack().unwrap();
                 if right.get_type() == ObjectType::Int {
-                    let Object::Int(mut right) = right else {unreachable!()};
+                    let Object::Int(mut right) = right else {
+                        unreachable!()
+                    };
                     right.value = -right.value;
                     self.push_stack(Object::Int(right))
                 } else {
@@ -251,7 +275,9 @@ impl VM {
             Instruction::JIS { idx } => {
                 let sign = self.pop_stack().unwrap();
                 if sign.get_type() == ObjectType::Bool {
-                    let Object::Bool(sign) = sign else {unreachable!()};
+                    let Object::Bool(sign) = sign else {
+                        unreachable!()
+                    };
                     if sign.value {
                         self.current_frame_mut().set_ic(*idx);
                         return;
@@ -263,7 +289,9 @@ impl VM {
             Instruction::JNS { idx } => {
                 let sign = self.pop_stack().unwrap();
                 if sign.get_type() == ObjectType::Bool {
-                    let Object::Bool(sign) = sign else {unreachable!()};
+                    let Object::Bool(sign) = sign else {
+                        unreachable!()
+                    };
                     if !sign.value {
                         self.current_frame_mut().set_ic(*idx);
                         return;
@@ -291,14 +319,14 @@ impl VM {
 
                 if idx.get_type() == ObjectType::Int {
                     let Object::Int(int) = idx else {
-                    unreachable!()
+                        unreachable!()
                     };
 
                     let tgt = self.pop_stack().unwrap();
                     if tgt.get_type() == ObjectType::Array {
                         let Object::Array(arr) = tgt else {
-                    unreachable!()
-                    };
+                            unreachable!()
+                        };
                         self.push_stack(arr.elements[int.value as usize].clone());
                     } else {
                         // emit error
@@ -314,13 +342,19 @@ impl VM {
             }
             Instruction::RETN => {
                 let popped_frame = self.pop_frame();
-                self.sp = popped_frame.bp() - 1;
+                self.sp = ({
+                    let this = &popped_frame;
+                    this.bp
+                }) - 1;
                 return;
             }
             Instruction::RETV => {
                 let value = self.pop_stack().unwrap();
                 let popped_frame = self.pop_frame();
-                self.sp = popped_frame.bp() - 1;
+                self.sp = ({
+                    let this = &popped_frame;
+                    this.bp
+                }) - 1;
                 self.push_stack(value);
                 return;
             }
@@ -430,7 +464,9 @@ impl VM {
     }
 
     fn make_closure(&mut self, fn_idx: usize, free_len: usize) {
-        let Object::CompiledFunction(compiled_func ) = self.constants[fn_idx].clone() else {unreachable!()};
+        let Object::CompiledFunction(compiled_func) = self.constants[fn_idx].clone() else {
+            unreachable!()
+        };
 
         let mut closure = ClosureFunction {
             fun: compiled_func,

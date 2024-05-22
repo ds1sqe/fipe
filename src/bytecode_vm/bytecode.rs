@@ -1,4 +1,5 @@
 pub mod compiler;
+pub mod errors;
 pub mod instruction;
 pub mod instructions;
 pub mod opcode;
@@ -6,7 +7,7 @@ mod symbol;
 
 use crate::object::{Object, ObjectTrait};
 
-use self::instructions::Instructions;
+use self::{errors::BytecodeError, instructions::Instructions};
 
 #[derive(Debug)]
 pub struct Bytecode {
@@ -15,11 +16,13 @@ pub struct Bytecode {
 }
 
 impl Bytecode {
-    pub fn new() -> Self {
-        Self {
+    pub fn create() -> Result<Self, BytecodeError> {
+        let new_instruction = Instructions::create()?;
+
+        Ok(Self {
             constants: Vec::new(),
-            instructions: Instructions::new(),
-        }
+            instructions: new_instruction,
+        })
     }
 
     pub fn to_string(&self) -> String {

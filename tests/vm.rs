@@ -15,7 +15,7 @@ fn run_vm_test(tests: Tests<Option<Object>>) {
         let lexer = Lexer::new(test.input.clone());
         let program = Parser::new(lexer).parse().unwrap();
 
-        let mut comp = Compiler::new();
+        let mut comp = Compiler::create();
         comp.compile(program);
         let bytecode = comp.bytecode();
 
