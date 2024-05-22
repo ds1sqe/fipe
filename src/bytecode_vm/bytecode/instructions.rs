@@ -1,6 +1,8 @@
 use std::{alloc, alloc::Layout, ptr::NonNull};
 
-use super::{errors::InstructionsError, instruction::Instruction, opcode::OpCode};
+use super::{
+    errors::InstructionsError, instruction::Instruction, opcode::OpCode,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Instructions {
@@ -123,12 +125,19 @@ impl Instructions {
     /// # Errors [`InstructionsError`]
     ///
     /// This function will return an error if this [`Instructions::grow()`] have failed.
-    pub fn add_instruction(&mut self, ins: Instruction) -> Result<usize, InstructionsError> {
+    pub fn add_instruction(
+        &mut self,
+        ins: Instruction,
+    ) -> Result<usize, InstructionsError> {
         if self.len + ins.opcode().length() > self.cap {
             self.grow()?;
         }
         unsafe {
-            std::ptr::copy(ins.as_byte().as_ptr(), self.cursor, ins.opcode().length());
+            std::ptr::copy(
+                ins.as_byte().as_ptr(),
+                self.cursor,
+                ins.opcode().length(),
+            );
             self.cursor = self.cursor.add(ins.opcode().length());
         }
         let offset = self.len;
@@ -142,7 +151,11 @@ impl Instructions {
     /// # Safety
     /// if lengths are different between `ins` and instruction at `offset`,
     /// There will be Corruption of this [`Instructions`]
-    pub unsafe fn update_instruction(&mut self, ins: Instruction, offset: usize) {
+    pub unsafe fn update_instruction(
+        &mut self,
+        ins: Instruction,
+        offset: usize,
+    ) {
         unsafe {
             std::ptr::copy(
                 ins.as_byte().as_ptr(),
@@ -168,9 +181,13 @@ impl Instructions {
     ///
     /// This function will return an error if failed to read opcode
     /// from [`Self::byte`] at `offset` to convert it as [`Instruction`]
-    pub fn read_instruction(&self, offset: usize) -> Result<Instruction, InstructionsError> {
+    pub fn read_instruction(
+        &self,
+        offset: usize,
+    ) -> Result<Instruction, InstructionsError> {
         unsafe {
-            let opcode = std::ptr::read(self.byte.as_ptr().add(offset) as *const OpCode);
+            let opcode =
+                std::ptr::read(self.byte.as_ptr().add(offset) as *const OpCode);
 
             let foo = match opcode {
                 OpCode::PUSH => Instruction::PUSH,
@@ -198,7 +215,9 @@ impl Instructions {
                 OpCode::GETCUR => Instruction::GETCUR,
 
                 has_argument => {
-                    let arg_1 = std::ptr::read(self.byte.as_ptr().add(offset + 1) as *const usize);
+                    let arg_1 = std::ptr::read(
+                        self.byte.as_ptr().add(offset + 1) as *const usize,
+                    );
 
                     match has_argument {
                         OpCode::CONST => Instruction::CONST { idx: arg_1 },
@@ -216,7 +235,8 @@ impl Instructions {
                         OpCode::CALL => Instruction::CALL { arg_len: arg_1 },
                         OpCode::CLOSURE => {
                             let arg_2 = std::ptr::read(
-                                self.byte.as_ptr().add(offset + 1 + 8) as *const usize
+                                self.byte.as_ptr().add(offset + 1 + 8)
+                                    as *const usize,
                             );
 
                             Instruction::CLOSURE {
@@ -225,7 +245,9 @@ impl Instructions {
                             }
                         }
                         _not_matched => {
-                            return Err(InstructionsError::CannotRead { offset });
+                            return Err(InstructionsError::CannotRead {
+                                offset,
+                            });
                         }
                     }
                 }
@@ -260,7 +282,8 @@ impl Instructions {
 
         let old_layout = Layout::array::<u8>(self.cap).unwrap();
         let old_ptr = self.byte.as_ptr() as *mut u8;
-        let new_ptr = unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) };
+        let new_ptr =
+            unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) };
 
         self.byte = match NonNull::new(new_ptr as *mut u8) {
             Some(p) => p,

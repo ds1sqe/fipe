@@ -10,8 +10,15 @@ pub enum CompileError {
     /// cannot find identifier on symbol table
     IdentifierNotFound(Identifier),
 
-    /// creation have failed because of inner instruction failed
+    /// creation of [`super::compiler::Compiler`] have failed because of inner instruction failed
     CreationFailed(InstructionsError),
+
+    /// failed to write (emit) instruction
+    InstructionWriteError(InstructionsError),
+
+    /// failed to create new scope bacause of
+    /// [`InstructionsError`]
+    ScopeCreateFaild(InstructionsError),
 }
 
 #[derive(Debug)]

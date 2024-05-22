@@ -61,6 +61,7 @@ impl SymbolTable {
         self.outer.is_none()
     }
 
+    /// TODO: add duplicate checking rule
     pub fn define(&mut self, name: &String) -> usize {
         let scope = if self.is_global() {
             Scope::Global
@@ -122,7 +123,8 @@ impl SymbolTable {
                         return outer_rst;
                     } else {
                         // outer local symbol means it's a free variable
-                        let free = self.define_free(&outer_rst.as_ref().unwrap().clone());
+                        let free = self
+                            .define_free(&outer_rst.as_ref().unwrap().clone());
                         return Some(free);
                     }
                 }

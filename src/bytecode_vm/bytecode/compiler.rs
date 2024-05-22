@@ -1,9 +1,10 @@
 use crate::{
     ast::{
-        ArrayLiteral, BlockStatement, BooleanLiteral, CallExpression, Expression,
-        ExpressionStatement, FunctionLiteral, Identifier, IfExpression, IndexExpression,
-        InfixExpression, IntegerLiteral, LetStatement, PrefixExpression, Program, ReturnStatement,
-        Statement, StringLiteral,
+        ArrayLiteral, BlockStatement, BooleanLiteral, CallExpression,
+        Expression, ExpressionStatement, FunctionLiteral, Identifier,
+        IfExpression, IndexExpression, InfixExpression, IntegerLiteral,
+        LetStatement, PrefixExpression, Program, ReturnStatement, Statement,
+        StringLiteral,
     },
     object::{Bool, CompiledFunction, Int, Object, StringObject},
     token::Kind,
@@ -26,6 +27,12 @@ struct Scope {
     instructions: Instructions,
 }
 
+impl Scope {
+    pub fn new(instructions: Instructions) -> Self {
+        Self { instructions }
+    }
+}
+
 #[derive(Debug)]
 struct InstructionInfo {
     instruction: Instruction,
@@ -43,7 +50,8 @@ pub struct Compiler {
     /// index of current_function's scope
     scope_idx: usize,
 
-    /// symbol_table which holds symbol
+    /// symbol_table which holds symbol.
+    /// never be None
     symbol_table: Option<SymbolTable>,
 
     /// last written instruction's information
@@ -120,22 +128,30 @@ impl Compiler {
         SUCCESS
     }
 
+    /// compile statement
     fn compile_stm(&mut self, stm: &Statement) -> Result<bool, CompileError> {
         match stm {
-            Statement::ExpressionStatement(stm) => self.compile_expression_stm(stm),
+            Statement::ExpressionStatement(stm) => {
+                self.compile_expression_stm(stm)
+            }
             Statement::LetStatement(stm) => self.compile_let_stm(stm),
             Statement::ReturnStatement(stm) => self.compile_return_stm(stm),
             Statement::BlockStatement(stm) => self.compile_block_stm(stm),
         }
     }
 
+    /// compile expression
     fn compile_exp(&mut self, exp: &Expression) -> Result<bool, CompileError> {
         match exp {
             Expression::Identifier(exp) => self.compile_identifier_exp(exp),
-            Expression::IntegerLiteral(lit) => self.compile_integer_literal(lit),
+            Expression::IntegerLiteral(lit) => {
+                self.compile_integer_literal(lit)
+            }
             Expression::BooleanLiteral(lit) => self.compile_bool_literal(lit),
             Expression::StringLiteral(lit) => self.compile_string_literal(lit),
-            Expression::FunctionLiteral(lit) => self.compile_function_literal(lit),
+            Expression::FunctionLiteral(lit) => {
+                self.compile_function_literal(lit)
+            }
             Expression::ArrayLiteral(lit) => self.compile_array_literal(lit),
             Expression::InfixExpression(exp) => self.compile_infix_exp(exp),
             Expression::PrefixExpression(exp) => self.compile_prefix_exp(exp),
@@ -145,13 +161,21 @@ impl Compiler {
         }
     }
 
-    fn compile_expression_stm(&mut self, stm: &ExpressionStatement) -> Result<bool, CompileError> {
+    /// compile expression statement
+    fn compile_expression_stm(
+        &mut self,
+        stm: &ExpressionStatement,
+    ) -> Result<bool, CompileError> {
         self.compile_exp(&stm.expression.as_ref().unwrap())?;
         self.emit(Instruction::POP);
         SUCCESS
     }
 
-    fn compile_let_stm(&mut self, stm: &LetStatement) -> Result<bool, CompileError> {
+    /// compile let statement
+    fn compile_let_stm(
+        &mut self,
+        stm: &LetStatement,
+    ) -> Result<bool, CompileError> {
         let idx = self
             .symbol_table
             .as_mut()
@@ -168,7 +192,12 @@ impl Compiler {
 
         SUCCESS
     }
-    fn compile_return_stm(&mut self, stm: &ReturnStatement) -> Result<bool, CompileError> {
+
+    /// compile return statement
+    fn compile_return_stm(
+        &mut self,
+        stm: &ReturnStatement,
+    ) -> Result<bool, CompileError> {
         match &stm.value {
             Some(exp) => {
                 self.compile_exp(exp)?;
@@ -180,7 +209,12 @@ impl Compiler {
         }
         SUCCESS
     }
-    fn compile_block_stm(&mut self, stm: &BlockStatement) -> Result<bool, CompileError> {
+
+    /// compile block statement
+    fn compile_block_stm(
+        &mut self,
+        stm: &BlockStatement,
+    ) -> Result<bool, CompileError> {
         for statement in &stm.statements {
             self.compile_stm(statement)?;
         }
@@ -193,7 +227,10 @@ impl Compiler {
     ///
     /// # Errors [CompileError::IdentifierNotFound]
     /// This function will return an error if identifier not found on [`self.symbol_table`]
-    fn compile_identifier_exp(&mut self, exp: &Identifier) -> Result<bool, CompileError> {
+    fn compile_identifier_exp(
+        &mut self,
+        exp: &Identifier,
+    ) -> Result<bool, CompileError> {
         let rst = self.symbol_table.as_mut().unwrap().resolve(&exp.value);
         if rst.is_some() {
             let sym = rst.unwrap();
@@ -207,62 +244,78 @@ impl Compiler {
 
     /// Compile given IntegerLiteral
     ///
-    /// # Errors TODO: add appropriate error
+    /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_integer_literal(&mut self, lit: &IntegerLiteral) -> Result<bool, CompileError> {
+    fn compile_integer_literal(
+        &mut self,
+        lit: &IntegerLiteral,
+    ) -> Result<bool, CompileError> {
         let int = Object::Int(Int { value: lit.value });
-        self.constants.push(int);
+        self.constants.push(int); // enlist Int to constant pool
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
-        });
+        })?;
 
         SUCCESS
     }
 
-    /// .
+    /// Compile given bool literal
     ///
     /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_bool_literal(&mut self, lit: &BooleanLiteral) -> Result<bool, CompileError> {
+    fn compile_bool_literal(
+        &mut self,
+        lit: &BooleanLiteral,
+    ) -> Result<bool, CompileError> {
         let boolean = Object::Bool(Bool { value: lit.value });
-        self.constants.push(boolean);
+        self.constants.push(boolean); // enlist boolean to constant pool
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
-        });
+        })?;
+
+        SUCCESS
     }
-    /// .
+    /// Compile given string literal
     ///
     /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_string_literal(&mut self, lit: &StringLiteral) -> Result<bool, CompileError> {
+    fn compile_string_literal(
+        &mut self,
+        lit: &StringLiteral,
+    ) -> Result<bool, CompileError> {
         let str = Object::String(StringObject {
             value: lit.value.clone(),
         });
         self.constants.push(str);
         self.emit(Instruction::CONST {
             idx: self.constants.len() - 1,
-        });
+        })?;
+
+        SUCCESS
     }
-    /// .
-    ///
-    /// # Panics
-    ///
-    /// Panics if .
+
+    /// Compile given function literal
     ///
     /// # Errors
     ///
-    /// This function will return an error if .
-    fn compile_function_literal(&mut self, lit: &FunctionLiteral) -> Result<bool, CompileError> {
+    /// This function will return an error if failed to compile
+    fn compile_function_literal(
+        &mut self,
+        lit: &FunctionLiteral,
+    ) -> Result<bool, CompileError> {
         self.enter_scope();
 
         if lit.ident.is_some() {
-            self.symbol_table
-                .as_mut()
-                .unwrap()
-                .define_function_name(&lit.ident.as_ref().unwrap().value);
+            unsafe {
+                self.symbol_table
+                    .as_mut()
+                    // this is safe because it's never be None
+                    .unwrap_unchecked()
+                    .define_function_name(&lit.ident.as_ref().unwrap().value);
+            }
         }
 
         // Instruction example
@@ -270,6 +323,7 @@ impl Compiler {
         // parameters
         // 001 GETLCL 0 (param1)
         // 002 GETLCL 1 (param2)
+
         for param in &lit.parameters {
             self.symbol_table.as_mut().unwrap().define(&param.value);
         }
@@ -279,9 +333,16 @@ impl Compiler {
         // 004 DEFLCL 3 (local2)
         // 005 GETLCL 3 (local2)
         // 006 GETLCL 2 (local1)
-        self.compile_block_stm(&lit.body);
 
-        if !self.update_last_instruction_if(Instruction::POP, Instruction::RETV) {
+        self.compile_block_stm(&lit.body)?;
+
+        // if the last instuction is POP then
+        //  replace it with RETV
+        //  which means it's have ended with expression statement.
+        //  it's implicitly
+        //
+        if !self.update_last_instruction_if(Instruction::POP, Instruction::RETV)
+        {
             self.emit(Instruction::RETN);
         }
 
@@ -324,6 +385,8 @@ impl Compiler {
                 self.emit(Instruction::DEFLCL { idx });
             }
         }
+
+        SUCCESS
     }
 
     /// .
@@ -331,13 +394,18 @@ impl Compiler {
     /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_array_literal(&mut self, lit: &ArrayLiteral) -> Result<bool, CompileError> {
+    fn compile_array_literal(
+        &mut self,
+        lit: &ArrayLiteral,
+    ) -> Result<bool, CompileError> {
         for el in lit.elements.iter() {
             self.compile_exp(el);
         }
         self.emit(Instruction::ARRAY {
             count: lit.elements.len(),
         });
+
+        SUCCESS
     }
 
     /// .
@@ -345,7 +413,10 @@ impl Compiler {
     /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_prefix_exp(&mut self, exp: &PrefixExpression) -> Result<bool, CompileError> {
+    fn compile_prefix_exp(
+        &mut self,
+        exp: &PrefixExpression,
+    ) -> Result<bool, CompileError> {
         self.compile_exp(&exp.right);
 
         match exp.token.kind {
@@ -356,13 +427,18 @@ impl Compiler {
                 todo!()
             }
         };
+
+        SUCCESS
     }
     /// .
     ///
     /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_infix_exp(&mut self, exp: &InfixExpression) -> Result<bool, CompileError> {
+    fn compile_infix_exp(
+        &mut self,
+        exp: &InfixExpression,
+    ) -> Result<bool, CompileError> {
         self.compile_exp(&exp.right);
         self.compile_exp(&exp.left);
 
@@ -388,6 +464,8 @@ impl Compiler {
                 todo!()
             }
         };
+
+        SUCCESS
     }
     /// .
     ///
@@ -398,7 +476,10 @@ impl Compiler {
     /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_if_exp(&mut self, exp: &IfExpression) -> Result<bool, CompileError> {
+    fn compile_if_exp(
+        &mut self,
+        exp: &IfExpression,
+    ) -> Result<bool, CompileError> {
         self.compile_exp(&exp.condition);
         let jump_consequence = self.emit(Instruction::JNS { idx: 0 });
         self.compile_stm(&Statement::BlockStatement(exp.consequence.clone()));
@@ -415,7 +496,9 @@ impl Compiler {
                 jump_consequence,
             );
 
-            self.compile_stm(&Statement::BlockStatement(exp.alternative.clone().unwrap()));
+            self.compile_stm(&Statement::BlockStatement(
+                exp.alternative.clone().unwrap(),
+            ));
             self.remove_last_instruction_if(Instruction::POP);
 
             self.update(
@@ -432,13 +515,18 @@ impl Compiler {
                 jump_consequence,
             );
         }
+
+        SUCCESS
     }
     /// .
     ///
     /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_call_exp(&mut self, exp: &CallExpression) -> Result<bool, CompileError> {
+    fn compile_call_exp(
+        &mut self,
+        exp: &CallExpression,
+    ) -> Result<bool, CompileError> {
         self.compile_exp(&exp.function);
 
         // example of instruction
@@ -468,6 +556,8 @@ impl Compiler {
         self.emit(Instruction::CALL {
             arg_len: exp.arguments.len(),
         });
+
+        SUCCESS
     }
 
     /// .
@@ -475,39 +565,50 @@ impl Compiler {
     /// # Errors
     ///
     /// This function will return an error if .
-    fn compile_index_exp(&mut self, exp: &IndexExpression) -> Result<bool, CompileError> {
+    fn compile_index_exp(
+        &mut self,
+        exp: &IndexExpression,
+    ) -> Result<bool, CompileError> {
         self.compile_exp(&exp.left);
         self.compile_exp(&exp.index);
 
         self.emit(Instruction::INDEX);
+
+        SUCCESS
     }
 
-    /// .
-    fn emit(&mut self, ins: Instruction) -> usize {
-        let pos = self
+    fn emit(&mut self, ins: Instruction) -> Result<usize, CompileError> {
+        let res = self
             .current_scope_mut()
             .instructions
             .add_instruction(ins.clone());
+
+        if res.is_err() {
+            return Err(CompileError::InstructionWriteError(res.unwrap_err()));
+        }
+
+        let pos = res.unwrap();
 
         self.last_instruction = Some(InstructionInfo {
             instruction: ins,
             pos,
         });
 
-        pos
+        Ok(pos)
     }
-    /// .
-    fn update(&mut self, ins: Instruction, offset: usize) {
+    /// Update instruction at `offset` with given `ins`
+    ///
+    /// # Safety
+    ///
+    /// this function is unsafe because it call [`Instructions::update_instruction`]
+    ///
+    unsafe fn update(&mut self, ins: Instruction, offset: usize) {
         self.current_scope_mut()
             .instructions
             .update_instruction(ins, offset)
     }
 
     /// Returns the remove last instruction of this [`Compiler`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if .
     fn remove_last_instruction(&mut self) {
         let new_length = self.last_instruction.as_ref().unwrap().pos;
         self.current_scope_mut()
@@ -519,14 +620,20 @@ impl Compiler {
     /// Update last_instruction if (ins_info.instruction == ins) || (ins_info.instruction == with)
     ///
     /// returns true if have changed instruction
-    fn update_last_instruction_if(&mut self, ins: Instruction, with: Instruction) -> bool {
-        if self
-            .last_instruction
-            .as_ref()
-            .is_some_and(|ins_info| (ins_info.instruction == ins) || (ins_info.instruction == with))
-        {
+    fn update_last_instruction_if(
+        &mut self,
+        ins: Instruction,
+        with: Instruction,
+    ) -> bool {
+        if self.last_instruction.as_ref().is_some_and(|ins_info| {
+            (ins_info.instruction == ins) || (ins_info.instruction == with)
+        }) {
             let pos = self.last_instruction.as_ref().unwrap().pos;
-            self.update(with.clone(), pos);
+
+            unsafe {
+                self.update(with.clone(), pos);
+            }
+
             self.last_instruction = Some(InstructionInfo {
                 instruction: with,
                 pos,
@@ -537,11 +644,7 @@ impl Compiler {
         false
     }
 
-    /// .
-    ///
-    /// # Panics
-    ///
-    /// Panics if .
+    /// Remove last instruction if `self.last_instruction == ins`
     fn remove_last_instruction_if(&mut self, ins: Instruction) {
         if self
             .last_instruction
@@ -549,7 +652,6 @@ impl Compiler {
             .is_some_and(|ins_info| ins_info.instruction == ins)
         {
             self.remove_last_instruction();
-            //self.update(,self.last_instruction.unwrap().pos)
         }
     }
 
@@ -559,14 +661,24 @@ impl Compiler {
     }
 
     /// create new scope and enclose current `self.symbol_table`
-    fn enter_scope(&mut self) {
-        let new_scope = Scope {
-            instructions: Instructions::create(),
-        };
+    fn enter_scope(&mut self) -> Result<bool, CompileError> {
+        let inst_rst = Instructions::create();
+        if inst_rst.is_err() {
+            // this is safe
+            unsafe {
+                return Err(CompileError::ScopeCreateFaild(
+                    // this will prohibit redundant checking
+                    inst_rst.unwrap_err_unchecked(),
+                ));
+            }
+        }
+        let new_scope = Scope::new(unsafe { inst_rst.unwrap_unchecked() });
+
         self.scopes.push(new_scope);
         self.scope_idx += 1;
 
-        self.symbol_table = Some(SymbolTable::enclose(self.symbol_table.take().unwrap()));
+        self.symbol_table =
+            Some(SymbolTable::enclose(self.symbol_table.take().unwrap()));
     }
 
     /// Leave [`Scope`] of this [`Compiler`]
@@ -576,7 +688,8 @@ impl Compiler {
     ///
     /// Panics if scopes length below 1 ( len < 1 )
     fn leave_scope(&mut self) -> Scope {
-        self.symbol_table = Some(self.symbol_table.as_mut().unwrap().get_outer());
+        self.symbol_table =
+            Some(self.symbol_table.as_mut().unwrap().get_outer());
         self.scope_idx -= 1;
         self.scopes.pop().unwrap()
     }
