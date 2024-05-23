@@ -11,7 +11,7 @@ use crate::{
     utils::add_pad,
 };
 
-pub mod frame;
+mod frame;
 
 pub mod errors;
 
@@ -568,7 +568,7 @@ impl Display for VM {
             if idx == self.fp {
                 buf += "Current Frame:\n";
             }
-            buf += frame.as_str()
+            buf += &frame.to_string();
         }
 
         buf += &self.stack_to_string();
