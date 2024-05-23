@@ -1,6 +1,6 @@
 use crate::{
     ast::Expression,
-    immix::{errors::ImmixError, Immix},
+    immix::errors::ImmixError,
     object::{Object, ObjectType},
     token::Kind,
 };

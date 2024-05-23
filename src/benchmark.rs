@@ -47,7 +47,9 @@ fibonacci(25);
     let mut comp = comp_rst.unwrap();
     let compile_start = Instant::now();
 
-    comp.compile(program.clone());
+    if let Err(e) = comp.compile(program.clone()) {
+        eprintln!("{:?}", e);
+    }
 
     let compile_time = compile_start.elapsed();
 
