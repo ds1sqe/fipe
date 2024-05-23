@@ -13,4 +13,4 @@ categories =["compilers"]
 
 
 [package.metadata.docs.rs]
-rustdoc-args = ["--document-private-item"]
+rustdoc-args = ["--document-private-items"]
