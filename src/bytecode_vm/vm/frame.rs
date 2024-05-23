@@ -1,3 +1,5 @@
+use std::fmt::{Display, Write};
+
 use crate::object::ClosureFunction;
 
 use super::super::bytecode::errors::FrameError;
@@ -48,8 +50,9 @@ impl Frame {
         self.ic += offset
     }
 
-    /// Returns the ic of this [`Frame`].
+    /// Returns the ic of this [`Frame`]
     pub fn ic(&self) -> usize {
+        #![allow(dead_code)]
         self.ic
     }
 
@@ -67,14 +70,15 @@ impl Frame {
     pub fn get_closure_ref(&self) -> &ClosureFunction {
         &self.cf
     }
+}
 
-    /// Create String from `&self`
-    pub fn to_string(&self) -> String {
+impl Display for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = String::new();
         buf += &format!("<FRAME> IC : {}, BP : {}\n", self.ic, self.bp);
         buf += "\nINSTRUCTIONS\n";
         buf += &self.cf.fun.instructions.to_string_with_highlight(self.ic);
 
-        buf
+        f.write_str(buf.as_str())
     }
 }

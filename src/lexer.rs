@@ -118,7 +118,7 @@ impl Lexer {
     }
 
     /// get next token
-    pub fn next(&mut self) -> Token {
+    pub fn next_token(&mut self) -> Token {
         self.skip_whitespace();
 
         let mut token: Token = Token::new(token::Kind::Illegal);

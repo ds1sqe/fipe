@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use self::{errors::VmError, frame::Frame};
 
 use super::bytecode::{instruction::Instruction, Bytecode};
@@ -256,7 +258,7 @@ impl VM {
                                     unreachable!()
                                 };
 
-                                match &instruction {
+                                match instruction {
                                     Instruction::ADD => {
                                         let rst =
                                             Object::String(StringObject {
@@ -280,7 +282,7 @@ impl VM {
                                     invalid => {
                                         return Err(
                                             VmError::InvalidStringInstruction(
-                                                instruction,
+                                                invalid,
                                             ),
                                         );
                                     }
@@ -352,8 +354,14 @@ impl VM {
                             });
                         }
                     }
-                    Instruction::JEQ { idx } => todo!(),
-                    Instruction::JNEQ { idx } => todo!(),
+
+                    Instruction::JEQ { idx: _ } => {
+                        todo!()
+                    }
+                    Instruction::JNEQ { idx: _ } => {
+                        todo!()
+                    }
+
                     Instruction::ARRAY { count } => {
                         let mut elements = Vec::with_capacity(count);
 
@@ -413,41 +421,14 @@ impl VM {
                     Instruction::CLOSURE { idx, free } => {
                         self.make_closure(idx, free);
                     }
-                    not_implemented => {
-                        return Err(VmError::NotImplentedInstruction {
-                            ins: not_implemented,
-                        })
-                    }
                 }
 
                 self.current_frame_mut()
                     .add_ic(instruction.opcode().length());
 
-                return Ok(());
+                Ok(())
             }
         }
-    }
-
-    pub fn to_string(&self) -> String {
-        let mut buf = String::new();
-        buf += "CONSTS\n";
-        for (idx, cons) in self.constants.iter().enumerate() {
-            buf += &format!("{:0>6}\t\t", idx);
-            buf += &cons.to_str();
-            buf += "\n";
-        }
-
-        buf += "\nFrames\n";
-        for (idx, frame) in self.frames.iter().enumerate() {
-            if idx == self.fp {
-                buf += "Current Frame:\n";
-            }
-            buf += &frame.to_string();
-        }
-
-        buf += &self.stack_to_string();
-
-        buf
     }
 
     pub fn stack_to_string(&self) -> String {
@@ -455,13 +436,19 @@ impl VM {
         buf += "\nSTACK\n";
         for idx in 0..self.sp + 5 {
             let obj = &self.stack[idx];
-            if idx < self.sp {
-                buf += &format!("{:->6}\t\t", idx);
-            } else if idx == self.sp {
-                buf += &format!("{:0>6}\t\t", idx);
-            } else {
-                buf += &format!("{:+>6}\t\t", idx);
+
+            match idx.cmp(&self.sp) {
+                std::cmp::Ordering::Less => {
+                    buf += &format!("{:->6}\t\t", idx);
+                }
+                std::cmp::Ordering::Equal => {
+                    buf += &format!("{:0>6}\t\t", idx);
+                }
+                std::cmp::Ordering::Greater => {
+                    buf += &format!("{:+>6}\t\t", idx);
+                }
             }
+
             if obj.is_none() {
                 buf += "NONE"
             } else {
@@ -499,11 +486,11 @@ impl VM {
         if self.sp > 0 {
             let result = self.stack[self.sp].clone();
             self.sp -= 1;
-            return result;
+            result
         } else {
             // TODO: Find better way to representation of None
             self.stack[self.sp + 1] = None;
-            return None;
+            None
         }
     }
 
@@ -563,5 +550,29 @@ impl VM {
         self.push_frame(new_frame);
 
         self.sp = new_bp + local_len;
+    }
+}
+
+impl Display for VM {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = String::new();
+        buf += "CONSTS\n";
+        for (idx, cons) in self.constants.iter().enumerate() {
+            buf += &format!("{:0>6}\t\t", idx);
+            buf += &cons.to_str();
+            buf += "\n";
+        }
+
+        buf += "\nFrames\n";
+        for (idx, frame) in self.frames.iter().enumerate() {
+            if idx == self.fp {
+                buf += "Current Frame:\n";
+            }
+            buf += &frame.to_string();
+        }
+
+        buf += &self.stack_to_string();
+
+        f.write_str(buf.as_str())
     }
 }

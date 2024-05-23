@@ -15,6 +15,16 @@ where
     level: usize,
 }
 
+impl<T: Hash + Eq + PartialEq + Debug + Clone> Default for Environment<T> {
+    fn default() -> Self {
+        Self {
+            binding: Default::default(),
+            outer: Default::default(),
+            level: Default::default(),
+        }
+    }
+}
+
 impl<T: Hash + Eq + PartialEq + Debug + Clone> Environment<T> {
     // get object clone from environment
     pub fn get_clone(&self, key: &T) -> Option<TypedPtr<Object>> {
@@ -23,13 +33,17 @@ impl<T: Hash + Eq + PartialEq + Debug + Clone> Environment<T> {
 
         if rst.is_none() && self.outer.is_some() {
             // if not found, try get object from outer scope
-            return self.outer.as_ref().unwrap().get_clone(&key);
+            return self.outer.as_ref().unwrap().get_clone(key);
         }
         rst.cloned()
     }
 
     // set object to environment
-    pub fn set(&mut self, key: T, obj: TypedPtr<Object>) -> Option<TypedPtr<Object>> {
+    pub fn set(
+        &mut self,
+        key: T,
+        obj: TypedPtr<Object>,
+    ) -> Option<TypedPtr<Object>> {
         self.binding.insert(key, obj)
     }
 
@@ -57,9 +71,11 @@ impl<T: Hash + Eq + PartialEq + Debug + Clone> Environment<T> {
         for (_, ptr) in self.binding.iter_mut() {
             ptr.set_mark(&Mark::Marked);
 
-            let obj = unsafe { &mut (*(ptr.as_ptr()).clone()) };
+            let obj = unsafe { &mut (*(ptr.as_ptr())) };
             if obj.get_type() == ObjectType::Function {
-                let Object::Function(fun) = obj else {unreachable!()};
+                let Object::Function(fun) = obj else {
+                    unreachable!()
+                };
                 fun.env.mark_all();
             }
         }

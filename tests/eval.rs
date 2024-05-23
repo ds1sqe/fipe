@@ -17,7 +17,7 @@ fn test_eval(input: String) -> Result<Option<Object>, EvalError> {
 
     let mut lex_cl = lex.clone();
     loop {
-        let tok = lex_cl.next();
+        let tok = lex_cl.next_token();
         if tok.kind == Kind::EOF {
             break;
         }
@@ -279,7 +279,10 @@ fn test_eval_errors() {
     ));
     tests.add((
         "-\"World\"",
-        EvalError::InvalidPrefixOperationTarget(ObjectType::String, Kind::Minus),
+        EvalError::InvalidPrefixOperationTarget(
+            ObjectType::String,
+            Kind::Minus,
+        ),
     ));
 
     tests.add((

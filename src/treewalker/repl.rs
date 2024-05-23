@@ -49,7 +49,7 @@ pub fn start() {
 
                 if debug_lexer {
                     loop {
-                        let cur_token = cloned_lexer.next();
+                        let cur_token = cloned_lexer.next_token();
 
                         println!("Debug Output (Lexer) >> {:?}", cur_token);
 
@@ -68,7 +68,8 @@ pub fn start() {
 
                 if program.is_ok() {
                     let program = program.unwrap();
-                    let result = evaluate(program.to_node(), &mut heap, &mut env);
+                    let result =
+                        evaluate(program.to_node(), &mut heap, &mut env);
 
                     if debug_evaluator {
                         println!("Debug Output (Eval) >> {:?}", result);

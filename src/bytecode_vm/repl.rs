@@ -13,10 +13,6 @@ pub fn start() {
     let debug_parser = false;
     let show_error = true;
 
-    let show_stack = true;
-    let show_instruction = true;
-    let run_single_cycle = true;
-
     loop {
         io::stdout().lock().write_all(PROMPT.as_bytes()).unwrap();
         io::stdout().flush().unwrap();
@@ -28,7 +24,7 @@ pub fn start() {
 
                 if debug_lexer {
                     loop {
-                        let cur_token = cloned_lexer.next();
+                        let cur_token = cloned_lexer.next_token();
 
                         println!("Debug Output (Lexer) >> {:?}", cur_token);
 
@@ -56,7 +52,7 @@ pub fn start() {
                     }
                     let mut compiler = comp_rst.unwrap();
 
-                    let mut comp = compiler.compile(program);
+                    let comp = compiler.compile(program);
 
                     if comp.is_err() {
                         println!("Error while compiler creation {:?}", comp);
@@ -67,7 +63,7 @@ pub fn start() {
                     match bytecode_rst {
                         Ok(_) => (),
                         Err(err) => {
-                            println!("Error while taking bytecode {:?}", comp);
+                            println!("Error while taking bytecode {:?}", err);
                             continue;
                         }
                     }
@@ -75,7 +71,7 @@ pub fn start() {
                     let mut vm =
                         unsafe { VM::new(bytecode_rst.unwrap_unchecked()) };
                     buf.clear();
-                    println!("Intitial state:{}", vm.to_string());
+                    println!("Intitial state:{}", vm);
 
                     println!("Commands:");
                     println!("\tpressing enter: excute next cycle.");
@@ -95,9 +91,11 @@ pub fn start() {
                                 if !vm.is_runable() {
                                     break;
                                 }
-                                vm.run_single();
+                                if let Err(e) = vm.run_single() {
+                                    eprintln!("{:?}", e);
+                                }
 
-                                println!("{}", vm.to_string());
+                                println!("{}", vm);
                             }
                             Err(err) => {
                                 println!("Error occured during reading stdin");
@@ -108,15 +106,13 @@ pub fn start() {
 
                     println!("VM Terminated.");
                     println!("Please give new input.");
-                } else {
-                    if show_error {
-                        println!("!!!> ERROR OCCURED <!!!");
-                        for errs in program.err().unwrap() {
-                            println!(">> ERROR DETAIL ");
-                            for err in errs {
-                                println!("Pos>> {:?}", err.as_ref().position());
-                                println!("Detail>> {} ", err.as_ref().detail());
-                            }
+                } else if show_error {
+                    println!("!!!> ERROR OCCURED <!!!");
+                    for errs in program.err().unwrap() {
+                        println!(">> ERROR DETAIL ");
+                        for err in errs {
+                            println!("Pos>> {:?}", err.as_ref().position());
+                            println!("Detail>> {} ", err.as_ref().detail());
                         }
                     }
                 }

@@ -54,7 +54,7 @@ impl ObjectTrait for Object {
     }
 
     fn to_str(&self) -> String {
-        let inner = match self {
+        match self {
             Object::Return(x) => x.to_str(),
             Object::Int(x) => x.to_str(),
             Object::Bool(x) => x.to_str(),
@@ -63,8 +63,7 @@ impl ObjectTrait for Object {
             Object::Array(x) => x.to_str(),
             Object::CompiledFunction(x) => x.to_str(),
             Object::Closure(x) => x.to_str(),
-        };
-        inner
+        }
     }
 }
 
@@ -132,7 +131,9 @@ pub struct Function {
 
 impl PartialEq for Function {
     fn eq(&self, other: &Self) -> bool {
-        self.identifier == other.identifier && self.args == other.args && self.block == other.block
+        self.identifier == other.identifier
+            && self.args == other.args
+            && self.block == other.block
     }
 }
 
@@ -152,7 +153,7 @@ impl ObjectTrait for Function {
         buf += "(";
         buf += &arguments.join(", ");
         buf += ") {\n";
-        buf += &format!("{}", self.block.to_str());
+        buf += &self.block.to_str();
         buf += "}";
 
         buf

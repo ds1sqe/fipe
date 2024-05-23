@@ -1,6 +1,6 @@
 use std::alloc::Layout;
 
-use crate::ast::Identifier;
+use crate::{ast::Identifier, token};
 
 #[derive(Debug)]
 pub enum CompileError {
@@ -19,6 +19,9 @@ pub enum CompileError {
     /// failed to create new scope bacause of
     /// [`InstructionsError`]
     ScopeCreateFaild(InstructionsError),
+
+    WrongPrefixOperator(token::Kind),
+    WrongInfixOperator(token::Kind),
 }
 
 #[derive(Debug)]

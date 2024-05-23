@@ -168,7 +168,7 @@ fn test_lexer() {
     expects.push(Token::with(Kind::EOF, "EOF"));
 
     for expect in expects {
-        let cur_token = lex.next();
+        let cur_token = lex.next_token();
         assert_eq!(expect.kind, cur_token.kind);
         assert_eq!(expect.literal, cur_token.literal);
     }

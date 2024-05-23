@@ -5,6 +5,8 @@ pub mod instructions;
 pub mod opcode;
 mod symbol;
 
+use std::fmt::Display;
+
 use crate::object::{Object, ObjectTrait};
 
 use self::{errors::BytecodeError, instructions::Instructions};
@@ -24,8 +26,10 @@ impl Bytecode {
             instructions: new_instruction,
         })
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl Display for Bytecode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = String::new();
         buf += "\nCONSTS\n";
         for (idx, cons) in self.constants.iter().enumerate() {
@@ -38,6 +42,6 @@ impl Bytecode {
 
         buf += &self.instructions.to_string();
 
-        buf
+        f.write_str(&buf)
     }
 }

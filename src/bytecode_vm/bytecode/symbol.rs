@@ -16,6 +16,7 @@ pub struct Symbol {
 }
 
 impl Symbol {
+    #![allow(dead_code)]
     pub fn is_global(&self) -> bool {
         self.scope == Scope::Global
     }
@@ -62,16 +63,16 @@ impl SymbolTable {
     }
 
     /// TODO: add duplicate checking rule
-    pub fn define(&mut self, name: &String) -> usize {
+    pub fn define(&mut self, name: &str) -> usize {
         let scope = if self.is_global() {
             Scope::Global
         } else {
             Scope::Local
         };
         self.table.insert(
-            name.clone(),
+            name.to_string(),
             Symbol {
-                name: name.clone(),
+                name: name.to_string(),
                 scope,
                 index: self.len,
             },
@@ -96,13 +97,13 @@ impl SymbolTable {
         symbol
     }
 
-    pub fn define_function_name(&mut self, name: &String) -> Symbol {
+    pub fn define_function_name(&mut self, name: &str) -> Symbol {
         let func_sym = Symbol {
-            name: name.clone(),
+            name: name.to_string(),
             scope: Scope::Function,
             index: 0,
         };
-        self.table.insert(name.clone(), func_sym.clone());
+        self.table.insert(name.to_string(), func_sym.clone());
         func_sym
     }
 
@@ -111,25 +112,23 @@ impl SymbolTable {
     }
 
     pub fn resolve(&mut self, name: &String) -> Option<Symbol> {
-        let rst = self.table.get(name);
-        if rst.is_some() {
-            return Some(rst.unwrap().clone());
-        } else {
-            if self.outer.is_some() {
-                // find symbol in self.outer
-                let outer_rst = self.outer.as_mut().unwrap().resolve(name);
-                if outer_rst.is_some() {
-                    if outer_rst.as_ref().unwrap().scope == Scope::Global {
-                        return outer_rst;
-                    } else {
-                        // outer local symbol means it's a free variable
-                        let free = self
-                            .define_free(&outer_rst.as_ref().unwrap().clone());
-                        return Some(free);
-                    }
+        if let Some(sym) = self.table.get(name) {
+            return Some(sym.clone());
+        } else if self.outer.is_some() {
+            // find symbol in self.outer
+            let outer_rst = self.outer.as_mut().unwrap().resolve(name);
+            if outer_rst.is_some() {
+                if outer_rst.as_ref().unwrap().scope == Scope::Global {
+                    return outer_rst;
+                } else {
+                    // outer local symbol means it's a free variable
+                    let free =
+                        self.define_free(&outer_rst.as_ref().unwrap().clone());
+                    return Some(free);
                 }
             }
         }
+
         None
     }
 }

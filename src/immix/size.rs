@@ -31,7 +31,7 @@ impl SizeClass {
             SMALL_MIN..=SMALL_MAX => Ok(SizeClass::Small),
             MEDIUM_MIN..=MEDIUM_MAX => Ok(SizeClass::Medium),
             LARGE_MIN..=LARGE_MAX => Ok(SizeClass::Large),
-            __ => Err(SizeClassError::TooBig),
+            __TooBig => Err(SizeClassError::TooBig),
         }
     }
 }

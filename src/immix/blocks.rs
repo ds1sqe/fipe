@@ -85,9 +85,9 @@ impl Block {
             let layout = Layout::from_size_align_unchecked(size, size);
             let ptr = alloc(layout);
             if ptr.is_null() {
-                return Err(BlockError::OutOfMemory);
+                Err(BlockError::OutOfMemory)
             } else {
-                return Ok(NonNull::new_unchecked(ptr));
+                Ok(NonNull::new_unchecked(ptr))
             }
         }
     }
@@ -116,6 +116,12 @@ pub struct Hole {
 }
 
 impl BlockMeta {
+    /// Creates a new [`BlockMeta`].
+    ///
+    /// # Safety
+    ///
+    /// from `block_ptr` to `block_ptr` + `LINE_MARK_START`
+    /// have to be available
     pub unsafe fn new(block_ptr: *const u8) -> BlockMeta {
         let mut meta = BlockMeta {
             lines: unsafe { block_ptr.add(LINE_MARK_START) as *mut Mark },
@@ -206,6 +212,7 @@ impl BlockMeta {
         }
     }
 
+    /// Returns the mark status str of this [`BlockMeta`].
     pub fn mark_status_str(&self) -> String {
         unsafe {
             let mut buf = String::new();
@@ -218,7 +225,7 @@ impl BlockMeta {
                 };
                 buf += &format!("{flag}");
                 if (idx + 1) % 8 == 0 {
-                    buf += &format!(" ");
+                    buf += " ";
                 }
                 if (idx + 1) % 64 == 0 {
                     buf += &format!(" {idx}\n");
@@ -242,7 +249,7 @@ impl BlockMeta {
                     };
                     buf += &format!("{flag}");
                     if (idx + 1) % 8 == 0 {
-                        buf += &format!(" ");
+                        buf += " ";
                     }
                     if (idx + 1) % 64 == 0 {}
                 }
@@ -347,7 +354,6 @@ impl BumpBlock {
 
             let self_ptr = NonNull::new(self);
             if self_ptr.is_none() {
-                // TODO: change err
                 return Err(BlockError::OutOfMemory);
             }
             let ptr = MetaPtr {
@@ -355,7 +361,7 @@ impl BumpBlock {
                 high: mark_high,
                 block: self_ptr.unwrap(),
             };
-            Ok((ptr, cursor as *const u8))
+            Ok((ptr, cursor))
         } else {
             // try find hole.
             if let Some(Hole { start, end }) =
@@ -371,7 +377,13 @@ impl BumpBlock {
             Err(BlockError::NoSpaceForAllocation)
         }
     }
+    /// write object to `self.block`
+    ///
+    /// # Safety
+    ///
+    /// this function will access a raw ptr of self.block
     unsafe fn write<T>(&mut self, object: T, offset: usize) -> *const T {
+        #![allow(dead_code)]
         let ptr = self.block.as_ptr().add(offset) as *mut T;
         write(ptr, object);
         ptr
@@ -428,9 +440,9 @@ impl LargeBlock {
             let layout = Layout::from_size_align_unchecked(size, size);
             let ptr = alloc(layout);
             if ptr.is_null() {
-                return Err(BlockError::OutOfMemory);
+                Err(BlockError::OutOfMemory)
             } else {
-                return Ok(NonNull::new_unchecked(ptr));
+                Ok(NonNull::new_unchecked(ptr))
             }
         }
     }
@@ -497,14 +509,14 @@ impl BlockList {
                     meta: OR::L(meta_ptr),
                     data: cursor,
                 }),
-                Err(__) => {
+                Err(__failed) => {
                     // head[0] bump block is full
                     if self.head.len() != 1 {
                         self.rest
                             .insert(self.count, self.head.pop_front().unwrap());
                         self.count += 1;
                         // recursion
-                        return self.head_alloc(alloc_size);
+                        self.head_alloc(alloc_size)
                     } else {
                         let new_bump = BumpBlock::new();
                         if new_bump.is_err() {
@@ -605,5 +617,11 @@ impl BlockList {
         for (_, blk) in self.rest.iter_mut() {
             blk.unmark();
         }
+    }
+}
+
+impl Default for BlockList {
+    fn default() -> Self {
+        Self::new()
     }
 }

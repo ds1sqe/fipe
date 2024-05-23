@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::io::Write;
 
 use super::opcode::OpCode;
@@ -216,8 +217,10 @@ impl Instruction {
 
         buf
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl Display for Instruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut buf = String::new();
 
         match self {
@@ -254,13 +257,17 @@ impl Instruction {
             Instruction::JEQ { idx } => buf += &format!("JEQ\t\t{idx}"),
             Instruction::JNEQ { idx } => buf += &format!("JNEQ\t\t{idx}"),
             Instruction::ARRAY { count } => buf += &format!("ARRAY\t\t{count}"),
-            Instruction::INDEX => buf += &format!("INDEX"),
-            Instruction::CALL { arg_len } => buf += &format!("CALL\t\t{arg_len}"),
+            Instruction::INDEX => buf += "INDEX",
+            Instruction::CALL { arg_len } => {
+                buf += &format!("CALL\t\t{arg_len}")
+            }
             Instruction::RETN => buf += "RETN",
             Instruction::RETV => buf += "RETV",
-            Instruction::CLOSURE { idx, free } => buf += &format!("CLOSURE\t\t{idx}\t{free}"),
+            Instruction::CLOSURE { idx, free } => {
+                buf += &format!("CLOSURE\t\t{idx}\t{free}")
+            }
         }
 
-        buf
+        f.write_str(buf.as_str())
     }
 }

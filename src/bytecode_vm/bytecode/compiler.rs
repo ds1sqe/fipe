@@ -71,16 +71,17 @@ impl Compiler {
     /// have failed
     pub fn create() -> Result<Self, CompileError> {
         let mut scopes = Vec::new();
-        let inst_rst = Instructions::create();
-        if inst_rst.is_err() {
-            return Err(CompileError::CreationFailed(inst_rst.unwrap_err()));
+        match Instructions::create() {
+            Err(e) => {
+                return Err(CompileError::CreationFailed(e));
+            }
+            Ok(ins) => {
+                scopes.push(
+                    // this Scope is will be main function
+                    Scope { instructions: ins },
+                );
+            }
         }
-        scopes.push(
-            // this Scope is will be main function
-            Scope {
-                instructions: inst_rst.unwrap(),
-            },
-        );
 
         Ok(Self {
             constants: Vec::new(),
@@ -119,10 +120,7 @@ impl Compiler {
     /// if have successfully compiled, returns Ok(True)
     pub fn compile(&mut self, src: Program) -> Result<bool, CompileError> {
         for stm in src.statements {
-            match self.compile_stm(&stm) {
-                Err(e) => return Err(e),
-                Ok(_) => (),
-            }
+            self.compile_stm(&stm)?;
         }
 
         SUCCESS
@@ -166,8 +164,8 @@ impl Compiler {
         &mut self,
         stm: &ExpressionStatement,
     ) -> Result<bool, CompileError> {
-        self.compile_exp(&stm.expression.as_ref().unwrap())?;
-        self.emit(Instruction::POP);
+        self.compile_exp(stm.expression.as_ref().unwrap())?;
+        self.emit(Instruction::POP)?;
         SUCCESS
     }
 
@@ -185,9 +183,9 @@ impl Compiler {
         self.compile_exp(&stm.value.clone().unwrap())?;
 
         if self.symbol_table.as_ref().unwrap().is_global() {
-            self.emit(Instruction::DEFGLB { idx });
+            self.emit(Instruction::DEFGLB { idx })?;
         } else {
-            self.emit(Instruction::DEFLCL { idx });
+            self.emit(Instruction::DEFLCL { idx })?;
         }
 
         SUCCESS
@@ -201,10 +199,10 @@ impl Compiler {
         match &stm.value {
             Some(exp) => {
                 self.compile_exp(exp)?;
-                self.emit(Instruction::RETV);
+                self.emit(Instruction::RETV)?;
             }
             None => {
-                self.emit(Instruction::RETN);
+                self.emit(Instruction::RETN)?;
             }
         }
         SUCCESS
@@ -234,7 +232,7 @@ impl Compiler {
         let rst = self.symbol_table.as_mut().unwrap().resolve(&exp.value);
         if rst.is_some() {
             let sym = rst.unwrap();
-            self.load_symbol(&sym);
+            self.load_symbol(&sym)?;
 
             SUCCESS
         } else {
@@ -306,7 +304,7 @@ impl Compiler {
         &mut self,
         lit: &FunctionLiteral,
     ) -> Result<bool, CompileError> {
-        self.enter_scope();
+        self.enter_scope()?;
 
         if lit.ident.is_some() {
             unsafe {
@@ -321,29 +319,28 @@ impl Compiler {
         // Instruction example
 
         // parameters
-        // 001 GETLCL 0 (param1)
-        // 002 GETLCL 1 (param2)
+        // 001 DEFLCL 0 (param1)
+        // 002 DEFLCL 1 (param2)
 
         for param in &lit.parameters {
             self.symbol_table.as_mut().unwrap().define(&param.value);
         }
 
-        // parameters
         // 003 DEFLCL 2 (local1)
         // 004 DEFLCL 3 (local2)
-        // 005 GETLCL 3 (local2)
-        // 006 GETLCL 2 (local1)
 
         self.compile_block_stm(&lit.body)?;
+        // 005 GETLCL 3 (local2)
+        // 006 GETLCL 2 (local1)
 
         // if the last instuction is POP then
         //  replace it with RETV
         //  which means it's have ended with expression statement.
-        //  it's implicitly
+        //  it's implicitly returned
         //
         if !self.update_last_instruction_if(Instruction::POP, Instruction::RETV)
         {
-            self.emit(Instruction::RETN);
+            self.emit(Instruction::RETN)?;
         }
 
         let free_syms = self.symbol_table.as_ref().unwrap().get_free();
@@ -355,7 +352,7 @@ impl Compiler {
         // 008 GETFREE 1 (free2)
 
         for free in free_syms.iter() {
-            self.load_symbol(free);
+            self.load_symbol(free)?;
         }
 
         let compiled_function = CompiledFunction {
@@ -370,7 +367,7 @@ impl Compiler {
         self.emit(Instruction::CLOSURE {
             idx: self.constants.len() - 1,
             free: free_syms.len(),
-        });
+        })?;
 
         // if function has identifier and have't let bind
         if lit.ident.is_some() && !lit.is_let_bind {
@@ -380,89 +377,69 @@ impl Compiler {
                 .unwrap()
                 .define(&lit.ident.as_ref().unwrap().value);
             if self.symbol_table.as_ref().unwrap().is_global() {
-                self.emit(Instruction::DEFGLB { idx });
+                self.emit(Instruction::DEFGLB { idx })?;
             } else {
-                self.emit(Instruction::DEFLCL { idx });
+                self.emit(Instruction::DEFLCL { idx })?;
             }
         }
 
         SUCCESS
     }
 
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
     fn compile_array_literal(
         &mut self,
         lit: &ArrayLiteral,
     ) -> Result<bool, CompileError> {
         for el in lit.elements.iter() {
-            self.compile_exp(el);
+            self.compile_exp(el)?;
         }
         self.emit(Instruction::ARRAY {
             count: lit.elements.len(),
-        });
+        })?;
 
         SUCCESS
     }
 
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
     fn compile_prefix_exp(
         &mut self,
         exp: &PrefixExpression,
     ) -> Result<bool, CompileError> {
-        self.compile_exp(&exp.right);
+        self.compile_exp(&exp.right)?;
 
         match exp.token.kind {
-            Kind::Bang => self.emit(Instruction::BANG),
-            Kind::Minus => self.emit(Instruction::NEG),
-            __not_matched => {
-                // emit error
-                todo!()
-            }
+            Kind::Bang => self.emit(Instruction::BANG)?,
+            Kind::Minus => self.emit(Instruction::NEG)?,
+            wrong_token => Err(CompileError::WrongPrefixOperator(wrong_token))?,
         };
 
         SUCCESS
     }
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
+
     fn compile_infix_exp(
         &mut self,
         exp: &InfixExpression,
     ) -> Result<bool, CompileError> {
-        self.compile_exp(&exp.right);
-        self.compile_exp(&exp.left);
+        self.compile_exp(&exp.right)?;
+        self.compile_exp(&exp.left)?;
 
-        match &exp.operator.kind {
+        match exp.operator.kind {
             Kind::Assign => todo!(),
-            Kind::Plus => self.emit(Instruction::ADD),
-            Kind::Minus => self.emit(Instruction::SUB),
-            Kind::Product => self.emit(Instruction::PRODUCT),
-            Kind::Divide => self.emit(Instruction::DIVIDE),
-            Kind::Mod => self.emit(Instruction::MOD),
-            Kind::LT => self.emit(Instruction::CLT),
-            Kind::LT_OR_EQ => self.emit(Instruction::CLTE),
-            Kind::GT => self.emit(Instruction::CGT),
-            Kind::GT_OR_EQ => self.emit(Instruction::CGTE),
-            Kind::EQ => self.emit(Instruction::CEQ),
-            Kind::NOT_EQ => self.emit(Instruction::CNEQ),
-            Kind::And => self.emit(Instruction::AND),
-            Kind::Or => self.emit(Instruction::OR),
-            Kind::Bit_And => self.emit(Instruction::BAND),
-            Kind::Bit_Or => self.emit(Instruction::BOR),
-            __not_matched => {
-                // emit error
-                todo!()
-            }
+            Kind::Plus => self.emit(Instruction::ADD)?,
+            Kind::Minus => self.emit(Instruction::SUB)?,
+            Kind::Product => self.emit(Instruction::PRODUCT)?,
+            Kind::Divide => self.emit(Instruction::DIVIDE)?,
+            Kind::Mod => self.emit(Instruction::MOD)?,
+            Kind::LT => self.emit(Instruction::CLT)?,
+            Kind::LT_OR_EQ => self.emit(Instruction::CLTE)?,
+            Kind::GT => self.emit(Instruction::CGT)?,
+            Kind::GT_OR_EQ => self.emit(Instruction::CGTE)?,
+            Kind::EQ => self.emit(Instruction::CEQ)?,
+            Kind::NOT_EQ => self.emit(Instruction::CNEQ)?,
+            Kind::And => self.emit(Instruction::AND)?,
+            Kind::Or => self.emit(Instruction::OR)?,
+            Kind::Bit_And => self.emit(Instruction::BAND)?,
+            Kind::Bit_Or => self.emit(Instruction::BOR)?,
+            wrong_token => Err(CompileError::WrongInfixOperator(wrong_token))?,
         };
 
         SUCCESS
@@ -480,9 +457,9 @@ impl Compiler {
         &mut self,
         exp: &IfExpression,
     ) -> Result<bool, CompileError> {
-        self.compile_exp(&exp.condition);
+        self.compile_exp(&exp.condition)?;
         let jump_consequence = self.emit(Instruction::JNS { idx: 0 })?;
-        self.compile_stm(&Statement::BlockStatement(exp.consequence.clone()));
+        self.compile_stm(&Statement::BlockStatement(exp.consequence.clone()))?;
 
         self.remove_last_instruction_if(Instruction::POP);
 
@@ -500,7 +477,7 @@ impl Compiler {
 
             self.compile_stm(&Statement::BlockStatement(
                 exp.alternative.clone().unwrap(),
-            ));
+            ))?;
             self.remove_last_instruction_if(Instruction::POP);
 
             unsafe {
@@ -524,16 +501,12 @@ impl Compiler {
 
         SUCCESS
     }
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
+
     fn compile_call_exp(
         &mut self,
         exp: &CallExpression,
     ) -> Result<bool, CompileError> {
-        self.compile_exp(&exp.function);
+        self.compile_exp(&exp.function)?;
 
         for arg in &exp.arguments {
             self.compile_exp(arg)?;
@@ -546,19 +519,14 @@ impl Compiler {
         SUCCESS
     }
 
-    /// .
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if .
     fn compile_index_exp(
         &mut self,
         exp: &IndexExpression,
     ) -> Result<bool, CompileError> {
-        self.compile_exp(&exp.left);
-        self.compile_exp(&exp.index);
+        self.compile_exp(&exp.left)?;
+        self.compile_exp(&exp.index)?;
 
-        self.emit(Instruction::INDEX);
+        self.emit(Instruction::INDEX)?;
 
         SUCCESS
     }
@@ -569,8 +537,8 @@ impl Compiler {
             .instructions
             .add_instruction(ins.clone());
 
-        if res.is_err() {
-            return Err(CompileError::InstructionWriteError(res.unwrap_err()));
+        if let Err(e) = res {
+            return Err(CompileError::InstructionWriteError(e));
         }
 
         let pos = res.unwrap();
@@ -691,8 +659,7 @@ impl Compiler {
         &mut self.scopes[self.scope_idx]
     }
 
-    /// .
-    fn load_symbol(&mut self, sym: &Symbol) {
+    fn load_symbol(&mut self, sym: &Symbol) -> Result<bool, CompileError> {
         let inst = match sym.scope() {
             symbol::Scope::Global => Instruction::GETGLB { idx: sym.index },
             symbol::Scope::Local => Instruction::GETLCL { idx: sym.index },
@@ -700,6 +667,8 @@ impl Compiler {
             symbol::Scope::Function => Instruction::GETCUR,
         };
 
-        self.emit(inst);
+        self.emit(inst)?;
+
+        SUCCESS
     }
 }

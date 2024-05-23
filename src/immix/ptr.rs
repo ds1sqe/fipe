@@ -29,13 +29,15 @@ impl<T: Sized> RawPtr<T> {
     }
 
     /// get ref to the object
-    /// [safety] Unsafe because there are no guarantees
+    /// # Safety
+    /// Unsafe because there are no guarantees
     /// about internal `ptr`'s validity
     pub unsafe fn as_ref(&self) -> &T {
         self.ptr.as_ref()
     }
     /// get mut ref to the object
-    /// [safety] Unsafe because there are no guarantees
+    /// # Safety
+    /// Unsafe because there are no guarantees
     /// about internal `ptr`'s validity
     pub unsafe fn as_mut(&mut self) -> &mut T {
         self.ptr.as_mut()
@@ -44,7 +46,7 @@ impl<T: Sized> RawPtr<T> {
 
 impl<T: Sized> Clone for RawPtr<T> {
     fn clone(&self) -> RawPtr<T> {
-        RawPtr { ptr: self.ptr }
+        *self
     }
 }
 

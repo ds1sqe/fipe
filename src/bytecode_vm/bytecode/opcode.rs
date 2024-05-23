@@ -80,7 +80,7 @@ impl OpCode {
             | OpCode::BOR
             | OpCode::RETN
             | OpCode::RETV
-            | OpCode::GETCUR => return &NO_ARG.arg_size,
+            | OpCode::GETCUR => NO_ARG.arg_size,
 
             OpCode::CONST
             | OpCode::DEFGLB
@@ -90,13 +90,15 @@ impl OpCode {
             | OpCode::GETFREE
             | OpCode::CALL
             | OpCode::ARRAY
-            | OpCode::INDEX => return &CONST.arg_size,
+            | OpCode::INDEX => CONST.arg_size,
 
-            OpCode::JMP | OpCode::JIS | OpCode::JNS | OpCode::JEQ | OpCode::JNEQ => {
-                return &JUMP.arg_size
-            }
+            OpCode::JMP
+            | OpCode::JIS
+            | OpCode::JNS
+            | OpCode::JEQ
+            | OpCode::JNEQ => JUMP.arg_size,
 
-            OpCode::CLOSURE => return &CLOSURE.arg_size,
+            OpCode::CLOSURE => CLOSURE.arg_size,
         }
     }
     pub fn length(&self) -> usize {
@@ -122,7 +124,7 @@ impl OpCode {
             | OpCode::BOR
             | OpCode::RETN
             | OpCode::RETV
-            | OpCode::GETCUR => return NO_ARG.length,
+            | OpCode::GETCUR => NO_ARG.length,
 
             OpCode::CONST
             | OpCode::DEFGLB
@@ -132,13 +134,15 @@ impl OpCode {
             | OpCode::GETFREE
             | OpCode::CALL
             | OpCode::ARRAY
-            | OpCode::INDEX => return CONST.length,
+            | OpCode::INDEX => CONST.length,
 
-            OpCode::JMP | OpCode::JIS | OpCode::JNS | OpCode::JEQ | OpCode::JNEQ => {
-                return JUMP.length
-            }
+            OpCode::JMP
+            | OpCode::JIS
+            | OpCode::JNS
+            | OpCode::JEQ
+            | OpCode::JNEQ => JUMP.length,
 
-            OpCode::CLOSURE => return CLOSURE.length,
+            OpCode::CLOSURE => CLOSURE.length,
         }
     }
 }

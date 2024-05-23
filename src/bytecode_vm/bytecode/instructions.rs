@@ -1,4 +1,8 @@
-use std::{alloc, alloc::Layout, ptr::NonNull};
+use std::{
+    alloc::{self, Layout},
+    fmt::Display,
+    ptr::NonNull,
+};
 
 use super::{
     errors::InstructionsError, instruction::Instruction, opcode::OpCode,
@@ -37,7 +41,7 @@ impl Instructions {
 
         let new_ptr = unsafe { alloc::alloc(layout) };
 
-        let ptr = match NonNull::new(new_ptr as *mut u8) {
+        let ptr = match NonNull::new(new_ptr) {
             Some(p) => p,
             None => {
                 // HACK: change this to configuration
@@ -61,32 +65,6 @@ impl Instructions {
             len: 0,
         })
     }
-
-    /// Stringify this [`Instructions`]
-    pub fn to_string(&self) -> String {
-        let mut buf = String::new();
-        let mut idx = 0;
-
-        while idx < self.len {
-            let res = self.read_instruction(idx);
-
-            if res.is_err() {
-                return format!(
-                    "Error have occured on reading instruction. Error: {:?}",
-                    res.unwrap_err()
-                );
-            }
-
-            let ins = res.unwrap();
-            buf += &format!("{:0>5}\t\t", idx);
-            buf += &ins.to_string();
-            buf += "\n";
-            idx += ins.opcode().length();
-        }
-
-        buf
-    }
-
     /// Stringify this [`Instructions`]
     ///
     /// * hidx - index of highlight target
@@ -189,7 +167,7 @@ impl Instructions {
             let opcode =
                 std::ptr::read(self.byte.as_ptr().add(offset) as *const OpCode);
 
-            let foo = match opcode {
+            let instruction = match opcode {
                 OpCode::PUSH => Instruction::PUSH,
                 OpCode::POP => Instruction::POP,
                 OpCode::ADD => Instruction::ADD,
@@ -253,7 +231,7 @@ impl Instructions {
                 }
             };
 
-            Ok(foo)
+            Ok(instruction)
         }
     }
 
@@ -276,16 +254,16 @@ impl Instructions {
         let new_cap = 2 * self.cap;
         let new_layout = Layout::array::<u8>(new_cap).unwrap();
 
-        if (new_layout.size() <= isize::MAX as usize) {
+        if new_layout.size() <= isize::MAX as usize {
             return Err(InstructionsError::TooLargeToAllocate);
         }
 
         let old_layout = Layout::array::<u8>(self.cap).unwrap();
-        let old_ptr = self.byte.as_ptr() as *mut u8;
+        let old_ptr = self.byte.as_ptr();
         let new_ptr =
             unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) };
 
-        self.byte = match NonNull::new(new_ptr as *mut u8) {
+        self.byte = match NonNull::new(new_ptr) {
             Some(p) => p,
             None => {
                 // HACK: change this to configuration
@@ -310,13 +288,41 @@ impl Instructions {
     ///
     /// # Safety
     /// this is unsafe because of possibility of multiple owner of this
+    #[allow(dead_code)]
     unsafe fn manual_drop(&mut self) {
         dbg!("drop...", &self);
         unsafe {
             alloc::dealloc(
-                self.byte.as_ptr() as *mut u8,
+                self.byte.as_ptr(),
                 Layout::array::<u8>(self.cap).unwrap(),
             );
         }
+    }
+}
+
+impl Display for Instructions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = String::new();
+        let mut idx = 0;
+
+        while idx < self.len {
+            let res = self.read_instruction(idx);
+
+            if res.is_err() {
+                f.write_fmt(format_args!(
+                    "Error have occured on reading instruction. Error: {:?}",
+                    res.unwrap_err()
+                ))?;
+                return Ok(());
+            }
+
+            let ins = res.unwrap();
+            buf += &format!("{:0>5}\t\t", idx);
+            buf += &ins.to_string();
+            buf += "\n";
+            idx += ins.opcode().length();
+        }
+
+        f.write_str(buf.as_str())
     }
 }
