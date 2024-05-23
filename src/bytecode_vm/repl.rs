@@ -45,11 +45,35 @@ pub fn start() {
                     println!("Debug Output (Parser) >> {:?}", program);
                 }
 
-                if program.is_ok() {
-                    let program = program.unwrap();
-                    let mut comp = Compiler::create();
-                    comp.compile(program);
-                    let mut vm = VM::new(comp.bytecode());
+                if let Ok(program) = program {
+                    let comp_rst = Compiler::create();
+                    if comp_rst.is_err() {
+                        println!(
+                            "Error while compiler creation {:?}",
+                            comp_rst
+                        );
+                        continue;
+                    }
+                    let mut compiler = comp_rst.unwrap();
+
+                    let mut comp = compiler.compile(program);
+
+                    if comp.is_err() {
+                        println!("Error while compiler creation {:?}", comp);
+                        continue;
+                    }
+
+                    let bytecode_rst = compiler.bytecode();
+                    match bytecode_rst {
+                        Ok(_) => (),
+                        Err(err) => {
+                            println!("Error while taking bytecode {:?}", comp);
+                            continue;
+                        }
+                    }
+
+                    let mut vm =
+                        unsafe { VM::new(bytecode_rst.unwrap_unchecked()) };
                     buf.clear();
                     println!("Intitial state:{}", vm.to_string());
 

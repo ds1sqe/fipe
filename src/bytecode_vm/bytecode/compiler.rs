@@ -481,39 +481,45 @@ impl Compiler {
         exp: &IfExpression,
     ) -> Result<bool, CompileError> {
         self.compile_exp(&exp.condition);
-        let jump_consequence = self.emit(Instruction::JNS { idx: 0 });
+        let jump_consequence = self.emit(Instruction::JNS { idx: 0 })?;
         self.compile_stm(&Statement::BlockStatement(exp.consequence.clone()));
 
         self.remove_last_instruction_if(Instruction::POP);
 
         if exp.alternative.is_some() {
-            let jump_alternative = self.emit(Instruction::JMP { idx: 0 });
+            let jump_alternative = self.emit(Instruction::JMP { idx: 0 })?;
 
-            self.update(
-                Instruction::JNS {
-                    idx: self.next_offset(),
-                },
-                jump_consequence,
-            );
+            unsafe {
+                self.update(
+                    Instruction::JNS {
+                        idx: self.next_offset(),
+                    },
+                    jump_consequence,
+                );
+            }
 
             self.compile_stm(&Statement::BlockStatement(
                 exp.alternative.clone().unwrap(),
             ));
             self.remove_last_instruction_if(Instruction::POP);
 
-            self.update(
-                Instruction::JMP {
-                    idx: self.next_offset(),
-                },
-                jump_alternative,
-            );
+            unsafe {
+                self.update(
+                    Instruction::JMP {
+                        idx: self.next_offset(),
+                    },
+                    jump_alternative,
+                );
+            }
         } else {
-            self.update(
-                Instruction::JNS {
-                    idx: self.next_offset(),
-                },
-                jump_consequence,
-            );
+            unsafe {
+                self.update(
+                    Instruction::JNS {
+                        idx: self.next_offset(),
+                    },
+                    jump_consequence,
+                );
+            }
         }
 
         SUCCESS
@@ -529,33 +535,13 @@ impl Compiler {
     ) -> Result<bool, CompileError> {
         self.compile_exp(&exp.function);
 
-        // example of instruction
-        // 000 Function
-        // 001 GETLCC arg 1
-        // 002 GETLCC arg 2
-        // 003 GETLCC local 1
-        // 004 GETLCC local 2
-        // 005 GETFREE free1
-        // 006 GETFREE free2
-        // 007 CALL
-
-        // expected stack
-        // 000 Function (bp)
-        // 001 arg 1
-        // 002 arg 2
-        // 003 local 1
-        // 004 local 2
-        // 005 free1
-        // 006 free2
-        // 007 LOCAL STACK
-
         for arg in &exp.arguments {
-            self.compile_exp(arg)
+            self.compile_exp(arg)?;
         }
 
         self.emit(Instruction::CALL {
             arg_len: exp.arguments.len(),
-        });
+        })?;
 
         SUCCESS
     }
@@ -679,6 +665,8 @@ impl Compiler {
 
         self.symbol_table =
             Some(SymbolTable::enclose(self.symbol_table.take().unwrap()));
+
+        SUCCESS
     }
 
     /// Leave [`Scope`] of this [`Compiler`]

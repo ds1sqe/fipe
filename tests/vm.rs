@@ -15,16 +15,18 @@ fn run_vm_test(tests: Tests<Option<Object>>) {
         let lexer = Lexer::new(test.input.clone());
         let program = Parser::new(lexer).parse().unwrap();
 
-        let mut comp = Compiler::create();
+        let mut comp = Compiler::create().unwrap();
         comp.compile(program);
-        let bytecode = comp.bytecode();
+        let bytecode = comp.bytecode().unwrap();
 
         println!("Bytecode\n{}", bytecode.to_string());
 
         let mut vm = VM::new(bytecode);
 
         while vm.is_runable() {
-            vm.run_single();
+            if let Err(err) = vm.run_single() {
+                eprintln!("Error {:?}", err);
+            }
         }
         println!("VM STACK:\n {}", vm.stack_to_string());
 

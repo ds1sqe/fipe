@@ -1,15 +1,17 @@
-use self::frame::Frame;
+use self::{errors::VmError, frame::Frame};
 
-use super::bytecode::{instruction::Instruction, instructions::Instructions, Bytecode};
+use super::bytecode::{instruction::Instruction, Bytecode};
 use crate::{
     object::{
-        Array, Bool, ClosureFunction, CompiledFunction, Int, Object, ObjectTrait, ObjectType,
-        StringObject,
+        Array, Bool, ClosureFunction, CompiledFunction, Int, Object,
+        ObjectTrait, ObjectType, StringObject,
     },
     utils::add_pad,
 };
 
 mod frame;
+
+mod errors;
 
 const GLOBAL_SIZE: usize = 1 << 8;
 
@@ -60,312 +62,370 @@ impl VM {
         }
     }
 
-    pub fn run_single(&mut self) {
-        let ins = self.current_frame().rext_instruction();
-        match &ins {
-            Instruction::PUSH => todo!(),
-            Instruction::POP => {
-                self.pop_stack();
-            }
-            Instruction::CONST { idx } => {
-                // load constants into stack
-                self.push_stack(self.constants[*idx].clone());
-            }
-            Instruction::DEFGLB { idx } => {
-                // define global variable
-                if *idx < self.global.len() {
-                    self.global[*idx] = self.pop_stack().unwrap();
-                } else {
-                    let obj = self.pop_stack().unwrap();
-                    self.global.push(obj);
-                }
-            }
-            Instruction::GETGLB { idx } => {
-                // get global variable
-                self.push_stack(self.global[*idx].clone());
-            }
-            Instruction::DEFLCL { idx } => {
-                // define local variable
-                let offset = ({
-                    let this = &self.current_frame();
-                    this.bp
-                }) + 1
-                    + idx;
-                self.stack[offset] = Some(self.pop_stack().unwrap());
-            }
-            Instruction::GETLCL { idx } => {
-                // get local variable
-                let offset = ({
-                    let this = &self.current_frame();
-                    this.bp
-                }) + 1
-                    + idx;
+    pub fn run_single(&mut self) -> Result<(), VmError> {
+        let ins_rst = self.current_frame().rext_instruction();
+        match ins_rst {
+            Err(err) => Err(VmError::InstructionReadFailure(err)),
+            Ok(instruction) => {
+                match instruction {
+                    Instruction::PUSH => todo!(),
+                    Instruction::POP => {
+                        self.pop_stack();
+                    }
+                    Instruction::CONST { idx } => {
+                        // load constants into stack
+                        self.push_stack(self.constants[idx].clone());
+                    }
+                    Instruction::DEFGLB { idx } => {
+                        // define global variable
+                        if idx < self.global.len() {
+                            self.global[idx] = self.pop_stack().unwrap();
+                        } else {
+                            let obj = self.pop_stack().unwrap();
+                            self.global.push(obj);
+                        }
+                    }
+                    Instruction::GETGLB { idx } => {
+                        // get global variable
+                        self.push_stack(self.global[idx].clone());
+                    }
+                    Instruction::DEFLCL { idx } => {
+                        // define local variable
+                        let offset = &self.current_frame().bp() + 1 + idx;
+                        self.stack[offset] = Some(self.pop_stack().unwrap());
+                    }
+                    Instruction::GETLCL { idx } => {
+                        // get local variable
+                        let offset = &self.current_frame().bp() + 1 + idx;
 
-                self.push_stack(self.stack[offset].clone().unwrap());
-            }
-            Instruction::GETFREE { idx } => {
-                // get local variable
-                self.push_stack(self.current_frame().get_closure_ref().free[*idx].clone());
-            }
-            Instruction::GETCUR => {
-                // push current function to stack
-                self.push_stack(Object::Closure(
-                    self.current_frame().get_closure_ref().clone(),
-                ));
-            }
+                        self.push_stack(self.stack[offset].clone().unwrap());
+                    }
+                    Instruction::GETFREE { idx } => {
+                        // get local variable
+                        self.push_stack(
+                            self.current_frame().get_closure_ref().free[idx]
+                                .clone(),
+                        );
+                    }
+                    Instruction::GETCUR => {
+                        // push current function to stack
+                        self.push_stack(Object::Closure(
+                            self.current_frame().get_closure_ref().clone(),
+                        ));
+                    }
 
-            Instruction::ADD
-            | Instruction::SUB
-            | Instruction::PRODUCT
-            | Instruction::DIVIDE
-            | Instruction::MOD
-            | Instruction::CGT
-            | Instruction::CGTE
-            | Instruction::CLT
-            | Instruction::CLTE
-            | Instruction::CEQ
-            | Instruction::CNEQ
-            | Instruction::AND
-            | Instruction::OR
-            | Instruction::BAND
-            | Instruction::BOR => {
-                let left = self.pop_stack().unwrap();
-                let right = self.pop_stack().unwrap();
+                    Instruction::ADD
+                    | Instruction::SUB
+                    | Instruction::PRODUCT
+                    | Instruction::DIVIDE
+                    | Instruction::MOD
+                    | Instruction::CGT
+                    | Instruction::CGTE
+                    | Instruction::CLT
+                    | Instruction::CLTE
+                    | Instruction::CEQ
+                    | Instruction::CNEQ
+                    | Instruction::AND
+                    | Instruction::OR
+                    | Instruction::BAND
+                    | Instruction::BOR => {
+                        let left = self.pop_stack().unwrap();
+                        let right = self.pop_stack().unwrap();
 
-                if left.get_type() == right.get_type() {
-                    if left.get_type() == ObjectType::Int {
-                        let Object::Int(left) = left else {
-                            unreachable!()
-                        };
-                        let Object::Int(right) = right else {
-                            unreachable!()
-                        };
-
-                        match &ins {
-                            Instruction::ADD
-                            | Instruction::SUB
-                            | Instruction::PRODUCT
-                            | Instruction::DIVIDE
-                            | Instruction::MOD
-                            | Instruction::BAND
-                            | Instruction::BOR => {
-                                let value = match &ins {
-                                    Instruction::ADD => left.value + right.value,
-                                    Instruction::SUB => left.value - right.value,
-                                    Instruction::PRODUCT => left.value * right.value,
-                                    Instruction::DIVIDE => left.value / right.value,
-                                    Instruction::MOD => left.value % right.value,
-                                    Instruction::BAND => left.value & right.value,
-                                    Instruction::BOR => left.value | right.value,
-                                    __ => {
-                                        unreachable!()
-                                    }
+                        if left.get_type() == right.get_type() {
+                            if left.get_type() == ObjectType::Int {
+                                let Object::Int(left) = left else {
+                                    unreachable!()
                                 };
-                                let rst = Object::Int(Int { value });
-                                self.push_stack(rst);
-                            }
-                            Instruction::CGT
-                            | Instruction::CGTE
-                            | Instruction::CLT
-                            | Instruction::CLTE
-                            | Instruction::CEQ
-                            | Instruction::CNEQ => {
-                                let value = match &ins {
-                                    Instruction::CGT => left.value > right.value,
-                                    Instruction::CGTE => left.value >= right.value,
-                                    Instruction::CLT => left.value < right.value,
-                                    Instruction::CLTE => left.value <= right.value,
-                                    Instruction::CEQ => left.value == right.value,
-                                    Instruction::CNEQ => left.value != right.value,
-                                    __ => {
-                                        unreachable!()
+                                let Object::Int(right) = right else {
+                                    unreachable!()
+                                };
+
+                                match instruction {
+                                    Instruction::ADD
+                                    | Instruction::SUB
+                                    | Instruction::PRODUCT
+                                    | Instruction::DIVIDE
+                                    | Instruction::MOD
+                                    | Instruction::BAND
+                                    | Instruction::BOR => {
+                                        let value = match &instruction {
+                                            Instruction::ADD => {
+                                                left.value + right.value
+                                            }
+                                            Instruction::SUB => {
+                                                left.value - right.value
+                                            }
+                                            Instruction::PRODUCT => {
+                                                left.value * right.value
+                                            }
+                                            Instruction::DIVIDE => {
+                                                left.value / right.value
+                                            }
+                                            Instruction::MOD => {
+                                                left.value % right.value
+                                            }
+                                            Instruction::BAND => {
+                                                left.value & right.value
+                                            }
+                                            Instruction::BOR => {
+                                                left.value | right.value
+                                            }
+                                            _unreachable => {
+                                                unreachable!()
+                                            }
+                                        };
+                                        let rst = Object::Int(Int { value });
+                                        self.push_stack(rst);
+                                    }
+                                    Instruction::CGT
+                                    | Instruction::CGTE
+                                    | Instruction::CLT
+                                    | Instruction::CLTE
+                                    | Instruction::CEQ
+                                    | Instruction::CNEQ => {
+                                        let value = match &instruction {
+                                            Instruction::CGT => {
+                                                left.value > right.value
+                                            }
+                                            Instruction::CGTE => {
+                                                left.value >= right.value
+                                            }
+                                            Instruction::CLT => {
+                                                left.value < right.value
+                                            }
+                                            Instruction::CLTE => {
+                                                left.value <= right.value
+                                            }
+                                            Instruction::CEQ => {
+                                                left.value == right.value
+                                            }
+                                            Instruction::CNEQ => {
+                                                left.value != right.value
+                                            }
+                                            _unreachable => {
+                                                unreachable!()
+                                            }
+                                        };
+                                        let rst = Object::Bool(Bool { value });
+                                        self.push_stack(rst);
+                                    }
+                                    invalid => {
+                                        return Err(
+                                            VmError::InvalidIntegerInstruction(
+                                                invalid,
+                                            ),
+                                        );
+                                    }
+                                }
+                            } else if left.get_type() == ObjectType::Bool {
+                                let Object::Bool(left) = left else {
+                                    unreachable!()
+                                };
+                                let Object::Bool(right) = right else {
+                                    unreachable!()
+                                };
+                                let value = match instruction {
+                                    Instruction::AND => {
+                                        left.value && right.value
+                                    }
+                                    Instruction::OR => {
+                                        left.value || right.value
+                                    }
+                                    Instruction::CEQ => {
+                                        left.value == right.value
+                                    }
+                                    Instruction::CNEQ => {
+                                        left.value != right.value
+                                    }
+                                    invaild_instruction => {
+                                        return Err(
+                                            VmError::InvalidBoolInstruction(
+                                                invaild_instruction,
+                                            ),
+                                        );
                                     }
                                 };
                                 let rst = Object::Bool(Bool { value });
                                 self.push_stack(rst);
-                            }
-                            __ => {
-                                unreachable!()
-                            }
-                        }
-                    } else if left.get_type() == ObjectType::Bool {
-                        let Object::Bool(left) = left else {
-                            unreachable!()
-                        };
-                        let Object::Bool(right) = right else {
-                            unreachable!()
-                        };
-                        let value = match &ins {
-                            Instruction::AND => left.value && right.value,
-                            Instruction::OR => left.value || right.value,
-                            Instruction::CEQ => left.value == right.value,
-                            Instruction::CNEQ => left.value != right.value,
-                            __ => {
-                                unreachable!()
-                            }
-                        };
-                        let rst = Object::Bool(Bool { value });
-                        self.push_stack(rst);
-                    } else if left.get_type() == ObjectType::String {
-                        let Object::String(left) = left else {
-                            unreachable!()
-                        };
-                        let Object::String(right) = right else {
-                            unreachable!()
-                        };
+                            } else if left.get_type() == ObjectType::String {
+                                let Object::String(left) = left else {
+                                    unreachable!()
+                                };
+                                let Object::String(right) = right else {
+                                    unreachable!()
+                                };
 
-                        match &ins {
-                            Instruction::ADD => {
-                                let rst = Object::String(StringObject {
-                                    value: left.value + &right.value,
-                                });
-                                self.push_stack(rst);
+                                match &instruction {
+                                    Instruction::ADD => {
+                                        let rst =
+                                            Object::String(StringObject {
+                                                value: left.value
+                                                    + &right.value,
+                                            });
+                                        self.push_stack(rst);
+                                    }
+                                    Instruction::CEQ => {
+                                        let rst = Object::Bool(Bool {
+                                            value: left.value == right.value,
+                                        });
+                                        self.push_stack(rst);
+                                    }
+                                    Instruction::CNEQ => {
+                                        let rst = Object::Bool(Bool {
+                                            value: left.value != right.value,
+                                        });
+                                        self.push_stack(rst);
+                                    }
+                                    invalid => {
+                                        return Err(
+                                            VmError::InvalidStringInstruction(
+                                                instruction,
+                                            ),
+                                        );
+                                    }
+                                }
                             }
-                            Instruction::CEQ => {
-                                let rst = Object::Bool(Bool {
-                                    value: left.value == right.value,
-                                });
-                                self.push_stack(rst);
-                            }
-                            Instruction::CNEQ => {
-                                let rst = Object::Bool(Bool {
-                                    value: left.value != right.value,
-                                });
-                                self.push_stack(rst);
-                            }
-                            __ => {
-                                unreachable!()
-                            }
+                        } else {
+                            return Err(VmError::TypeNotSame { left, right });
                         }
                     }
-                } else {
-                    // emit error
-                }
-            }
 
-            Instruction::BANG => {
-                let right = self.pop_stack().unwrap();
-                if right.get_type() == ObjectType::Bool {
-                    let Object::Bool(mut right) = right else {
-                        unreachable!()
-                    };
-                    right.value = !right.value;
-                    self.push_stack(Object::Bool(right))
-                } else {
-                    // emit error
-                }
-            }
-            Instruction::NEG => {
-                let right = self.pop_stack().unwrap();
-                if right.get_type() == ObjectType::Int {
-                    let Object::Int(mut right) = right else {
-                        unreachable!()
-                    };
-                    right.value = -right.value;
-                    self.push_stack(Object::Int(right))
-                } else {
-                    // emit error
-                }
-            }
-
-            Instruction::JMP { idx } => {
-                self.current_frame_mut().set_ic(*idx);
-                return;
-            }
-            Instruction::JIS { idx } => {
-                let sign = self.pop_stack().unwrap();
-                if sign.get_type() == ObjectType::Bool {
-                    let Object::Bool(sign) = sign else {
-                        unreachable!()
-                    };
-                    if sign.value {
-                        self.current_frame_mut().set_ic(*idx);
-                        return;
+                    Instruction::BANG => {
+                        let right = self.pop_stack().unwrap();
+                        if right.get_type() == ObjectType::Bool {
+                            let Object::Bool(mut right) = right else {
+                                unreachable!()
+                            };
+                            right.value = !right.value;
+                            self.push_stack(Object::Bool(right))
+                        } else {
+                            return Err(VmError::NotABolean { obj: right });
+                        }
                     }
-                } else {
-                    // emit error
-                }
-            }
-            Instruction::JNS { idx } => {
-                let sign = self.pop_stack().unwrap();
-                if sign.get_type() == ObjectType::Bool {
-                    let Object::Bool(sign) = sign else {
-                        unreachable!()
-                    };
-                    if !sign.value {
-                        self.current_frame_mut().set_ic(*idx);
-                        return;
+                    Instruction::NEG => {
+                        let right = self.pop_stack().unwrap();
+                        if right.get_type() == ObjectType::Int {
+                            let Object::Int(mut right) = right else {
+                                unreachable!()
+                            };
+                            right.value = -right.value;
+                            self.push_stack(Object::Int(right))
+                        } else {
+                            return Err(VmError::NotAInt { obj: right });
+                        }
                     }
-                } else {
-                    // emit error
-                }
-            }
-            Instruction::JEQ { idx } => todo!(),
-            Instruction::JNEQ { idx } => todo!(),
-            Instruction::ARRAY { count } => {
-                let mut elements = Vec::with_capacity(*count);
 
-                for offset in (1..=*count).rev() {
-                    elements.push(self.stack[self.sp + 1 - offset].clone().unwrap())
-                }
-                self.sp -= count;
-
-                let array = Object::Array(Array { elements });
-
-                self.push_stack(array);
-            }
-            Instruction::INDEX => {
-                let idx = self.pop_stack().unwrap();
-
-                if idx.get_type() == ObjectType::Int {
-                    let Object::Int(int) = idx else {
-                        unreachable!()
-                    };
-
-                    let tgt = self.pop_stack().unwrap();
-                    if tgt.get_type() == ObjectType::Array {
-                        let Object::Array(arr) = tgt else {
-                            unreachable!()
-                        };
-                        self.push_stack(arr.elements[int.value as usize].clone());
-                    } else {
-                        // emit error
+                    Instruction::JMP { idx } => {
+                        self.current_frame_mut().set_ic(idx);
+                        return Ok(());
                     }
-                } else {
-                    // emit error
+                    Instruction::JIS { idx } => {
+                        let sign = self.pop_stack().unwrap();
+                        if sign.get_type() == ObjectType::Bool {
+                            let Object::Bool(sign) = sign else {
+                                unreachable!()
+                            };
+                            if sign.value {
+                                self.current_frame_mut().set_ic(idx);
+                                return Ok(());
+                            }
+                        } else {
+                            return Err(VmError::JumpConditionNotABolean {
+                                obj: sign,
+                            });
+                        }
+                    }
+                    Instruction::JNS { idx } => {
+                        let sign = self.pop_stack().unwrap();
+                        if sign.get_type() == ObjectType::Bool {
+                            let Object::Bool(sign) = sign else {
+                                unreachable!()
+                            };
+                            if !sign.value {
+                                self.current_frame_mut().set_ic(idx);
+                                return Ok(());
+                            }
+                        } else {
+                            return Err(VmError::JumpConditionNotABolean {
+                                obj: sign,
+                            });
+                        }
+                    }
+                    Instruction::JEQ { idx } => todo!(),
+                    Instruction::JNEQ { idx } => todo!(),
+                    Instruction::ARRAY { count } => {
+                        let mut elements = Vec::with_capacity(count);
+
+                        for offset in (1..=count).rev() {
+                            elements.push(
+                                self.stack[self.sp + 1 - offset]
+                                    .clone()
+                                    .unwrap(),
+                            )
+                        }
+                        self.sp -= count;
+
+                        let array = Object::Array(Array { elements });
+
+                        self.push_stack(array);
+                    }
+                    Instruction::INDEX => {
+                        let idx = self.pop_stack().unwrap();
+
+                        if idx.get_type() == ObjectType::Int {
+                            let Object::Int(int) = idx else {
+                                unreachable!()
+                            };
+
+                            let tgt = self.pop_stack().unwrap();
+                            if tgt.get_type() == ObjectType::Array {
+                                let Object::Array(arr) = tgt else {
+                                    unreachable!()
+                                };
+                                self.push_stack(
+                                    arr.elements[int.value as usize].clone(),
+                                );
+                            } else {
+                                return Err(VmError::IndexTargetNotAArray {
+                                    obj: tgt,
+                                });
+                            }
+                        } else {
+                            return Err(VmError::IndexNotAInt { obj: idx });
+                        }
+                    }
+                    Instruction::CALL { arg_len } => {
+                        self.current_frame_mut()
+                            .add_ic(instruction.opcode().length());
+                        self.call(arg_len);
+                    }
+                    Instruction::RETN => {
+                        let popped_frame = self.pop_frame();
+                        self.sp = &popped_frame.bp() - 1;
+                    }
+                    Instruction::RETV => {
+                        let value = self.pop_stack().unwrap();
+                        let popped_frame = self.pop_frame();
+                        self.sp = &popped_frame.bp() - 1;
+                        self.push_stack(value);
+                    }
+                    Instruction::CLOSURE { idx, free } => {
+                        self.make_closure(idx, free);
+                    }
+                    not_implemented => {
+                        return Err(VmError::NotImplentedInstruction {
+                            ins: not_implemented,
+                        })
+                    }
                 }
-            }
-            Instruction::CALL { arg_len } => {
-                self.current_frame_mut().add_ic(ins.opcode().length());
-                self.call(*arg_len);
-                return;
-            }
-            Instruction::RETN => {
-                let popped_frame = self.pop_frame();
-                self.sp = ({
-                    let this = &popped_frame;
-                    this.bp
-                }) - 1;
-                return;
-            }
-            Instruction::RETV => {
-                let value = self.pop_stack().unwrap();
-                let popped_frame = self.pop_frame();
-                self.sp = ({
-                    let this = &popped_frame;
-                    this.bp
-                }) - 1;
-                self.push_stack(value);
-                return;
-            }
-            Instruction::CLOSURE { idx, free } => {
-                self.make_closure(*idx, *free);
-            }
-            not_implemented => {
-                panic!("not implemented instruction {:?}", not_implemented);
+
+                self.current_frame_mut()
+                    .add_ic(instruction.opcode().length());
+
+                return Ok(());
             }
         }
-        self.current_frame_mut().add_ic(ins.opcode().length());
     }
 
     pub fn to_string(&self) -> String {
@@ -464,7 +524,9 @@ impl VM {
     }
 
     fn make_closure(&mut self, fn_idx: usize, free_len: usize) {
-        let Object::CompiledFunction(compiled_func) = self.constants[fn_idx].clone() else {
+        let Object::CompiledFunction(compiled_func) =
+            self.constants[fn_idx].clone()
+        else {
             unreachable!()
         };
 
@@ -483,7 +545,9 @@ impl VM {
     }
 
     fn call(&mut self, arg_len: usize) {
-        let Object::Closure(cl) = self.stack[self.sp - arg_len].clone().unwrap() else {
+        let Object::Closure(cl) =
+            self.stack[self.sp - arg_len].clone().unwrap()
+        else {
             unreachable!()
         };
 

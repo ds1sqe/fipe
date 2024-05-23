@@ -116,7 +116,7 @@ pub struct Hole {
 }
 
 impl BlockMeta {
-    pub fn new(block_ptr: *const u8) -> BlockMeta {
+    pub unsafe fn new(block_ptr: *const u8) -> BlockMeta {
         let mut meta = BlockMeta {
             lines: unsafe { block_ptr.add(LINE_MARK_START) as *mut Mark },
         };
@@ -125,7 +125,11 @@ impl BlockMeta {
     }
 
     /// search hole upward
-    pub fn find_hole(&self, start_byte: usize, alloc_size: usize) -> Option<Hole> {
+    pub fn find_hole(
+        &self,
+        start_byte: usize,
+        alloc_size: usize,
+    ) -> Option<Hole> {
         // The count of consecutive available holes.
         let mut count = 0;
 
@@ -308,12 +312,15 @@ impl BumpBlock {
             cursor: block_ptr,
             limit: unsafe { block_ptr.add(BLOCK_CAPACITY) },
             block: inner_block,
-            meta: BlockMeta::new(block_ptr),
+            meta: unsafe { BlockMeta::new(block_ptr) },
         };
         Ok(block)
     }
 
-    pub fn inner_alloc(&mut self, alloc_size: usize) -> Result<(MetaPtr, *const u8), BlockError> {
+    pub fn inner_alloc(
+        &mut self,
+        alloc_size: usize,
+    ) -> Result<(MetaPtr, *const u8), BlockError> {
         let cursor_ptr = self.cursor as usize;
         let limit = self.limit as usize;
 
@@ -328,8 +335,11 @@ impl BumpBlock {
         // if next_ptr == limit, we have to find hole next time,
         // and then, next_ptr > limit.
         if next_ptr <= limit {
-            let mark_low = (self.cursor as usize - self.block.as_ptr() as usize) / LINE_SIZE;
-            let mark_high = (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
+            let mark_low = (self.cursor as usize
+                - self.block.as_ptr() as usize)
+                / LINE_SIZE;
+            let mark_high =
+                (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
             self.meta
                 .set_mark_range(&Mark::Allocated, mark_low, mark_high);
             let cursor = self.cursor;
@@ -348,7 +358,9 @@ impl BumpBlock {
             Ok((ptr, cursor as *const u8))
         } else {
             // try find hole.
-            if let Some(Hole { start, end }) = self.meta.find_hole(0, alloc_size) {
+            if let Some(Hole { start, end }) =
+                self.meta.find_hole(0, alloc_size)
+            {
                 let cursor = start * LINE_SIZE;
                 let limit = end * LINE_SIZE;
                 self.cursor = unsafe { self.block.as_ptr().add(cursor) };
@@ -429,7 +441,8 @@ impl LargeBlock {
 
     pub fn dealloc_block(self) {
         unsafe {
-            let layout = Layout::from_size_align_unchecked(self.size, self.size);
+            let layout =
+                Layout::from_size_align_unchecked(self.size, self.size);
 
             dealloc(self.ptr.as_ptr(), layout);
         }
@@ -487,7 +500,8 @@ impl BlockList {
                 Err(__) => {
                     // head[0] bump block is full
                     if self.head.len() != 1 {
-                        self.rest.insert(self.count, self.head.pop_front().unwrap());
+                        self.rest
+                            .insert(self.count, self.head.pop_front().unwrap());
                         self.count += 1;
                         // recursion
                         return self.head_alloc(alloc_size);
@@ -531,7 +545,10 @@ impl BlockList {
         }
     }
 
-    fn large_alloc(&mut self, alloc_size: usize) -> Result<PairPtr, AllocError> {
+    fn large_alloc(
+        &mut self,
+        alloc_size: usize,
+    ) -> Result<PairPtr, AllocError> {
         let size = alloc_size.next_power_of_two();
         let new_large_block = LargeBlock::new(size)?;
         self.large.insert(self.count, new_large_block);
