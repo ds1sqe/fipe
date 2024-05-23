@@ -2,7 +2,11 @@
 name = "dlang"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["Kim Dae Up <ds1sqe@mensakorea.org>"]
+description = "Programing language from scratch"
+repository = "https://github.com/ds1sqe/dlang"
+license = "MIT OR Apache-2.0"
+keywords = ["interpreter","compiler"]
+categories =["compilers"]
 
 [dependencies]
