@@ -1,0 +1,3 @@
+(function() {var implementors = {
+"docs":[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.78.0/core/cmp/trait.Eq.html\" title=\"trait core::cmp::Eq\">Eq</a> for <a class=\"enum\" href=\"docs/immix/mark/enum.Mark.html\" title=\"enum docs::immix::mark::Mark\">Mark</a>"],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.78.0/core/cmp/trait.Eq.html\" title=\"trait core::cmp::Eq\">Eq</a> for <a class=\"enum\" href=\"docs/token/enum.Kind.html\" title=\"enum docs::token::Kind\">Kind</a>"]]
+};if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Object","ObjectType"],"fn":["is_same_type"],"mod":["environment"],"struct":["Array","Bool","ClosureFunction","CompiledFunction","Function","Int","Return","StringObject"],"trait":["ObjectTrait"]};

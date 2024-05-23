@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CLOSURE","CONST","JUMP","NO_ARG"],"enum":["Instruction"],"struct":["Definition"]};

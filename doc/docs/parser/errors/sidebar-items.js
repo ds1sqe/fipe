@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["InfixFunctionErrorKind","PrefixFunctionErrorKind"],"struct":["InfixFunctionError","ParseError","PrefixFunctionError"],"trait":["ParserError"]};
