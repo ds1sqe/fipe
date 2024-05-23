@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["Expression","Node","Statement"],"struct":["ArrayLiteral","BlockStatement","BooleanLiteral","CallExpression","ExpressionStatement","FunctionLiteral","Identifier","IfExpression","IndexExpression","InfixExpression","IntegerLiteral","LetStatement","PrefixExpression","Program","ReturnStatement","StringLiteral"],"trait":["Nodetrait"]};

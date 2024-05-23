@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["ALIGN_MASK","ALIGN_WORD","BLOCK_CAPACITY","BLOCK_SIZE","LINE_COUNT","LINE_MARK_START","LINE_SIZE"],"struct":["Block","BlockList","BlockMeta","BumpBlock","Hole","LargeBlock"],"type":["BlockPointer","BlockSize"]};

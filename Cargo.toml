@@ -10,3 +10,7 @@ keywords = ["interpreter","compiler"]
 categories =["compilers"]
 
 [dependencies]
+
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--document-private-item"]

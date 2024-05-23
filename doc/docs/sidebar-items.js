@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["ast","benchmark","bytecode_vm","heap","immix","lexer","object","parser","test","token","treewalker","utils"]};

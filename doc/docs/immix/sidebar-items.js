@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["alloc_size_of"],"mod":["blocks","errors","mark","ptr","size"],"struct":["Immix"]};

@@ -11,9 +11,9 @@ use crate::{
     utils::add_pad,
 };
 
-mod frame;
+pub mod frame;
 
-mod errors;
+pub mod errors;
 
 const GLOBAL_SIZE: usize = 1 << 8;
 
@@ -568,7 +568,7 @@ impl Display for VM {
             if idx == self.fp {
                 buf += "Current Frame:\n";
             }
-            buf += &frame.to_string();
+            buf += frame.as_str()
         }
 
         buf += &self.stack_to_string();

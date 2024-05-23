@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["OR"],"struct":["MetaPtr","PairPtr","RawPtr","TypedPtr"]};
