@@ -16,7 +16,9 @@ fn run_vm_test(tests: Tests<Option<Object>>) {
         let program = Parser::new(lexer).parse().unwrap();
 
         let mut comp = Compiler::create().unwrap();
-        comp.compile(program);
+        if let Err(e) = comp.compile(program) {
+            panic!("Compile error {:?}", e);
+        }
         let bytecode = comp.bytecode().unwrap();
 
         println!("Bytecode\n{}", bytecode.to_string());
@@ -25,7 +27,7 @@ fn run_vm_test(tests: Tests<Option<Object>>) {
 
         while vm.is_runable() {
             if let Err(err) = vm.run_single() {
-                eprintln!("Error {:?}", err);
+                panic!("VmError {:?}", err)
             }
         }
         println!("VM STACK:\n {}", vm.stack_to_string());
@@ -262,8 +264,7 @@ let no_return = fn() { };no_return() no_return() no_return() no_return()
 
     tests.add((
         "
-let fun = fn() { 10 + 20 };
-fun()
+let fun = fn() { 10 + 20 }; fun()
 ",
         Some(Object::Int(Int { value: 30 })),
     ));

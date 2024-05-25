@@ -31,7 +31,7 @@
 
 
       Prefix_Expression = Prefix_Operator Expression
-        ex) 1 + 2, a - b, big >= small, ... 
+        ex) -100, !true, !false
 
       
       Call_Expression = Identifier ( Expression* ) | Function_Literal ( Expression* ) 
