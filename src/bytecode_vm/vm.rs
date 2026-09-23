@@ -5,8 +5,8 @@ use self::{errors::VmError, frame::Frame};
 use super::bytecode::{instruction::Instruction, Bytecode};
 use crate::{
     object::{
-        Array, Bool, ClosureFunction, CompiledFunction, Int, Object, ObjectTrait, ObjectType,
-        StringObject,
+        Array, Bool, ClosureFunction, CompiledFunction, Int, Object,
+        ObjectTrait, ObjectType, StringObject,
     },
     utils::add_pad,
 };
@@ -104,7 +104,10 @@ impl VM {
                     }
                     Instruction::GETFREE { idx } => {
                         // get local variable
-                        self.push_stack(self.current_frame().get_closure_ref().free[idx].clone());
+                        self.push_stack(
+                            self.current_frame().get_closure_ref().free[idx]
+                                .clone(),
+                        );
                     }
                     Instruction::GETCUR => {
                         // push current function to stack
@@ -149,13 +152,27 @@ impl VM {
                                     | Instruction::BAND
                                     | Instruction::BOR => {
                                         let value = match &instruction {
-                                            Instruction::ADD => left.value + right.value,
-                                            Instruction::SUB => left.value - right.value,
-                                            Instruction::PRODUCT => left.value * right.value,
-                                            Instruction::DIVIDE => left.value / right.value,
-                                            Instruction::MOD => left.value % right.value,
-                                            Instruction::BAND => left.value & right.value,
-                                            Instruction::BOR => left.value | right.value,
+                                            Instruction::ADD => {
+                                                left.value + right.value
+                                            }
+                                            Instruction::SUB => {
+                                                left.value - right.value
+                                            }
+                                            Instruction::PRODUCT => {
+                                                left.value * right.value
+                                            }
+                                            Instruction::DIVIDE => {
+                                                left.value / right.value
+                                            }
+                                            Instruction::MOD => {
+                                                left.value % right.value
+                                            }
+                                            Instruction::BAND => {
+                                                left.value & right.value
+                                            }
+                                            Instruction::BOR => {
+                                                left.value | right.value
+                                            }
                                             _unreachable => {
                                                 unreachable!()
                                             }
@@ -170,12 +187,24 @@ impl VM {
                                     | Instruction::CEQ
                                     | Instruction::CNEQ => {
                                         let value = match &instruction {
-                                            Instruction::CGT => left.value > right.value,
-                                            Instruction::CGTE => left.value >= right.value,
-                                            Instruction::CLT => left.value < right.value,
-                                            Instruction::CLTE => left.value <= right.value,
-                                            Instruction::CEQ => left.value == right.value,
-                                            Instruction::CNEQ => left.value != right.value,
+                                            Instruction::CGT => {
+                                                left.value > right.value
+                                            }
+                                            Instruction::CGTE => {
+                                                left.value >= right.value
+                                            }
+                                            Instruction::CLT => {
+                                                left.value < right.value
+                                            }
+                                            Instruction::CLTE => {
+                                                left.value <= right.value
+                                            }
+                                            Instruction::CEQ => {
+                                                left.value == right.value
+                                            }
+                                            Instruction::CNEQ => {
+                                                left.value != right.value
+                                            }
                                             _unreachable => {
                                                 unreachable!()
                                             }
@@ -184,7 +213,11 @@ impl VM {
                                         self.push_stack(rst);
                                     }
                                     invalid => {
-                                        return Err(VmError::InvalidIntegerInstruction(invalid));
+                                        return Err(
+                                            VmError::InvalidIntegerInstruction(
+                                                invalid,
+                                            ),
+                                        );
                                     }
                                 }
                             } else if left.get_type() == ObjectType::Bool {
@@ -195,14 +228,24 @@ impl VM {
                                     unreachable!()
                                 };
                                 let value = match instruction {
-                                    Instruction::AND => left.value && right.value,
-                                    Instruction::OR => left.value || right.value,
-                                    Instruction::CEQ => left.value == right.value,
-                                    Instruction::CNEQ => left.value != right.value,
+                                    Instruction::AND => {
+                                        left.value && right.value
+                                    }
+                                    Instruction::OR => {
+                                        left.value || right.value
+                                    }
+                                    Instruction::CEQ => {
+                                        left.value == right.value
+                                    }
+                                    Instruction::CNEQ => {
+                                        left.value != right.value
+                                    }
                                     invaild_instruction => {
-                                        return Err(VmError::InvalidBoolInstruction(
-                                            invaild_instruction,
-                                        ));
+                                        return Err(
+                                            VmError::InvalidBoolInstruction(
+                                                invaild_instruction,
+                                            ),
+                                        );
                                     }
                                 };
                                 let rst = Object::Bool(Bool { value });
@@ -217,9 +260,11 @@ impl VM {
 
                                 match instruction {
                                     Instruction::ADD => {
-                                        let rst = Object::String(StringObject {
-                                            value: left.value + &right.value,
-                                        });
+                                        let rst =
+                                            Object::String(StringObject {
+                                                value: left.value
+                                                    + &right.value,
+                                            });
                                         self.push_stack(rst);
                                     }
                                     Instruction::CEQ => {
@@ -235,7 +280,11 @@ impl VM {
                                         self.push_stack(rst);
                                     }
                                     invalid => {
-                                        return Err(VmError::InvalidStringInstruction(invalid));
+                                        return Err(
+                                            VmError::InvalidStringInstruction(
+                                                invalid,
+                                            ),
+                                        );
                                     }
                                 }
                             }
@@ -284,7 +333,9 @@ impl VM {
                                 return Ok(());
                             }
                         } else {
-                            return Err(VmError::JumpConditionNotABolean { obj: sign });
+                            return Err(VmError::JumpConditionNotABolean {
+                                obj: sign,
+                            });
                         }
                     }
                     Instruction::JNS { idx } => {
@@ -298,7 +349,9 @@ impl VM {
                                 return Ok(());
                             }
                         } else {
-                            return Err(VmError::JumpConditionNotABolean { obj: sign });
+                            return Err(VmError::JumpConditionNotABolean {
+                                obj: sign,
+                            });
                         }
                     }
 
@@ -313,7 +366,11 @@ impl VM {
                         let mut elements = Vec::with_capacity(count);
 
                         for offset in (1..=count).rev() {
-                            elements.push(self.stack[self.sp + 1 - offset].clone().unwrap())
+                            elements.push(
+                                self.stack[self.sp + 1 - offset]
+                                    .clone()
+                                    .unwrap(),
+                            )
                         }
                         self.sp -= count;
 
@@ -334,9 +391,18 @@ impl VM {
                                 let Object::Array(arr) = tgt else {
                                     unreachable!()
                                 };
-                                self.push_stack(arr.elements[int.value as usize].clone());
+                                let element = usize::try_from(int.value)
+                                    .ok()
+                                    .and_then(|index| arr.elements.get(index))
+                                    .ok_or(VmError::IndexOutOfBounds {
+                                        index: int.value,
+                                        length: arr.elements.len(),
+                                    })?;
+                                self.push_stack(element.clone());
                             } else {
-                                return Err(VmError::IndexTargetNotAArray { obj: tgt });
+                                return Err(VmError::IndexTargetNotAArray {
+                                    obj: tgt,
+                                });
                             }
                         } else {
                             return Err(VmError::IndexNotAInt { obj: idx });

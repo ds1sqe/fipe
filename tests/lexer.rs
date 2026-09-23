@@ -1,5 +1,5 @@
-use dlang::lexer;
-use dlang::token::{Kind, Token};
+use fipe::lexer;
+use fipe::token::{Kind, Token};
 
 #[test]
 fn test_lexer() {

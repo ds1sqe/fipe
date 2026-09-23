@@ -27,6 +27,7 @@ pub fn start() {
         io::stdout().lock().write_all(PROMPT.as_bytes()).unwrap();
         io::stdout().flush().unwrap();
         match stdin.read_line(&mut buf) {
+            Ok(0) => return,
             Ok(_) => {
                 if buf == "$env\n" {
                     dbg!(&env);

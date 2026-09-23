@@ -8,7 +8,7 @@ const MEDIUM_MIN: usize = SMALL_MAX + 1;
 const MEDIUM_MAX: usize = BLOCK_CAPACITY;
 
 const LARGE_MIN: usize = MEDIUM_MAX + 1;
-const LARGE_MAX: usize = std::usize::MAX;
+const LARGE_MAX: usize = usize::MAX;
 /// Represent Object's size
 /// - Small fit inside a line
 /// - Medium more than one line but small than block

@@ -1,4 +1,4 @@
-use dlang::{
+use fipe::{
     bytecode_vm::{bytecode::compiler::Compiler, vm::VM},
     lexer::Lexer,
     object::{Array, Bool, Int, Object},

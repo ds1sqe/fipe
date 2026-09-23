@@ -36,20 +36,20 @@ impl Lexer {
     }
 
     fn read_char(&mut self) {
-        if self.next_pos >= self.input.len() {
-            self.cur = '\0'
-        } else {
-            self.cur = self.input.chars().nth(self.next_pos).unwrap()
-        }
         self.pos = self.next_pos;
-        self.next_pos += 1;
+        if self.next_pos >= self.input.len() {
+            self.cur = '\0';
+        } else {
+            self.cur = self.input[self.next_pos..].chars().next().unwrap();
+            self.next_pos += self.cur.len_utf8();
+        }
     }
 
     fn peek_char(&self) -> char {
         if self.next_pos >= self.input.len() {
             return '\0';
         }
-        self.input.chars().nth(self.next_pos).unwrap()
+        self.input[self.next_pos..].chars().next().unwrap()
     }
 
     fn skip_whitespace(&mut self) {
@@ -69,7 +69,7 @@ impl Lexer {
         {
             self.read_char();
         }
-        self.input[start..self.pos + 1].to_string()
+        self.input[start..self.next_pos].to_string()
     }
 
     fn read_num(&mut self) -> Result<String, errors::LexerError> {
@@ -81,14 +81,14 @@ impl Lexer {
                 let err = errors::LexerError {
                     pos_start: start,
                     pos_end: self.pos,
-                    reason: self.input[start..self.pos + 1].to_string()
+                    reason: self.input[start..self.next_pos].to_string()
                         + " is not a numeric",
                 };
                 return Err(err);
             }
             self.read_char();
         }
-        Ok(self.input[start..self.pos + 1].to_string())
+        Ok(self.input[start..self.next_pos].to_string())
     }
 
     fn read_string(&mut self) -> Result<String, errors::LexerError> {

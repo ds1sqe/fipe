@@ -17,6 +17,7 @@ pub fn start() {
         io::stdout().lock().write_all(PROMPT.as_bytes()).unwrap();
         io::stdout().flush().unwrap();
         match stdin.read_line(&mut buf) {
+            Ok(0) => return,
             Ok(_) => {
                 let lexer = Lexer::new(buf.clone());
 
@@ -78,14 +79,16 @@ pub fn start() {
                     println!("\t          exit: terminate");
 
                     loop {
+                        buf.clear();
                         match stdin.read_line(&mut buf) {
+                            Ok(0) => return,
                             Ok(_) => {
                                 // HACK: clear screen
                                 println!("\n\n\n\n\n\n\n\n\n");
                                 println!("\n\n\n\n\n\n\n\n\n");
                                 println!("\n\n\n\n\n\n\n\n\n");
                                 println!("\n\n\n\n\n\n\n\n\n");
-                                if buf == "exit" {
+                                if buf.trim_end() == "exit" {
                                     break;
                                 }
                                 if !vm.is_runable() {
@@ -93,6 +96,7 @@ pub fn start() {
                                 }
                                 if let Err(e) = vm.run_single() {
                                     eprintln!("{:?}", e);
+                                    break;
                                 }
 
                                 println!("{}", vm);

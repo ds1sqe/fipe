@@ -15,6 +15,7 @@ pub enum VmError {
     JumpConditionNotABolean { obj: Object },
     IndexTargetNotAArray { obj: Object },
     IndexNotAInt { obj: Object },
+    IndexOutOfBounds { index: i64, length: usize },
 
     NotImplentedInstruction { ins: Instruction },
 }

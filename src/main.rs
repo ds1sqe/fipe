@@ -1,6 +1,6 @@
 use std::env;
 
-use dlang::{benchmark::benchmark, bytecode_vm, treewalker};
+use fipe::{benchmark::benchmark, bytecode_vm, treewalker};
 
 fn main() {
     let args: Vec<String> = env::args().collect();

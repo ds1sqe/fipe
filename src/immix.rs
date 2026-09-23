@@ -1,4 +1,6 @@
-use std::{collections::HashMap, hash::Hash, marker::PhantomData, mem::size_of};
+use std::{
+    collections::HashMap, hash::Hash, marker::PhantomData, mem::size_of,
+};
 
 use self::{blocks::BlockList, errors::ImmixError, ptr::PairPtr};
 
@@ -40,11 +42,13 @@ where
 
     pub fn alloc(&mut self, key: K, val: V) -> Result<PairPtr, ImmixError> {
         if !self.entities.contains_key(&key) {
-            let ptr = self.memory.alloc(size_of::<V>())?;
+            let ptr = self
+                .memory
+                .alloc(size_of::<V>().max(std::mem::align_of::<V>()))?;
 
             // write inner memory with given val
             unsafe { std::ptr::write(ptr.data as *mut V, val) }
-            self.entities.insert(key, ptr);
+            self.entities.insert(key, ptr.clone());
 
             Ok(ptr)
         } else {
@@ -68,9 +72,21 @@ where
         }
 
         for tgt in clean_lists {
-            self.entities.remove(&tgt);
+            if let Some(ptr) = self.entities.remove(&tgt) {
+                // This entity was initialized by alloc and is no longer reachable.
+                unsafe { std::ptr::drop_in_place(ptr.data as *mut V) };
+            }
         }
 
         self.memory.sweep();
+    }
+}
+
+impl<K: Hash + Eq, V> Drop for Immix<K, V> {
+    fn drop(&mut self) {
+        for ptr in self.entities.values() {
+            // Drop live values before their backing blocks are deallocated.
+            unsafe { std::ptr::drop_in_place(ptr.data as *mut V) };
+        }
     }
 }

@@ -1,4 +1,4 @@
-use dlang::{
+use fipe::{
     ast::Nodetrait,
     heap::Heap,
     lexer,

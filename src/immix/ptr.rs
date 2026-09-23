@@ -1,9 +1,6 @@
-use std::{marker::PhantomData, ptr::NonNull};
+use std::{cell::Cell, marker::PhantomData, ptr::NonNull, rc::Rc};
 
-use super::{
-    blocks::{BumpBlock, LargeBlock},
-    mark::Mark,
-};
+use super::{blocks::BlockMeta, mark::Mark};
 
 #[derive(Debug)]
 pub struct RawPtr<T: Sized> {
@@ -14,7 +11,8 @@ impl<T: Sized> RawPtr<T> {
     /// create new RawPtr form given `*const` ptr
     pub fn new(ptr: *const T) -> Self {
         Self {
-            ptr: unsafe { NonNull::new_unchecked(ptr as *mut T) },
+            ptr: NonNull::new(ptr as *mut T)
+                .expect("RawPtr requires a non-null pointer"),
         }
     }
 
@@ -64,16 +62,16 @@ pub enum OR<L, R> {
     R(R),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MetaPtr {
     pub low: usize,
     pub high: usize,
-    pub block: NonNull<BumpBlock>,
+    pub marks: BlockMeta,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PairPtr {
-    pub meta: OR<MetaPtr, RawPtr<LargeBlock>>,
+    pub meta: OR<MetaPtr, Rc<Cell<Mark>>>,
     pub data: *const u8,
 }
 
@@ -81,31 +79,22 @@ impl PairPtr {
     pub fn set_mark(&mut self, mark: &Mark) {
         match &mut self.meta {
             OR::L(mptr) => {
-                unsafe {
-                    mptr.block
-                        .as_mut()
-                        .meta
-                        .set_mark_range(mark, mptr.low, mptr.high)
-                };
+                mptr.marks.set_mark_range(mark, mptr.low, mptr.high);
             }
-            OR::R(lblk) => unsafe {
-                lblk.as_mut().set_mark(mark);
-            },
+            OR::R(mark_cell) => {
+                mark_cell.set(*mark);
+            }
         }
     }
     pub fn is_unmarked(&self) -> bool {
         match &self.meta {
-            OR::L(mptr) => unsafe {
-                return mptr.block.as_ref().meta.is_unmarked(mptr.low);
-            },
-            OR::R(lblk) => unsafe {
-                return lblk.as_ref().is_unmarked();
-            },
+            OR::L(mptr) => mptr.marks.is_unmarked(mptr.low),
+            OR::R(mark_cell) => mark_cell.get() == Mark::Unmarked,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypedPtr<T> {
     pub ptr: PairPtr,
     pub tag: PhantomData<T>,

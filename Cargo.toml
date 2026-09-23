@@ -1,10 +1,12 @@
 [package]
-name = "dlang"
-version = "0.1.3"
+name = "fipe"
+version = "0.1.0"
 edition = "2021"
 authors = ["Kim Dae Up <ds1sqe@mensakorea.org>"]
-description = "Programing language from scratch"
-repository = "https://github.com/ds1sqe/dlang"
+description = "An experimental language with a bytecode compiler and VM"
+repository = "https://github.com/ds1sqe/fipe"
+readme = "README.md"
+include = ["/src/**", "/tests/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE-*"]
 license = "MIT OR Apache-2.0"
 keywords = ["interpreter","compiler"]
 categories =["compilers"]

@@ -5,9 +5,10 @@ use super::opcode::OpCode;
 
 /// ARG_SIZE
 const ARG_NONE: [usize; 0] = [];
-const ARG_CONST: [usize; 1] = [8];
-const ARG_OFFSET: [usize; 1] = [8];
-const ARG_CLOSURE: [usize; 2] = [8, 8];
+const WORD_SIZE: usize = std::mem::size_of::<usize>();
+const ARG_CONST: [usize; 1] = [WORD_SIZE];
+const ARG_OFFSET: [usize; 1] = [WORD_SIZE];
+const ARG_CLOSURE: [usize; 2] = [WORD_SIZE, WORD_SIZE];
 
 /// Definition of instruction's length and arg
 pub struct Definition {
@@ -21,17 +22,17 @@ pub const NO_ARG: Definition = Definition {
 };
 
 pub const CONST: Definition = Definition {
-    length: 1 + 8,
+    length: 1 + WORD_SIZE,
     arg_size: &ARG_CONST,
 };
 
 pub const JUMP: Definition = Definition {
-    length: 1 + 8,
+    length: 1 + WORD_SIZE,
     arg_size: &ARG_OFFSET,
 };
 
 pub const CLOSURE: Definition = Definition {
-    length: 1 + 8 + 8,
+    length: 1 + WORD_SIZE + WORD_SIZE,
     arg_size: &ARG_CLOSURE,
 };
 

@@ -1,4 +1,4 @@
-use dlang::{
+use fipe::{
     ast::{ArrayLiteral, Nodetrait},
     lexer::Lexer,
     parser::Parser,

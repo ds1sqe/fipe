@@ -1,173 +1,87 @@
-use std::{
-    alloc::{self, Layout},
-    fmt::Display,
-    ptr::NonNull,
-};
+use std::{alloc::Layout, fmt::Display};
 
 use super::{
     errors::InstructionsError, instruction::Instruction, opcode::OpCode,
 };
 
+/// Owned encoded bytecode. Clones have independent storage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Instructions {
-    /// actual bytes are stored in here
-    byte: NonNull<u8>,
-    /// position of next instruction will be written
-    cursor: *mut u8,
-    /// capacity of [`Self::byte`] ( bytes )
-    cap: usize,
-    /// actual length of whole instructions ( bytes )
-    len: usize,
+    byte: Vec<u8>,
 }
 
-/// default size of instructions, 2048 (0x800) bytes
 const SIZE: usize = 1 << 11;
 
-const SUCCESS: Result<(), InstructionsError> = Ok(());
-
 impl Instructions {
-    /// create [`Instructions`]
-    ///
-    /// # Panics
-    ///
-    /// Panics if OOM (out of memory) and panic_flag is set to true
-    ///
-    /// # Errors [`InstructionsError::AllocationFailed`]
-    ///
-    /// This function will return an error if panic_flag is set to false
-    /// and OOM occured
+    /// Create an empty instruction buffer.
     pub fn create() -> Result<Self, InstructionsError> {
-        let layout = Layout::array::<u8>(SIZE).unwrap();
-
-        let new_ptr = unsafe { alloc::alloc(layout) };
-
-        let ptr = match NonNull::new(new_ptr) {
-            Some(p) => p,
-            None => {
-                // HACK: change this to configuration
-                let panic_flag = false;
-
-                if panic_flag {
-                    // May panic here if OOM (Out of memory)
-                    // depending on env_config and if panic_flag is true,
-                    // global configuration, it may either panic (resulting in unwinding or aborting as per
-                    // configuration for all panics), or abort the process (with no unwinding).
-                    alloc::handle_alloc_error(layout);
-                }
-                return Err(InstructionsError::AllocationFailed(layout));
-            }
-        };
-
-        Ok(Self {
-            byte: ptr,
-            cursor: ptr.as_ptr(),
-            cap: SIZE,
-            len: 0,
-        })
-    }
-    /// Stringify this [`Instructions`]
-    ///
-    /// * hidx - index of highlight target
-    pub fn to_string_with_highlight(&self, hidx: usize) -> String {
-        let mut buf = String::new();
-        let mut idx = 0;
-
-        while idx < self.len {
-            let res = self.read_instruction(idx);
-
-            if res.is_err() {
-                return format!(
-                    "Error have occured on reading instruction. Error: {:?}",
-                    res.unwrap_err()
-                );
-            }
-
-            let ins = res.unwrap();
-
-            if idx == hidx {
-                buf += &format!(">>{:0>5}\t\t", idx);
-            } else {
-                buf += &format!("{:0>5}\t\t", idx);
-            }
-            buf += &ins.to_string();
-            buf += "\n";
-            idx += ins.opcode().length();
-        }
-
-        buf
+        let mut code = Self { byte: Vec::new() };
+        code.reserve(SIZE)?;
+        Ok(code)
     }
 
-    /// Add new instruction at the end.
-    /// return new Instruction's offset
-    ///
-    /// # Errors [`InstructionsError`]
-    ///
-    /// This function will return an error if this [`Instructions::grow()`] have failed.
+    fn reserve(&mut self, additional: usize) -> Result<(), InstructionsError> {
+        let size = self
+            .byte
+            .len()
+            .checked_add(additional)
+            .ok_or(InstructionsError::TooLargeToAllocate)?;
+        let layout = Layout::array::<u8>(size)
+            .map_err(|_| InstructionsError::TooLargeToAllocate)?;
+        self.byte
+            .try_reserve(additional)
+            .map_err(|_| InstructionsError::AllocationFailed(layout))
+    }
+
+    /// Append an instruction and return its byte offset.
     pub fn add_instruction(
         &mut self,
         ins: Instruction,
     ) -> Result<usize, InstructionsError> {
-        if self.len + ins.opcode().length() > self.cap {
-            self.grow()?;
-        }
-        unsafe {
-            std::ptr::copy(
-                ins.as_byte().as_ptr(),
-                self.cursor,
-                ins.opcode().length(),
-            );
-            self.cursor = self.cursor.add(ins.opcode().length());
-        }
-        let offset = self.len;
-        self.len += ins.opcode().length();
-
+        let bytes = ins.as_byte();
+        self.reserve(bytes.len())?;
+        let offset = self.byte.len();
+        self.byte.extend_from_slice(&bytes);
         Ok(offset)
     }
 
-    /// Update instruction at `offset` with given `ins`
+    /// Replace an instruction at its byte offset.
     ///
     /// # Safety
-    /// if lengths are different between `ins` and instruction at `offset`,
-    /// There will be Corruption of this [`Instructions`]
+    /// The offset must name an instruction of the same encoded length.
     pub unsafe fn update_instruction(
         &mut self,
         ins: Instruction,
         offset: usize,
     ) {
-        unsafe {
-            std::ptr::copy(
-                ins.as_byte().as_ptr(),
-                self.byte.as_ptr().add(offset),
-                ins.opcode().length(),
-            );
-        }
+        let bytes = ins.as_byte();
+        let end = offset
+            .checked_add(bytes.len())
+            .expect("instruction offset overflow");
+        self.byte[offset..end].copy_from_slice(&bytes);
     }
 
-    /// Remove instructions by set [`Self::len`] with `new_len`
-    ///
-    /// This will move [`Self::cursor`] with new position of next instruction's one
+    /// Truncate the bytecode at an instruction boundary.
     pub fn remove_instruction(&mut self, new_len: usize) {
-        unsafe {
-            self.cursor = self.byte.as_ptr().add(new_len);
-        }
-        self.len = new_len;
+        assert!(new_len <= self.byte.len(), "cannot extend by truncating");
+        self.byte.truncate(new_len);
     }
 
-    /// Read Instruction at given `offset`
-    ///
-    /// # Errors [`InstructionsError::CannotRead`]
-    ///
-    /// This function will return an error if failed to read opcode
-    /// from [`Self::byte`] at `offset` to convert it as [`Instruction`]
+    fn read_operand(&self, offset: usize) -> Option<usize> {
+        let end = offset.checked_add(std::mem::size_of::<usize>())?;
+        let bytes = self.byte.get(offset..end)?.try_into().ok()?;
+        Some(usize::from_ne_bytes(bytes))
+    }
+
+    /// Decode an instruction without assuming alignment of its operands.
     pub fn read_instruction(
         &self,
         offset: usize,
     ) -> Result<Instruction, InstructionsError> {
-        unsafe {
-            let opcode =
-                std::ptr::read(self.byte.as_ptr().add(offset) as *const OpCode);
-
-            let instruction = match opcode {
+        let decode = || -> Option<Instruction> {
+            let opcode = OpCode::try_from(*self.byte.get(offset)?).ok()?;
+            let argument = || self.read_operand(offset.checked_add(1)?);
+            Some(match opcode {
                 OpCode::PUSH => Instruction::PUSH,
                 OpCode::POP => Instruction::POP,
                 OpCode::ADD => Instruction::ADD,
@@ -191,138 +105,63 @@ impl Instructions {
                 OpCode::RETN => Instruction::RETN,
                 OpCode::RETV => Instruction::RETV,
                 OpCode::GETCUR => Instruction::GETCUR,
+                OpCode::CONST => Instruction::CONST { idx: argument()? },
+                OpCode::DEFGLB => Instruction::DEFGLB { idx: argument()? },
+                OpCode::GETGLB => Instruction::GETGLB { idx: argument()? },
+                OpCode::DEFLCL => Instruction::DEFLCL { idx: argument()? },
+                OpCode::GETLCL => Instruction::GETLCL { idx: argument()? },
+                OpCode::GETFREE => Instruction::GETFREE { idx: argument()? },
+                OpCode::JMP => Instruction::JMP { idx: argument()? },
+                OpCode::JIS => Instruction::JIS { idx: argument()? },
+                OpCode::JNS => Instruction::JNS { idx: argument()? },
+                OpCode::JEQ => Instruction::JEQ { idx: argument()? },
+                OpCode::JNEQ => Instruction::JNEQ { idx: argument()? },
+                OpCode::ARRAY => Instruction::ARRAY { count: argument()? },
+                OpCode::CALL => Instruction::CALL {
+                    arg_len: argument()?,
+                },
+                OpCode::CLOSURE => Instruction::CLOSURE {
+                    idx: argument()?,
+                    free: self.read_operand(
+                        offset.checked_add(1 + std::mem::size_of::<usize>())?,
+                    )?,
+                },
+            })
+        };
+        decode().ok_or(InstructionsError::CannotRead { offset })
+    }
 
-                has_argument => {
-                    let arg_1 = std::ptr::read(
-                        self.byte.as_ptr().add(offset + 1) as *const usize,
-                    );
+    /// Return the encoded length in bytes.
+    pub fn length(&self) -> usize {
+        self.byte.len()
+    }
 
-                    match has_argument {
-                        OpCode::CONST => Instruction::CONST { idx: arg_1 },
-                        OpCode::DEFGLB => Instruction::DEFGLB { idx: arg_1 },
-                        OpCode::GETGLB => Instruction::GETGLB { idx: arg_1 },
-                        OpCode::DEFLCL => Instruction::DEFLCL { idx: arg_1 },
-                        OpCode::GETLCL => Instruction::GETLCL { idx: arg_1 },
-                        OpCode::GETFREE => Instruction::GETFREE { idx: arg_1 },
-                        OpCode::JMP => Instruction::JMP { idx: arg_1 },
-                        OpCode::JIS => Instruction::JIS { idx: arg_1 },
-                        OpCode::JNS => Instruction::JNS { idx: arg_1 },
-                        OpCode::JEQ => Instruction::JEQ { idx: arg_1 },
-                        OpCode::JNEQ => Instruction::JNEQ { idx: arg_1 },
-                        OpCode::ARRAY => Instruction::ARRAY { count: arg_1 },
-                        OpCode::CALL => Instruction::CALL { arg_len: arg_1 },
-                        OpCode::CLOSURE => {
-                            let arg_2 = std::ptr::read(
-                                self.byte.as_ptr().add(offset + 1 + 8)
-                                    as *const usize,
-                            );
+    pub fn to_string_with_highlight(&self, hidx: usize) -> String {
+        self.format(Some(hidx))
+    }
 
-                            Instruction::CLOSURE {
-                                idx: arg_1,
-                                free: arg_2,
-                            }
-                        }
-                        _not_matched => {
-                            return Err(InstructionsError::CannotRead {
-                                offset,
-                            });
-                        }
-                    }
+    fn format(&self, highlight: Option<usize>) -> String {
+        let mut buf = String::new();
+        let mut offset = 0;
+        while offset < self.byte.len() {
+            let instruction = match self.read_instruction(offset) {
+                Ok(instruction) => instruction,
+                Err(error) => {
+                    return format!("Error reading instruction: {error:?}")
                 }
             };
-
-            Ok(instruction)
-        }
-    }
-
-    /// Returns the length of this [`Instructions`].
-    pub fn length(&self) -> usize {
-        self.len
-    }
-
-    /// grow size of [`Self::byte`] by twice
-    ///
-    /// # Panics
-    ///
-    /// Panics if OOM (out of memory) and panic_flag is set to true
-    ///
-    /// # Errors [`InstructionsError::AllocationFailed`]
-    ///
-    /// This function will return an error if panic_flag is set to false
-    /// and OOM occured
-    fn grow(&mut self) -> Result<(), InstructionsError> {
-        let new_cap = 2 * self.cap;
-        let new_layout = Layout::array::<u8>(new_cap).unwrap();
-
-        if new_layout.size() <= isize::MAX as usize {
-            return Err(InstructionsError::TooLargeToAllocate);
-        }
-
-        let old_layout = Layout::array::<u8>(self.cap).unwrap();
-        let old_ptr = self.byte.as_ptr();
-        let new_ptr =
-            unsafe { alloc::realloc(old_ptr, old_layout, new_layout.size()) };
-
-        self.byte = match NonNull::new(new_ptr) {
-            Some(p) => p,
-            None => {
-                // HACK: change this to configuration
-                let panic_flag = false;
-
-                if panic_flag {
-                    // May panic here if OOM (Out of memory)
-                    // depending on env_config and if panic_flag is true,
-                    // global configuration, it may either panic (resulting in unwinding or aborting as per
-                    // configuration for all panics), or abort the process (with no unwinding).
-                    alloc::handle_alloc_error(new_layout);
-                }
-                return Err(InstructionsError::AllocationFailed(new_layout));
+            if highlight == Some(offset) {
+                buf += ">>";
             }
-        };
-        self.cap = new_cap;
-
-        SUCCESS
-    }
-
-    /// Returns the manual drop of this [`Instructions`].
-    ///
-    /// # Safety
-    /// this is unsafe because of possibility of multiple owner of this
-    #[allow(dead_code)]
-    unsafe fn manual_drop(&mut self) {
-        dbg!("drop...", &self);
-        unsafe {
-            alloc::dealloc(
-                self.byte.as_ptr(),
-                Layout::array::<u8>(self.cap).unwrap(),
-            );
+            buf += &format!("{offset:0>5}\t\t{instruction}\n");
+            offset += instruction.opcode().length();
         }
+        buf
     }
 }
 
 impl Display for Instructions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut buf = String::new();
-        let mut idx = 0;
-
-        while idx < self.len {
-            let res = self.read_instruction(idx);
-
-            if res.is_err() {
-                f.write_fmt(format_args!(
-                    "Error have occured on reading instruction. Error: {:?}",
-                    res.unwrap_err()
-                ))?;
-                return Ok(());
-            }
-
-            let ins = res.unwrap();
-            buf += &format!("{:0>5}\t\t", idx);
-            buf += &ins.to_string();
-            buf += "\n";
-            idx += ins.opcode().length();
-        }
-
-        f.write_str(buf.as_str())
+        f.write_str(&self.format(None))
     }
 }

@@ -14,16 +14,18 @@
 
 use std::{
     alloc::{alloc, dealloc, Layout},
+    cell::Cell,
     collections::{HashMap, VecDeque},
     fmt,
     mem::replace,
     ptr::{write, NonNull},
+    rc::Rc,
 };
 
 use super::{
     errors::{AllocError, BlockError},
     mark::Mark,
-    ptr::{MetaPtr, PairPtr, RawPtr, OR},
+    ptr::{MetaPtr, PairPtr, OR},
     size::SizeClass,
 };
 
@@ -47,8 +49,8 @@ pub const ALIGN_MASK: usize = !(ALIGN_WORD);
 
 #[derive(Debug)]
 pub struct Block {
-    pub ptr: BlockPointer,
-    pub size: BlockSize,
+    ptr: BlockPointer,
+    size: BlockSize,
 }
 
 pub type BlockPointer = NonNull<u8>;
@@ -82,7 +84,8 @@ impl Block {
     ///
     fn alloc_block(size: BlockSize) -> Result<BlockPointer, BlockError> {
         unsafe {
-            let layout = Layout::from_size_align_unchecked(size, size);
+            let layout = Layout::from_size_align(size, size)
+                .map_err(|_| BlockError::BadSize(size))?;
             let ptr = alloc(layout);
             if ptr.is_null() {
                 Err(BlockError::OutOfMemory)
@@ -96,17 +99,22 @@ impl Block {
         self.ptr.as_ptr()
     }
 
-    pub fn dealloc_block(ptr: BlockPointer, size: BlockSize) {
+    /// # Safety
+    /// The pointer and size must describe a live allocation from Block.
+    unsafe fn dealloc_block(ptr: BlockPointer, size: BlockSize) {
         unsafe {
-            let layout = Layout::from_size_align_unchecked(size, size);
+            let layout =
+                Layout::from_size_align(size, size).expect("block layout");
 
             dealloc(ptr.as_ptr(), layout);
         }
     }
 }
 
+/// Shared mark state remains valid when a block moves between collections.
+#[derive(Clone, PartialEq)]
 pub struct BlockMeta {
-    lines: *mut Mark,
+    lines: Rc<[Cell<Mark>; LINE_COUNT]>,
 }
 
 #[derive(Debug)]
@@ -116,173 +124,105 @@ pub struct Hole {
 }
 
 impl BlockMeta {
-    /// Creates a new [`BlockMeta`].
-    ///
-    /// # Safety
-    ///
-    /// from `block_ptr` to `block_ptr` + `LINE_MARK_START`
-    /// have to be available
-    pub unsafe fn new(block_ptr: *const u8) -> BlockMeta {
-        let mut meta = BlockMeta {
-            lines: unsafe { block_ptr.add(LINE_MARK_START) as *mut Mark },
-        };
-        meta.reset();
-        meta
+    pub fn new() -> Self {
+        Self {
+            lines: Rc::new(std::array::from_fn(|_| Cell::new(Mark::Unmarked))),
+        }
     }
 
-    /// search hole upward
     pub fn find_hole(
         &self,
         start_byte: usize,
         alloc_size: usize,
     ) -> Option<Hole> {
-        // The count of consecutive available holes.
+        let required = alloc_size.checked_add(LINE_SIZE - 1)? / LINE_SIZE;
         let mut count = 0;
-
-        let starting_line = start_byte / LINE_SIZE;
-
-        // celi up to LINE_SIZE
-        let lines_required = (alloc_size + LINE_SIZE - 1) / LINE_SIZE;
-
-        let end = LINE_COUNT;
-
-        for index in starting_line..end {
-            let marked = unsafe { *self.lines.add(index) };
-
-            if marked == Mark::Unmarked {
-                // Count unmarked lines
+        for index in start_byte / LINE_SIZE..BLOCK_CAPACITY / LINE_SIZE {
+            if self.lines[index].get() == Mark::Unmarked {
                 count += 1;
-            } else {
-                if count >= lines_required {
-                    // we have found space
-                    let start = index - count;
-                    let end = index;
-                    return Some(Hole { start, end });
+                if count == required {
+                    return Some(Hole {
+                        start: index + 1 - count,
+                        end: index + 1,
+                    });
                 }
-                // There was no consecutive space,
-                // so reset the hole search state.
+            } else {
                 count = 0;
             }
         }
         None
     }
-    /// Reset all mark flags to unmarked.
+
     pub fn reset(&mut self) {
-        unsafe {
-            for idx in 0..LINE_COUNT {
-                *self.lines.add(idx) = Mark::Unmarked;
-            }
+        for line in self.lines.iter() {
+            line.set(Mark::Unmarked);
         }
     }
 
-    /// Mark the indexed line
     pub fn mark_line(&mut self, idx: usize) {
-        unsafe { *self.as_line_mark(idx) = Mark::Marked };
+        self.set_mark_line(&Mark::Marked, idx);
     }
-    /// Mark the range, caller must check low and high is safe
+
     pub fn mark_range(&mut self, low: usize, high: usize) {
-        unsafe {
-            for idx in low..=high {
-                *self.lines.add(idx) = Mark::Marked;
-            }
-        }
+        self.set_mark_range(&Mark::Marked, low, high);
     }
-    /// Unmark the indexed line
+
     pub fn unmark_line(&mut self, idx: usize) {
-        unsafe { *self.as_line_mark(idx) = Mark::Unmarked };
+        self.set_mark_line(&Mark::Unmarked, idx);
     }
-    /// Unmark the range, caller must check low and high is safe
+
     pub fn unmark_range(&mut self, low: usize, high: usize) {
-        unsafe {
-            for idx in low..=high {
-                *self.lines.add(idx) = Mark::Unmarked;
-            }
-        }
+        self.set_mark_range(&Mark::Unmarked, low, high);
     }
-    /// Set mark the indexed line
+
     pub fn set_mark_line(&mut self, mark: &Mark, idx: usize) {
-        unsafe { *self.as_line_mark(idx) = *mark };
+        self.lines[idx].set(*mark);
     }
-    /// Set mark the range, caller must check low and high is safe
+
     pub fn set_mark_range(&mut self, mark: &Mark, low: usize, high: usize) {
-        unsafe {
-            for idx in low..=high {
-                *self.lines.add(idx) = *mark;
-            }
+        for line in &self.lines[low..=high] {
+            line.set(*mark);
         }
     }
 
-    /// Returns the mark status str of this [`BlockMeta`].
     pub fn mark_status_str(&self) -> String {
-        unsafe {
-            let mut buf = String::new();
-            for idx in 0..LINE_COUNT {
-                let mark = self.lines.add(idx);
-                let flag = match *mark {
-                    Mark::Unmarked => '-',
-                    Mark::Allocated => 'A',
-                    Mark::Marked => 'M',
-                };
-                buf += &format!("{flag}");
-                if (idx + 1) % 8 == 0 {
-                    buf += " ";
-                }
-                if (idx + 1) % 64 == 0 {
-                    buf += &format!(" {idx}\n");
-                }
+        let mut buf = String::new();
+        for (idx, line) in self.lines.iter().enumerate() {
+            buf.push(match line.get() {
+                Mark::Unmarked => '-',
+                Mark::Allocated => 'A',
+                Mark::Marked => 'M',
+            });
+            if (idx + 1) % 8 == 0 {
+                buf.push(' ');
             }
-            buf
+            if (idx + 1) % 64 == 0 {
+                buf += &format!(" {idx}\n");
+            }
         }
+        buf
     }
+
     pub fn mark_status_vec_str(&self) -> Vec<String> {
-        unsafe {
-            let mut vec = Vec::new();
-            for line in 0..4 {
-                let mut buf = String::new();
-
-                for idx in 0..64 {
-                    let mark = self.lines.add(line * 64 + idx);
-                    let flag = match *mark {
-                        Mark::Unmarked => '-',
-                        Mark::Allocated => 'A',
-                        Mark::Marked => 'M',
-                    };
-                    buf += &format!("{flag}");
-                    if (idx + 1) % 8 == 0 {
-                        buf += " ";
-                    }
-                    if (idx + 1) % 64 == 0 {}
-                }
-                buf += &format!("{}", (line + 1) * 64 - 1);
-                vec.push(buf);
-            }
-
-            vec
-        }
+        self.mark_status_str().lines().map(str::to_owned).collect()
     }
+
     pub fn is_marked(&self, idx: usize) -> bool {
-        unsafe { *self.as_ref_line_mark(idx) == Mark::Marked }
-    }
-    pub fn is_unmarked(&self, idx: usize) -> bool {
-        unsafe { *self.as_ref_line_mark(idx) == Mark::Unmarked }
+        self.lines[idx].get() == Mark::Marked
     }
 
-    unsafe fn as_line_mark(&mut self, line: usize) -> &mut Mark {
-        &mut *self.lines.add(line)
-    }
-    unsafe fn as_ref_line_mark(&self, line: usize) -> &Mark {
-        &*self.lines.add(line)
+    pub fn is_unmarked(&self, idx: usize) -> bool {
+        self.lines[idx].get() == Mark::Unmarked
     }
 
     pub fn is_fresh(&self) -> bool {
-        unsafe {
-            for idx in 0..LINE_COUNT {
-                if !(*self.lines.add(idx) == Mark::Unmarked) {
-                    return false;
-                }
-            }
-        }
-        true
+        self.lines.iter().all(|line| line.get() == Mark::Unmarked)
+    }
+}
+
+impl Default for BlockMeta {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -319,7 +259,7 @@ impl BumpBlock {
             cursor: block_ptr,
             limit: unsafe { block_ptr.add(BLOCK_CAPACITY) },
             block: inner_block,
-            meta: unsafe { BlockMeta::new(block_ptr) },
+            meta: BlockMeta::new(),
         };
         Ok(block)
     }
@@ -328,6 +268,9 @@ impl BumpBlock {
         &mut self,
         alloc_size: usize,
     ) -> Result<(MetaPtr, *const u8), BlockError> {
+        if alloc_size == 0 || alloc_size > BLOCK_CAPACITY {
+            return Err(BlockError::NoSpaceForAllocation);
+        }
         let cursor_ptr = self.cursor as usize;
         let limit = self.limit as usize;
 
@@ -337,7 +280,10 @@ impl BumpBlock {
         }
         let next_pos = cursor_pos_opt.unwrap();
         // align up to word boundary
-        let next_ptr = (next_pos + 0xFF) & ALIGN_MASK;
+        let next_ptr = next_pos
+            .checked_add(ALIGN_WORD)
+            .ok_or(BlockError::AddressOverflow)?
+            & ALIGN_MASK;
 
         // if next_ptr == limit, we have to find hole next time,
         // and then, next_ptr > limit.
@@ -346,20 +292,20 @@ impl BumpBlock {
                 - self.block.as_ptr() as usize)
                 / LINE_SIZE;
             let mark_high =
-                (next_pos - self.block.as_ptr() as usize) / LINE_SIZE;
+                (next_pos - 1 - self.block.as_ptr() as usize) / LINE_SIZE;
             self.meta
                 .set_mark_range(&Mark::Allocated, mark_low, mark_high);
             let cursor = self.cursor;
-            self.cursor = next_ptr as *const u8;
+            self.cursor = unsafe {
+                self.block
+                    .as_ptr()
+                    .add(next_ptr - self.block.as_ptr() as usize)
+            };
 
-            let self_ptr = NonNull::new(self);
-            if self_ptr.is_none() {
-                return Err(BlockError::OutOfMemory);
-            }
             let ptr = MetaPtr {
                 low: mark_low,
                 high: mark_high,
-                block: self_ptr.unwrap(),
+                marks: self.meta.clone(),
             };
             Ok((ptr, cursor))
         } else {
@@ -390,7 +336,7 @@ impl BumpBlock {
     }
 
     pub fn current_hole_size(&self) -> usize {
-        self.cursor as usize - self.limit as usize
+        self.limit as usize - self.cursor as usize
     }
 
     pub fn is_fresh(&self) -> bool {
@@ -404,9 +350,9 @@ impl BumpBlock {
 
 #[derive(Debug)]
 pub struct LargeBlock {
-    pub ptr: BlockPointer,
-    pub size: BlockSize,
-    pub mark: Mark,
+    ptr: BlockPointer,
+    size: BlockSize,
+    pub mark: Rc<Cell<Mark>>,
 }
 impl LargeBlock {
     /// create new memory block.
@@ -422,7 +368,7 @@ impl LargeBlock {
         Ok(LargeBlock {
             size,
             ptr: self::LargeBlock::alloc_block(size)?,
-            mark: Mark::Allocated,
+            mark: Rc::new(Cell::new(Mark::Allocated)),
         })
     }
     /// allocate block pointer.
@@ -437,7 +383,8 @@ impl LargeBlock {
     ///
     fn alloc_block(size: BlockSize) -> Result<BlockPointer, BlockError> {
         unsafe {
-            let layout = Layout::from_size_align_unchecked(size, size);
+            let layout = Layout::from_size_align(size, size)
+                .map_err(|_| BlockError::BadSize(size))?;
             let ptr = alloc(layout);
             if ptr.is_null() {
                 Err(BlockError::OutOfMemory)
@@ -452,27 +399,22 @@ impl LargeBlock {
     }
 
     pub fn dealloc_block(self) {
-        unsafe {
-            let layout =
-                Layout::from_size_align_unchecked(self.size, self.size);
-
-            dealloc(self.ptr.as_ptr(), layout);
-        }
+        drop(self);
     }
 
     pub fn set_mark(&mut self, mark: &Mark) {
-        self.mark = *mark;
+        self.mark.set(*mark);
     }
 
     pub fn unmark(&mut self) {
-        self.mark = Mark::Unmarked;
+        self.mark.set(Mark::Unmarked);
     }
 
     pub fn is_marked(&self) -> bool {
-        self.mark == Mark::Marked
+        self.mark.get() == Mark::Marked
     }
     pub fn is_unmarked(&self) -> bool {
-        self.mark == Mark::Unmarked
+        self.mark.get() == Mark::Unmarked
     }
 }
 
@@ -561,14 +503,16 @@ impl BlockList {
         &mut self,
         alloc_size: usize,
     ) -> Result<PairPtr, AllocError> {
-        let size = alloc_size.next_power_of_two();
+        let size = alloc_size
+            .checked_next_power_of_two()
+            .ok_or(AllocError::SizeTooBig)?;
         let new_large_block = LargeBlock::new(size)?;
         self.large.insert(self.count, new_large_block);
 
         let ptr = self.large.get(&self.count).unwrap().as_ptr();
         self.count += 1;
         let rst = PairPtr {
-            meta: OR::R(RawPtr::new(ptr as *const LargeBlock)),
+            meta: OR::R(self.large[&(self.count - 1)].mark.clone()),
             data: ptr,
         };
         Ok(rst)
@@ -611,8 +555,8 @@ impl BlockList {
         for (_, lblk) in self.large.iter_mut() {
             lblk.unmark();
         }
-        if !self.head.is_empty() {
-            self.head[0].meta.reset();
+        for block in &mut self.head {
+            block.meta.reset();
         }
         for (_, blk) in self.rest.iter_mut() {
             blk.unmark();
@@ -623,5 +567,21 @@ impl BlockList {
 impl Default for BlockList {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for Block {
+    fn drop(&mut self) {
+        // The constructor validates and records the allocation layout.
+        unsafe { Self::dealloc_block(self.ptr, self.size) };
+    }
+}
+
+impl Drop for LargeBlock {
+    fn drop(&mut self) {
+        let layout = Layout::from_size_align(self.size, self.size)
+            .expect("block layout");
+        // This block uniquely owns the payload; metadata has independent ownership.
+        unsafe { dealloc(self.ptr.as_ptr(), layout) };
     }
 }

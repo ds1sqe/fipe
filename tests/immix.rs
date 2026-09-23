@@ -1,4 +1,4 @@
-use dlang::immix::blocks::{BlockList, BumpBlock};
+use fipe::immix::blocks::{BlockList, BumpBlock};
 
 #[test]
 fn test_bumpblock() {
