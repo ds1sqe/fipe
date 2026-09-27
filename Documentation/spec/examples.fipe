@@ -1,0 +1,53 @@
+# Lexical and syntax corpus, not a runnable program for Fipe 0.1.0.
+use fs
+use text ver 2
+
+let dir = (sys.lookup root /module/fs/root | as Rd<fs>)
+ls -l dir | filter (e => e.size > 4096) | map .name
+
+let add = fn(a, b) { a + b }
+let add2 = add 2
+add2 4
+
+fn big(dir: Rd<fs>, min: u64) -> Result<Vec<String>, fs.Error> {
+    let Ok _ = fs.remove dir /tmp/x
+    fs.list dir /etc |: filter (e => e.size > min) |: map .name
+}
+
+find x |: cat |! log || root
+find x | {
+    Just Entry { name, .. } if name != "" => name
+    _ => "-"
+}
+
+struct Point { x: i64, y: i64 }
+struct Width(u64): Default(80)
+enum EntryKind { File: String, Directory: String }
+trait Display { fn display(self) -> String }
+impl Display for Width {
+    fn display(self) -> String { show self }
+}
+
+let values = [199, -5, 0x199, 0o17, 0b1010, 1_000]
+let floats = [1.5, 1e3, -1.2e-3]
+let text = "a b\n\xC3\xA9"
+let raw = 'no\nescapes # here'
+let bytes = b"\x00\xFF"
+let resource = rd:4
+let buffer: [u8; 4] = [0x41, 0x42, 0, 0]
+
+ls -c=80 -l=False --width 80 -n=-5 --la -t [a, b]
+cat ./x ../x /module/fs/root "-x" --
+cat héllo "한글"
+cat "#x" # comment ends here
+
+cat x | # continuation
+    grep foo > ./output
+
+with cwd /tmp {
+    ls
+}
+
+if ready { True } else { False }
+let compare = fn(x, y) { x <= y }
+find x || fault "no x"

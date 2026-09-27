@@ -1,0 +1,85 @@
+(* Draft; disambiguation and proposal status are in syntax.md. *)
+file = newlines, { entry, NEWLINE, newlines }, [ entry ], EOF ;
+entry = item | line ;
+newlines = { NEWLINE } ;
+
+item = import | function_item | struct_item | enum_item
+     | trait_item | impl_item | alias_item ;
+import = "use", NAME, [ "ver", INTEGER ] ;
+function_item = "fn", NAME, parameters, [ "->", type ], block ;
+parameters = "(", newlines, [ parameter_list ], newlines, ")" ;
+parameter_list = parameter, { ",", newlines, parameter }, [ "," ] ;
+parameter = NAME, [ ":", type ], [ "=", operand ] ;
+
+struct_item = "struct", NAME, ( record_fields | newtype ), [ default ] ;
+record_fields = "{", newlines, [ field_list ], newlines, "}" ;
+field_list = field, { ",", newlines, field }, [ "," ] ;
+field = NAME, ":", type ;
+newtype = "(", type, ")" ;
+default = ":", NAME, "(", operand, ")" ;
+enum_item = "enum", NAME, "{", newlines, variant_list, newlines, "}" ;
+variant_list = variant, { ",", newlines, variant }, [ "," ] ;
+variant = NAME, [ ":", type ] ;
+trait_item = "trait", NAME, [ ":", NAME ], trait_body ;
+trait_body = "{", newlines,
+             { signature, NEWLINE, newlines }, [ signature ], "}" ;
+signature = "fn", NAME, parameters, [ "->", type ] ;
+impl_item = "impl", NAME, "for", type, impl_body ;
+impl_body = "{", newlines,
+            { function_item, NEWLINE, newlines }, [ function_item ], "}" ;
+alias_item = "type", NAME, [ type_parameters ], "=", type ;
+type_parameters = "<", type_parameter, { ",", type_parameter }, ">" ;
+type_parameter = NAME, [ ":", NAME ] ;
+
+type = named_type | unit_type | array_type | function_type ;
+named_type = NAME, [ "<", type, { ",", type }, ">" ] ;
+unit_type = "(", ")" ;
+array_type = "[", type, ";", INTEGER, "]" ;
+function_type = "fn", "(", [ type, { ",", type } ], ")", "->", type ;
+
+line = binding | scoped | pipeline ;
+binding = "let", pattern, [ ":", type ], "=", line ;
+scoped = "with", NAME, operand, block ;
+pipeline = stage, { pipe, stage }, [ redirect, operand ] ;
+pipe = "|" | "|:" | "|!" | "||" | "&&" ;
+redirect = ">" | ">>" ;
+stage = arms | conditional | application | cast_stage | value ;
+cast_stage = "as", type ;
+application = NAME, argument, { argument } ;
+argument = operand | FLAG, [ "=", operand ] ;
+operand = primary ;
+
+value = equality ;
+equality = comparison, [ ( "==" | "!=" ), comparison ] ;
+comparison = sum, [ ( "<" | "<=" | ">" | ">=" ), sum ] ;
+sum = product, { ( "+" | "-" ), product } ;
+product = cast, { ( "*" | "/" | "%" ), cast } ;
+cast = unary, { "as", type } ;
+unary = { "!" }, primary ;
+primary = literal | NAME | WORD | PATH | SELECTOR | "/"
+        | group | list | struct_value | closure | arm_block | block ;
+literal = INTEGER | FLOAT | STRING | BYTES | RD | unit ;
+unit = "(", newlines, ")" ;
+group = "(", newlines, line, newlines, ")" ;
+list = "[", newlines, [ elements ], newlines, "]" ;
+elements = line, { ",", newlines, line }, [ "," ] ;
+struct_value = NAME, "{", newlines,
+               [ field_values ], newlines, "}" ;
+field_values = field_value, { ",", newlines, field_value }, [ "," ] ;
+field_value = NAME, ":", line ;
+closure = "fn", parameters, [ "->", type ], block ;
+block = "{", newlines, { line, NEWLINE, newlines }, [ line ], "}" ;
+conditional = "if", stage, block, [ "else", ( conditional | block ) ] ;
+
+arms = arm, { ",", newlines, arm } ;
+arm_block = "{", newlines, arm,
+            { [ "," ], NEWLINE, newlines, arm },
+            [ "," ], newlines, "}" ;
+arm = pattern, [ "if", stage ], "=>", line ;
+pattern = pattern_atom | NAME, pattern ;
+pattern_atom = literal | NAME | list_pattern | struct_pattern
+             | "(", pattern, ")" ;
+list_pattern = "[", [ pattern, { ",", pattern }, [ "," ] ], "]" ;
+struct_pattern = NAME, "{", [ pattern_fields ], "}" ;
+pattern_fields = pattern_field, { ",", pattern_field }, [ "," ] ;
+pattern_field = NAME, [ ":", pattern ] | WORD ;

@@ -1,15 +1,8 @@
+#![no_std]
+#![forbid(unsafe_code)]
 #![doc = include_str!("../README.md")]
 
-pub mod ast;
-pub mod bytecode_vm;
-pub mod heap;
-pub mod immix;
-pub mod lexer;
-pub mod object;
-pub mod parser;
-pub mod token;
-pub mod treewalker;
+extern crate alloc;
 
-pub mod benchmark;
-pub mod test;
-pub mod utils;
+pub mod lex;
+pub mod token;

@@ -1,0 +1,54 @@
+(* Character-level forms. lexical.md defines maximal word boundaries,
+   ordered classification, initial BOM skipping, symbol matching,
+   newline suppression and errors.
+   A ? ... ? sequence denotes the exact character set described within it. *)
+token = keyword | symbol | name | selector | word | flag | path
+      | integer | float | resource | string | raw_string | bytes | newline ;
+
+name = identifier, { ".", identifier } ;
+identifier = name_start, { name_continue } ;
+name_start = letter | "_" ;
+name_continue = name_start | digit ;
+letter = ? ASCII A-Z or a-z ? ;
+digit = ? ASCII 0-9 ? ;
+hex_digit = digit | ? ASCII A-F or a-f ? ;
+oct_digit = ? ASCII 0-7 ? ;
+bin_digit = "0" | "1" ;
+
+word = word_scalar, { word_scalar } ;
+word_scalar = ? Unicode scalar except spacing, LF, C0/C1 controls,
+                U+FEFF, U+200B and
+                ( ) { } [ ] , ; : = < > ! | & double-quote single-quote # ? ;
+flag = ( "-" | "--" ), letter, { word_scalar } ;
+selector = ".", name ;
+path = ( "/" | "./" | "../" ), { word_scalar } ;
+
+decimal = digit, { [ "_" ], digit } ;
+hex = hex_digit, { [ "_" ], hex_digit } ;
+oct = oct_digit, { [ "_" ], oct_digit } ;
+bin = bin_digit, { [ "_" ], bin_digit } ;
+sign = [ "-" ] ;
+integer = sign, ( decimal | "0x", hex | "0o", oct | "0b", bin ) ;
+exponent = ( "e" | "E" ), [ "+" | "-" ], decimal ;
+float = sign, ( decimal, ".", decimal, [ exponent ] | decimal, exponent ) ;
+resource = "rd:", digit, { digit } ;
+
+double_quote = ? U+0022 ? ;
+single_quote = ? U+0027 ? ;
+backslash = ? U+005C ? ;
+string = double_quote, { text_scalar | escape }, double_quote ;
+bytes = "b", string ;
+raw_string = single_quote, { raw_scalar }, single_quote ;
+text_scalar = ? Unicode scalar except double-quote, backslash and
+                U+FEFF, U+200B, C0/C1 controls other than TAB ? ;
+raw_scalar = ? Unicode scalar except single-quote and
+               U+FEFF, U+200B, C0/C1 controls other than TAB ? ;
+escape = backslash, ( "n" | "t" | "r" | backslash | double_quote
+                   | single_quote | "0" | "x", hex_digit, hex_digit ) ;
+
+keyword = "let" | "if" | "else" | "with" | "fn" | "struct" | "enum"
+        | "trait" | "impl" | "for" | "type" | "use" | "ver" | "as" ;
+symbol = "+" | "-" | "*" | "/" | "%" | "(" | ")" | "{" | "}" | "[" | "]"
+       | "," | ";" | ":" | "=" | "==" | "!" | "!=" | "<" | "<="
+       | ">" | ">=" | ">>" | "->" | "=>" | "|" | "|:" | "|!" | "||" | "&&" ;
+newline = ? U+000A LF ? ;

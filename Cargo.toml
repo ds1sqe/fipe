@@ -1,18 +1,20 @@
 [package]
 name = "fipe"
-version = "0.1.0"
+version = "0.2.0-dev.1"
 edition = "2021"
 authors = ["Kim Dae Up <ds1sqe@mensakorea.org>"]
-description = "An experimental language with a bytecode compiler and VM"
+description = "Fipe, an embeddable functional pipeline language"
 repository = "https://github.com/ds1sqe/fipe"
-readme = "README.md"
-include = ["/src/**", "/tests/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE-*"]
+include = [
+    "/src/**", "/tests/**", "/Documentation/**", "/Cargo.toml",
+    "/Cargo.lock", "/README.md", "/LICENSE-*",
+]
 license = "MIT OR Apache-2.0"
 keywords = ["interpreter","compiler"]
 categories =["compilers"]
 
-[dependencies]
-
+[lints.rust]
+unsafe_code = "forbid"
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--document-private-items"]

@@ -1,0 +1,14 @@
+use fs
+let dir = (sys.lookup root /module/fs/root | as Rd<fs>)
+ls -l dir | filter (e => e.size > 4096) | map .name
+
+let add = fn(a, b) { a + b }
+let add2 = add 2
+add2 4
+
+fn big(dir: Rd<fs>, min: u64) -> Result<Vec<String>, fs.Error> {
+    let Ok _ = fs.remove dir /tmp/x
+    fs.list dir /etc |: filter (e => e.size > min) |: map .name
+}
+
+find x |: cat |! log || root

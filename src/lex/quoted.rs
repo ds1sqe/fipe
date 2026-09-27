@@ -1,0 +1,86 @@
+use super::{invisible, Reason, Scanner};
+use crate::token::Kind;
+use alloc::{string::String, vec::Vec};
+
+impl Scanner<'_> {
+    pub(super) fn quoted(&mut self, bytes: bool) -> Result<Kind, Reason> {
+        let quote = self.bump().expect("quoted starts at a quote");
+        let raw = quote == '\'';
+        let mut value = Vec::new();
+        let mut error = None;
+        loop {
+            match self.peek() {
+                None | Some('\n') => {
+                    return Err(error.unwrap_or(Reason::UnterminatedQuote));
+                }
+                Some(ch) if ch == quote => {
+                    self.bump();
+                    break;
+                }
+                Some(_) => {
+                    if let Err(reason) = self.quoted_char(raw, &mut value) {
+                        error.get_or_insert(reason);
+                    }
+                }
+            }
+        }
+        if let Some(reason) = error {
+            return Err(reason);
+        }
+        if bytes {
+            return Ok(Kind::Bytes(value));
+        }
+        String::from_utf8(value)
+            .map(|value| Kind::Str { value, raw })
+            .map_err(|_| Reason::InvalidUtf8)
+    }
+
+    fn quoted_char(
+        &mut self,
+        raw: bool,
+        out: &mut Vec<u8>,
+    ) -> Result<(), Reason> {
+        let ch = self.bump().expect("quoted_char is called before EOF");
+        if ch == '\\' && !raw {
+            out.push(self.escape()?);
+        } else if invisible(ch) || (ch.is_control() && ch != '\t') {
+            return Err(Reason::Stray(ch));
+        } else {
+            out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
+        }
+        Ok(())
+    }
+
+    fn escape(&mut self) -> Result<u8, Reason> {
+        let ch = self
+            .peek()
+            .filter(|&ch| ch != '\n')
+            .ok_or(Reason::BadEscape)?;
+        self.bump();
+        match ch {
+            'n' => Ok(b'\n'),
+            't' => Ok(b'\t'),
+            'r' => Ok(b'\r'),
+            '\\' => Ok(b'\\'),
+            '"' => Ok(b'"'),
+            '\'' => Ok(b'\''),
+            '0' => Ok(0),
+            'x' => Ok(self.hex_digit()? * 16 + self.hex_digit()?),
+            _ => Err(Reason::BadEscape),
+        }
+    }
+
+    fn hex_digit(&mut self) -> Result<u8, Reason> {
+        // Leave a closing quote or LF for recovery, even after an incomplete
+        // escape; it must not consume a token on the next physical line.
+        let ch = self.peek().ok_or(Reason::BadEscape)?;
+        let value = match ch {
+            '0'..='9' => ch as u8 - b'0',
+            'a'..='f' => ch as u8 - b'a' + 10,
+            'A'..='F' => ch as u8 - b'A' + 10,
+            _ => return Err(Reason::BadEscape),
+        };
+        self.bump();
+        Ok(value)
+    }
+}
