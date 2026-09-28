@@ -197,17 +197,19 @@ impl Parser {
         }
     }
 
-    /// A file entry: an item, a line, or `pub` before a `type`, a `trait`
-    /// or a binding.
+    /// A file entry: an item, a binding, a signature-only declaration
+    /// (`name: type` with no `=`), or a line; `pub` may precede a `type`,
+    /// a `trait`, a binding or a declaration.
     fn entry(&mut self) -> Result<Entry, Error> {
         let public = self.keyword(Keyword::Pub);
         let entry = if self.item_start() {
             Entry::Item(self.item(public)?)
+        } else if self.binding_ahead() {
+            Entry::Line(self.binding(Context::Line, public)?)
+        } else if self.colon_follows() {
+            Entry::Item(self.declare(public)?)
         } else if public {
-            if !self.binding_ahead() {
-                return Err(self.expected(Expected::Name));
-            }
-            Entry::Line(self.binding(Context::Line, true)?)
+            return Err(self.expected(Expected::Name));
         } else {
             Entry::Line(self.line(Context::Line)?)
         };
@@ -216,13 +218,20 @@ impl Parser {
     }
 
     /// Whether this line is a binding: a depth-zero `=` before its first
-    /// `=>`, pipe, comma or newline, not counting an `=` after a flag.
+    /// `=>`, pipe, comma or newline, not counting an `=` after a flag. A
+    /// `=>` after a depth-zero `:` belongs to the annotation's constraints.
     fn binding_ahead(&mut self) -> bool {
         self.peek();
         let mut depth = 0_usize;
         let mut after_flag = false;
+        let mut annotated = false;
         for token in &self.tokens[self.position..] {
             match token.kind {
+                Kind::Symbol(Symbol::Colon) if depth == 0 => annotated = true,
+                // Inside an annotation, `,` separates constraints and `=>`
+                // ends them; neither ends the line.
+                Kind::Symbol(Symbol::FatArrow | Symbol::Comma)
+                    if depth == 0 && annotated => {}
                 Kind::Symbol(
                     Symbol::LParen
                     | Symbol::LBracket

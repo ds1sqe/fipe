@@ -1,24 +1,15 @@
 # Syntax
 
-[syntax.ebnf](syntax.ebnf) is the grammar over the token inventory
-in [lexical structure](lexical.md). It is accompanied by the constraints here;
-EBNF alone does not resolve line, stage, binding or comma ambiguity. The
-rules below complete it. The [parser API](parser-api.md) defines
-representation and resource limits; checking and execution remain later
-stages.
+[syntax.ebnf](syntax.ebnf) is the grammar over the tokens of
+[lexical structure](lexical.md); the rules here resolve what EBNF cannot:
+lines, stages, bindings and commas. The [parser API](parser-api.md) owns
+representation and limits.
 
-## Grammar notation
-
-`a = b ;` defines a production; `,` concatenates; `|` chooses; `[ ]` is optional;
-`{ }` repeats zero or more times; `( )` groups. Quoted text is an exact token
-spelling, not a source-character rule. Uppercase identifiers are payload or
-structural terminals. `(* … *)` is a grammar comment. Empty files are valid.
-
-Every bare `NAME` can be qualified lexically. Definition sites, parameter
-names and members require one segment; `use` and value or type references
-may be qualified. `WORD("..")` alone is allowed as a record pattern's rest
-field. Every other `WORD` in `pattern_field` is rejected. `_` in a pattern
-binds nothing. `Self` is a name, not a keyword.
+In the grammar `,` concatenates, `|` chooses, `[ ]` is optional, `{ }`
+repeats, `( )` groups, quoted text is a token spelling and uppercase names
+are terminals. Definition sites, parameters and members take a one-segment
+`NAME`; `use` and references may be qualified. The only `WORD` in
+`pattern_field` is `..`, the rest field. `_` in a pattern binds nothing.
 
 **The case rule.** A name whose last segment starts with an ASCII uppercase
 letter is a constructor or a type wherever the parser must tell the two
@@ -28,13 +19,10 @@ constructor is uppercase" and "a binding is not".
 
 ## Lines and continuation
 
-A newline ends a line everywhere: at top level, inside `{ }` and inside
-`( )`. There is no statement terminator, no layout rule and no `match`,
-return, loop or reassignment form. Semicolon is accepted only in a fixed-array
-type. A closing bracket or EOF can end the final line without a newline.
-Blank and comment lines are ignored, except as stated below.
-
-A line continues across one newline in exactly these cases:
+A newline ends a line everywhere, including inside `{ }` and `( )`; a
+closer or EOF ends the last line. There is no terminator, layout rule,
+`match`, return, loop or reassignment. Semicolon occurs only in a
+fixed-array type. A line continues across one newline exactly when:
 
 - **After a trailing operator**: a pipe, `+ - * %`, a comparison, `->` or
   `=>`. A trailing `/` is the root path, not a continuation, so `ls /` ends
@@ -44,37 +32,22 @@ A line continues across one newline in exactly these cases:
   negative literal, a flag such as `-b` and a lone `/` begin a new line.
 - **After a trailing comma** inside a list, and after a list's opener or
   before its closer.
-- **Across a backslash join**, which the lexer performs before tokenization.
+- **Across a backslash join**, which the lexer performs.
 
-A blank line ends a continuation. Because the lexer drops comments, a
-comment-only line counts as blank. A leading operator after a blank line, on
-a file's or block's first line, or after an item is an error: an operator
-needs a stage on both sides, and there are no operator sections.
-
-```text
-find x |: cat |! log || root      find x                    total = price
-                                      |: cat                    * count
-                                      |! log                    + shipping
-                                      || root
-pub inc = n                       # the head ends where `=>` begins
-    => n + 1
-```
+A blank line ends a continuation, and a comment-only line is blank. A
+leading operator after a blank line, at the start of a file or block, or
+after an item is an error: there are no operator sections.
 
 ## Lists and blocks
 
-Two containers exist, chosen by position, never by glyph.
-
-A **list** is comma-separated: `[ ]`, type arguments and parameters `< >`,
-a call's `( )` that touches its callee, a constructor's fields, a record's
-`{ }`, a pattern's fields, a `type`, `trait` or `impl` body and an arm list.
-Newlines are allowed after the opener, after a comma and before the closer.
-Elsewhere a newline inside a list is an error at the newline, "expected `,`
-before the line break"; a comma therefore never begins a line. A trailing
-comma is allowed.
-
-A **block** is line-separated and its value is its last line: a file, a body,
-`{ }` anywhere else, and `( )` that does not touch a callee. An empty block
-has the unit value. `()` is the unit literal.
+Position, never the glyph, chooses between two containers. A **list** is
+comma-separated: `[ ]`, `< >`, a call's `( )` touching its callee, a
+constructor's or record's or pattern's fields, an item body and an arm
+list. Newlines are allowed only after the opener, after a comma and before
+the closer; elsewhere a newline in a list is the error "expected `,` before
+the line break". A trailing comma is allowed. A **block** is line-separated
+and its value is its last line: a file, a body, any other `{ }`, and `( )`
+not touching a callee. An empty block is `()`, the unit literal.
 
 ```text
 f(x,                # a list: the comma carries the line over
@@ -86,43 +59,38 @@ f(x                 # error at the end of this line: expected `,`
 f (                 # `f` applied to one argument, a group whose value is `g`
   g
 )
-cat x \             # the backslash join: `cat x y`
-    y
 ```
 
-**Records by case.** After a name, `(` that touches it is a call. `{` after
-an uppercase name opens a record, the raw construction that mirrors the
-record pattern: `Point { x: 1, y: 2 }`, and `{ x, y }` puns each field with
-the value of that name. After any other name `{` is a block argument:
-`map { [:e] => e.name, [!] => "-" }` is `map` applied to an arm block.
+**Records by case.** `{` after an uppercase name opens a record, the raw
+construction mirroring the record pattern: `Point { x: 1, y: 2 }`, and
+`{ x, y }` puns each field with the value of that name. After any other
+name `{` is a block argument: `map { [:e] => e.name, [!] => "-" }`.
 
-**Heads.** `if c { }`, `else { }`, `with k v { }` and item bodies open with
-`{`, and in an `if` or `with` head the first top-level `{` is the body. A
-record or block used in that head must be parenthesized. `else` attaches to
-the nearest unmatched `if`; newlines may separate it from `}`.
+**Heads.** In an `if` or `with` head the first top-level `{` is the body;
+a record or block in the head is parenthesized. `else` attaches to the
+nearest unmatched `if`, across newlines.
 
 ## Bindings
 
-There is no `let`. A line is a binding when a top-level `=` comes before its
-first `=>`, pipe, comma or newline, not counting an `=` attached to a flag:
-`x = 1`, `[x, y] = e`, `Just x = e`, `Ok _ = fs.remove dir /tmp/x`,
-`x: i64 = e`. `=` always makes a new binding; a second `x = …` shadows.
-`cmd -c=80` is a call, and `x => y = 1` is an arm whose body binds. The
-value is a whole line, so `add = a b => a + b` binds an arm list and
-`f: A -> B = x => …` puts the signature on the binding. `pub` before a
-file-level binding exports it; `pub` anywhere else is an error.
+A line is a binding when a top-level `=` comes before its first `=>`,
+pipe, comma or newline, not counting a flag's `=` or a `=>` inside an
+annotation: `x = 1`, `[x, y] = e`, `Just x = e`, `x: i64 = e`. `=` always
+makes a new binding, so a second `x = …` shadows. `cmd -c=80` is a call
+and `x => y = 1` an arm whose body binds. The value is a whole line:
+`add = a b => a + b` binds an arm list, `f: A -> B = x => …` puts the
+signature on the binding. `pub` before a file-level binding exports it;
+elsewhere it is an error.
 
 ## Arms
 
-A block whose first line contains a top-level `=>` is an arm list, in either
-bracket; so is a stage that begins with a head and `=>`. A **head** is one or
-more patterns, each a pattern atom or `(name = operand)`, a parameter with a
-default; by the case rule `Just e rest` is two patterns and `Just Just e`
-one. An arm with several patterns is a function of that many parameters,
-curried. Arms are a comma list: a comma follows every arm body, including a
-block body. An arm body is a non-arm line and may start on the line after
-`=>`; a nested arm list needs its own brackets. An arm list is one function
-value: piped into, called, bound or passed. Arm order is preserved;
+A block whose first line has a top-level `=>` is an arm list, in either
+bracket; so is a stage beginning with a head and `=>`. A **head** is one or
+more patterns, each a pattern atom or `(name = operand)`, a parameter
+with a default; `Just e rest` is two patterns, `Just Just e` one. Several
+patterns make a curried function of that many parameters. Arms are a comma
+list; a comma follows every body, block bodies included. A body is a
+non-arm line and may start after the newline following `=>`; a nested arm
+list needs its own brackets. An arm list is one function value, in order;
 checking owns totality.
 
 ```text
@@ -138,37 +106,27 @@ ls: Rd -> Bool -> Vec<Entry> = dir (long = False) => …
 
 ## Stage selection
 
-Use the following resolution, without consulting value types:
+In order, without types: `with`, `if` and a binding introduce their own
+forms; a top-level `=>` after a head starts an arm list; an operand
+followed by an arithmetic or comparison operator is a value expression; an
+operand followed by spaced operands or flags is an application; a lone
+operand is a value. An operator after an application argument is an error:
+`add 2 - 1` and `cat x > y` are invalid, `add (2 - 1)` and `(cat x) > y`
+valid; a negative literal is an operand, so `add 2 -1` is valid.
 
-1. `with`, `if` and a binding introduce their own forms.
-2. A top-level `=>` following a valid head starts an arm list.
-3. A first operand followed by an arithmetic/comparison operator is a value
-   expression, using the precedence table below.
-4. An operand followed by spaced operands or flags starts an application.
-5. A lone operand is a value; whether a name evaluates to a function is typed.
+**Explicit instantiation.** A name with a touching `<` carries type
+arguments: `read<i64>`, `Rd<fs>`, `pl.into<Point>`. A spaced `<` compares,
+so `a<b` is the error "expected `>`". There is no cast keyword.
 
-An operator after an application argument is rejected: `add 2 - 1` and
-`cat x > y` are invalid; `add (2 - 1)` and `(cat x) > y` are valid. A
-negative token is an operand, so `add 2 -1` is valid. A bound function at a
-stage head can have arguments even though it is a value.
-
-**Explicit instantiation.** A name followed by a touching `<` carries type
-arguments in value position: `read<i64>`, `Rd<fs>`, `pl.into<Point>`. A
-spaced `<` is comparison, so `a<b` is an error, "expected `>`", and `a < b`
-compares. There is no cast keyword: a type name in value position is an
-ordinary name, its constructor, and conversion is a named function.
-
-**Outcome brackets.** `[` whose next token is `:` or `!` is an outcome
-bracket, in patterns and in values: `[:e]` and `[:]` are the success side,
-`[!e]` and `[!]` the miss side, with an optional payload. It is never a
-list, so a one-element list of a negation is written `[(!x)]`. Which family
-the bracket denotes is the checker's, from the scrutinee or expected type.
+**Outcome brackets.** `[` followed by `:` or `!` is an outcome bracket in
+patterns and values: `[:e]` and `[:]` the success side, `[!e]` and `[!]`
+the miss side. It is never a list, so a one-element list of a negation is
+`[(!x)]`. The family is the checker's.
 
 ## Precedence
 
-Higher rows bind tighter. There is no unary arithmetic minus operator; minus
-is part of an adjacent numeric literal or a binary operator. `>` is
-comparison at every position; no redirection form exists.
+Higher rows bind tighter. There is no unary minus: minus is part of a
+literal or a binary operator. `>` is comparison everywhere.
 
 | Forms | Association |
 | --- | --- |
@@ -181,70 +139,63 @@ comparison at every position; no redirection form exists.
 | `== !=` | non-associative |
 | `| |: |! || &&` | left, one level |
 
-An arm body extends to its enclosing delimiter or comma, including a
-pipeline. Inside a list, an arm list must be bracketed so that its commas do
-not consume neighboring elements; a member value in a `trait` or `impl`
-body is therefore one arm, or a bracketed arm list.
+An arm body extends to its enclosing delimiter or comma, pipeline
+included; inside a list an arm list is bracketed, and a member value is one
+arm or a bracketed arm list.
 
-`/` is a root-path operand at an operand position and division between
-values. After a potential call head, `/` is division if another operand
-follows it on the same line; otherwise it supplies the root path, as in
-`ls /`. Group an earlier root-path argument when needed: `cat (/) other`.
-Other standalone arithmetic symbols used as text arguments must be quoted.
+`/` is the root path at an operand position and division between values.
+After a call head it is division if another operand follows on the line,
+else the root path: `ls /`; an earlier root-path argument is grouped,
+`cat (/) other`. Other bare arithmetic symbols as text are quoted.
 
 ## Arguments and calls
 
-The parser retains a sequence of positional operands and flag arguments.
-It does not decide whether `-l` takes a value from the next operand; declared
-types drive [binding](evaluation.md). Under the lexical contract, `=` in an
-attached flag must touch the flag and its operand's first token; whitespace
-form is `-c 80`. Quoted flag text is an ordinary string, and `--` does not
-end flag parsing.
-
-Space application requires a source gap before each argument. Adjacent `(`
-instead starts an explicit argument-list call on any operand: `f(a,b)` and
-`f a b` supply the same argument sequence. `f()` records an explicit call with
-no arguments; checking owns defaults and arity. `f (x)` passes a group;
-`f (x,y)` is invalid because tuples do not exist. `f` on one line and `(g)`
-on the next are two lines: a call paren must touch its callee. Call, list
-and record elements may contain non-arm lines; bracket an arm value used
-there. A constructor is called like any function: `Point 3 4`, `Point -y 4
+The parser keeps positional operands and flags in order and never decides
+which spot one fills; [evaluation](evaluation.md) binds them. `-c=80` is
+one flag argument, `-c 80` a flag and an operand. Space application needs
+a gap before each argument; a touching `(` is an explicit argument list, so
+`f(a,b)` and `f a b` supply the same sequence, `f()` calls with none,
+`f (x)` passes a group and `f (x,y)` is invalid, tuples not existing. A
+call paren touches its callee, so `f` and `(g)` on the next line are two
+lines. A constructor is called like any function: `Point 3 4`, `Point -y 4
 -x 3`, `Point(3, 4)`, `Width`, `Point.line 2`.
 
-Adjacent selector tokens extend an operand: `(e).name`, `f().name`, and
-`(e).a.b`. A separated `.name` is a selector argument. Names such as `e.name`
-retain their segments; one dot serves fields, module members and a type's
-namespace, and the checker resolves the first segment. `::` has no meaning
-in this draft and is kept free for a later namespace form. Numeric field
-selectors such as `.0` are not admitted; no tuple syntax is added.
+Touching selectors extend an operand: `(e).name`, `f().name`. A separated
+`.name` is a selector argument. `e.name` keeps its segments for the checker,
+whose one dot serves fields, modules and type namespaces. `::` has no
+meaning in this draft. Numeric selectors such as `.0` do not exist.
 
-Record-pattern `..` may occur once, as the last field. Items cannot appear
-inside expression blocks. A record or block argument immediately before a
-required body brace, including a `with` value, must be grouped.
+Record-pattern `..` occurs once, last. Items cannot appear in expression
+blocks. A record or block argument just before a required body brace,
+including a `with` value, is grouped.
 
 ## Definitions
 
-Items are module-level: `use`, `type`, `trait` and `impl`. `pub` may precede
-`type`, `trait` and a binding; it exports. `use x` imports a module, `use
-x.inc x.Point` names, `use text 2` an API version. A file-level binding
-whose value is syntactically an arm list is collected with the items, so it
-may recurse and be used before its line; every other binding is a line in
-order.
+Items are module-level: `use`, `type`, `trait`, `impl` and a declaration;
+`pub` exports a `type`, `trait`, binding or declaration. `use x` imports a
+module, `use x.inc x.Point` names, `use text 2` an API version. A
+file-level binding whose value is syntactically an arm list is collected
+with the items, so it may recurse; every other binding is a line in order.
 
 `type Name<params> { members }` has one member grammar: a lowercase field
-`[pub] name: type [= operand]`, or an uppercase constructor `Name` or
-`Name(fields)`. Whether a body mixes the two, and whether names have the
-right case, is checked, not parsed. Type parameters are written only by the
-prelude. There is no alias, `struct` or `enum` form.
+`[pub] name: type [= operand]` or an uppercase constructor `Name` or
+`Name(fields)`; mixing and case are checked, not parsed. There is no
+alias, `struct` or `enum`.
 
-`trait Name[: Parent] { members }` has members `name: type [= value]`; an
-uppercase member with a bound, `Error: Err`, is an associated type. `impl
-Target[: Trait] { members }` has members `[pub] name [: type] = value`, and
-in an inherent impl bare arms, which together are the type's written
-constructor. Member values follow the list rule above: one arm, or a
-bracketed arm list.
+`trait Name<params>[: Parent] { members }` has members `name: type [=
+value]`; an uppercase member with a bound, `Error: Err`, is an associated
+type. `impl Target[: Trait] { members }` has members `[pub] name [: type] =
+value`, associated types `Name = type`, and in an inherent impl bare arms,
+which together are the type's written constructor. Member values follow the
+list rule above: one arm, or a bracketed arm list.
 
-The function type is `A -> B`, right-associative: `A -> B -> C` is
-`A -> (B -> C)`, `() -> T` takes unit, and `(A -> B) -> C` groups. A
-trailing `->` continues the line. There is no `fn` in types, items or
-values; the arm is the one function form.
+The function type `A -> B -> C` is `A -> (B -> C)`; `() -> T` takes unit
+and `(A -> B) -> C` groups. There is no `fn`: the arm is the one function
+form.
+
+**Declaration forms**, for the prelude and host declarations, rejected
+elsewhere by the checker: type parameters on `type` and `trait`;
+constraints at the top of an annotation, `show: Show a => a -> String`,
+never inside a type; and a signature-only declaration, `pub len: Vec<a> ->
+u64`, a file-level `name: type` with no `=`. A lowercase name in a type is
+a type variable.

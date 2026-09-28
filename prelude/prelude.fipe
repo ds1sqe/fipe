@@ -1,0 +1,101 @@
+# The Fipe prelude: the one declaration written by hand, parsed by the
+# crate's own parser at start. Draft of plan 04 phase 1; phase 2 completes
+# the surface against the corpus and examples. Type parameters,
+# constraints and signature-only declarations are prelude-only forms; a
+# declaration with no value is implemented by the crate.
+
+# Types
+pub type Bool { True, False }
+pub type Ordering { Less, Equal, Greater }
+pub type Maybe<T> { Just(v: T), Nothing }
+pub type Result<T, E: Err> { Ok(v: T), Err(e: E) }
+pub type Either<L, R> { Left(l: L), Right(r: R) }
+pub type String { bytes: Vec<u8> }
+pub type ParseError { message: String }
+pub type Utf8Error { at: u64 }
+
+# Derived classes: the checker supplies every instance; no user impl.
+pub trait Eq { eq: Self -> Self -> Bool }
+pub trait Ord: Eq { cmp: Self -> Self -> Ordering }
+pub trait Show { repr: Self -> String }
+pub trait Num {
+    add: Self -> Self -> Self,
+    sub: Self -> Self -> Self,
+    mul: Self -> Self -> Self,
+    div: Self -> Self -> Self,
+    rem: Self -> Self -> Self,
+}
+pub trait Float: Num {}
+
+# Declared classes.
+pub trait Display { display: Self -> String }
+pub trait Err: Display {}
+pub trait Read { read: String -> Result<Self, ParseError> }
+pub trait From<A> { from: A -> Self }
+pub trait Into<B> { into: Self -> B }
+pub trait TryFrom<A> { Error: Err, try_from: A -> Result<Self, Self.Error> }
+pub trait TryInto<B> { Error: Err, try_into: Self -> Result<B, Self.Error> }
+pub trait Functor { map: (a -> b) -> Self<a> -> Self<b> }
+pub trait Monad: Functor {
+    pure: a -> Self<a>,
+    then: (a -> Self<b>) -> Self<a> -> Self<b>,
+}
+pub trait Alternative {
+    empty: Self<a>,
+    or: Self<a> -> Self<a> -> Self<a>,
+}
+
+impl ParseError: Display { display = self => self.message }
+impl ParseError: Err {}
+impl Utf8Error: Display { display = self => join "" ["invalid UTF-8 at ", show self.at] }
+impl Utf8Error: Err {}
+impl String: Display { display = self => self }
+impl Maybe: Functor {
+    map = f m => m | { Just v => Just (f v), Nothing => Nothing },
+}
+impl Maybe: Monad {
+    pure = v => Just v,
+    then = f m => m | { Just v => f v, Nothing => Nothing },
+}
+impl Maybe: Alternative {
+    empty = Nothing,
+    or = a b => a | { Just _ => a, Nothing => b },
+}
+
+# Conversion words. `to` and `try` resolve either side of a direction;
+# their obligation is the checker's, so they carry no constraint here.
+pub show: Show a => a -> String
+pub to: a -> b
+pub try: a -> Result<b, e>
+
+# Text and bytes.
+pub bytes: String -> Vec<u8>
+pub utf8: Vec<u8> -> Result<String, Utf8Error>
+pub lines: String -> Vec<String>
+pub words: String -> Vec<String>
+pub split: String -> String -> Vec<String>
+pub join: String -> Vec<String> -> String
+pub lower: String -> String
+pub upper: String -> String
+
+# Numbers.
+pub round: Float a => a -> a
+pub trunc: Float a => a -> a
+pub floor: Float a => a -> a
+pub ceil: Float a => a -> a
+
+# Collections: the value comes last, so the pipe fills it.
+pub len: Vec<a> -> u64
+pub filter: (a -> Bool) -> Vec<a> -> Vec<a>
+pub fold: b -> (b -> a -> b) -> Vec<a> -> b
+pub first: Vec<a> -> Maybe<a>
+pub head: Vec<a> -> a
+pub take: u64 -> Vec<a> -> Vec<a>
+pub flatten: Vec<Vec<a>> -> Vec<a>
+pub collect: Vec<Result<a, e>> -> Result<Vec<a>, e>
+pub sum: Num a => Vec<a> -> a
+pub sort: Ord a => Vec<a> -> Vec<a>
+
+# Effects the language owns.
+pub fault: String -> a
+pub log: a -> a

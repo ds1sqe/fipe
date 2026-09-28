@@ -8,6 +8,98 @@ use fipe::{
 };
 
 #[test]
+fn declaration_forms_carry_parameters_constraints_and_types() {
+    let input = "pub trait From<A> { from: A -> Self }\npub show: Show a => a -> String\nf: Show a, Num b => a -> b = x => x\nimpl P: TryFrom<S> { Error = Vec<u8>, try_from = s => Ok s }\ntrait T { m: Read a => String -> a, n: A }";
+    let parsed = module(input);
+    let [Entry::Item(from), Entry::Item(show), Entry::Line(f), Entry::Item(try_from), Entry::Item(t)] =
+        parsed.entries.as_slice()
+    else {
+        panic!()
+    };
+    let ItemKind::Trait { parameters, .. } = &from.kind else {
+        panic!()
+    };
+    assert!(from.public);
+    assert_eq!(parameters[0].name.segments, ["A"]);
+    let ItemKind::Declare { name: shown, ty } = &show.kind else {
+        panic!()
+    };
+    assert!(show.public);
+    assert_eq!(shown.segments, ["show"]);
+    let TypeKind::Qualified { constraints, ty } = &parsed.ty(*ty).unwrap().kind
+    else {
+        panic!()
+    };
+    assert_eq!(constraints.len(), 1);
+    assert_eq!(constraints[0].variable.segments, ["a"]);
+    assert_eq!(
+        Source::new(input).slice(parsed.ty(constraints[0].class).unwrap().span),
+        Some("Show")
+    );
+    assert_eq!(
+        Source::new(input).slice(constraints[0].span),
+        Some("Show a")
+    );
+    assert!(matches!(
+        parsed.ty(*ty).unwrap().kind,
+        TypeKind::Function { .. }
+    ));
+    let ExprKind::Bind {
+        annotation: Some(annotation),
+        value,
+        ..
+    } = node(&parsed, *f)
+    else {
+        panic!()
+    };
+    let TypeKind::Qualified { constraints, .. } =
+        &parsed.ty(*annotation).unwrap().kind
+    else {
+        panic!()
+    };
+    assert_eq!(constraints.len(), 2);
+    assert!(matches!(node(&parsed, *value), ExprKind::Arms(_)));
+    let ItemKind::Impl { members, .. } = &try_from.kind else {
+        panic!()
+    };
+    let [ImplMember::Type {
+        name: error, ty, ..
+    }, ImplMember::Named { .. }] = members.as_slice()
+    else {
+        panic!()
+    };
+    assert_eq!(error.segments, ["Error"]);
+    assert_eq!(
+        Source::new(input).slice(parsed.ty(*ty).unwrap().span),
+        Some("Vec<u8>")
+    );
+    let ItemKind::Trait { members, .. } = &t.kind else {
+        panic!()
+    };
+    assert!(matches!(
+        parsed.ty(members[0].ty).unwrap().kind,
+        TypeKind::Qualified { .. }
+    ));
+    assert!(matches!(
+        parsed.ty(members[1].ty).unwrap().kind,
+        TypeKind::Named { .. }
+    ));
+    for (input, offending) in [
+        ("{ x: i64 }", ":"),
+        ("f: Vec<Show a => a> = x", "a"),
+        ("pub x", "x"),
+        ("x: i64 =>", "=>"),
+    ] {
+        let result = errors(input);
+        assert_eq!(
+            Source::new(input).slice(result[0].span),
+            Some(offending),
+            "{input}: {result:?}"
+        );
+    }
+}
+
+#[test]
 fn imports_take_names_and_a_version() {
     let input = "use fs\nuse text 2\nuse x.inc x.Point";
     let parsed = module(input);
@@ -189,12 +281,14 @@ fn types_traits_and_impls_have_member_lists() {
 
     let ItemKind::Trait {
         name: trait_name,
+        parameters: none,
         parent: Some(parent),
         members,
     } = &ord.kind
     else {
         panic!()
     };
+    assert_eq!(none.len(), 0);
     assert_eq!(trait_name.segments, ["Ord"]);
     assert_eq!(parent.segments, ["Eq"]);
     assert_eq!(members[0].name.segments, ["cmp"]);

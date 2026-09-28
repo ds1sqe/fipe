@@ -30,7 +30,7 @@ impl Parser {
         let pattern = self.pattern(context)?;
         let start = self.pattern_span(pattern).start;
         let annotation = if self.eat(Symbol::Colon) {
-            Some(self.type_syntax()?)
+            Some(self.annotation()?)
         } else {
             None
         };

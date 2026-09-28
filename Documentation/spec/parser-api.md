@@ -1,8 +1,7 @@
 # Parser API
 
-This chapter specifies the parser boundary. The syntax chapter
-owns language rules; this API owns representation and implementation limits.
-Public conformance tests exercise this boundary and the syntax corpus.
+[Syntax](syntax.md) owns the language rules; this chapter owns the Rust
+representation and the implementation limits.
 
 ## Entry point
 
@@ -11,67 +10,48 @@ parse::parse(input: lex::Lexed) -> Result<ast::Module, Vec<parse::Error>>
 Error { span: token::Span, reason: parse::Reason }
 ~~~
 
-The parser consumes owned tokens and performs no source rescanning, name
-lookup, type checking or I/O. Existing lexical diagnostics are returned as
-lexical reasons, without trying to parse an invalid token stream. An empty
-file is a valid module. Any syntax diagnostic rejects the whole result;
-recovery collects further errors but never returns a partial executable AST.
+The parser consumes owned tokens and does no rescanning, lookup, checking
+or I/O. Lexical errors come back as `Reason::Lexical` without parsing.
+Any error rejects the whole result; recovery only collects more errors.
+`Lexed` is publicly constructible: a missing, repeated or nonempty-span
+EOF, or overlapping or reversed spans, is `InvalidTokenStream`, never a
+panic. An empty file is a module; the module span runs from byte zero
+through EOF, including a skipped BOM.
 
-`Lexed` is publicly constructible. Missing/repeated EOF, overlapping or
-reversed spans, and nonempty EOF spans produce `InvalidTokenStream` rather
-than a panic. For normal use, supply the result of `lex::lex` unchanged.
-The module span covers byte zero through EOF, including a skipped initial BOM.
+## Representation
 
-## Syntax representation
+A module owns expressions, patterns and type syntax in three flat arenas,
+reached by `ExprId`, `PatternId` and `TypeId` through `expr`, `pattern`
+and `ty`. Cloning, comparing and dropping a module never recurse through
+source nesting. Entries keep source order and separate items from lines.
+Every node, name, field, argument and operator keeps its byte span.
 
-A module owns expressions, patterns and type syntax in three flat arenas.
-`ExprId`, `PatternId` and `TypeId` are distinct references scoped to that module;
-`expr`, `pattern` and `ty` return optional references to their nodes. Nodes
-refer to children by these IDs. Cloning, comparing and dropping a module do
-not recurse through the source nesting or through a long pipeline/call chain.
+| Form | Node |
+| --- | --- |
+| `( )` not touching a callee; `{ }` | group and block, each a line sequence; `()` is the unit literal |
+| `f a -l -c=80`, `f(a, b)` | call with callee, argument sequence and written style; `-c 80` is a flag then an operand |
+| `e.name`, `.name`, `(e).name` | qualified name kept in segments; selector; postfix field |
+| operators, pipes | distinct binary and pipe nodes with operator spans |
+| `read<i64>` | instance: name and type arguments |
+| `[:e]`, `[!]` | outcome node with side and optional payload, in values and patterns |
+| `Point { x, y: 2 }` | record: uppercase head and fields, a punned field holding a name |
+| `pub p: T = v` | binding: visibility, pattern, optional annotation, value |
+| `a (b = 0) if g => body` | arm: head patterns, guard, body; the default is a pattern atom; an arm list is the function |
+| `A -> B`, `Show a => T` | curried function type; qualified type with constraints |
+| `use`, `type`, `trait`, `impl`, `name: T` | items with visibility; declarations keep parameters, constraints and associated types |
 
-Module entries preserve source order and distinguish items from expression
-lines. Every expression, pattern, type, item, name, field and argument retains
-its byte span. Operators have their own spans as well as enclosing expression
-spans. A group node is a parenthesized line sequence and a block node a
-braced one; both keep line order, and a unit literal is distinct.
+No parser rule decides which spot an argument fills, whether a dot is a
+field or a module, or whether a declaration form is allowed; checking
+owns those.
 
-Names retain their qualified segments. `e.name` may denote field access or a
-module-qualified name; the checker resolves it. A selector `.name` is its own
-node. Postfix `(e).name` explicitly selects fields from an expression.
+## Limits and recovery
 
-Calls retain their callee, argument sequence and written call style. A flag
-has its name and optional attached expression; `-c 80` is a flag followed by
-a positional expression, while `-c=80` is one flag argument with a value.
-No parser rule decides which declared parameter an argument fills.
+At most 64 nested frames; deeper input is `NestingLimit`. Flat lists,
+pipelines, operator and postfix chains cost no frame per element. Rules
+inspect at most three tokens ahead, except the binding rule, which scans
+the current line for a depth-zero `=`.
 
-Binary operators and pipes are distinct nodes. A name with touching type
-arguments is an instance node holding the name and its type syntax; a bare
-type name is a name. An outcome bracket is a node with its side and optional
-payload, in expressions and in patterns. A record node holds its uppercase
-head and field values, a punned field holding a name. A binding retains its
-visibility, pattern, optional annotation and value; there is no function
-node, an arm list is the function. An arm retains its head patterns, guard
-and body; a head atom `(name = operand)` is a default pattern. Function
-types are curried pairs. Imports (names and an optional version), types
-(fields and constructors), traits (typed members with optional defaults) and
-implementations (named members and constructor arms) are items, each with
-its visibility. Type parameters are retained; checking owns prelude-only use.
-
-## Progress and limits
-
-The implementation accepts at most 64 nested parsing frames and reports
-`NestingLimit` when exceeded. This is an implementation resource limit, not
-a language type rule or the later execution budget. Flat argument lists,
-pipelines, operators and postfix chains do not consume one frame per element.
-
-Recovery advances to a retained newline that ends a line, a containing
-closing bracket or EOF; the containing parser owns its closing bracket. A
-newline that an operator carries over is not a recovery point. Malformed items/lines are not
-placed in the returned module because a module is returned only on success.
-Diagnostic wording is host-owned; typed reasons and byte spans are stable.
-
-A missing comma before a line break inside a list is its own diagnostic,
-spanning the newline. Continuation, the record rule and the default-pattern
-atom inspect at most three tokens ahead; the binding rule scans the current
-line for a depth-zero `=`. No rule performs a lookup.
+Recovery resumes at a retained newline that ends a line, at the enclosing
+closer or at EOF; a carried-over newline is not a recovery point. A missing
+comma before a line break inside a list is `CommaBeforeLineBreak`, spanning
+the newline. Reasons and spans are stable; wording is the host's.

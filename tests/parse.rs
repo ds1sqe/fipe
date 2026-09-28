@@ -72,6 +72,10 @@ fn opening_module_and_formal_corpus_parse() {
     let corpus = include_str!("../Documentation/spec/examples.fipe");
     let parsed = module(corpus);
     assert_eq!(Source::new(corpus).slice(parsed.span), Some(corpus));
+    let prelude = include_str!("../prelude/prelude.fipe");
+    let parsed = module(prelude);
+    assert_eq!(Source::new(prelude).slice(parsed.span), Some(prelude));
+    assert!(parsed.entries.len() > 40);
 }
 
 /// Every program under `Documentation/examples` parses and covers the

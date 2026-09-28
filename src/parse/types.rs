@@ -1,11 +1,85 @@
 use super::{Error, Expected, Parser, Reason};
 use crate::{
-    ast::{ExprId, ExprKind, Name, Type, TypeId, TypeKind},
+    ast::{Constraint, ExprId, ExprKind, Name, Type, TypeId, TypeKind},
     token::{Kind, Span, Symbol},
 };
 use alloc::vec::Vec;
 
 impl Parser {
+    /// The type of an annotation: `Show a, Num b => type`, or a type.
+    /// Constraints live only here, at the top; a nested type has none.
+    pub(super) fn annotation(&mut self) -> Result<TypeId, Error> {
+        if !self.constraints_ahead() {
+            return self.type_syntax();
+        }
+        let start = self.here().start;
+        let mut constraints = Vec::new();
+        loop {
+            let class = self.type_atom()?;
+            let variable = self.name(true)?;
+            let span = Span {
+                start: self.module.types[class.0].span.start,
+                end: variable.span.end,
+            };
+            constraints.push(Constraint {
+                class,
+                variable,
+                span,
+            });
+            if !self.eat(Symbol::Comma) {
+                break;
+            }
+        }
+        self.expect(Symbol::FatArrow)?;
+        self.skip_newline();
+        let ty = self.type_syntax()?;
+        Ok(self.add_type(
+            TypeKind::Qualified { constraints, ty },
+            self.since(start),
+        ))
+    }
+
+    /// A depth-zero `=>` before this annotation ends: a constraint list.
+    /// An annotation ends at `=`, `:`, a newline, a pipe, a brace or an
+    /// unmatched closer, so a later member's `=>` is never taken.
+    fn constraints_ahead(&mut self) -> bool {
+        self.peek();
+        let mut depth = 0_usize;
+        for token in &self.tokens[self.position..] {
+            match token.kind {
+                Kind::Symbol(
+                    Symbol::LParen | Symbol::LBracket | Symbol::Less,
+                ) => {
+                    depth += 1;
+                }
+                Kind::Symbol(
+                    Symbol::RParen | Symbol::RBracket | Symbol::Greater,
+                ) => match depth.checked_sub(1) {
+                    Some(less) => depth = less,
+                    None => return false,
+                },
+                Kind::Symbol(symbol) if depth == 0 => {
+                    if symbol == Symbol::FatArrow {
+                        return true;
+                    }
+                    let ends = matches!(
+                        symbol,
+                        Symbol::Assign
+                            | Symbol::Colon
+                            | Symbol::LBrace
+                            | Symbol::RBrace
+                    );
+                    if ends || symbol.continues_line() {
+                        return false;
+                    }
+                }
+                Kind::Newline | Kind::Eof if depth == 0 => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// A type: an atom, or `atom -> type`, which nests to the right.
     pub(super) fn type_syntax(&mut self) -> Result<TypeId, Error> {
         self.nested(|parser| {

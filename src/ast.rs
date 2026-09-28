@@ -277,6 +277,20 @@ pub enum TypeKind {
         parameter: TypeId,
         result: TypeId,
     },
+    /// `Show a, Num b => type`: constraints at the top of an annotation.
+    /// A prelude and declaration form.
+    Qualified {
+        constraints: Vec<Constraint>,
+        ty: TypeId,
+    },
+}
+
+/// One constraint `Class<args> variable`, such as `Show a` or `From<a> b`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Constraint {
+    pub class: TypeId,
+    pub variable: Name,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,9 +313,10 @@ pub enum ItemKind {
         parameters: Vec<TypeParameter>,
         members: Vec<Member>,
     },
-    /// `trait Name: Parent { members }`.
+    /// `trait Name<params>: Parent { members }`.
     Trait {
         name: Name,
+        parameters: Vec<TypeParameter>,
         parent: Option<Name>,
         members: Vec<TraitMember>,
     },
@@ -311,6 +326,9 @@ pub enum ItemKind {
         implements: Option<TypeId>,
         members: Vec<ImplMember>,
     },
+    /// `name: type` with no value: a signature-only declaration, the form
+    /// of prelude primitives and host declarations.
+    Declare { name: Name, ty: TypeId },
 }
 
 /// A member of a `type` body: a lowercase field or an uppercase constructor.
@@ -342,7 +360,8 @@ pub struct TraitMember {
     pub span: Span,
 }
 
-/// A named member `name = value`, or a bare arm of the written constructor.
+/// A named member `name = value`, an associated type `Name = type`, or a
+/// bare arm of the written constructor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImplMember {
     Named {
@@ -350,6 +369,11 @@ pub enum ImplMember {
         name: Name,
         annotation: Option<TypeId>,
         value: ExprId,
+        span: Span,
+    },
+    Type {
+        name: Name,
+        ty: TypeId,
         span: Span,
     },
     Constructor(Arm),

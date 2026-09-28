@@ -39,7 +39,11 @@ impl Parser {
                 ) => {
                     depth = depth.checked_sub(1)?;
                 }
-                Kind::Symbol(Symbol::Comma | Symbol::Assign) if depth == 0 => {
+                // A head has no depth-zero `:`; one starts an annotation,
+                // whose `=>` introduces constraints, not an arm.
+                Kind::Symbol(
+                    Symbol::Comma | Symbol::Assign | Symbol::Colon,
+                ) if depth == 0 => {
                     return None;
                 }
                 Kind::Symbol(symbol)

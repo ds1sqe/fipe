@@ -52,30 +52,47 @@ impl Parser {
         Ok(ItemKind::Use { names, version })
     }
 
+    /// `name: type` with no value, at file level.
+    pub(super) fn declare(&mut self, public: bool) -> Result<Item, Error> {
+        let name = self.name(true)?;
+        let start = name.span.start;
+        self.expect(Symbol::Colon)?;
+        let ty = self.annotation()?;
+        Ok(Item {
+            kind: ItemKind::Declare { name, ty },
+            public,
+            span: self.since(start),
+        })
+    }
+
     /// `type Name<params> { members }`.
     fn type_item(&mut self) -> Result<ItemKind, Error> {
         self.bump();
         let name = self.name(true)?;
-        let parameters = if self.eat(Symbol::Less) {
-            self.list(Symbol::Greater, |parser| {
-                let name = parser.name(true)?;
-                let bound = if parser.eat(Symbol::Colon) {
-                    Some(parser.name(false)?)
-                } else {
-                    None
-                };
-                let span = parser.since(name.span.start);
-                Ok(TypeParameter { name, bound, span })
-            })?
-        } else {
-            Vec::new()
-        };
+        let parameters = self.type_parameters()?;
         self.expect(Symbol::LBrace)?;
         let members = self.list(Symbol::RBrace, Self::member)?;
         Ok(ItemKind::Type {
             name,
             parameters,
             members,
+        })
+    }
+
+    /// `<T, U: Bound>` after a `type` or `trait` name, when present.
+    fn type_parameters(&mut self) -> Result<Vec<TypeParameter>, Error> {
+        if !self.eat(Symbol::Less) {
+            return Ok(Vec::new());
+        }
+        self.list(Symbol::Greater, |parser| {
+            let name = parser.name(true)?;
+            let bound = if parser.eat(Symbol::Colon) {
+                Some(parser.name(false)?)
+            } else {
+                None
+            };
+            let span = parser.since(name.span.start);
+            Ok(TypeParameter { name, bound, span })
         })
     }
 
@@ -115,10 +132,11 @@ impl Parser {
         })
     }
 
-    /// `trait Name: Parent { name: type [= value], … }`.
+    /// `trait Name<params>: Parent { name: type [= value], … }`.
     fn trait_item(&mut self) -> Result<ItemKind, Error> {
         self.bump();
         let name = self.name(true)?;
+        let parameters = self.type_parameters()?;
         let parent = if self.eat(Symbol::Colon) {
             Some(self.name(false)?)
         } else {
@@ -128,7 +146,7 @@ impl Parser {
         let members = self.list(Symbol::RBrace, |parser| {
             let name = parser.name(true)?;
             parser.expect(Symbol::Colon)?;
-            let ty = parser.type_syntax()?;
+            let ty = parser.annotation()?;
             let default = if parser.eat(Symbol::Assign) {
                 Some(parser.member_value()?)
             } else {
@@ -144,6 +162,7 @@ impl Parser {
         })?;
         Ok(ItemKind::Trait {
             name,
+            parameters,
             parent,
             members,
         })
@@ -167,8 +186,15 @@ impl Parser {
             let start = parser.here().start;
             let public = parser.keyword(Keyword::Pub);
             let name = parser.name(true)?;
+            if name.is_uppercase() {
+                // An associated type takes a type, not a value.
+                parser.expect(Symbol::Assign)?;
+                let ty = parser.type_syntax()?;
+                let span = parser.since(start);
+                return Ok(ImplMember::Type { name, ty, span });
+            }
             let annotation = if parser.eat(Symbol::Colon) {
-                Some(parser.type_syntax()?)
+                Some(parser.annotation()?)
             } else {
                 None
             };
@@ -200,7 +226,7 @@ impl Parser {
         self.line(Context::Element)
     }
 
-    fn colon_follows(&mut self) -> bool {
+    pub(super) fn colon_follows(&mut self) -> bool {
         self.peek();
         matches!(self.tokens[self.position].kind, Kind::Name(_))
             && self

@@ -2,10 +2,11 @@
    and the list newline rule are in syntax.md. `newlines` marks where a
    list admits line breaks. *)
 file = newlines, { entry, NEWLINE, newlines }, [ entry ], EOF ;
-entry = [ "pub" ], ( item | line ) ;
+entry = [ "pub" ], ( item | declaration | line ) ;
 newlines = { NEWLINE } ;
 
 item = import | type_item | trait_item | impl_item ;
+declaration = NAME, ":", annotation ;
 import = "use", NAME, { NAME }, [ INTEGER ] ;
 type_item = "type", NAME, [ type_parameters ], "{", newlines,
             [ members ], newlines, "}" ;
@@ -16,16 +17,20 @@ members = member, { ",", newlines, member }, [ "," ] ;
 member = field | NAME, [ "(", newlines, [ fields ], newlines, ")" ] ;
 fields = field, { ",", newlines, field }, [ "," ] ;
 field = [ "pub" ], NAME, ":", type, [ "=", operand ] ;
-trait_item = "trait", NAME, [ ":", NAME ], "{", newlines,
-             [ trait_members ], newlines, "}" ;
+trait_item = "trait", NAME, [ type_parameters ], [ ":", NAME ], "{",
+             newlines, [ trait_members ], newlines, "}" ;
 trait_members = trait_member, { ",", newlines, trait_member }, [ "," ] ;
-trait_member = NAME, ":", type, [ "=", member_value ] ;
+trait_member = NAME, ":", annotation, [ "=", member_value ] ;
 impl_item = "impl", type, [ ":", type ], "{", newlines,
             [ impl_members ], newlines, "}" ;
 impl_members = impl_member, { ",", newlines, impl_member }, [ "," ] ;
-impl_member = [ "pub" ], NAME, [ ":", type ], "=", member_value | arm ;
+impl_member = [ "pub" ], NAME, [ ":", annotation ], "=", member_value
+            | NAME, "=", type | arm ;
 member_value = arm | line ;
 
+annotation = [ constraints, "=>", newlines ], type ;
+constraints = constraint, { ",", constraint } ;
+constraint = named_type, NAME ;
 type = type_atom, [ "->", newlines, type ] ;
 type_atom = named_type | unit_type | array_type | "(", type, ")" ;
 named_type = NAME, [ type_arguments ] ;
@@ -34,7 +39,7 @@ unit_type = "(", ")" ;
 array_type = "[", type, ";", INTEGER, "]" ;
 
 line = binding | scoped | pipeline ;
-binding = pattern, [ ":", type ], "=", line ;
+binding = pattern, [ ":", annotation ], "=", line ;
 scoped = "with", NAME, operand, block ;
 pipeline = stage, { pipe, stage } ;
 pipe = "|" | "|:" | "|!" | "||" | "&&" ;
