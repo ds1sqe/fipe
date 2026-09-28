@@ -3,16 +3,11 @@
 Functional Pipeline Language: embedded, extensible, functional, typed,
 compiled. Fipe is its own Rust crate with no dependencies or editor coupling.
 
-This development version implements the new language's lexer and parser using
-core + alloc, with no unsafe code. It provides owned tokens, UTF-8 byte spans,
-scalar source positions, an owned syntax tree and recoverable diagnostics.
-Checking and execution are subsequent milestones. The prior implementation
-remains in Git at commit 7606ff7 and on crates.io as version 0.1.0.
-
-See the [specification](Documentation/spec/README.md), its
-[lexical contract](Documentation/spec/lexical.md) and
-[syntax](Documentation/spec/syntax.md). Lexical and syntax rules are defined;
-later-stage language questions are recorded separately.
+This development version implements the lexer and parser with `core` and
+`alloc`, no unsafe code: owned tokens, byte spans, scalar positions, an
+owned syntax tree and recoverable diagnostics. Checking and execution
+follow. The [specification](Documentation/spec/README.md) defines the
+language; the prior implementation is version 0.1.0, Git `7606ff7`.
 
 ## Library
 
@@ -36,8 +31,7 @@ assert_eq!(
 );
 ~~~
 
-Lexing collects errors and resumes so a host can show multiple diagnostics.
-Parsing rejects any unit with lexical or syntax errors and performs no effects.
+Lexing collects errors and resumes; parsing rejects any unit with errors.
 
 ~~~rust
 use fipe::{
@@ -56,10 +50,8 @@ assert!(matches!(
 ));
 ~~~
 
-The [parser API](Documentation/spec/parser-api.md) preserves source spans,
-argument order and syntax without resolving names or types. Flat node storage
-supports long pipelines without recursive ownership. Excessive nesting returns
-a diagnostic. No CLI, checker, runtime or host I/O is included in this version.
+The [parser API](Documentation/spec/parser-api.md) keeps spans, argument
+order and syntax without resolving names or types.
 
 ## Development
 
@@ -74,12 +66,9 @@ cargo check --locked --offline --lib --no-default-features \
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --offline --no-deps
 ~~~
 
-Tests exercise the public API and language corpus, numeric boundaries, string
-decoding, AST structure, precedence, error recovery, Unicode positions and
-malformed token combinations.
-Warning denial belongs to these maintainer checks, so new compiler warnings
-do not become build errors for consumers. Unsafe code remains forbidden.
-The APIs and language remain experimental.
+Warning denial lives in these checks, not the manifest, so a new compiler
+warning never breaks a consumer's build. The APIs and language are
+experimental.
 
 ## License
 

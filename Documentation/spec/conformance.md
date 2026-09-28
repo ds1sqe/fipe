@@ -1,14 +1,12 @@
 # Conformance cases
 
-These cases define observables to test as each stage is implemented. Lexical
-and syntax cases are covered by public-API tests. Type-checking and execution
-cases describe later stages and do not claim those implementations exist.
-Cases depending on [open decisions](open.md) are conditional on approval.
+Observables to test per stage. Lexical and syntax cases are covered by
+public-API tests; checking and execution cases await their stages, and a
+case citing [open decisions](open.md) is conditional on it.
 
 ## Lexing
 
-Compare token kinds, semantic payloads, exact source slices and diagnostics.
-EOF occurs once. All spans are monotonic byte ranges on scalar boundaries.
+Compare kinds, payloads, source slices and diagnostics.
 
 | Source | Expected distinction |
 | --- | --- |
@@ -37,11 +35,9 @@ EOF occurs once. All spans are monotonic byte ranges on scalar boundaries.
 | other U+FEFF / any literal U+200B | stray, including in comments and quotes |
 | `"\xEF\xBB\xBF"` / `"\xE2\x80\x8B"` | escaped marks are valid string data |
 
-Test every keyword (`let`, `fn`, `as`, `for`, `ver` are names) and every
-one-/two-character operator beside its neighbor.
-For `cat héllo "한글"`, verify byte slices and scalar columns independently.
-Include trailing comments, CRLF, source EOF in an escape, invalid hex,
-negative zero, all radix boundaries and all five continued pipes.
+Also every keyword and non-keyword name, every operator beside its
+neighbor, byte slices and scalar columns of `cat héllo "한글"`, CRLF, EOF
+inside an escape, negative zero, radix boundaries and all five pipes.
 
 ## Parsing and checking
 
@@ -88,14 +84,13 @@ negative zero, all radix boundaries and all five continued pipes.
 | `300` at a `u8` literal spot | check error |
 | dynamic numeric value outside `u8` | admitted cast then runtime Fault |
 
-The [corpus](examples.fipe) supplies complete surface forms, including the
-opening language example, items, marked pipes, arrays, comments and Unicode.
-Check AST shape, inferred types and diagnostics, not merely successful parses.
+The [corpus](examples.fipe) supplies the complete surface; check AST
+shape, inferred types and diagnostics, not only successful parses.
 
 ## Evaluation and hosts
 
-Use a deterministic recording host that returns declared values and records
-every invoked operation. Test values and ordered effects together:
+Under a recording host that returns declared values and records every
+operation, test values and ordered effects together:
 
 - Named arguments evaluate once in source order (E1).
 - A skipped `||`, `&&`, `|:` or `|!` branch has no host effects.
@@ -107,6 +102,6 @@ every invoked operation. Test values and ordered effects together:
 - VM and native backends produce identical observations from the same typed
   unit and replayed host responses, including charge points (E2/H1).
 
-Test prelude monad identity/associativity for `Maybe` and `Result`, including
-error propagation. Equality of optimized implementations alone cannot prove
-the language rules; each case also needs an independently stated outcome.
+Test monad identity and associativity for `Maybe` and `Result`. Each case
+states its outcome independently; agreement between backends alone proves
+nothing.
