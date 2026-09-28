@@ -243,7 +243,7 @@ fn types_traits_and_impls_have_member_lists() {
     assert_eq!(type_name.segments, ["Point"]);
     assert_eq!(parameters.len(), 0);
     let [Member::Field(x), Member::Field(y), Member::Field(len)] =
-        members.as_slice()
+        members.as_deref().unwrap()
     else {
         panic!()
     };
@@ -265,7 +265,7 @@ fn types_traits_and_impls_have_member_lists() {
         name: dot,
         fields: none,
         ..
-    }] = members.as_slice()
+    }] = members.as_deref().unwrap()
     else {
         panic!()
     };
@@ -471,4 +471,78 @@ fn function_types_nest_right_and_array_extents_are_preserved() {
         parsed.ty(*result).unwrap().kind,
         TypeKind::Function { .. }
     ));
+}
+
+#[test]
+fn labeled_parameters_and_opaque_types_are_declaration_forms() {
+    let input = "pub ls: (path: Src = \".\") -> (long: Bool = False) -> Vec<Entry>\ntype Rd<api>\nf: (A -> B) -> C";
+    let parsed = module(input);
+    let [Entry::Item(ls), Entry::Item(rd), Entry::Item(f)] =
+        parsed.entries.as_slice()
+    else {
+        panic!()
+    };
+    let ItemKind::Declare { ty, .. } = &ls.kind else {
+        panic!()
+    };
+    let TypeKind::Function { parameter, result } =
+        &parsed.ty(*ty).unwrap().kind
+    else {
+        panic!()
+    };
+    let TypeKind::Labeled {
+        name,
+        ty: path,
+        default: Some(default),
+    } = &parsed.ty(*parameter).unwrap().kind
+    else {
+        panic!()
+    };
+    assert_eq!(name.segments, ["path"]);
+    assert_eq!(
+        Source::new(input).slice(parsed.ty(*path).unwrap().span),
+        Some("Src")
+    );
+    assert!(matches!(node(&parsed, *default), ExprKind::Literal(_)));
+    let TypeKind::Function { parameter, .. } =
+        &parsed.ty(*result).unwrap().kind
+    else {
+        panic!()
+    };
+    assert_eq!(
+        Source::new(input).slice(parsed.ty(*parameter).unwrap().span),
+        Some("(long: Bool = False)")
+    );
+    let ItemKind::Type {
+        parameters,
+        members: None,
+        ..
+    } = &rd.kind
+    else {
+        panic!("{rd:?}")
+    };
+    assert_eq!(parameters.len(), 1);
+    let ItemKind::Declare { ty, .. } = &f.kind else {
+        panic!()
+    };
+    let TypeKind::Function { parameter, .. } = &parsed.ty(*ty).unwrap().kind
+    else {
+        panic!()
+    };
+    assert!(matches!(
+        parsed.ty(*parameter).unwrap().kind,
+        TypeKind::Function { .. }
+    ));
+    for (input, at) in [
+        ("x: (a: )", ")"),
+        ("x: (a: i64 = )", ")"),
+        ("x: (a: i64", ""),
+    ] {
+        let errors = errors(input);
+        assert_eq!(
+            Source::new(input).slice(errors[0].span),
+            Some(at),
+            "{input}"
+        );
+    }
 }

@@ -3,6 +3,7 @@
 use fs
 
 # `find` returns a Maybe. `|:` runs on the hit, `|!` on the miss.
+default_config = "port = 80"
 find ./config.toml |: cat |! log "no config" || default_config
 
 # The same, one stage per line.
@@ -14,7 +15,7 @@ find ./config.toml
 # Bind on success; a miss ends this body with the miss.
 load = path => {
     [:file] = find path
-    file | cat | parse_toml
+    file | cat | lines
 }
 
 # Arms are the match. `[:e]` is the hit with its payload, `[!]` the miss.
@@ -33,10 +34,10 @@ read_port = text => text | read<u16> | {
 }
 
 # `&&` sequences on success; `||` supplies the fallback payload.
-find ./cache && clear_cache || log "nothing to clear"
+find ./cache && rm ./cache || log "nothing to clear"
 port = read_port "8080" || 3000
 
 # Names fix a family when the spot does not.
-first = xs => if (len xs) > 0 { Just (head xs) } else { Nothing }
+maybe_head = xs => if (len xs) > 0 { Just (head xs) } else { Nothing }
 m: Maybe<i64> = [:1]
 r: Result<i64, String> = [!"bad"]

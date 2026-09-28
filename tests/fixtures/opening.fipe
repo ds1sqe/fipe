@@ -37,8 +37,8 @@ find x | {                                    # arms are the match, and a functi
 # A type is its shape; its impl is its code. The type name is its constructor.
 pub type Point { pub x: i64, pub y: i64 = 0, len: u64 }
 impl Point {
-    x (y = 0) => Self { x, y, len: norm x y }, # the written constructor; braces are raw
-    dist = self q => norm (self.x - q.x) (self.y - q.y),
+    x (y = 0) => Self { x, y, len: hypot x y }, # the written constructor; braces are raw
+    dist = self q => hypot (self.x - q.x) (self.y - q.y),
 }
 impl Point: Display { display = self => join "," [show self.x, show self.y] }
 Point 3 4 | show                              # "3,4"; `p.dist q` fills `self`

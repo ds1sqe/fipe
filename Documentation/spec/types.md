@@ -136,6 +136,12 @@ dispatch restrictions.
 | record | its constructor applied to nothing, if every spot defaults |
 | `Maybe<T>` | `Nothing` |
 
+A declaration's labeled parameters are its spot names and defaults, not
+part of its type: `(long: Bool = False) -> Vec<Entry>` has type `Bool ->
+Vec<Entry>`. An opaque type has no fields, constructors or derived
+classes; a declaration of its own name, `Rd: u64 -> Rd<api>`, is its
+constructor. In the prelude and host declarations an impl member with no
+value is supplied by the implementation, as a name with no value is.
 A declared `= value` overrides the type default and may name the spots
 before it. Duplicate parameter names and ambiguous Bool shorthand letters
 are check errors. No parameter is `Maybe` or `Result`; defaults model

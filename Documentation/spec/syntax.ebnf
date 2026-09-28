@@ -8,8 +8,8 @@ newlines = { NEWLINE } ;
 item = import | type_item | trait_item | impl_item ;
 declaration = NAME, ":", annotation ;
 import = "use", NAME, { NAME }, [ INTEGER ] ;
-type_item = "type", NAME, [ type_parameters ], "{", newlines,
-            [ members ], newlines, "}" ;
+type_item = "type", NAME, [ type_parameters ],
+            [ "{", newlines, [ members ], newlines, "}" ] ;
 type_parameters = "<", newlines, type_parameter,
                   { ",", newlines, type_parameter }, newlines, ">" ;
 type_parameter = NAME, [ ":", NAME ] ;
@@ -32,7 +32,9 @@ annotation = [ constraints, "=>", newlines ], type ;
 constraints = constraint, { ",", constraint } ;
 constraint = named_type, NAME ;
 type = type_atom, [ "->", newlines, type ] ;
-type_atom = named_type | unit_type | array_type | "(", type, ")" ;
+type_atom = named_type | unit_type | array_type | labeled_type
+          | "(", type, ")" ;
+labeled_type = "(", NAME, ":", type, [ "=", operand ], ")" ;
 named_type = NAME, [ type_arguments ] ;
 type_arguments = "<", newlines, type, { ",", newlines, type }, newlines, ">" ;
 unit_type = "(", ")" ;

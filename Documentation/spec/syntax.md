@@ -196,6 +196,8 @@ form.
 **Declaration forms**, for the prelude and host declarations, rejected
 elsewhere by the checker: type parameters on `type` and `trait`;
 constraints at the top of an annotation, `show: Show a => a -> String`,
-never inside a type; and a signature-only declaration, `pub len: Vec<a> ->
-u64`, a file-level `name: type` with no `=`. A lowercase name in a type is
-a type variable.
+never inside a type; a signature-only declaration, `pub len: Vec<a> ->
+u64`, a file-level `name: type` with no `=`; a labeled parameter in a
+function type, `(long: Bool = False) -> …`, whose default is an operand;
+and `type Rd<api>` with no body, an opaque type. A lowercase name in a
+type is a type variable.

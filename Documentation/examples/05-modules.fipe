@@ -14,9 +14,12 @@ pub main: Vec<String> -> Result<(), cli.Error> = args => {
     Ok ()
 }
 
+# A handle is a host type made by a host function.
+dir = sys.lookup root /module/fs/root | Rd<fs>
+
 # A module member and a field use the same dot; the checker tells them
 # apart by what `fs` and `e` are.
-e = fs.list root /etc | first
+e = fs.list dir /etc | first
 e.name
 fs.size e
 
@@ -24,11 +27,7 @@ fs.size e
 with cwd /tmp {
     ls | map .name | put ./listing
 }
-with lang "C" { sort ./names }
-
-# A handle is a host type made by a host function.
-dir = sys.lookup root /module/fs/root | Rd<fs>
-fs.list dir /etc | map .name
+with lang "C" { cat ./names | lines | sort }
 
 # Faults end the run; `Err` values do not.
 check = n => if n < 0 { fault "negative" } else { Ok n }

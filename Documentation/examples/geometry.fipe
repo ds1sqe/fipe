@@ -1,0 +1,13 @@
+# A library module: `05-modules.fipe` imports `Point` and `Polar` from it.
+pub type Point { pub x: i64, pub y: i64 = 0 }
+impl Point: Display { display = self => join "," [show self.x, show self.y] }
+impl Point: Read {
+    read = s => s | split "," | map read<i64> | collect |: {
+        [x, y] => Ok (Self x y),
+        _ => Err (ParseError "two numbers"),
+    },
+}
+
+pub type Polar { pub r: f64, pub t: f64 }
+impl Polar: From<Point> { from = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x } }
+impl Polar: Display { display = self => join "@" [show self.r, show self.t] }

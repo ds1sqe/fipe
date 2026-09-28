@@ -283,6 +283,13 @@ pub enum TypeKind {
         constraints: Vec<Constraint>,
         ty: TypeId,
     },
+    /// `(name: type = operand)`: a labeled parameter with an optional
+    /// default, in a declaration's function type. A declaration form.
+    Labeled {
+        name: Name,
+        ty: TypeId,
+        default: Option<ExprId>,
+    },
 }
 
 /// One constraint `Class<args> variable`, such as `Show a` or `From<a> b`.
@@ -307,11 +314,12 @@ pub enum ItemKind {
         names: Vec<Name>,
         version: Option<u64>,
     },
-    /// `type Name<params> { members }`.
+    /// `type Name<params> { members }`; with no body, an opaque type,
+    /// which is a declaration form.
     Type {
         name: Name,
         parameters: Vec<TypeParameter>,
-        members: Vec<Member>,
+        members: Option<Vec<Member>>,
     },
     /// `trait Name<params>: Parent { members }`.
     Trait {

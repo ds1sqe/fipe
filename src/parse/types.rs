@@ -1,4 +1,4 @@
-use super::{Error, Expected, Parser, Reason};
+use super::{Context, Error, Expected, Parser, Reason};
 use crate::{
     ast::{Constraint, ExprId, ExprKind, Name, Type, TypeId, TypeKind},
     token::{Kind, Span, Symbol},
@@ -99,6 +99,7 @@ impl Parser {
 
     fn type_atom(&mut self) -> Result<TypeId, Error> {
         let start = self.here().start;
+        let labeled = self.label_follows();
         let kind = match self.peek() {
             Kind::Name(_) => {
                 let name = self.name(false)?;
@@ -108,6 +109,19 @@ impl Parser {
                     Vec::new()
                 };
                 TypeKind::Named { name, arguments }
+            }
+            Kind::Symbol(Symbol::LParen) if labeled => {
+                self.bump();
+                let name = self.name(true)?;
+                self.expect(Symbol::Colon)?;
+                let ty = self.type_syntax()?;
+                let default = if self.eat(Symbol::Assign) {
+                    Some(self.operand(Context::Element)?)
+                } else {
+                    None
+                };
+                self.expect(Symbol::RParen)?;
+                TypeKind::Labeled { name, ty, default }
             }
             Kind::Symbol(Symbol::LParen) => {
                 self.bump();
@@ -134,6 +148,17 @@ impl Parser {
             _ => return Err(self.expected(Expected::Type)),
         };
         Ok(self.add_type(kind, self.since(start)))
+    }
+
+    /// `( NAME :` opens a labeled parameter rather than a grouped type.
+    fn label_follows(&self) -> bool {
+        matches!(
+            self.tokens.get(self.position + 1).map(|token| &token.kind),
+            Some(Kind::Name(_))
+        ) && self
+            .tokens
+            .get(self.position + 2)
+            .is_some_and(|token| token.kind == Kind::Symbol(Symbol::Colon))
     }
 
     /// The list after an opening `<`; at least one type, closed by `>`.

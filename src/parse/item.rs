@@ -65,13 +65,17 @@ impl Parser {
         })
     }
 
-    /// `type Name<params> { members }`.
+    /// `type Name<params> { members }`, or `type Name<params>` alone, an
+    /// opaque type.
     fn type_item(&mut self) -> Result<ItemKind, Error> {
         self.bump();
         let name = self.name(true)?;
         let parameters = self.type_parameters()?;
-        self.expect(Symbol::LBrace)?;
-        let members = self.list(Symbol::RBrace, Self::member)?;
+        let members = if self.eat(Symbol::LBrace) {
+            Some(self.list(Symbol::RBrace, Self::member)?)
+        } else {
+            None
+        };
         Ok(ItemKind::Type {
             name,
             parameters,

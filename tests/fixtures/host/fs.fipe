@@ -1,0 +1,8 @@
+# The conformance host's `fs` module.
+pub type Error { pub message: String }
+impl Error: Display { display = self => self.message }
+impl Error: Err {}
+
+pub list: (dir: Rd<fs>) -> (path: Src) -> (long: Bool = False) -> Vec<Entry>
+pub remove: (dir: Rd<fs>) -> (path: Src) -> Result<(), Error>
+pub size: Entry -> u64

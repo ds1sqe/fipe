@@ -37,8 +37,8 @@ Every node, name, field, argument and operator keeps its byte span.
 | `Point { x, y: 2 }` | record: uppercase head and fields, a punned field holding a name |
 | `pub p: T = v` | binding: visibility, pattern, optional annotation, value |
 | `a (b = 0) if g => body` | arm: head patterns, guard, body; the default is a pattern atom; an arm list is the function |
-| `A -> B`, `Show a => T` | curried function type; qualified type with constraints |
-| `use`, `type`, `trait`, `impl`, `name: T` | items with visibility; declarations keep parameters, constraints and associated types |
+| `A -> B`, `Show a => T`, `(x: T = v) -> U` | curried function type; qualified type with constraints; labeled parameter with a default |
+| `use`, `type`, `trait`, `impl`, `name: T` | items with visibility; declarations keep parameters, constraints and associated types; a `type` without a body has no member list |
 
 No parser rule decides which spot an argument fills, whether a dot is a
 field or a module, or whether a declaration form is allowed; checking

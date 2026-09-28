@@ -5,6 +5,7 @@
 extern crate alloc;
 
 pub mod ast;
+pub mod decl;
 pub mod lex;
 pub mod parse;
 pub mod token;

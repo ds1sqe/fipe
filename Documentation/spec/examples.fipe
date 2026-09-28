@@ -39,9 +39,9 @@ type Width { w: u64 = 80 }
 type Shape { Circle(r: f64), Square(side: f64), Dot }
 type Marker {}
 impl Point {
-    x (y = 0) => Self { x, y, len: norm x y },
+    x (y = 0) => Self { x, y, len: hypot x y },
     pub line: i64 -> Self = p => Self p p,
-    dist = self q => norm (self.x - q.x) (self.y - q.y),
+    dist = self q => hypot (self.x - q.x) (self.y - q.y),
 }
 impl Poly {
     [] => fault "empty",

@@ -3,7 +3,7 @@
 
 # A record. Lowercase members are fields; `len` is private and computed
 # from the fields before it. A default is an operand, so a call is grouped.
-pub type Point { pub x: i64, pub y: i64 = 0, len: u64 = (norm x y) }
+pub type Point { pub x: i64, pub y: i64 = 0, len: u64 = (hypot x y) }
 
 # A sum. Uppercase members are constructors, each with named fields.
 pub type Shape { Circle(r: f64), Rect(w: f64, h: f64), Dot }
@@ -14,10 +14,10 @@ type Width { w: u64 = 80 }
 # Code lives in the impl. Bare arms are the written constructor; `Self { }`
 # is the raw construction, legal here because the fields are visible.
 impl Point {
-    x (y = 0) => Self { x, y, len: norm x y },
+    x (y = 0) => Self { x, y, len: hypot x y },
     pub origin = Self 0 0,
     pub line: i64 -> Self = p => Self p p,
-    dist = self q => norm (self.x - q.x) (self.y - q.y),
+    dist = self q => hypot (self.x - q.x) (self.y - q.y),
     scale = self k => Self (self.x * k) (self.y * k),
 }
 
@@ -31,12 +31,27 @@ impl Shape {
 
 # Traits: `Display` prints, `Read` parses, and each is on the type it reads.
 impl Point: Display { display = self => join "," [show self.x, show self.y] }
-impl Point: Read { read = s => s | split "," | map read<i64> | collect | pair }
+impl Point: Read {
+    read = s => s | split "," | map read<i64> | collect |: {
+        [x, y] => Ok (Self x y),
+        _ => Err (ParseError "two numbers"),
+    },
+}
 
 # Conversion: the word names the trait, the trait names the side that works.
 pub type Polar { pub r: f64, pub t: f64 }
-impl Polar: From<Point> { from = p => Self { r: norm p.x p.y, t: atan2 p.y p.x } }
-impl Polar: TryInto<Point> { Error = RangeError, try_into = self => bounded self }
+pub type RangeError { pub r: f64 }
+impl RangeError: Display { display = self => join " " ["out of range:", show self.r] }
+impl RangeError: Err {}
+impl Polar: From<Point> { from = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x } }
+impl Polar: TryInto<Point> {
+    Error = RangeError,
+    try_into = self => if self.r < 1e9 {
+        Ok (Point (round (self.r * (cos self.t))) (round (self.r * (sin self.t))))
+    } else {
+        Err (RangeError self.r)
+    },
+}
 
 # Use.
 p = Point 3 4                     # the constructor

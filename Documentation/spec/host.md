@@ -19,10 +19,14 @@ binding, type or trait; a `pub` binding whose type is not complete is a
 check error, and an exported host-callable signature is monomorphic. This
 draft has no `mod`. H1 defines import identity and cycles.
 
-External declarations and file exports use the language's own type system.
-A declaration describes data types, functions with parameter names,
-defaults and effect information. No Rust, kernel or transport type is part
-of Fipe type identity unless a declaration admits it.
+A host declares in Fipe, with the declaration forms of
+[syntax](syntax.md): one file per host module, named by the module, and
+one for the command namespace, holding bare commands, bindings and the
+types they share. A declaration is a signature with labeled spots and
+defaults, an opaque type, a type, a trait or an impl; a name or impl
+member with no value is implemented by the host. No Rust, kernel or
+transport type is part of Fipe type identity unless a declaration admits
+it.
 
 ## Name lookup
 
@@ -33,7 +37,9 @@ dot serves every namespace. For `x.a`, resolve `x` as above, then take
 field `a` of its type, else a function `a` in scope with a parameter named
 `self`, filled with `x`, else the member `a` of module `x`; an uppercase
 `X.a` reads type `X`'s namespace, inherent and trait members, with nothing
-filled. A value named `fs` hides the module `fs` in its scope, so `fs.list`
+filled. A lowercase type argument naming a `use`d module, `fs` in
+`Rd<fs>`, is an API reference; any other lowercase name in a type is a
+variable. A value named `fs` hides the module `fs` in its scope, so `fs.list`
 on a value without that field is a check error, never a module call. `::`
 has no meaning in this draft and stays free for a later `mod` and
 namespace form such as `std::fs`.

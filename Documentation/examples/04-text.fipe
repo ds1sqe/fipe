@@ -1,7 +1,7 @@
 # Text: strings are values, words are text, and the prelude's text
 # functions take their input last so that the pipe fills it.
 use text 2
-use text.lines text.words
+use text.trim
 
 # Word frequency of a file, top ten.
 cat ./book.txt
@@ -11,12 +11,12 @@ cat ./book.txt
     | map lower
     | filter (w => (len w) > 3)
     | count
-    | sort -by .1 -desc
+    | sort -by .n -desc
     | take 10
 
 # A word is text unless it is bound; quotes force text.
 name = "world"
-greet = who => "hello, " + who
+greet = who => ["hello, ", trim who] | join ""
 greet name                        # hello, world
 greet "name"                      # hello, name
 
