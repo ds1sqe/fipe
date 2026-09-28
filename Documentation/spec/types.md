@@ -101,10 +101,11 @@ in value position, its constructor. An impl is written only in its target's
 module; one definition per (type, name), and a name both inherent and
 trait-supplied is a check error.
 
-`pub type` exports the type. A private field is readable, matchable and
-suppliable only inside its module; outside it is not a spot and takes its
-default, so the derived constructor exists outside exactly when every
-private field defaults. `String`'s field has no default, so `utf8` is the
+`pub type` exports the type. A private record field is readable,
+matchable and suppliable only inside its module; outside it is not a spot
+and takes its default, so the derived constructor exists outside exactly
+when every private field defaults. A sum constructor's fields are its
+payload and are always visible. `String`'s field has no default, so `utf8` is the
 only way in. A `pub` binding or member needs a complete type (T3).
 
 ## Traits

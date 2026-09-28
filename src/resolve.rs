@@ -150,6 +150,12 @@ pub enum Reason {
     UnknownMember,
     /// `impl T` where `T` is not a type of this module: `Self` is local.
     ImplOutsideModule,
+    /// A record form names a field the type does not declare.
+    UnknownField,
+    /// A private field supplied, read or matched outside its module.
+    PrivateField {
+        field: String,
+    },
 }
 
 /// Resolve one module against the prelude, the host's declarations and
@@ -175,6 +181,7 @@ pub fn resolve(
         frame: Vec::new(),
         scopes: Vec::new(),
         self_type: None,
+        members: Vec::new(),
         errors: Vec::new(),
     };
     resolver.collect();
@@ -219,7 +226,19 @@ struct Resolver<'a> {
     /// line lives in the first one.
     scopes: Vec<Vec<(String, Target)>>,
     self_type: Option<String>,
+    /// Every impl member of this module, by (type, name), for coherence.
+    members: Vec<(String, String, Span)>,
     errors: Vec<Error>,
+}
+
+/// The fields of a record or of a constructor with fields.
+struct Shape {
+    fields: Vec<(String, bool)>,
+    /// Declared outside the module being resolved.
+    foreign: bool,
+    /// The type's module writes a constructor, so the derived one's
+    /// spots are not its fields.
+    written: bool,
 }
 
 impl Resolver<'_> {
@@ -547,11 +566,22 @@ impl Resolver<'_> {
         let methods = implements
             .and_then(|id| named(self.module, id))
             .and_then(|name| self.trait_methods(&name));
+        let ty = named(self.module, target).unwrap_or_default();
         for member in members {
             let ImplMember::Named { name, public, .. } = member else {
                 continue;
             };
             self.case(name, false);
+            // One definition per (type, name), inherent or trait-supplied.
+            let text = last(name);
+            if let Some((_, _, first)) =
+                self.members.iter().find(|(t, n, _)| *t == ty && *n == text)
+            {
+                let first = *first;
+                self.error(name.span, Reason::Duplicate { first });
+                continue;
+            }
+            self.members.push((ty.clone(), text, name.span));
             if implements.is_none() {
                 self.define(
                     name,
@@ -824,6 +854,8 @@ impl Resolver<'_> {
             }
             ExprKind::Record { name, fields } => {
                 let target = self.record_name(name);
+                let names: Vec<_> = fields.iter().map(|f| &f.name).collect();
+                self.fields(target.as_ref(), &names);
                 self.resolved.expressions[id.0] = target;
                 for field in fields {
                     self.expr(field.value, Position::Other);
@@ -899,18 +931,153 @@ impl Resolver<'_> {
     /// A callee stands in value position; an argument may be text.
     fn call(&mut self, callee: ExprId, arguments: &[crate::ast::Argument]) {
         self.expr(callee, Position::Other);
+        // A derived constructor called from outside its module has only
+        // the public fields as spots.
+        let shape = self.resolved.expressions[callee.0]
+            .as_ref()
+            .filter(|t| matches!(t, Target::Constructor { .. }))
+            .and_then(|t| self.shape(t))
+            .filter(|shape| shape.foreign && !shape.written);
+        let public = shape
+            .as_ref()
+            .map_or(usize::MAX, |s| s.fields.iter().filter(|f| f.1).count());
+        let mut positional = 0;
         for argument in arguments {
             match &argument.kind {
                 crate::ast::ArgumentKind::Positional(value) => {
                     self.expr(*value, Position::Argument);
+                    if positional == public {
+                        let field = shape.as_ref().and_then(|s| {
+                            s.fields.iter().find(|f| !f.1).map(|f| f.0.clone())
+                        });
+                        if let Some(field) = field {
+                            self.error(
+                                argument.span,
+                                Reason::PrivateField { field },
+                            );
+                        }
+                    }
+                    positional += 1;
                 }
-                crate::ast::ArgumentKind::Flag { value, .. } => {
+                crate::ast::ArgumentKind::Flag { name, value } => {
                     if let Some(value) = value {
                         self.expr(*value, Position::Argument);
+                    }
+                    let private = shape.as_ref().is_some_and(|s| {
+                        s.fields.iter().any(|f| f.0 == *name && !f.1)
+                    });
+                    if private {
+                        self.error(
+                            argument.span,
+                            Reason::PrivateField {
+                                field: name.clone(),
+                            },
+                        );
                     }
                 }
             }
         }
+    }
+
+    /// The fields a record form names must exist and, outside the
+    /// type's module, be public.
+    fn fields(&mut self, target: Option<&Target>, names: &[&Name]) {
+        let Some(shape) = target.and_then(|t| self.shape(t)) else {
+            return;
+        };
+        for name in names {
+            let text = last(name);
+            match shape.fields.iter().find(|f| f.0 == text) {
+                None => self.error(name.span, Reason::UnknownField),
+                Some((_, false)) if shape.foreign => {
+                    self.error(name.span, Reason::PrivateField { field: text });
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// The declared fields behind a record type, `Self`, or a
+    /// constructor, when its module is one we can read.
+    fn shape(&self, target: &Target) -> Option<Shape> {
+        let (module, foreign, ty, constructor) = match target {
+            Target::SelfType => {
+                (self.module, false, self.self_type.clone()?, None)
+            }
+            Target::Type { origin, name } => {
+                let (module, foreign) = self.owner(origin)?;
+                (module, foreign, name.clone(), None)
+            }
+            Target::Constructor { origin, ty, name } => {
+                let (module, foreign) = self.owner(origin)?;
+                (module, foreign, ty.clone(), Some(name.clone()))
+            }
+            _ => return None,
+        };
+        let members = module.entries.iter().find_map(|entry| match entry {
+            Entry::Item(item) => match &item.kind {
+                ItemKind::Type { name, members, .. } if last(name) == ty => {
+                    members.as_ref()
+                }
+                _ => None,
+            },
+            Entry::Line(_) => None,
+        })?;
+        let fields: Vec<(String, bool)> = match constructor {
+            // A sum constructor's fields are its payload, always visible.
+            Some(name) if name != ty => members
+                .iter()
+                .find_map(|member| match member {
+                    Member::Constructor {
+                        name: c, fields, ..
+                    } if last(c) == name => Some(fields),
+                    _ => None,
+                })?
+                .iter()
+                .map(|f| (last(&f.name), true))
+                .collect(),
+            _ => members
+                .iter()
+                .filter_map(|member| match member {
+                    Member::Field(f) => Some((last(&f.name), f.public)),
+                    Member::Constructor { .. } => None,
+                })
+                .collect(),
+        };
+        let written = module.entries.iter().any(|entry| match entry {
+            Entry::Item(item) => match &item.kind {
+                ItemKind::Impl {
+                    target, members, ..
+                } => {
+                    named(module, *target).as_deref() == Some(&ty)
+                        && members
+                            .iter()
+                            .any(|m| matches!(m, ImplMember::Constructor(_)))
+                }
+                _ => false,
+            },
+            Entry::Line(_) => false,
+        });
+        Some(Shape {
+            fields,
+            foreign,
+            written,
+        })
+    }
+
+    /// The module that owns a declaration, and whether it is another one.
+    fn owner(&self, origin: &Origin) -> Option<(&Module, bool)> {
+        Some(match origin {
+            Origin::This => (self.module, false),
+            Origin::Prelude => (&self.declarations.prelude.module, true),
+            Origin::Commands => {
+                (&self.declarations.commands.as_ref()?.module, true)
+            }
+            Origin::Host(host) => {
+                (&self.declarations.get_module(host)?.module, true)
+            }
+            Origin::File(stem) => (self.file(stem)?, true),
+        })
     }
 
     /// A head binds its parameters in order; a default sees the earlier
@@ -964,6 +1131,8 @@ impl Resolver<'_> {
             }
             PatternKind::Record { name, fields, .. } => {
                 let target = self.record_name(name);
+                let names: Vec<_> = fields.iter().map(|f| &f.name).collect();
+                self.fields(target.as_ref(), &names);
                 self.resolved.patterns[id.0] = target;
                 for field in fields {
                     match field.pattern {

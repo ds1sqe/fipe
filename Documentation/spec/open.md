@@ -35,9 +35,9 @@ implements the parameterized prelude traits `From<A>`, `Into<B>`,
 `TryFrom<A>` and `TryInto<B>`. Coherence keys on (trait, arguments, type)
 under the "`Self` is local" orphan rule, with at most one conversion impl
 per direction across the four traits. Fully define trait kinds, signatures,
-derived instances, hoisting of file-level arm bindings, the case rule at
-declarations, default-expression evaluation and termination of recursive
-type detection before the checker milestone.
+derived instances, default-expression evaluation and termination of
+recursive type detection before the checker milestone; hoisting, the case
+rule and name lookup are ruled and implemented by resolution.
 
 ## E1 — Evaluation and outcome rebuilding
 

@@ -67,6 +67,13 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `impl P { x (y = 0) => Self { x, y }, f = p => … }` / `impl P: T { f = … }` | constructor arm and member / trait impl |
 | `impl P { f = a => 1, b => 2 }` / `impl P { f = a => 1 b => 2 }` | member then constructor arm / error: bracket the arms |
 | `use x.inc x.Point` / `use text 2` / `use fs ver 2` | names / version / error |
+| `foo 1`, `foo` / `cat foo` | unknown name / text |
+| `f 1` before `f = a => …` / before `g = 2` | hoisted / unknown name |
+| `type point {}`, `type S { circle(r: f64) }`, `Point = 1` | case rule at the declaration |
+| `type T<a> {}`, `x: Show a => …`, `pub len: T` in a program | declaration form |
+| `sys.lookup`, `Polar.from`, `e.name`, `fs = e` then `fs.list` | module export / type member / members of a value, twice |
+| `use nowhere`, `use geometry.Nope`, `fs.nope`, `Point.nope` | unknown module / not exported / unknown member, twice |
+| `impl Vec: Len {}` / `impl P: Display { nope = … }` | `Self` is local / not the trait's method |
 | `add = a b => a + b` | generalized Num-constrained function |
 | `add2 = add 2` | one open spot |
 | wrong record field | check error before any host call |
@@ -74,7 +81,7 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `find x | put out` / `find x || "" | put out` | outcome at a byte spot: check error / text written |
 | `m = [:1]` / `m: Maybe<i64> = [:1]` | family unknown: check error / `Just 1` |
 | `Point 3 4`, `Point 3`, `1 | Point 1` / `Point 3 4 5` | constructor, default, pipe fills `y` / extra argument |
-| `Point { x: 3, y: 4, len: 5 }` outside its module | check error: `len` is private |
+| `Point { x: 3, y: 4, len: 5 }`, `Point 3 4 5`, `Point -len 5` outside its module | check error at the field or argument: `len` is private |
 | `pl | Point.from`, `pl.into<Point>`, `pl | to<Point>` / `pl | Point` | conversions / `Point pl`: check error at an `i64` spot |
 | `impl Point: From<Polar>` and `impl Polar: Into<Point>` | check error: one impl per direction |
 | `"42" | read<i64>` / `n: i64 = "42"` / `n: i64 = "x"` | `Result` / `42` / check error |

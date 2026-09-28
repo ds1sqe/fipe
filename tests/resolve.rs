@@ -485,3 +485,65 @@ fn use_forms_and_impl_placement_are_checked() {
     assert!(check("type P { x: i64 }\nimpl P: TryFrom<String> { Error = ParseError, try_from = s => Self.Error }").is_ok());
     assert!(check("use text 2\nuse text.trim\ntrim \"x\"").is_ok());
 }
+
+#[test]
+fn private_fields_are_located_outside_their_module() {
+    let shapes = (
+        "shapes".to_string(),
+        module("pub type Point { pub x: i64, pub y: i64 = 0, len: u64 = 0 }\npub type Shape { Circle(r: f64), Rect(w: f64, hidden: f64) }\npub type Written { pub x: i64, secret: i64 = 0 }\nimpl Written { x => Self { x, secret: 1 } }"),
+    );
+    let files = [shapes];
+    let check =
+        |text: &str| -> Result<Resolved, Vec<(Reason, Option<String>)>> {
+            let parsed = module(text);
+            resolve(&parsed, &host(), &files).map_err(|errors| {
+                errors
+                    .into_iter()
+                    .map(|e| {
+                        (
+                            e.reason,
+                            Source::new(text).slice(e.span).map(str::to_string),
+                        )
+                    })
+                    .collect()
+            })
+        };
+    let private = |field: &str| Reason::PrivateField {
+        field: field.into(),
+    };
+    assert_eq!(
+        check("use shapes.Point\nPoint { x: 3, y: 4, len: 5 }").unwrap_err(),
+        [(private("len"), Some("len".into()))]
+    );
+    assert_eq!(
+        check("use shapes.Point\nPoint { x, len } = Point 1").unwrap_err(),
+        [(private("len"), Some("len".into()))]
+    );
+    assert_eq!(
+        check("use shapes.Point\nPoint { x: 3, nope: 1 }").unwrap_err(),
+        [(Reason::UnknownField, Some("nope".into()))]
+    );
+    assert_eq!(
+        check("use shapes.Point\nPoint 3 4 5").unwrap_err(),
+        [(private("len"), Some("5".into()))]
+    );
+    assert_eq!(
+        check("use shapes.Point\nPoint -len 5 3").unwrap_err(),
+        [(private("len"), Some("-len".into()))]
+    );
+    // A sum constructor's fields are its payload, always visible.
+    assert!(check("use shapes.Rect\nRect { w, hidden } = 1\nRect 1 2").is_ok());
+    assert_eq!(
+        check("use shapes.Rect\nRect { w, nope } = 1").unwrap_err(),
+        [(Reason::UnknownField, Some("nope".into()))]
+    );
+    // A written constructor's spots are its own; a public field is fine.
+    assert!(check("use shapes.Point shapes.Written\nPoint 3 4\nPoint -y 4 -x 3\nPoint { x: 1, y: 2 }\nWritten 1 2").is_ok());
+    // Inside the module every field is visible.
+    assert!(check("type P { pub x: i64, len: u64 = 0 }\nP { x: 1, len: 2 }\nP 1 2\nimpl P { f = self => Self { x: 1, len: 0 } }\nP { x, len } = P 1").is_ok());
+    // Two definitions of one (type, name) collide, inherent or trait.
+    let dup = check("type P { x: i64 }\nimpl P { show_x = self => 1 }\nimpl P: Display { show_x = self => 2 }").unwrap_err();
+    assert!(matches!(dup[0].0, Reason::Duplicate { .. }), "{dup:?}");
+    let dup = check("type P { x: i64 }\ntype Q { y: i64 }\nimpl P { f = self => 1 }\nimpl Q { f = self => 2 }").unwrap_err();
+    assert!(matches!(dup[0].0, Reason::Duplicate { .. }), "{dup:?}");
+}
