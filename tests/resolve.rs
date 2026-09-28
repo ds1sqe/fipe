@@ -73,18 +73,63 @@ fn value(origin: Origin, name: &str) -> Target {
     }
 }
 
+/// Every example, parsed, keyed by stem: the module tree `use` reads.
+fn examples() -> Vec<(String, Module)> {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("Documentation/examples");
+    let mut paths: Vec<_> = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "fipe"))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+            (stem, module(&std::fs::read_to_string(&path).unwrap()))
+        })
+        .collect()
+}
+
+fn example(stem: &str) -> (String, Module, Resolved) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("Documentation/examples")
+        .join(format!("{stem}.fipe"));
+    let text = std::fs::read_to_string(path).unwrap();
+    let parsed = module(&text);
+    let resolved =
+        resolve(&parsed, &host(), &examples()).unwrap_or_else(|errors| {
+            let located: Vec<_> = errors
+                .iter()
+                .map(|e| {
+                    (
+                        &e.reason,
+                        Source::new(&text).line_col(e.span.start),
+                        Source::new(&text).slice(e.span),
+                    )
+                })
+                .collect();
+            panic!("{stem}: {located:?}")
+        });
+    (text, parsed, resolved)
+}
+
+#[test]
+fn every_example_resolves() {
+    let files = examples();
+    assert!(files.len() >= 6);
+    for (stem, _) in &files {
+        example(stem);
+    }
+}
+
 #[test]
 fn the_first_two_examples_resolve() {
-    for path in ["01-files.fipe", "02-outcomes.fipe"] {
-        let text = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("Documentation/examples")
-                .join(path),
-        )
-        .unwrap();
-        let (parsed, resolved) = ok(&text);
+    for path in ["01-files", "02-outcomes"] {
+        let (text, parsed, resolved) = example(path);
         assert!(resolved.exports.is_empty(), "{path}");
-        if path == "01-files.fipe" {
+        if path == "01-files" {
             assert_eq!(
                 target(&text, &parsed, &resolved, "ls"),
                 &value(Origin::Commands, "ls")
@@ -273,4 +318,170 @@ fn the_case_rule_duplicates_and_declaration_forms_are_located() {
         target(text, &parsed, &resolved, "g"),
         &value(Origin::This, "g")
     );
+}
+
+#[test]
+fn dots_classify_modules_types_and_values() {
+    let (text, parsed, resolved) = example("05-modules");
+    assert_eq!(
+        target(&text, &parsed, &resolved, "sys.lookup"),
+        &value(Origin::Host("sys".into()), "lookup")
+    );
+    assert_eq!(
+        target(&text, &parsed, &resolved, "fs.size"),
+        &value(Origin::Host("fs".into()), "size")
+    );
+    let Target::Members { head, members } =
+        target(&text, &parsed, &resolved, "e.name")
+    else {
+        panic!()
+    };
+    assert!(matches!(**head, Target::Local { .. }));
+    assert_eq!(members, &["name"]);
+    assert_eq!(
+        target(&text, &parsed, &resolved, "Polar.from"),
+        &Target::TypeMember {
+            ty: Box::new(Target::Type {
+                origin: Origin::File("geometry".into()),
+                name: "Polar".into()
+            }),
+            member: "from".into()
+        }
+    );
+    assert_eq!(
+        target(&text, &parsed, &resolved, "Rd<fs>"),
+        &value(Origin::Commands, "Rd")
+    );
+    assert_eq!(resolved.exports.len(), 2);
+
+    let (parsed, resolved) = ok("fs = 1\nfs.list");
+    let Entry::Line(id) = parsed.entries[1] else {
+        panic!()
+    };
+    let Target::Members { head, .. } = resolved.expr(id).unwrap() else {
+        panic!()
+    };
+    assert!(matches!(**head, Target::Local { .. }));
+
+    let (parsed, resolved) = ok("type P { x: i64 }\nimpl P { f = self => self.x }\nimpl P: Display { display = self => show self.x }\nP.f\nP.display\nx: cli.Error = 1\nd = 4 | Rd<fs>");
+    let text = "type P { x: i64 }\nimpl P { f = self => self.x }\nimpl P: Display { display = self => show self.x }\nP.f\nP.display\nx: cli.Error = 1\nd = 4 | Rd<fs>";
+    assert!(matches!(
+        target(text, &parsed, &resolved, "P.display"),
+        Target::TypeMember { .. }
+    ));
+    let source = Source::new(text);
+    let mut kinds = Vec::new();
+    for entry in &parsed.entries {
+        let Entry::Line(id) = entry else { continue };
+        if let ExprKind::Bind {
+            annotation: Some(a),
+            ..
+        } = &parsed.expr(*id).unwrap().kind
+        {
+            kinds.push((
+                source.slice(parsed.ty(*a).unwrap().span),
+                resolved.ty(*a).cloned(),
+            ));
+        }
+    }
+    assert_eq!(
+        kinds,
+        [(
+            Some("cli.Error"),
+            Some(Target::Type {
+                origin: Origin::Host("cli".into()),
+                name: "Error".into()
+            })
+        )]
+    );
+    let ExprKind::Bind { value, .. } = &parsed
+        .expr(match parsed.entries.last().unwrap() {
+            Entry::Line(id) => *id,
+            Entry::Item(_) => panic!(),
+        })
+        .unwrap()
+        .kind
+    else {
+        panic!()
+    };
+    let ExprKind::Pipe { right, .. } = &parsed.expr(*value).unwrap().kind
+    else {
+        panic!()
+    };
+    let ExprKind::Instance { arguments, .. } =
+        &parsed.expr(*right).unwrap().kind
+    else {
+        panic!()
+    };
+    assert_eq!(
+        resolved.ty(arguments[0]),
+        Some(&Target::Module(Origin::Host("fs".into())))
+    );
+}
+
+#[test]
+fn use_forms_and_impl_placement_are_checked() {
+    let geometry = ("geometry".to_string(), module("pub type Point { pub x: i64 }\nimpl Point: Display { display = self => show self.x }\nhidden = 1\npub shown = 2"));
+    let files = [geometry];
+    let check =
+        |text: &str| -> Result<Resolved, Vec<(Reason, Option<String>)>> {
+            let parsed = module(text);
+            resolve(&parsed, &host(), &files).map_err(|errors| {
+                errors
+                    .into_iter()
+                    .map(|e| {
+                        (
+                            e.reason,
+                            Source::new(text).slice(e.span).map(str::to_string),
+                        )
+                    })
+                    .collect()
+            })
+        };
+    assert!(check(
+        "use geometry.Point geometry.shown\nPoint 1\nshown\nPoint.display"
+    )
+    .is_ok());
+    assert!(
+        check("use geometry\ngeometry.Point 1 | show geometry.shown").is_ok()
+    );
+    assert_eq!(
+        check("use nowhere").unwrap_err(),
+        [(Reason::UnknownModule, Some("nowhere".into()))]
+    );
+    assert_eq!(
+        check("use geometry.Nope").unwrap_err(),
+        [(Reason::NotExported, Some("geometry.Nope".into()))]
+    );
+    assert_eq!(
+        check("use geometry.hidden").unwrap_err(),
+        [(Reason::NotExported, Some("geometry.hidden".into()))]
+    );
+    assert_eq!(
+        check("fs.nope 1").unwrap_err(),
+        [(Reason::UnknownMember, Some("fs.nope".into()))]
+    );
+    assert_eq!(
+        check("use geometry\ngeometry.display").unwrap_err(),
+        [(Reason::UnknownMember, Some("geometry.display".into()))]
+    );
+    assert_eq!(
+        check("use geometry.Point\nPoint.nope").unwrap_err(),
+        [(Reason::UnknownMember, Some("Point.nope".into()))]
+    );
+    assert_eq!(
+        check("x: cli.Nope = 1").unwrap_err(),
+        [(Reason::UnknownType, Some("cli.Nope".into()))]
+    );
+    assert_eq!(
+        check("impl Vec: Len {}").unwrap_err(),
+        [(Reason::ImplOutsideModule, Some("Vec".into()))]
+    );
+    assert_eq!(
+        check("type P { x: i64 }\nimpl P: Display { nope = self => 1 }")
+            .unwrap_err(),
+        [(Reason::UnknownMember, Some("nope".into()))]
+    );
+    assert!(check("type P { x: i64 }\nimpl P: TryFrom<String> { Error = ParseError, try_from = s => Self.Error }").is_ok());
+    assert!(check("use text 2\nuse text.trim\ntrim \"x\"").is_ok());
 }

@@ -142,6 +142,14 @@ pub enum Reason {
     /// a signature-only declaration, a labeled parameter, an opaque type.
     DeclarationForm,
     SelfOutsideBody,
+    /// `use x` names neither a host module nor a supplied file module.
+    UnknownModule,
+    /// `use m.n`: `m` has no public `n`.
+    NotExported,
+    /// `m.n` or `T.n`: no such member of the module or type namespace.
+    UnknownMember,
+    /// `impl T` where `T` is not a type of this module: `Self` is local.
+    ImplOutsideModule,
 }
 
 /// Resolve one module against the prelude, the host's declarations and
@@ -203,7 +211,6 @@ struct Defined {
 struct Resolver<'a> {
     module: &'a Module,
     declarations: &'a Declarations,
-    #[allow(dead_code, reason = "file modules are 04.3's `use` forms")]
     files: &'a [(String, Module)],
     resolved: Resolved,
     /// The module frame: items, hoisted bindings, imports.
@@ -226,7 +233,12 @@ impl Resolver<'_> {
         for entry in &self.module.entries {
             match entry {
                 Entry::Item(item) => match &item.kind {
-                    ItemKind::Use { .. } | ItemKind::Impl { .. } => {}
+                    ItemKind::Impl { .. } => {}
+                    ItemKind::Use { names, .. } => {
+                        for name in names {
+                            self.import(name);
+                        }
+                    }
                     ItemKind::Type {
                         name,
                         parameters,
@@ -293,11 +305,186 @@ impl Resolver<'_> {
         }
         for entry in &self.module.entries {
             if let Entry::Item(item) = entry {
-                if let ItemKind::Impl { members, .. } = &item.kind {
-                    self.inherent(members);
+                if let ItemKind::Impl {
+                    target,
+                    implements,
+                    members,
+                } = &item.kind
+                {
+                    self.impl_item(*target, *implements, members);
                 }
             }
         }
+    }
+
+    /// `use m` binds the module's name; `use m.n` binds its export `n`.
+    fn import(&mut self, name: &Name) {
+        let module = &name.segments[0];
+        let Some(origin) = self.module_origin(module) else {
+            self.error(name.span, Reason::UnknownModule);
+            return;
+        };
+        if name.segments.len() == 1 {
+            self.define(name, Space::Value, Target::Module(origin), false);
+            return;
+        }
+        let member = &name.segments[1];
+        let mut found = false;
+        for space in [Space::Type, Space::Value] {
+            if let Some(target) = self.exported(&origin, member, space) {
+                self.define(name, space, target, false);
+                found = true;
+            }
+        }
+        if !found {
+            self.error(name.span, Reason::NotExported);
+        }
+    }
+
+    /// A host module or a supplied file module, by name.
+    fn module_origin(&self, name: &str) -> Option<Origin> {
+        if self.declarations.get_module(name).is_some() {
+            Some(Origin::Host(name.to_string()))
+        } else if self.file(name).is_some() {
+            Some(Origin::File(name.to_string()))
+        } else {
+            None
+        }
+    }
+
+    fn file(&self, name: &str) -> Option<&Module> {
+        self.files
+            .iter()
+            .find(|(stem, _)| stem == name)
+            .map(|(_, module)| module)
+    }
+
+    /// A public name of a host or file module.
+    fn exported(
+        &self,
+        origin: &Origin,
+        name: &str,
+        space: Space,
+    ) -> Option<Target> {
+        match origin {
+            Origin::Host(module) => {
+                let namespace = self.declarations.get_module(module)?;
+                match space {
+                    Space::Value => {
+                        namespace_value(namespace, origin.clone(), name).filter(
+                            |_| namespace.value(name).is_none_or(|d| d.public),
+                        )
+                    }
+                    Space::Type => namespace
+                        .ty(name)
+                        .filter(|declared| declared.public)
+                        .and_then(|_| {
+                            namespace_type(namespace, origin.clone(), name)
+                        }),
+                }
+            }
+            Origin::File(stem) => {
+                file_export(self.file(stem)?, origin, name, space)
+            }
+            _ => None,
+        }
+    }
+
+    /// The methods of a trait, when the trait is known.
+    fn trait_methods(&self, name: &str) -> Option<Vec<String>> {
+        for entry in &self.module.entries {
+            if let Entry::Item(item) = entry {
+                if let ItemKind::Trait {
+                    name: trait_name,
+                    members,
+                    ..
+                } = &item.kind
+                {
+                    if last(trait_name) == name {
+                        return Some(
+                            members
+                                .iter()
+                                .filter(|m| !m.name.is_uppercase())
+                                .map(|m| last(&m.name))
+                                .collect(),
+                        );
+                    }
+                }
+            }
+        }
+        let declarations = self.declarations;
+        let namespaces = core::iter::once(&declarations.prelude)
+            .chain(declarations.commands.iter());
+        for namespace in namespaces {
+            if let Some(Kind::Trait { methods, .. }) =
+                namespace.ty(name).map(|declared| &declared.kind)
+            {
+                return Some(methods.clone());
+            }
+        }
+        None
+    }
+
+    /// Whether `ty`'s namespace has `member`: an impl member of the
+    /// type in the module that owns it, or a method of a trait it
+    /// implements. `None` when the owner is not a module we can read.
+    fn has_member(&self, ty: &Target, member: &str) -> Option<bool> {
+        let (module, name) = match ty {
+            Target::Type {
+                origin: Origin::This,
+                name,
+            } => (self.module, name),
+            Target::Type {
+                origin: Origin::Prelude,
+                name,
+            } => (&self.declarations.prelude.module, name),
+            Target::Type {
+                origin: Origin::Commands,
+                name,
+            } => (&self.declarations.commands.as_ref()?.module, name),
+            Target::Type {
+                origin: Origin::Host(host),
+                name,
+            } => (&self.declarations.get_module(host)?.module, name),
+            Target::Type {
+                origin: Origin::File(stem),
+                name,
+            } => (self.file(stem)?, name),
+            _ => return None,
+        };
+        for entry in &module.entries {
+            let Entry::Item(item) = entry else { continue };
+            let ItemKind::Impl {
+                target,
+                implements,
+                members,
+            } = &item.kind
+            else {
+                continue;
+            };
+            if named(module, *target).as_deref() != Some(name) {
+                continue;
+            }
+            let written = members.iter().any(|m| match m {
+                ImplMember::Named { name, .. }
+                | ImplMember::Type { name, .. } => last(name) == member,
+                ImplMember::Constructor(_) => false,
+            });
+            if written {
+                return Some(true);
+            }
+            if let Some(trait_name) =
+                implements.and_then(|id| named(module, id))
+            {
+                if self
+                    .trait_methods(&trait_name)
+                    .is_some_and(|methods| methods.iter().any(|m| m == member))
+                {
+                    return Some(true);
+                }
+            }
+        }
+        Some(false)
     }
 
     /// A record's constructor is the type's name; a sum's are its members.
@@ -339,11 +526,33 @@ impl Resolver<'_> {
         }
     }
 
-    /// Inherent members are functions in scope in the type's module.
-    fn inherent(&mut self, members: &[ImplMember]) {
+    /// `impl T` is written only in `T`'s module; an inherent impl's
+    /// members are functions in scope there, and a trait impl's members
+    /// are the trait's methods.
+    fn impl_item(
+        &mut self,
+        target: TypeId,
+        implements: Option<TypeId>,
+        members: &[ImplMember],
+    ) {
+        let span = self.module.types[target.0].span;
+        let local = named(self.module, target).is_some_and(|name| {
+            self.defined(&name, Space::Type).is_some_and(|defined| {
+                matches!(defined.target, Target::Type { .. })
+            })
+        });
+        if !local {
+            self.error(span, Reason::ImplOutsideModule);
+        }
+        let methods = implements
+            .and_then(|id| named(self.module, id))
+            .and_then(|name| self.trait_methods(&name));
         for member in members {
-            if let ImplMember::Named { name, public, .. } = member {
-                self.case(name, false);
+            let ImplMember::Named { name, public, .. } = member else {
+                continue;
+            };
+            self.case(name, false);
+            if implements.is_none() {
                 self.define(
                     name,
                     Space::Value,
@@ -353,6 +562,10 @@ impl Resolver<'_> {
                     },
                     *public,
                 );
+            } else if methods.as_ref().is_some_and(|methods| {
+                !methods.iter().any(|m| *m == last(name))
+            }) {
+                self.error(name.span, Reason::UnknownMember);
             }
         }
     }
@@ -610,7 +823,7 @@ impl Resolver<'_> {
                 }
             }
             ExprKind::Record { name, fields } => {
-                let target = self.type_name(name);
+                let target = self.record_name(name);
                 self.resolved.expressions[id.0] = target;
                 for field in fields {
                     self.expr(field.value, Position::Other);
@@ -750,7 +963,7 @@ impl Resolver<'_> {
                 }
             }
             PatternKind::Record { name, fields, .. } => {
-                let target = self.type_name(name);
+                let target = self.record_name(name);
                 self.resolved.patterns[id.0] = target;
                 for field in fields {
                     match field.pattern {
@@ -776,6 +989,33 @@ impl Resolver<'_> {
         position: Position,
     ) -> Option<Target> {
         let first = &name.segments[0];
+        let qualified = name.segments.len() > 1;
+        // `X.a`: a type's namespace, when `X` names a type.
+        if qualified
+            && (first == "Self" || first.starts_with(char::is_uppercase))
+        {
+            let ty = if first == "Self" {
+                if self.self_type.is_none() {
+                    self.error(name.span, Reason::SelfOutsideBody);
+                    return None;
+                }
+                Some(Target::SelfType)
+            } else {
+                self.lookup_type(first)
+            };
+            if let Some(ty) = ty {
+                let member = &name.segments[1];
+                if self.has_member(&ty, member) == Some(false) {
+                    self.error(name.span, Reason::UnknownMember);
+                    return None;
+                }
+                let head = Target::TypeMember {
+                    ty: Box::new(ty),
+                    member: member.clone(),
+                };
+                return Some(members(head, &name.segments[2..]));
+            }
+        }
         let head = if first == "Self" {
             if self.self_type.is_some() {
                 Some(Target::SelfType)
@@ -787,22 +1027,47 @@ impl Resolver<'_> {
             self.lookup_value(first)
         };
         let Some(head) = head else {
-            if name.segments.len() == 1 && position == Position::Argument {
+            if !qualified && position == Position::Argument {
                 return Some(Target::Word);
             }
             self.error(name.span, Reason::UnknownName);
             return None;
         };
-        if name.segments.len() == 1 {
+        if !qualified {
             return Some(head);
         }
-        Some(Target::Members {
-            head: Box::new(head),
-            members: name.segments[1..].to_vec(),
-        })
+        // `m.a`: a module's export, which must exist.
+        if let Target::Module(origin) = &head {
+            let Some(export) =
+                self.exported(origin, &name.segments[1], Space::Value)
+            else {
+                self.error(name.span, Reason::UnknownMember);
+                return None;
+            };
+            return Some(members(export, &name.segments[2..]));
+        }
+        Some(members(head, &name.segments[1..]))
     }
 
-    /// A name in type position, or before `{` in a record.
+    /// The uppercase name before `{`: a record type, or a sum's
+    /// constructor with fields, such as `Rect { w, h }`.
+    fn record_name(&mut self, name: &Name) -> Option<Target> {
+        if name.segments.len() == 1 && name.segments[0] != "Self" {
+            if let Some(ty) = self.lookup_type(&name.segments[0]) {
+                return Some(ty);
+            }
+            if let Some(constructor @ Target::Constructor { .. }) =
+                self.lookup_value(&name.segments[0])
+            {
+                return Some(constructor);
+            }
+            self.error(name.span, Reason::UnknownType);
+            return None;
+        }
+        self.type_name(name)
+    }
+
+    /// A name in type position.
     fn type_name(&mut self, name: &Name) -> Option<Target> {
         let first = &name.segments[0];
         if first == "Self" {
@@ -812,8 +1077,18 @@ impl Resolver<'_> {
             self.error(name.span, Reason::SelfOutsideBody);
             return None;
         }
-        if name.segments.len() > 1 {
-            // Module-qualified types are 04.3.
+        if name.segments.len() == 2 {
+            // `m.T`: a module's exported type.
+            let found = self.module_origin(first).and_then(|origin| {
+                self.exported(&origin, &name.segments[1], Space::Type)
+            });
+            if found.is_none() {
+                self.error(name.span, Reason::UnknownType);
+            }
+            return found;
+        }
+        if name.segments.len() > 2 {
+            self.error(name.span, Reason::UnknownType);
             return None;
         }
         if let Some(target) = self.lookup_type(first) {
@@ -822,6 +1097,9 @@ impl Resolver<'_> {
         if name.is_uppercase() {
             self.error(name.span, Reason::UnknownType);
             None
+        } else if let Some(origin) = self.module_origin(first) {
+            // `Rd<fs>`: an API reference.
+            Some(Target::Module(origin))
         } else {
             Some(Target::Variable(first.clone()))
         }
@@ -848,6 +1126,106 @@ impl Resolver<'_> {
             }
         }
     }
+}
+
+/// `head.a.b`: the remaining segments as members of the checker's.
+fn members(head: Target, rest: &[String]) -> Target {
+    if rest.is_empty() {
+        head
+    } else {
+        Target::Members {
+            head: Box::new(head),
+            members: rest.to_vec(),
+        }
+    }
+}
+
+/// A `pub` name of a file module, read syntactically.
+fn file_export(
+    module: &Module,
+    origin: &Origin,
+    name: &str,
+    space: Space,
+) -> Option<Target> {
+    let origin = origin.clone();
+    for entry in &module.entries {
+        match entry {
+            Entry::Item(item) if item.public => match (&item.kind, space) {
+                (ItemKind::Type { name: ty, .. }, Space::Type)
+                    if last(ty) == name =>
+                {
+                    return Some(Target::Type {
+                        origin,
+                        name: name.to_string(),
+                    });
+                }
+                (
+                    ItemKind::Type {
+                        name: ty, members, ..
+                    },
+                    Space::Value,
+                ) => {
+                    let sum = members
+                        .iter()
+                        .flatten()
+                        .any(|m| matches!(m, Member::Constructor { .. }));
+                    let constructor = if sum {
+                        members.iter().flatten().any(|m| {
+                            matches!(m, Member::Constructor { name: c, .. } if last(c) == name)
+                        })
+                    } else {
+                        last(ty) == name
+                    };
+                    if constructor {
+                        return Some(Target::Constructor {
+                            origin,
+                            ty: last(ty),
+                            name: name.to_string(),
+                        });
+                    }
+                }
+                (ItemKind::Trait { name: t, .. }, Space::Type)
+                    if last(t) == name =>
+                {
+                    return Some(Target::Trait {
+                        origin,
+                        name: name.to_string(),
+                    });
+                }
+                (ItemKind::Trait { members, .. }, Space::Value)
+                    if members.iter().any(|m| last(&m.name) == name) =>
+                {
+                    return Some(Target::Value {
+                        origin,
+                        name: name.to_string(),
+                    });
+                }
+                _ => {}
+            },
+            Entry::Line(id) if space == Space::Value => {
+                let ExprKind::Bind {
+                    public: true,
+                    pattern,
+                    ..
+                } = &module.expressions[id.0].kind
+                else {
+                    continue;
+                };
+                if let PatternKind::Name(bound) =
+                    &module.patterns[pattern.0].kind
+                {
+                    if last(bound) == name {
+                        return Some(Target::Value {
+                            origin,
+                            name: name.to_string(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn last(name: &Name) -> String {
