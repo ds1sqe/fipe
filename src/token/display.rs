@@ -31,7 +31,6 @@ impl fmt::Display for Kind {
                 f.write_str("b")?;
                 quoted(f, bytes)
             }
-            Self::Rd(id) => write!(f, "rd:{id}"),
             Self::Newline => f.write_str("\n"),
             Self::Eof => f.write_str("<eof>"),
         }

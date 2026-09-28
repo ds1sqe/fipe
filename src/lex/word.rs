@@ -76,7 +76,7 @@ fn integer(text: &str, radix: u32, negative: bool) -> Result<Kind, Reason> {
         .ok_or(Reason::IntegerRange)
 }
 
-pub(super) fn magnitude(text: &str, radix: u32) -> Option<u64> {
+fn magnitude(text: &str, radix: u32) -> Option<u64> {
     text.chars()
         .filter(|&ch| ch != '_')
         .try_fold(0_u64, |n, ch| {

@@ -13,11 +13,13 @@ main. All code in the unit checks before any of its program effects occur.
 Declaration discovery and source loading are host preparation, not script
 evaluation. Failure to resolve source, an API or a version is a check error.
 
-`use module` imports a module once; `use module ver n` requests a host-declared
-API version. Files have no written version; hosts supply identity for caching.
-A function with a complete written signature is exported; an inferred one is
-private. An exported host-callable signature is monomorphic. T3 defines the
-exact annotation requirement; H1 defines import identity and cycle handling.
+`use module` imports a module once; `use module n` requests a host-declared
+API version; `use module.name …` brings names into scope. Files have no
+written version; hosts supply identity for caching. This draft has no `mod`: a
+file is a module named by its stem and the host resolves the tree. `pub`
+exports a binding, type or trait; a `pub` binding whose type is not complete
+is a check error, and an exported host-callable signature is monomorphic. T3
+defines "complete"; H1 defines import identity and cycle handling.
 
 External declarations and file exports use the same language type system.
 A declaration describes data types, functions, parameter names/defaults and
@@ -28,27 +30,36 @@ part of Fipe type identity unless admitted by that declaration interface.
 
 For a name in expression position, search nearest lexical binding, then an
 imported/host-declared API name, then the host's command namespace. Shadowing
-is lexical. `cat x` uses a bound `x`; `cat "x"` forces text. A qualified name
-may be a module member or field chain; checking resolves its first segment
-then verifies every following segment. Unknown fields are check errors.
+is lexical. `cat x` uses a bound `x`; `cat "x"` forces text. One dot serves
+every namespace: for `x.a`, resolve `x` as above, then take field `a` of its
+type, else a function `a` in scope with a parameter named `self`, filled
+with `x`, else the member `a` of module `x`; an uppercase `X.a` reads type
+`X`'s namespace, inherent and trait members, with nothing filled. A value
+named `fs` hides the module `fs` in its scope, and `fs.list` on a value with
+no such field is a check error, never a silent module call. Unknown fields
+are check errors. `::` has no meaning in this draft; it is kept lexically
+free for a later `mod` and namespace form such as `std::fs`.
 
 The prelude is implicit and contains the language's primitive traits,
-constructors and functions. Names such as `fs`, `sys`, `cli`, `root` and `env`
-are host declarations/bindings, not universal reserved words. An embedding
+constructors and functions. Names such as `fs`, `sys`, `cli`, `root`, `env`,
+`Rd`, `put` and `append` are host declarations/bindings, not universal
+reserved words; the conformance host declares exactly those the corpus uses. An embedding
 must provide any such name used by its program. Host PATH is a policy for
 the command namespace, not an OS environment requirement.
 
 ## Environment and resources
 
-The host environment is separate from lexical bindings. `let cwd = x` never
+The host environment is separate from lexical bindings. `cwd = x` never
 changes the host environment. `with key value { body }` evaluates its body
 under a child environment whose lifetime is that evaluation; it is not an
 assignment followed by restoration. Lookup, mutation, fallback and permissions
 are declared host operations. A `with` level does not mutate its parent.
 
-A resource value carries identity, not an owned handle. The host opens,
-caches and closes execution capabilities and validates its replies against
-their declared language types. Capability cleanup must occur on success and
+A host that has resources declares an opaque nominal type for them and the
+functions that make one from a number or word or refine it to an API, such
+as the conformance host's `Rd` and `Rd<fs>`; the language names none. A resource value carries identity, not an owned
+handle. The host opens, caches and closes execution capabilities and
+validates its replies against their declared language types. Capability cleanup must occur on success and
 Fault. Cleanup failures and environment capture by escaping closures are H1.
 
 ## Input, output and observation
@@ -59,7 +70,9 @@ cast policy; missing input or a different open arity is a check/run admission
 error. A host may instead reject all implicit top-level output, as for a
 callback-only module.
 
-Returned values remain typed data until the host applies a sink policy.
+Writing is a declared host command with a value-last spot, never an
+operator. Returned values remain typed data until the host applies a sink
+policy.
 Output formatting, whether to unwrap outcomes, process exit codes, streaming
 and diagnostic presentation belong to that host's documented contract.
 For backend comparison, fix one host contract rather than comparing hosts

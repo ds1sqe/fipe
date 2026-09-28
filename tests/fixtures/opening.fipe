@@ -1,14 +1,46 @@
+# One syntax: a line is what you type at the prompt, and a file is lines.
 use fs
-let dir = (sys.lookup root /module/fs/root | as Rd<fs>)
-ls -l dir | filter (e => e.size > 4096) | map .name
 
-let add = fn(a, b) { a + b }
-let add2 = add 2
-add2 4
+# A command line. Flags are named arguments, words fill the spots in order,
+# and `|` fills the last open spot of the next stage.
+ls -l /etc | filter (e => e.size > 4096) | map .name
 
-fn big(dir: Rd<fs>, min: u64) -> Result<Vec<String>, fs.Error> {
-    let Ok _ = fs.remove dir /tmp/x
+# A handle is an `Rd`, a type the host declares, with a function `Rd` that
+# makes one; `Rd<fs>` asks for the `fs` API, once per run.
+dir = sys.lookup root /module/fs/root | Rd<fs>
+fs.list dir /etc | map .name | put ./names    # `put` is a host command: the value as bytes
+cat (Rd 4)                                    # a handle by number
+
+# `=` binds and never reassigns. The arm is the one function form; it curries.
+add = a b => a + b                            # T -> T -> T where T: Num
+add2 = add 2                                  # i64 -> i64
+add2 4                                        # 6
+
+# `pub` exports; the signature sits on the binding. Outcomes are values:
+# the marked pipes feel their side, and `||` leaves the outcome.
+pub big: Rd<fs> -> u64 -> Result<Vec<String>, fs.Error> = dir min => {
+    Ok _ = fs.remove dir /tmp/x               # binds on Ok; an Err ends the body with it
     fs.list dir /etc |: filter (e => e.size > min) |: map .name
 }
 
-find x |: cat |! log || root
+find x |: cat |! log || root                  # find x; so cat it; but log the miss; or root
+find x                                        # the same, one stage per line
+    |: cat
+    |! log
+    || root
+find x |: cat || fault "no x" | append ./log  # leave the Maybe with `||`, then append the bytes
+find x | {                                    # arms are the match, and a function value
+    [:Entry { name, .. }] if name != "" => name,
+    [!] => "-",
+}
+
+# A type is its shape; its impl is its code. The type name is its constructor.
+pub type Point { pub x: i64, pub y: i64 = 0, len: u64 }
+impl Point {
+    x (y = 0) => Self { x, y, len: norm x y }, # the written constructor; braces are raw
+    dist = self q => norm (self.x - q.x) (self.y - q.y),
+}
+impl Point: Display { display = self => join "," [show self.x, show self.y] }
+Point 3 4 | show                              # "3,4"; `p.dist q` fills `self`
+
+with cwd /tmp { ls }                          # a child environment, for the block only

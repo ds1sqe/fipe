@@ -22,10 +22,13 @@ input through public APIs. Keep README examples executable as doctests.
 Keep blanket warning denial in check commands, not the library manifest or
 crate attributes. Keep the unsafe-code prohibition in the library.
 
-Durable execution plans and flight logs live under `~/docs/plans/fipe/`.
-Start with `lexer/01-lexer.md` and its flight log for plan 01.0's implementation;
-`spec/01-spec.md` records the formal-definition work. Read the applicable log
-on resume. Lexical behavior is defined; parser decisions are the next stage.
+The durable plan root is `~/docs/plans/fipe/language/`: read
+`00-master-plan.md` and `flight-log.md` on resume. Majors `01-spec.md`,
+`02-lexer.md` (committed at `df3a471`) and `03-parser.md` record the finished
+stages; the checker is the next major. Lexical and syntax behavior are
+defined; checking follows parsing. The design record (`design/`,
+`research/`, `intentions.md`) sits in that root; Reovim's own plan covers
+only the editor's adoption of the language.
 Release 0.1.0's dynamic implementation is retained in Git at `7606ff7`.
 The user approved replacing that implementation as the new frontend lands.
 Adopt useful behavior and test cases per stage.

@@ -14,8 +14,8 @@ Fipe means Functional Pipeline Language. Five goals govern its design:
    both must agree. An optional LLVM backend would be a separate crate.
 
 These are goals, not implementation claims. The [specification](spec/README.md)
-defines lexical structure and the later language stages. The lexer implements
-its lexical contract; parsing, checking and execution follow. Their remaining
+defines lexical structure, syntax and the later language stages. The frontend
+implements lexing and parsing; checking and execution follow. Their remaining
 questions are recorded in [open rules](spec/open.md). The library is independent
 of every host and uses only `core` and `alloc`.
 

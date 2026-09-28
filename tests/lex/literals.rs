@@ -1,6 +1,4 @@
-mod common;
-
-use common::{int, name, negative, string, tokens};
+use super::{int, name, negative, string, tokens};
 use fipe::{
     lex::{lex, Reason},
     token::Kind,
@@ -74,17 +72,6 @@ fn floats_preserve_exact_decimal_spelling() {
     ] {
         tokens(input, vec![Kind::Float(input.into())]);
     }
-}
-
-#[test]
-fn resource_ids_are_decimal_unsigned_and_bounded() {
-    tokens(
-        "rd:0004 rd:18446744073709551615",
-        vec![Kind::Rd(4), Kind::Rd(u64::MAX)],
-    );
-    let result = lex("rd:18446744073709551616 tail");
-    assert_eq!(result.errors[0].reason, Reason::ResourceIdRange);
-    assert_eq!(result.tokens[0].kind, name("tail"));
 }
 
 #[test]

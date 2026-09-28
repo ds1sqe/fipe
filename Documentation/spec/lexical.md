@@ -1,7 +1,6 @@
 # Lexical structure
 
-This chapter defines the token stream for plan 01.0, independently of parsing
-or hosts. [lexical.ebnf](lexical.ebnf) defines the character-level forms;
+This chapter defines the token stream, independently of parsing or hosts. [lexical.ebnf](lexical.ebnf) defines the character-level forms;
 the boundary, priority and recovery rules here complete that grammar.
 
 ## Source and positions
@@ -37,23 +36,24 @@ Thus `a+b`, `x*2`, `my-file`, `2024-01-01` and `fs.Entry` are whole words.
 Arithmetic `+ - * / %` needs token boundaries: `x * 2`, not `x*2`.
 Classification occurs only after the whole word is known.
 
-Three prefixes intervene before ordinary word scanning:
+Three forms intervene before ordinary word scanning:
 
 - `"` and `'` begin quoted literals; `b"` at a token boundary begins bytes.
-- `rd:` followed by a whole unsigned decimal digit run is one resource-id
-  literal. `rd:4x` instead yields `NAME("rd")`, `:`, `WORD("4x")`.
 - A word consisting of `-` immediately followed by `>` becomes `->`.
+- A line join: `\` followed only by spacing before LF or EOF, outside a
+  quoted literal or comment. See [logical lines](#comments-and-logical-lines).
 
 Symbols use longest match from this finite set:
 
 ```text
-|: |! || && => -> == != <= >= >>
+|: |! || && => -> == != <= >=
 ( ) { } [ ] , ; : = < > ! |
 ```
 
 Lone `&` is an error. `+ - * / %` are symbol tokens when they are whole words.
-`>>` is one token even inside a type; syntax specifies its use as two closers.
-`=` always delimits: `-n=-5` is `FLAG("n")`, `=`, `INTEGER(-5)`.
+There is no `>>` token: `Vec<Vec<u8>>` ends with two `>` symbols, and no
+shift operator exists. `=` always delimits: `-n=-5` is `FLAG("n")`, `=`,
+`INTEGER(-5)`.
 
 ## Word classification
 
@@ -86,8 +86,12 @@ pattern meaning is wildcard. Other Unicode bare text remains a `WORD`.
 Keywords are exactly:
 
 ```text
-let if else with fn struct enum trait impl for type use ver as
+if else with type trait impl use pub
 ```
+
+`let`, `fn`, `as`, `mod`, `struct`, `enum`, `for`, `ver`, `Self`, `into`
+and `read` are names. Binding, function, cast and conversion forms need no
+keyword; [syntax](syntax.md) defines them by position.
 
 ## Numbers
 
@@ -115,8 +119,8 @@ binary64. Checking converts directly to its selected `f32` or
 `f64` width, round-to-nearest ties-to-even, and rejects finite-source overflow.
 Underflow may round to a signed zero. This avoids double rounding through f64.
 
-An `RD` payload is an unsigned decimal id at most `2^64 - 1`, without sign or
-underscores. Overflow is `ResourceIdRange`. It performs no resource lookup.
+There is no resource-id literal. `rd:4` is `NAME("rd")`, `:`, `INTEGER(4)`;
+how a number becomes a host handle is that host's declared cast.
 
 ## Quoted literals
 
@@ -158,13 +162,30 @@ a | # comment
   b                 # NAME(a), |, NAME(b), NEWLINE
 ```
 
-Grouping may let the parser ignore retained newlines. Lexing never needs to
-know nesting or whether a word is a variable, command or filename.
+A backslash joins two physical lines. When `\` is followed only by spacing
+before LF or EOF, and is outside a quoted literal or comment, the `\`, that
+spacing and the LF are discarded: no `NEWLINE` is emitted, and the join is a
+token boundary, so `x\` LF `y` is `NAME(x)`, `NAME(y)`. Spacing after the
+backslash is tolerated so that an invisible trailing space cannot break the
+join. Any other `\` is an ordinary word character (`a\b` is one word), a
+`\` inside a comment is comment text and joins nothing, and a `\` inside a
+decoded quote is an escape.
+
+```text
+cat x \
+    y                 # NAME(cat), NAME(x), NAME(y), NEWLINE
+cat x # note \
+    y                 # NAME(cat), NAME(x), NEWLINE, NAME(y), NEWLINE
+```
+
+Which retained newlines end a line, and which an operator or comma carries
+over, is the parser's rule. Lexing never needs to know nesting or whether a
+word is a variable, command or filename.
 
 ## Terminal inventory
 
 The syntax grammar uses payload terminals `NAME WORD FLAG PATH SELECTOR
-INTEGER FLOAT STRING BYTES RD`, structural terminals `NEWLINE EOF`, and the
+INTEGER FLOAT STRING BYTES`, structural terminals `NEWLINE EOF`, and the
 quoted keyword/symbol spellings above. Strings record decoded bytes and raw
 versus decoded spelling; bytes record decoded bytes. Exact spelling always
 remains recoverable from the source span.
@@ -178,7 +199,7 @@ consumed individually. A range error consumes the whole literal. Continue
 scanning and emit EOF exactly once, even after errors.
 
 Diagnostic reasons are `UnterminatedQuote`, `BadEscape`, `InvalidUtf8`,
-`Stray`, `IntegerRange`, `ResourceIdRange`. Span a failed quote or number in
+`Stray` and `IntegerRange`. Span a failed quote or number in
 full; span an outside stray character alone. An unterminated span ends just
 before LF or at EOF. If several quote faults exist, report the first detected
 one. Tokens before and after an error retain their original source offsets.

@@ -32,7 +32,6 @@ pub enum Reason {
     InvalidUtf8,
     Stray(char),
     IntegerRange,
-    ResourceIdRange,
 }
 
 impl fmt::Display for Reason {
@@ -43,7 +42,6 @@ impl fmt::Display for Reason {
             Self::InvalidUtf8 => f.write_str("string is not valid UTF-8"),
             Self::Stray(ch) => write!(f, "unexpected character {ch:?}"),
             Self::IntegerRange => f.write_str("integer magnitude exceeds u64"),
-            Self::ResourceIdRange => f.write_str("resource id exceeds u64"),
         }
     }
 }
@@ -85,6 +83,7 @@ impl Scanner<'_> {
                     self.bump();
                 }
                 '#' => self.comment(),
+                '\\' if self.join_ahead() => self.join(),
                 _ => {
                     let kind = self.token();
                     self.finish(start, kind);
@@ -129,6 +128,25 @@ impl Scanner<'_> {
         self.continuation = false;
     }
 
+    /// A backslash followed only by spacing before LF or EOF joins lines.
+    fn join_ahead(&self) -> bool {
+        self.text[self.offset..]
+            .strip_prefix('\\')
+            .is_some_and(|rest| {
+                rest.chars().take_while(|&ch| ch != '\n').all(spacing)
+            })
+    }
+
+    fn join(&mut self) {
+        while self.peek().is_some_and(|ch| ch != '\n') {
+            self.bump();
+        }
+        self.bump();
+        // The joined newline is gone; a following blank line still ends a
+        // pipe continuation, as it would without the join.
+        self.continuation = false;
+    }
+
     fn comment(&mut self) {
         while let Some(ch) = self.peek().filter(|&ch| ch != '\n') {
             let start = self.offset;
@@ -161,7 +179,10 @@ impl Scanner<'_> {
 
     fn word(&mut self) -> Result<Kind, Reason> {
         let start = self.offset;
-        while self.peek().is_some_and(|ch| !boundary(ch)) {
+        while let Some(ch) = self.peek() {
+            if boundary(ch) || (ch == '\\' && self.join_ahead()) {
+                break;
+            }
             self.bump();
         }
         let word = &self.text[start..self.offset];
@@ -169,27 +190,7 @@ impl Scanner<'_> {
             self.bump();
             return Ok(Kind::Symbol(Symbol::Arrow));
         }
-        if word == "rd" {
-            if let Some(id) = self.resource_id() {
-                return id.map(Kind::Rd);
-            }
-        }
         word::classify(word)
-    }
-
-    fn resource_id(&mut self) -> Option<Result<u64, Reason>> {
-        let suffix = self.text[self.offset..].strip_prefix(':')?;
-        let end = suffix.find(boundary).unwrap_or(suffix.len());
-        let digits = &suffix[..end];
-        if digits.is_empty() || !digits.bytes().all(|ch| ch.is_ascii_digit()) {
-            return None;
-        }
-        // Look ahead without consuming malformed rd: words. Each candidate
-        // is inspected at most twice, so scanning remains linear.
-        for _ in 0..=end {
-            self.bump();
-        }
-        Some(word::magnitude(digits, 10).ok_or(Reason::ResourceIdRange))
     }
 
     fn symbol(&mut self) -> Result<Symbol, Reason> {
@@ -204,7 +205,6 @@ impl Scanner<'_> {
             ('!', Some('=')) => Some(Symbol::NotEq),
             ('<', Some('=')) => Some(Symbol::LessEq),
             ('>', Some('=')) => Some(Symbol::GreaterEq),
-            ('>', Some('>')) => Some(Symbol::Append),
             _ => None,
         };
         if let Some(pair) = pair {

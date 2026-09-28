@@ -80,7 +80,6 @@ pub enum Kind {
         raw: bool,
     },
     Bytes(Vec<u8>),
-    Rd(u64),
     Newline,
     Eof,
 }
@@ -88,40 +87,28 @@ pub enum Kind {
 /// Reserved words. Prelude constructors and host API names are not keywords.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Keyword {
-    Let,
     If,
     Else,
     With,
-    Fn,
-    Struct,
-    Enum,
+    Type,
     Trait,
     Impl,
-    For,
-    Type,
     Use,
-    Ver,
-    As,
+    Pub,
 }
 
 impl Keyword {
     #[must_use]
     pub fn from_word(word: &str) -> Option<Self> {
         Some(match word {
-            "let" => Self::Let,
             "if" => Self::If,
             "else" => Self::Else,
             "with" => Self::With,
-            "fn" => Self::Fn,
-            "struct" => Self::Struct,
-            "enum" => Self::Enum,
+            "type" => Self::Type,
             "trait" => Self::Trait,
             "impl" => Self::Impl,
-            "for" => Self::For,
-            "type" => Self::Type,
             "use" => Self::Use,
-            "ver" => Self::Ver,
-            "as" => Self::As,
+            "pub" => Self::Pub,
             _ => return None,
         })
     }
@@ -129,20 +116,14 @@ impl Keyword {
     #[must_use]
     pub const fn spelling(self) -> &'static str {
         match self {
-            Self::Let => "let",
             Self::If => "if",
             Self::Else => "else",
             Self::With => "with",
-            Self::Fn => "fn",
-            Self::Struct => "struct",
-            Self::Enum => "enum",
+            Self::Type => "type",
             Self::Trait => "trait",
             Self::Impl => "impl",
-            Self::For => "for",
-            Self::Type => "type",
             Self::Use => "use",
-            Self::Ver => "ver",
-            Self::As => "as",
+            Self::Pub => "pub",
         }
     }
 }
@@ -172,7 +153,6 @@ pub enum Symbol {
     LessEq,
     Greater,
     GreaterEq,
-    Append,
     Arrow,
     FatArrow,
     Pipe,
@@ -208,7 +188,6 @@ impl Symbol {
             Self::LessEq => "<=",
             Self::Greater => ">",
             Self::GreaterEq => ">=",
-            Self::Append => ">>",
             Self::Arrow => "->",
             Self::FatArrow => "=>",
             Self::Pipe => "|",
@@ -219,6 +198,7 @@ impl Symbol {
         }
     }
 
+    /// The five pipes: the lexer suppresses the first newline after them.
     #[must_use]
     pub const fn continues_line(self) -> bool {
         matches!(

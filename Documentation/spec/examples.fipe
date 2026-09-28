@@ -1,53 +1,109 @@
 # Lexical and syntax corpus, not a runnable program for Fipe 0.1.0.
+# The opening example lives in tests/fixtures/opening.fipe; this file
+# covers the remaining surface forms.
 use fs
-use text ver 2
+use text 2
+use fs.list fs.Entry
 
-let dir = (sys.lookup root /module/fs/root | as Rd<fs>)
+dir = sys.lookup root /module/fs/root | Rd<fs>
 ls -l dir | filter (e => e.size > 4096) | map .name
 
-let add = fn(a, b) { a + b }
-let add2 = add 2
+add = a b => a + b
+add2 = add 2
 add2 4
+inc: i64 -> i64 = n => n + 1
+pub inc2 = n
+    => n + 2
+max = a b if a > b => a, _ b => b
+compose: (i64 -> i64) -> (i64 -> i64) -> i64 -> i64 = f g x => f (g x)
+thunk: () -> i64 = () => 1
+ls: Rd -> Bool -> Vec<Entry> = dir (long = False) => fs.list dir -l=long
 
-fn big(dir: Rd<fs>, min: u64) -> Result<Vec<String>, fs.Error> {
-    let Ok _ = fs.remove dir /tmp/x
+big: Rd<fs> -> u64 -> Result<Vec<String>, fs.Error> = dir min => {
+    Ok _ = fs.remove dir /tmp/x
     fs.list dir /etc |: filter (e => e.size > min) |: map .name
 }
 
 find x |: cat |! log || root
 find x | {
-    Just Entry { name, .. } if name != "" => name
-    _ => "-"
+    Just Entry { name, .. } if name != "" => name,
+    [:e] => e.name,
+    _ => "-",
 }
+find x | ([:e] => e.name, [!] => "-")
+m: Maybe<i64> = [:1]
+pairs | { Just e rest => e, Just Just e => e, _ _ => 0 }
 
-struct Point { x: i64, y: i64 }
-struct Width(u64): Default(80)
-enum EntryKind { File: String, Directory: String }
-trait Display { fn display(self) -> String }
-impl Display for Width {
-    fn display(self) -> String { show self }
+pub type Point { pub x: i64, pub y: i64 = 0, len: u64 }
+type Width { w: u64 = 80 }
+type Shape { Circle(r: f64), Square(side: f64), Dot }
+type Marker {}
+impl Point {
+    x (y = 0) => Self { x, y, len: norm x y },
+    pub line: i64 -> Self = p => Self p p,
+    dist = self q => norm (self.x - q.x) (self.y - q.y),
 }
+impl Poly {
+    [] => fault "empty",
+    ps => Self { pts: ps },
+}
+trait Display { display: Self -> String }
+trait Ord: Eq {
+    cmp: Self -> Self -> Ordering,
+    max: Self -> Self -> Self = (a b if (cmp a b) == Less => b, a _ => a),
+}
+impl Width: Display { display = self => show self.w }
+impl Polar: Into<Point> { into = self => Point (round self.r) 0 }
+impl Point: TryFrom<String> { Error = ParseError, try_from = s => read s }
+Point 3 4
+Point -y 4 -x 3
+Point(3, 4)
+Width
+Circle 1.5
+Point.line 2
+p.dist q
+pl.into<Point>
+pl | Point.from
+"3,4" | try<Point>
+pl | to<Point>
+"42" | read<i64> |: add 1 || 0
+Point 3 4 | show
 
-let values = [199, -5, 0x199, 0o17, 0b1010, 1_000]
-let floats = [1.5, 1e3, -1.2e-3]
-let text = "a b\n\xC3\xA9"
-let raw = 'no\nescapes # here'
-let bytes = b"\x00\xFF"
-let resource = rd:4
-let buffer: [u8; 4] = [0x41, 0x42, 0, 0]
+values = [199, -5, 0x199, 0o17, 0b1010, 1_000]
+floats = [1.5, 1e3, -1.2e-3]
+text = "a b\n\xC3\xA9"
+raw = 'no\nescapes # here'
+bytes = b"\x00\xFF"
+resource = Rd 4
+buffer: [u8; 4] = [0x41, 0x42, 0, 0]
+t: Vec<
+  u8
+> = []
+total = price
+    * count
+    + shipping
+wrapped = f(x,
+    y)
+grouped = (x = 1
+    x + 1)
+[x, [y], 0] = values
+Point { x, .. } = p
+n: i64 = round 1.5
 
 ls -c=80 -l=False --width 80 -n=-5 --la -t [a, b]
 cat ./x ../x /module/fs/root "-x" --
 cat héllo "한글"
 cat "#x" # comment ends here
+cat x \
+    y
 
 cat x | # continuation
-    grep foo > ./output
+    grep foo | put ./output
 
 with cwd /tmp {
     ls
 }
 
 if ready { True } else { False }
-let compare = fn(x, y) { x <= y }
+compare = x y => x <= y
 find x || fault "no x"

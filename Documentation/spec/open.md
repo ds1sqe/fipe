@@ -2,37 +2,9 @@
 
 These are proposals for review, not approved behavior. Examples distinguish
 choices; an implementation must not fill a gap without updating the owning
-rule. S1–S3 concern the parser; T/E/H concern checking and execution.
-Plan 01.0's lexical choices are defined by [lexical structure](lexical.md).
-
-## S1 — Precedence, newlines and stages
-
-The design only says pipes are loosest. **Proposed:** the complete table and
-stage selection in [syntax](syntax.md), with all five pipes left-associative
-at one level. `a || b && c` means `(a || b) && c`; parenthesize to change it.
-Ignore newlines in grouping and type/field lists; keep them in block bodies;
-allow a newline before `else`. An arm's body includes its remaining pipeline.
-Alternative: conventional `&&` tighter than `||`, with another pipe level.
-
-## S2 — Slash and greater-than context
-
-`/` is both a root path and division; `>` both comparison and redirect.
-**Proposed:** `/` remains one symbol token, usable as a root-path operand or
-infix division by position. `>` at outer line level redirects; write `(x > y)`
-for an outer value comparison. It compares inside a group, guard or if head.
-`cat x > y` redirects; `if x > y { x }` compares. In types, parser-local
-splitting makes `Vec<Vec<u8>>` close twice; elsewhere `>>` redirects.
-Alternative: consult bound names/types to decide comparison versus redirect.
-
-## S3 — Parenthesized calls and selectors
-
-Space application coexists in examples with `fs.Entry(a,b)` and `x.m()`.
-**Proposed:** adjacent parentheses are an explicit argument-list call for any
-callable, not only constructors/methods. `f(a,b)` and `f a b` supply the same
-spots; `f()` supplies no arguments and invokes defaults/arity-zero behavior.
-`f (x)` is space application to a group. Add no tuple syntax in this step.
-The candidate EBNF currently omits this extension until approved. Tuple fields
-such as `.0` and selecting a field on `(e).name` need the same postfix ruling.
+rule. T/E/H concern checking and execution. Lexical choices are defined by
+[lexical structure](lexical.md). The user settled parser choices
+S1–S3 on 2026-09-27; [syntax](syntax.md) owns their rules.
 
 ## T1 — Outcome identity
 
@@ -55,12 +27,17 @@ ambiguous trait defaulting before checking polymorphic host calls.
 
 ## T3 — Traits and declarations
 
-`Self<A>`, trait-as-type dispatch, inferred Bool arguments and user aliases
-need exact checking rules. **Proposed:** export only signatures with every
-parameter and result annotated, except a receiver fixed by its enclosing impl;
-keep written type parameters in the prelude only. Fully define trait kinds,
-signatures, coherence, derived instances, default-expression evaluation and
-termination of recursive type detection before the checker milestone.
+`Self<A>`, trait-as-type dispatch, inferred Bool arguments and the
+associated type `Error` need exact checking rules. **Proposed:** a `pub`
+binding must have a complete type, written or inferred monomorphic; keep
+written type parameters in the prelude only, except that ordinary source
+implements the parameterized prelude traits `From<A>`, `Into<B>`,
+`TryFrom<A>` and `TryInto<B>`. Coherence keys on (trait, arguments, type)
+under the "`Self` is local" orphan rule, with at most one conversion impl
+per direction across the four traits. Fully define trait kinds, signatures,
+derived instances, hoisting of file-level arm bindings, the case rule at
+declarations, default-expression evaluation and termination of recursive
+type detection before the checker milestone.
 
 ## E1 — Evaluation and outcome rebuilding
 
@@ -70,7 +47,7 @@ payload or the same outcome family, prefer the latter; use an explicit
 constructor for nesting. Keep Bool to `||`/`&&` until `Bool |:`/`|!` has a
 defined payload. Define failing non-success patterns before admitting them.
 Test cases: `Just 1 |: (_ => Just 2)` yields `Just 2`; an inactive branch does
-not call the host; `let [x] = []` must have a defined rejection or outcome.
+not call the host; `[x] = []` must have a defined rejection or outcome.
 
 ## E2 — Arithmetic
 

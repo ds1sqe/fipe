@@ -31,11 +31,17 @@ arguments in order until its signature is known. Bind in these steps:
 2. Positional operands fill unfilled non-Bool spots in declaration order.
    A trailing `Vec<T>` collects remaining positional operands; its default is
    empty. A named Vec argument supplies one list, not separate elements.
-3. A pipe supplies the final declared spot, whatever its type. A previously
-   filled spot is a check error. Collections are never implicitly spread.
-4. Each remaining spot takes its parameter default, then its type default.
-   A spot with neither remains open. The result is a function of the open
-   spots in declaration order, or the body result if all spots are filled.
+3. A pipe supplies the last spot still open after named and positional
+   arguments, whatever its type: `x | f 1 2` is `f 1 2 x`. To place the
+   input elsewhere, name it: `x | v => f v 2 3`. A previously filled spot is
+   a check error. Collections are never implicitly spread.
+4. Each remaining spot takes its parameter default, then its type default,
+   in declaration order; a default may name the spots before it, so
+   `dir (width = 80) (cols = width / 8) => …` and a field `len: u64 = norm
+   x y` are well defined. A spot with neither remains open. The result is a
+   function of the open spots in declaration order, or the body result if
+   all spots are filled. Construction is application: `Point 1` fills `y`
+   from its default, and `Just` stays a function.
 
 Duplicate supply, unknown flag, non-Bool shorthand chaining, extra arguments
 and an invalid cast are rejected at check time where statically knowable.
@@ -43,8 +49,8 @@ and an invalid cast are rejected at check time where statically knowable.
 end-of-flags marker. T3 must resolve interactions with inferred Bool parameters.
 
 ```text
-fn add(a: i64, b: i64) -> i64 { a + b }
-let add2 = add 2                # one open spot
+add: i64 -> i64 -> i64 = a b => a + b
+add2 = add 2                   # one open spot
 add2 4                         # 6
 ```
 
@@ -110,36 +116,34 @@ not inferred without a declared payload interface (T3).
 
 ## Pattern binding
 
-Ordinary `let name = e` binds the value in the remaining scope. A matching
+Ordinary `name = e` binds the value in the remaining scope; a later `name =
+…` shadows it and a closure keeps the value it captured. A matching
 constructor pattern exposes fields or payloads; `_` discards a value.
 
 The agreed success-pattern case has the following meaning:
 
 ```text
-let Just x = e
+Just x = e
 body
 
 ≡ e |: (x => body)
 ```
 
-`Ok` behaves analogously. Failure ends the current body with the same failure;
-the continuation is lifted by the marked-pipe rule. Nested pattern lets nest
-these binds. If implicit rebuilding would leave two possible meanings, require
-an explicit constructor. E1 must define arbitrary failing patterns, `Left`/`Err`
-patterns and nested partial patterns; they are not runtime panics by default.
+`Ok` behaves analogously, and `[:x] = e` is the same binding spelled by
+side. Failure ends the current body with the same failure;
+the continuation is lifted by the marked-pipe rule. Nested pattern bindings
+nest these binds. If implicit rebuilding would leave two possible meanings,
+require an explicit constructor. E1 must define arbitrary failing patterns,
+`Left`/`Err` patterns and nested partial patterns; they are not runtime
+panics by default.
 
-## Redirection and faults
+## Writing and faults
 
-A host may supply `sys.put(target, bytes)` and `sys.append(target, bytes)`:
-
-```text
-line > target    ≡ line | sys.put target
-line >> target   ≡ line | sys.append target
-```
-
-The value meets the byte spot by the ordinary cast policy. These methods return
-unit. An absent declaration is a check error; the language owns no filesystem.
-The syntactic distinction from comparison is S2.
+The language has no redirection. A host that writes declares a command whose
+final spot takes the value, so the pipe fills it: `cat x | put out`,
+`ls | append names` in the conformance host. The value meets that spot by
+the ordinary [cast policy](types.md), which never admits an outcome
+implicitly. The language owns no filesystem.
 
 `fault message` ends the run without a value. Budget exhaustion, arithmetic
 failure, dynamic cast failure and host failure behave the same way. The host

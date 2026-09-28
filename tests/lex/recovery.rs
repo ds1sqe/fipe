@@ -242,9 +242,9 @@ fn assert_spans(input: &str) {
 #[test]
 fn malformed_combinations_always_progress_with_valid_spans() {
     let pieces = [
-        "", "a", "rd:", "b", "\"", "'", "\\", "\\x", "é", "한", "😀", "\n",
-        "\r", "\t", "\0", "\u{85}", "\u{a0}", "\u{2028}", "\u{feff}", "#", "|",
-        ":", "!", "&", "=", ">", "-", "0", "_", "\u{200b}",
+        "", "a", "rd:", "b", "\"", "'", "\\", "\\x", "\\\n", "é", "한", "😀",
+        "\n", "\r", "\t", "\0", "\u{85}", "\u{a0}", "\u{2028}", "\u{feff}",
+        "#", "|", ":", "!", "&", "=", ">", "-", "0", "_", "\u{200b}",
     ];
     for a in pieces {
         for b in pieces {
@@ -282,11 +282,11 @@ fn whitespace_and_controls_have_fixed_source_meaning() {
 #[test]
 fn large_literals_and_deep_delimiters_do_not_need_recursion() {
     let digits = "9".repeat(100_000);
-    let input = format!("{digits} rd:{digits} 1e{digits} \"{digits}\" next");
+    let input = format!("{digits} -{digits} 1e{digits} \"{digits}\" next");
     let result = lex(&input);
     assert_eq!(
         result.errors.iter().map(|e| e.reason).collect::<Vec<_>>(),
-        [Reason::IntegerRange, Reason::ResourceIdRange]
+        [Reason::IntegerRange, Reason::IntegerRange]
     );
     assert_eq!(result.tokens[0].kind, Kind::Float(format!("1e{digits}")));
     assert_eq!(

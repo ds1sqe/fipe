@@ -1,10 +1,73 @@
-mod common;
-
-use common::{int, name, negative, string, tokens};
 use fipe::{
     lex::lex,
-    token::{Keyword as K, Kind, Kind::Symbol as S, Source, Symbol::*},
+    token::{Keyword as K, Kind, Kind::Symbol as S, Source, Span, Symbol::*},
 };
+
+#[path = "lex/invisibles.rs"]
+mod invisibles;
+#[path = "lex/literals.rs"]
+mod literals;
+#[path = "lex/positions.rs"]
+mod positions;
+#[path = "lex/recovery.rs"]
+mod recovery;
+
+fn name(text: &str) -> Kind {
+    Kind::Name(text.split('.').map(str::to_owned).collect())
+}
+
+const fn int(magnitude: u64) -> Kind {
+    Kind::Int {
+        negative: false,
+        magnitude,
+    }
+}
+
+const fn negative(magnitude: u64) -> Kind {
+    Kind::Int {
+        negative: true,
+        magnitude,
+    }
+}
+
+fn string(value: &str, raw: bool) -> Kind {
+    Kind::Str {
+        value: value.to_owned(),
+        raw,
+    }
+}
+
+fn tokens(input: &str, expected: Vec<Kind>) {
+    let result = lex(input);
+    assert!(result.errors.is_empty(), "{input:?}: {:?}", result.errors);
+    let eof = result.tokens.last().unwrap();
+    assert_eq!(eof.kind, Kind::Eof);
+    assert_eq!(
+        eof.span,
+        Span {
+            start: input.len(),
+            end: input.len()
+        }
+    );
+    let mut expected = expected;
+    expected.push(Kind::Eof);
+    assert_eq!(
+        result
+            .tokens
+            .iter()
+            .map(|token| &token.kind)
+            .collect::<Vec<_>>(),
+        expected.iter().collect::<Vec<_>>(),
+        "{input:?}"
+    );
+    let source = Source::new(input);
+    let mut end = 0;
+    for token in result.tokens {
+        assert!(end <= token.span.start);
+        assert!(source.slice(token.span).is_some());
+        end = token.span.end;
+    }
+}
 
 #[test]
 fn literal_forms_and_payloads() {
@@ -25,7 +88,7 @@ fn literal_forms_and_payloads() {
             vec![string("a b", false), string("a b", true)],
         ),
         (r#"b"text""#, vec![Kind::Bytes(b"text".to_vec())]),
-        ("rd:4", vec![Kind::Rd(4)]),
+        ("rd:4", vec![name("rd"), S(Colon), int(4)]),
         (
             "/module/fs/root ./x ../x",
             vec![
@@ -174,20 +237,14 @@ fn every_flag_form_has_one_value_grammar() {
 #[test]
 fn all_keywords_and_symbols() {
     for keyword in [
-        K::Let,
         K::If,
         K::Else,
         K::With,
-        K::Fn,
-        K::Struct,
-        K::Enum,
+        K::Type,
         K::Trait,
         K::Impl,
-        K::For,
-        K::Type,
         K::Use,
-        K::Ver,
-        K::As,
+        K::Pub,
     ] {
         tokens(keyword.spelling(), vec![Kind::Kw(keyword)]);
         assert_eq!(keyword.to_string(), keyword.spelling());
@@ -195,14 +252,14 @@ fn all_keywords_and_symbols() {
     for symbol in [
         Plus, Minus, Star, Slash, Percent, LParen, RParen, LBrace, RBrace,
         LBracket, RBracket, Comma, Semicolon, Colon, Assign, Eq, Not, NotEq,
-        Less, LessEq, Greater, GreaterEq, Append, Arrow, FatArrow, Pipe,
-        PipeGood, PipeBad, Or, And,
+        Less, LessEq, Greater, GreaterEq, Arrow, FatArrow, Pipe, PipeGood,
+        PipeBad, Or, And,
     ] {
         tokens(symbol.spelling(), vec![S(symbol)]);
         assert_eq!(symbol.to_string(), symbol.spelling());
     }
     tokens(
-        "| |: |! || && = => == ! != < <= > >= >> - ->",
+        "| |: |! || && = => == ! != < <= > >= >> - -> as",
         vec![
             S(Pipe),
             S(PipeGood),
@@ -218,9 +275,11 @@ fn all_keywords_and_symbols() {
             S(LessEq),
             S(Greater),
             S(GreaterEq),
-            S(Append),
+            S(Greater),
+            S(Greater),
             S(Minus),
             S(Arrow),
+            name("as"),
         ],
     );
     tokens("!b", vec![S(Not), name("b")]);
@@ -266,8 +325,41 @@ fn word_boundaries_are_not_arithmetic_or_name_resolution() {
     );
     tokens("rd:4x", vec![name("rd"), S(Colon), Kind::Word("4x".into())]);
     tokens("rd:-4", vec![name("rd"), S(Colon), negative(4)]);
-    tokens("rd:4_0", vec![name("rd"), S(Colon), int(40)]);
+    tokens("rd:0004", vec![name("rd"), S(Colon), int(4)]);
     tokens("rd:", vec![name("rd"), S(Colon)]);
+}
+
+#[test]
+fn backslash_joins_lines_outside_quotes_and_comments() {
+    for input in [
+        "cat x \\\ny",
+        "cat x \\\r\ny",
+        "cat x \\ \t \ny",
+        "cat x\\\ny",
+    ] {
+        tokens(input, vec![name("cat"), name("x"), name("y")]);
+    }
+    tokens("cat x \\", vec![name("cat"), name("x")]);
+    tokens(
+        "cat x # note \\\ny",
+        vec![name("cat"), name("x"), Kind::Newline, name("y")],
+    );
+    tokens(
+        "a\\b \\x '\\' \\\n",
+        vec![
+            Kind::Word("a\\b".into()),
+            Kind::Word("\\x".into()),
+            string("\\", true),
+        ],
+    );
+    tokens(
+        "a | \\\n\nb",
+        vec![name("a"), S(Pipe), Kind::Newline, name("b")],
+    );
+    let source = "x \\\ny";
+    let result = lex(source);
+    assert_eq!(result.tokens[1].span, Span { start: 4, end: 5 });
+    assert_eq!(Source::new(source).line_col(4), (2, 1));
 }
 
 #[test]
@@ -295,7 +387,8 @@ fn type_spellings_remain_context_free_tokens() {
             name("Vec"),
             S(Less),
             name("u8"),
-            S(Append),
+            S(Greater),
+            S(Greater),
         ],
     );
     tokens(
@@ -309,20 +402,27 @@ fn type_spellings_remain_context_free_tokens() {
         ],
     );
     tokens(
-        "fn(a: A, b: B) -> C",
+        "(A -> B) -> C",
         vec![
-            Kind::Kw(K::Fn),
             S(LParen),
-            name("a"),
-            S(Colon),
             name("A"),
-            S(Comma),
-            name("b"),
-            S(Colon),
+            S(Arrow),
             name("B"),
             S(RParen),
             S(Arrow),
             name("C"),
+        ],
+    );
+    tokens(
+        "let fn struct enum for ver as",
+        vec![
+            name("let"),
+            name("fn"),
+            name("struct"),
+            name("enum"),
+            name("for"),
+            name("ver"),
+            name("as"),
         ],
     );
 }
@@ -361,27 +461,22 @@ fn opening_example_matches_each_token_and_spelling() {
 #[test]
 fn migrated_donor_lexer_forms() {
     tokens(
-        "let ten = 10\nfn add(x1,y1) { x1 + y1 }\n\
+        "ten = 10\nadd = x1 y1 => x1 + y1\n\
             if x>y { x * y } else { x / y }\n\
             ten<=two ten>=two ten==two ten!=two True&&False True||False []",
         vec![
-            Kind::Kw(K::Let),
             name("ten"),
             S(Assign),
             int(10),
             Kind::Newline,
-            Kind::Kw(K::Fn),
             name("add"),
-            S(LParen),
+            S(Assign),
             name("x1"),
-            S(Comma),
             name("y1"),
-            S(RParen),
-            S(LBrace),
+            S(FatArrow),
             name("x1"),
             S(Plus),
             name("y1"),
-            S(RBrace),
             Kind::Newline,
             Kind::Kw(K::If),
             name("x"),
@@ -426,7 +521,7 @@ fn migrated_donor_lexer_forms() {
 #[test]
 fn canonical_display_retains_semantic_payloads() {
     let source = r#"let _ = -0 0xFF 1_0.5e-2 b"\xFF\0" "한글\n" 'raw \xFF'
-        --width rd:40 ../x .field fs.Entry + - * / % | |: |! || &&"#;
+        --width ../x .field fs.Entry + - * / % | |: |! || &&"#;
     for token in lex(source).tokens {
         if token.kind != Kind::Eof {
             tokens(&token.kind.to_string(), vec![token.kind]);
@@ -441,27 +536,16 @@ fn opening_module_is_one_complete_token_stream() {
     tokens(
         include_str!("fixtures/opening.fipe"),
         vec![
+            Kind::Newline,
             Kind::Kw(K::Use),
             name("fs"),
             Kind::Newline,
-            Kind::Kw(K::Let),
-            name("dir"),
-            S(Assign),
-            S(LParen),
-            name("sys.lookup"),
-            name("root"),
-            Kind::Path("/module/fs/root".into()),
-            S(Pipe),
-            Kind::Kw(K::As),
-            name("Rd"),
-            S(Less),
-            name("fs"),
-            S(Greater),
-            S(RParen),
+            Kind::Newline,
+            Kind::Newline,
             Kind::Newline,
             name("ls"),
             Kind::Flag("l".into()),
-            name("dir"),
+            Kind::Path("/etc".into()),
             S(Pipe),
             name("filter"),
             S(LParen),
@@ -476,22 +560,46 @@ fn opening_module_is_one_complete_token_stream() {
             Kind::Selector(vec!["name".into()]),
             Kind::Newline,
             Kind::Newline,
-            Kind::Kw(K::Let),
+            Kind::Newline,
+            Kind::Newline,
+            name("dir"),
+            S(Assign),
+            name("sys.lookup"),
+            name("root"),
+            Kind::Path("/module/fs/root".into()),
+            S(Pipe),
+            name("Rd"),
+            S(Less),
+            name("fs"),
+            S(Greater),
+            Kind::Newline,
+            name("fs.list"),
+            name("dir"),
+            Kind::Path("/etc".into()),
+            S(Pipe),
+            name("map"),
+            Kind::Selector(vec!["name".into()]),
+            S(Pipe),
+            name("put"),
+            Kind::Path("./names".into()),
+            Kind::Newline,
+            name("cat"),
+            S(LParen),
+            name("Rd"),
+            int(4),
+            S(RParen),
+            Kind::Newline,
+            Kind::Newline,
+            Kind::Newline,
             name("add"),
             S(Assign),
-            Kind::Kw(K::Fn),
-            S(LParen),
             name("a"),
-            S(Comma),
             name("b"),
-            S(RParen),
-            S(LBrace),
+            S(FatArrow),
             name("a"),
             S(Plus),
             name("b"),
-            S(RBrace),
             Kind::Newline,
-            Kind::Kw(K::Let),
             name("add2"),
             S(Assign),
             name("add"),
@@ -501,20 +609,17 @@ fn opening_module_is_one_complete_token_stream() {
             int(4),
             Kind::Newline,
             Kind::Newline,
-            Kind::Kw(K::Fn),
+            Kind::Newline,
+            Kind::Newline,
+            Kind::Kw(K::Pub),
             name("big"),
-            S(LParen),
-            name("dir"),
             S(Colon),
             name("Rd"),
             S(Less),
             name("fs"),
             S(Greater),
-            S(Comma),
-            name("min"),
-            S(Colon),
+            S(Arrow),
             name("u64"),
-            S(RParen),
             S(Arrow),
             name("Result"),
             S(Less),
@@ -525,9 +630,12 @@ fn opening_module_is_one_complete_token_stream() {
             S(Comma),
             name("fs.Error"),
             S(Greater),
+            S(Assign),
+            name("dir"),
+            name("min"),
+            S(FatArrow),
             S(LBrace),
             Kind::Newline,
-            Kind::Kw(K::Let),
             name("Ok"),
             name("_"),
             S(Assign),
@@ -562,6 +670,162 @@ fn opening_module_is_one_complete_token_stream() {
             name("log"),
             S(Or),
             name("root"),
+            Kind::Newline,
+            name("find"),
+            name("x"),
+            Kind::Newline,
+            S(PipeGood),
+            name("cat"),
+            Kind::Newline,
+            S(PipeBad),
+            name("log"),
+            Kind::Newline,
+            S(Or),
+            name("root"),
+            Kind::Newline,
+            name("find"),
+            name("x"),
+            S(PipeGood),
+            name("cat"),
+            S(Or),
+            name("fault"),
+            string("no x", false),
+            S(Pipe),
+            name("append"),
+            Kind::Path("./log".into()),
+            Kind::Newline,
+            name("find"),
+            name("x"),
+            S(Pipe),
+            S(LBrace),
+            Kind::Newline,
+            S(LBracket),
+            S(Colon),
+            name("Entry"),
+            S(LBrace),
+            name("name"),
+            S(Comma),
+            Kind::Word("..".into()),
+            S(RBrace),
+            S(RBracket),
+            Kind::Kw(K::If),
+            name("name"),
+            S(NotEq),
+            string("", false),
+            S(FatArrow),
+            name("name"),
+            S(Comma),
+            Kind::Newline,
+            S(LBracket),
+            S(Not),
+            S(RBracket),
+            S(FatArrow),
+            string("-", false),
+            S(Comma),
+            Kind::Newline,
+            S(RBrace),
+            Kind::Newline,
+            Kind::Newline,
+            Kind::Newline,
+            Kind::Kw(K::Pub),
+            Kind::Kw(K::Type),
+            name("Point"),
+            S(LBrace),
+            Kind::Kw(K::Pub),
+            name("x"),
+            S(Colon),
+            name("i64"),
+            S(Comma),
+            Kind::Kw(K::Pub),
+            name("y"),
+            S(Colon),
+            name("i64"),
+            S(Assign),
+            int(0),
+            S(Comma),
+            name("len"),
+            S(Colon),
+            name("u64"),
+            S(RBrace),
+            Kind::Newline,
+            Kind::Kw(K::Impl),
+            name("Point"),
+            S(LBrace),
+            Kind::Newline,
+            name("x"),
+            S(LParen),
+            name("y"),
+            S(Assign),
+            int(0),
+            S(RParen),
+            S(FatArrow),
+            name("Self"),
+            S(LBrace),
+            name("x"),
+            S(Comma),
+            name("y"),
+            S(Comma),
+            name("len"),
+            S(Colon),
+            name("norm"),
+            name("x"),
+            name("y"),
+            S(RBrace),
+            S(Comma),
+            Kind::Newline,
+            name("dist"),
+            S(Assign),
+            name("self"),
+            name("q"),
+            S(FatArrow),
+            name("norm"),
+            S(LParen),
+            name("self.x"),
+            S(Minus),
+            name("q.x"),
+            S(RParen),
+            S(LParen),
+            name("self.y"),
+            S(Minus),
+            name("q.y"),
+            S(RParen),
+            S(Comma),
+            Kind::Newline,
+            S(RBrace),
+            Kind::Newline,
+            Kind::Kw(K::Impl),
+            name("Point"),
+            S(Colon),
+            name("Display"),
+            S(LBrace),
+            name("display"),
+            S(Assign),
+            name("self"),
+            S(FatArrow),
+            name("join"),
+            string(",", false),
+            S(LBracket),
+            name("show"),
+            name("self.x"),
+            S(Comma),
+            name("show"),
+            name("self.y"),
+            S(RBracket),
+            S(RBrace),
+            Kind::Newline,
+            name("Point"),
+            int(3),
+            int(4),
+            S(Pipe),
+            name("show"),
+            Kind::Newline,
+            Kind::Newline,
+            Kind::Kw(K::With),
+            name("cwd"),
+            Kind::Path("/tmp".into()),
+            S(LBrace),
+            name("ls"),
+            S(RBrace),
             Kind::Newline,
         ],
     );

@@ -33,12 +33,12 @@ Consumers must not parse/execute a compilation unit whose errors are nonempty.
 | FLOAT | Float(String), exact spelling including separators/sign |
 | STRING | Str { value: String, raw: bool } |
 | BYTES | Bytes(Vec<u8>) |
-| RD | Rd(u64) |
 | NEWLINE, EOF | Newline, Eof |
 
 A string's decoded bytes are value.as_bytes(); raw distinguishes single quotes.
 Symbol and Keyword are finite enums. Keyword::from_word recognizes only exact
-keywords. Symbol::continues_line identifies the five pipeline symbols.
+keywords. Symbol::continues_line identifies the five pipeline symbols whose
+following newline the lexer suppresses; a backslash line join emits nothing.
 Reason is the diagnostic category enum from the lexical contract; Stray
 carries the offending scalar.
 

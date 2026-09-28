@@ -1,12 +1,13 @@
 # Fipe language specification
 
-Fipe means Functional Pipeline Language. Plan 01.0 defines lexical structure;
-the remaining chapters are the formal draft for subsequent language stages.
+Fipe means Functional Pipeline Language. Lexical structure and syntax are
+defined and implemented. Types, evaluation and embedding are the formal draft
+for subsequent language stages.
 
-The development crate implements the lexical contract. Published 0.1.0 is
+The development crate implements lexing and parsing. Published 0.1.0 is
 the earlier dynamic language and does not conform to this specification.
-The syntax and semantic draft still includes [open decisions](open.md) for
-the parser/checker/runtime stages. They do not qualify lexical conformance.
+The semantic draft still includes [open decisions](open.md) for checking
+and execution. They do not qualify lexical or syntactic conformance.
 
 ## Scope
 
@@ -26,6 +27,7 @@ constraints do not give Rust types authority over language semantics.
 | --- | --- |
 | [Lexical structure](lexical.md), [EBNF](lexical.ebnf) | characters, tokens, literals, spans, recovery |
 | [Lexer API](lexer-api.md) | Rust token/diagnostic representation and source lookup |
+| [Parser API](parser-api.md) | owned syntax nodes, parser diagnostics and limits |
 | [Syntax](syntax.md), [EBNF](syntax.ebnf) | grammatical forms, precedence, disambiguation |
 | [Types](types.md) | type identity, inference, traits, defaults, cast checking |
 | [Evaluation](evaluation.md) | application, pipelines, outcomes, pattern binding |
@@ -69,7 +71,8 @@ permitted; executing a unit with any lexical, syntax or check error is not.
 
 ## Status
 
-The [source corpus](examples.fipe) is exercised by the public lexer tests.
-The complete opening example has an independent token oracle. Those tests
-and document checks establish lexical behavior, not parsing, type soundness
-or backend equivalence. Those are the following implementation milestones.
+The [source corpus](examples.fipe) is exercised by public lexer/parser tests.
+The complete opening example has an independent token oracle; parser tests
+assert AST structure, precedence, spans and recovery. These tests and document
+checks do not establish type soundness or backend equivalence. Those are
+the following implementation milestones.

@@ -3,15 +3,16 @@
 Functional Pipeline Language: embedded, extensible, functional, typed,
 compiled. Fipe is its own Rust crate with no dependencies or editor coupling.
 
-This development version implements the new language's lexer using
+This development version implements the new language's lexer and parser using
 core + alloc, with no unsafe code. It provides owned tokens, UTF-8 byte spans,
-scalar source positions and recoverable diagnostics. Parsing, checking and
-execution are subsequent milestones. The prior dynamic implementation remains
-in Git at commit 7606ff7 and on crates.io as version 0.1.0.
+scalar source positions, an owned syntax tree and recoverable diagnostics.
+Checking and execution are subsequent milestones. The prior implementation
+remains in Git at commit 7606ff7 and on crates.io as version 0.1.0.
 
-See the [specification](Documentation/spec/README.md) and its
-[lexical contract](Documentation/spec/lexical.md). Lexical rules are defined
-for this milestone; later-stage language questions are recorded separately.
+See the [specification](Documentation/spec/README.md), its
+[lexical contract](Documentation/spec/lexical.md) and
+[syntax](Documentation/spec/syntax.md). Lexical and syntax rules are defined;
+later-stage language questions are recorded separately.
 
 ## Library
 
@@ -36,8 +37,29 @@ assert_eq!(
 ~~~
 
 Lexing collects errors and resumes so a host can show multiple diagnostics.
-Reject a unit with any errors before parsing or executing it. No CLI, runtime
-or host I/O is included in this version.
+Parsing rejects any unit with lexical or syntax errors and performs no effects.
+
+~~~rust
+use fipe::{
+    ast::{Entry, ExprKind, PipeOp},
+    lex::lex,
+    parse::parse,
+};
+
+let module = parse(lex("ls -l /etc | map .name")).unwrap();
+let [Entry::Line(id)] = module.entries.as_slice() else {
+    panic!("expected one pipeline");
+};
+assert!(matches!(
+    &module.expr(*id).unwrap().kind,
+    ExprKind::Pipe { op: PipeOp::Plain, .. }
+));
+~~~
+
+The [parser API](Documentation/spec/parser-api.md) preserves source spans,
+argument order and syntax without resolving names or types. Flat node storage
+supports long pipelines without recursive ownership. Excessive nesting returns
+a diagnostic. No CLI, checker, runtime or host I/O is included in this version.
 
 ## Development
 
@@ -53,7 +75,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --offline --no-deps
 ~~~
 
 Tests exercise the public API and language corpus, numeric boundaries, string
-decoding, error recovery, Unicode positions and malformed token combinations.
+decoding, AST structure, precedence, error recovery, Unicode positions and
+malformed token combinations.
 Warning denial belongs to these maintainer checks, so new compiler warnings
 do not become build errors for consumers. Unsafe code remains forbidden.
 The APIs and language remain experimental.
