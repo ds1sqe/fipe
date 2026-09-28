@@ -71,8 +71,9 @@ permitted; executing a unit with any lexical, syntax or check error is not.
 
 ## Status
 
-The [source corpus](examples.fipe) is exercised by public lexer/parser tests.
-The complete opening example has an independent token oracle; parser tests
-assert AST structure, precedence, spans and recovery. These tests and document
+The [source corpus](examples.fipe) and the programs under
+[`Documentation/examples`](../examples/) are exercised by public lexer/parser
+tests. The complete opening example has an independent token oracle; parser
+tests assert AST structure, precedence, spans and recovery. These tests and document
 checks do not establish type soundness or backend equivalence. Those are
 the following implementation milestones.

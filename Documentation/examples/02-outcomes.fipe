@@ -1,0 +1,42 @@
+# Outcomes: `Maybe` and `Result` are values. The marked pipes feel a side,
+# `||` leaves the outcome, and the brackets name a side without its family.
+use fs
+
+# `find` returns a Maybe. `|:` runs on the hit, `|!` on the miss.
+find ./config.toml |: cat |! log "no config" || default_config
+
+# The same, one stage per line.
+find ./config.toml
+    |: cat
+    |! log "no config"
+    || default_config
+
+# Bind on success; a miss ends this body with the miss.
+load = path => {
+    [:file] = find path
+    file | cat | parse_toml
+}
+
+# Arms are the match. `[:e]` is the hit with its payload, `[!]` the miss.
+describe = {
+    [:e] if e.size == 0 => "empty",
+    [:e] => e.name,
+    [!] => "-",
+}
+find ./x | describe
+
+# Result carries an error on the miss side; `[!err]` binds it.
+read_port = text => text | read<u16> | {
+    [:port] if port > 1024 => Ok port,
+    [:_] => Err "reserved port",
+    [!err] => Err err,
+}
+
+# `&&` sequences on success; `||` supplies the fallback payload.
+find ./cache && clear_cache || log "nothing to clear"
+port = read_port "8080" || 3000
+
+# Names fix a family when the spot does not.
+first = xs => if (len xs) > 0 { Just (head xs) } else { Nothing }
+m: Maybe<i64> = [:1]
+r: Result<i64, String> = [!"bad"]

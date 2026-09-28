@@ -1,0 +1,30 @@
+# Files: the shell reading of Fipe. Every line is a command line, and a
+# pipe fills the last open spot of the next stage.
+use fs
+
+# The ten largest files under /var/log, as names.
+ls -l /var/log
+    | filter (e => e.size > 1_000_000)
+    | sort -by .size -desc
+    | take 10
+    | map .name
+
+# Bindings hold intermediate values; `=` never reassigns.
+logs = ls -l /var/log
+big = logs | filter (e => e.size > 1_000_000)
+count = big | len
+big | map .name | put ./big-logs                 # the host writes the bytes
+
+# A function is an arm; two head names curry, and it is used like any command.
+older = days e => e.age > days * 86_400
+ls -l /tmp | filter (older 7) | map .name | append ./stale
+
+# Flags are named arguments; `-r` is a Bool spot, `-depth 2` a valued one.
+find -r -depth 2 /etc -name "*.conf" | map .path
+
+# Two lines that read the same: vertical or horizontal.
+cat ./notes.md | lines | filter (l => l != "") | len
+cat ./notes.md
+    | lines
+    | filter (l => l != "")
+    | len

@@ -1,0 +1,34 @@
+# Modules and the host: a file is a module named by its stem, `use` brings
+# a module or its names in, `pub` exports, and `with` scopes the host's
+# environment for one block.
+use fs
+use geometry.Point geometry.Polar
+use cli 2
+
+# Exported bindings need a complete type; inferred ones stay private.
+pub area: f64 -> f64 -> f64 = w h => w * h
+pub main: Vec<String> -> Result<(), cli.Error> = args => {
+    [:name] = first args
+    p: Point = read name || Point 0 0
+    p | Polar.from | show | put out
+    Ok ()
+}
+
+# A module member and a field use the same dot; the checker tells them
+# apart by what `fs` and `e` are.
+e = fs.list root /etc | first
+e.name
+fs.size e
+
+# `with` evaluates its block under a child environment.
+with cwd /tmp {
+    ls | map .name | put ./listing
+}
+with lang "C" { sort ./names }
+
+# A handle is a host type made by a host function.
+dir = sys.lookup root /module/fs/root | Rd<fs>
+fs.list dir /etc | map .name
+
+# Faults end the run; `Err` values do not.
+check = n => if n < 0 { fault "negative" } else { Ok n }

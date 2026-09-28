@@ -74,6 +74,39 @@ fn opening_module_and_formal_corpus_parse() {
     assert_eq!(Source::new(corpus).slice(parsed.span), Some(corpus));
 }
 
+/// Every program under `Documentation/examples` parses and covers the
+/// whole source; the directory listing keeps new examples from being missed.
+#[test]
+fn documentation_examples_parse() {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("Documentation/examples");
+    let mut paths: Vec<_> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "fipe"))
+        .collect();
+    paths.sort();
+    assert!(paths.len() >= 5, "{directory:?}");
+    for path in paths {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let parsed = parse(lex(&text)).unwrap_or_else(|errors| {
+            let located: Vec<_> = errors
+                .iter()
+                .map(|error| {
+                    (
+                        &error.reason,
+                        Source::new(&text).line_col(error.span.start),
+                        Source::new(&text).slice(error.span),
+                    )
+                })
+                .collect();
+            panic!("{}: {located:?}", path.display())
+        });
+        assert_eq!(Source::new(&text).slice(parsed.span), Some(text.as_str()));
+        assert!(!parsed.entries.is_empty(), "{}", path.display());
+    }
+}
+
 #[test]
 fn empty_sources_and_bom_preserve_module_identity() {
     for input in ["", "# comment\n", "\u{feff}"] {

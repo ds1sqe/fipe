@@ -1,0 +1,55 @@
+# Types: a `type` is its shape, an `impl` is its code, and the type name is
+# its constructor. Conversion is a written word, never a spot's guess.
+
+# A record. Lowercase members are fields; `len` is private and computed
+# from the fields before it. A default is an operand, so a call is grouped.
+pub type Point { pub x: i64, pub y: i64 = 0, len: u64 = (norm x y) }
+
+# A sum. Uppercase members are constructors, each with named fields.
+pub type Shape { Circle(r: f64), Rect(w: f64, h: f64), Dot }
+
+# A newtype is a record with one field.
+type Width { w: u64 = 80 }
+
+# Code lives in the impl. Bare arms are the written constructor; `Self { }`
+# is the raw construction, legal here because the fields are visible.
+impl Point {
+    x (y = 0) => Self { x, y, len: norm x y },
+    pub origin = Self 0 0,
+    pub line: i64 -> Self = p => Self p p,
+    dist = self q => norm (self.x - q.x) (self.y - q.y),
+    scale = self k => Self (self.x * k) (self.y * k),
+}
+
+impl Shape {
+    area = self => self | {
+        Circle r => 3.14159 * r * r,
+        Rect { w, h } => w * h,
+        Dot => 0.0,
+    },
+}
+
+# Traits: `Display` prints, `Read` parses, and each is on the type it reads.
+impl Point: Display { display = self => join "," [show self.x, show self.y] }
+impl Point: Read { read = s => s | split "," | map read<i64> | collect | pair }
+
+# Conversion: the word names the trait, the trait names the side that works.
+pub type Polar { pub r: f64, pub t: f64 }
+impl Polar: From<Point> { from = p => Self { r: norm p.x p.y, t: atan2 p.y p.x } }
+impl Polar: TryInto<Point> { Error = RangeError, try_into = self => bounded self }
+
+# Use.
+p = Point 3 4                     # the constructor
+q = Point -y 1 -x 2               # named spots
+o = Point.origin
+d = p.dist q                      # the dot fills `self`
+p | scale 2 | show                # "6,8"
+Circle 1.5 | area
+[Circle 1.0, Rect 2.0 3.0, Dot] | map area | sum
+
+pl = p | Polar.from               # Polar's From<Point>
+pl | to<Polar>                    # the neutral word, same impl
+back = pl.try_into<Point>         # Result<Point, RangeError>
+back |: show || "out of range"
+"3,4" | read<Point>               # Result<Point, ParseError>
+Width                             # the default, 80

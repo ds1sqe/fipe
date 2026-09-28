@@ -1,0 +1,38 @@
+# Text: strings are values, words are text, and the prelude's text
+# functions take their input last so that the pipe fills it.
+use text 2
+use text.lines text.words
+
+# Word frequency of a file, top ten.
+cat ./book.txt
+    | lines
+    | map words
+    | flatten
+    | map lower
+    | filter (w => (len w) > 3)
+    | count
+    | sort -by .1 -desc
+    | take 10
+
+# A word is text unless it is bound; quotes force text.
+name = "world"
+greet = who => "hello, " + who
+greet name                        # hello, world
+greet "name"                      # hello, name
+
+# Strings are UTF-8; bytes are not. `utf8` is the only way from bytes in.
+raw = b"\xC3\xA9"
+raw | utf8 |: len || 0
+"é" | bytes | len                 # 2
+
+# Escapes and raw quotes.
+"tab\there" | show
+'no\nescapes' | len
+
+# Numbers from text: the spot trusts, the word returns an outcome.
+port: u16 = "8080"
+"8080" | read<u16> |: (n => n + 1) || 0
+n: i64 = round 2.5
+
+# Building lines to write: `join` and `put` take the value last.
+["a", "b", "c"] | join "\n" | put ./letters
