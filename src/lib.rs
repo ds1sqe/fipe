@@ -8,4 +8,5 @@ pub mod ast;
 pub mod decl;
 pub mod lex;
 pub mod parse;
+pub mod resolve;
 pub mod token;

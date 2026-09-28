@@ -30,8 +30,10 @@ it.
 
 ## Name lookup
 
-For a name in expression position: the nearest lexical binding, then an
-imported or host-declared API name, then the host's command namespace.
+For a name in expression position: the nearest lexical binding, then
+this module's items and imports, then the prelude, then a host module's
+name, then the host's command namespace. An unbound name in an argument
+position is text; anywhere else it is the check error "unknown name".
 Shadowing is lexical: `cat x` uses a bound `x`, `cat "x"` forces text. One
 dot serves every namespace. For `x.a`, resolve `x` as above, then take
 field `a` of its type, else a function `a` in scope with a parameter named

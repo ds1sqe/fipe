@@ -111,8 +111,9 @@ only way in. A `pub` binding or member needs a complete type (T3).
 
 One implementation per (trait, arguments, concrete type), written in the
 type's module. A trait name in a parameter position accepts an implementing
-value with runtime dispatch. Trait methods are functions in scope; `T.m`
-names `T`'s member `m` and `x.m` fills its `self` spot. An API method and
+value with runtime dispatch. Trait methods, and a type's inherent
+members in its module, are functions in scope; `T.m` names `T`'s member
+`m` and `x.m` fills its `self` spot. An API method and
 trait method with the same applicable name are ambiguous, a check error.
 Operators infer their obligations. A trait member `name: type = value` is a
 default method; an uppercase member with a bound, `Error: Err`, is an
