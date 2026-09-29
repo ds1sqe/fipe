@@ -23,10 +23,10 @@ pub big: Rd<fs> -> u64 -> Result<Vec<String>, fs.Error> = dir min => {
     fs.list dir /etc |: filter (e => e.size > min) |: map .name
 }
 
-find x |: cat |! log || root                  # find x; so cat it; but log the miss; or root
+find x |: cat |! log "gone" || root           # find x; so cat it; but log the miss; or root
 find x                                        # the same, one stage per line
     |: cat
-    |! log
+    |! log "gone"
     || root
 find x |: cat || fault "no x" | append ./log  # leave the Maybe with `||`, then append the bytes
 find x | {                                    # arms are the match, and a function value

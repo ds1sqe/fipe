@@ -16,6 +16,7 @@ cat ./book.txt
 
 # A word is text unless it is bound; quotes force text.
 name = "world"
+# greet: String -> String
 greet = who => ["hello, ", trim who] | join ""
 greet name                        # hello, world
 greet "name"                      # hello, name

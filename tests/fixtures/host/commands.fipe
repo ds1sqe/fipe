@@ -9,13 +9,14 @@ impl Src: Read {}
 pub type Sink
 impl Sink: Read {}
 pub type Entry { pub name: String, pub path: String, pub size: u64, pub age: u64 }
+impl Entry: Read {}
 
 pub root: Rd<sys>
 pub out: Sink
 
 pub ls: (path: Src = ".") -> (long: Bool = False) -> (recursive: Bool = False) ->
     (depth: u64 = 1) -> (name: String = "*") -> Vec<Entry>
-pub cat: Src -> String
+pub cat: Entry -> String
 pub find: Src -> Maybe<Entry>
 pub grep: (pattern: String) -> String -> String
 pub rm: Src -> Result<(), fs.Error>

@@ -168,22 +168,7 @@ pub fn resolve(
     declarations: &Declarations,
     files: &[(String, Module)],
 ) -> Result<Resolved, Vec<Error>> {
-    let mut resolver = Resolver {
-        module,
-        declarations,
-        files,
-        resolved: Resolved {
-            expressions: vec![None; module.expressions.len()],
-            patterns: vec![None; module.patterns.len()],
-            types: vec![None; module.types.len()],
-            exports: Vec::new(),
-        },
-        frame: Vec::new(),
-        scopes: Vec::new(),
-        self_type: None,
-        members: Vec::new(),
-        errors: Vec::new(),
-    };
+    let mut resolver = Resolver::new(module, declarations, files);
     resolver.collect();
     resolver.walk();
     if resolver.errors.is_empty() {
@@ -191,6 +176,25 @@ pub fn resolve(
     } else {
         Err(resolver.errors)
     }
+}
+
+/// Resolve one declared spot default of a declaration module, with the
+/// spots before it in scope by name and site. Its other names are the
+/// prelude's and the commands'; what does not resolve stays unresolved.
+pub(crate) fn resolve_default(
+    module: &Module,
+    declarations: &Declarations,
+    value: ExprId,
+    spots: &[(String, Span)],
+) -> Resolved {
+    let mut resolver = Resolver::new(module, declarations, &[]);
+    let scope = spots
+        .iter()
+        .map(|(name, site)| (name.clone(), Target::Local { site: *site }))
+        .collect();
+    resolver.scopes.push(scope);
+    resolver.expr(value, Position::Other);
+    resolver.resolved
 }
 
 /// Which namespace a frame entry belongs to.
@@ -241,7 +245,30 @@ struct Shape {
     written: bool,
 }
 
-impl Resolver<'_> {
+impl<'a> Resolver<'a> {
+    fn new(
+        module: &'a Module,
+        declarations: &'a Declarations,
+        files: &'a [(String, Module)],
+    ) -> Self {
+        Self {
+            module,
+            declarations,
+            files,
+            resolved: Resolved {
+                expressions: vec![None; module.expressions.len()],
+                patterns: vec![None; module.patterns.len()],
+                types: vec![None; module.types.len()],
+                exports: Vec::new(),
+            },
+            frame: Vec::new(),
+            scopes: Vec::new(),
+            self_type: None,
+            members: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
     fn error(&mut self, span: Span, reason: Reason) {
         self.errors.push(Error { span, reason });
     }

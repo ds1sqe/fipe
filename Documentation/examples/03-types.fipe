@@ -17,7 +17,9 @@ impl Point {
     x (y = 0) => Self { x, y, len: hypot x y },
     pub origin = Self 0 0,
     pub line: i64 -> Self = p => Self p p,
+    # dist: Point -> Point -> f64
     dist = self q => hypot (self.x - q.x) (self.y - q.y),
+    # scale: Point -> i64 -> Point
     scale = self k => Self (self.x * k) (self.y * k),
 }
 
@@ -58,7 +60,7 @@ p = Point 3 4                     # the constructor
 q = Point -y 1 -x 2               # named spots
 o = Point.origin
 d = p.dist q                      # the dot fills `self`
-p | scale 2 | show                # "6,8"
+p.scale 2 | show                  # "6,8"
 Circle 1.5 | area
 [Circle 1.0, Rect 2.0 3.0, Dot] | map area | sum
 

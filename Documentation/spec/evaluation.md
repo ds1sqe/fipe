@@ -55,14 +55,16 @@ check error when `cat` needs `Entry`.
 
 ## Marked pipes
 
-For a two-sided value let `L(l)` be the bad side and `R(r)` the good side;
-`Maybe` uses unit for `l`. `|:` selects right and `|!` left.
+For a two-sided value let `L(l)` be the bad side and `R(r)` the good side.
+`Maybe` has no miss payload: `|!` on a `Maybe` supplies nothing, and its
+stage is a value evaluated on the miss. `|:` selects right and `|!` left.
 
 ```text
 L(l) |: f   ⇓ L(l)                # f is not called
 R(r) |: f   ⇓ rebuild_right(f r)
 R(r) |! f   ⇓ R(r)                # f is not called
-L(l) |! f   ⇓ rebuild_left(f l)
+L(l) |! f   ⇓ rebuild_left(f l)   # Result and Either
+Nothing |! v ⇓ rebuild_left(v)    # Maybe: v is a value
 ```
 
 A plain return from `f` is wrapped in the selected constructor; a return of

@@ -1,0 +1,725 @@
+//! Inference over a resolved module.
+//!
+//! The judgments of [types.md] with the arity half of spot binding from
+//! [evaluation.md] §Parameter binding. It unifies and never casts,
+//! evaluates no default and calls no host. Bindings generalize at their
+//! boundary; hoisted arm bindings are typed in reference groups.
+//!
+//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
+//! [evaluation.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/evaluation.md
+
+mod arms;
+mod bind;
+mod dot;
+mod expr;
+mod groups;
+mod lower;
+mod outcome;
+mod spots;
+
+use crate::{
+    ast::{Arm, Entry, ExprId, ExprKind, ImplMember, ItemKind, Module, Name},
+    decl::Declarations,
+    resolve::{Origin, Resolved},
+    token::Span,
+    typed::Typed,
+    types::{Mismatch, Obligation, Scheme, Subst, Type},
+};
+use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
+
+/// A located type error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Error {
+    pub span: Span,
+    pub reason: Reason,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reason {
+    /// `actual` at `span` against `expected`, which `other` required.
+    Mismatch {
+        expected: Type,
+        actual: Type,
+        other: Span,
+    },
+    /// A type that would contain itself.
+    Occurs,
+    /// An outcome bracket or marked operator with no known family.
+    UnknownFamily,
+    /// No field or `self`-spot function `name` on `ty`; `other` is the
+    /// use that made a scheme's head `ty`, or the dot itself.
+    NoField {
+        ty: Type,
+        other: Span,
+    },
+    NotAFunction,
+    ExtraArgument,
+    /// A flag naming no spot, or a valued flag with no operand.
+    UnknownSpot {
+        name: String,
+    },
+    /// A pipe into a stage with no open spot, or a spot supplied twice.
+    FilledSpot,
+    /// A stage on `Maybe`'s miss side with an open spot: `|!` on a
+    /// `Maybe` supplies nothing, so its stage must be a value.
+    OpenSpot,
+    /// `||` or `&&` on `Either` or another non-`Bool` type.
+    NeedsMaybeOrResult,
+    /// The `Num` stub: arithmetic on a type that is not numeric.
+    NotNumeric,
+    /// A dot whose head's type is never known: its variable left the
+    /// type with the member obligation unsolved.
+    DotNeedsType,
+    /// A non-last line of a body whose value is not `()`.
+    Discarded,
+    /// A record construction without a field that has no default.
+    MissingField {
+        name: String,
+    },
+    /// An integer literal outside its type's range.
+    OutOfRange,
+    /// A `pub` binding or member whose type is not closed.
+    NotComplete,
+    /// An obligation on a variable that left the binding's type.
+    Ambiguous {
+        class: String,
+    },
+}
+
+/// Type one resolved module. `files` are the file modules its `use`
+/// lines may name, as given to [`resolve`](crate::resolve::resolve).
+///
+/// # Errors
+/// Every located type error; the walk continues past each one.
+pub fn infer(
+    module: &Module,
+    resolved: &Resolved,
+    declarations: &Declarations,
+    files: &[(String, Module)],
+) -> Result<Typed, Vec<Error>> {
+    let (typed, errors) = infer_partial(module, resolved, declarations, files);
+    if errors.is_empty() {
+        Ok(typed)
+    } else {
+        Err(errors)
+    }
+}
+
+/// [`infer`] keeping what it learned beside its errors: a binding that
+/// typed has its scheme even when another line failed.
+#[must_use]
+pub fn infer_partial(
+    module: &Module,
+    resolved: &Resolved,
+    declarations: &Declarations,
+    files: &[(String, Module)],
+) -> (Typed, Vec<Error>) {
+    run(module, resolved, declarations, files, &[])
+}
+
+/// Inference with the file modules already being typed, which a cycle
+/// of `use` lines must not enter again.
+fn run(
+    module: &Module,
+    resolved: &Resolved,
+    declarations: &Declarations,
+    files: &[(String, Module)],
+    visiting: &[String],
+) -> (Typed, Vec<Error>) {
+    let mut infer = Infer {
+        module,
+        resolved,
+        declarations,
+        files,
+        visiting: visiting.to_vec(),
+        state: State::new(Subst::default(), module.expressions.len()),
+        items: Vec::new(),
+        groups: Vec::new(),
+        self_type: None,
+    };
+    infer.declare();
+    infer.group_items();
+    infer.item_bodies();
+    for entry in &module.entries {
+        if let Entry::Line(id) = entry {
+            infer.line(*id, true);
+        }
+    }
+    infer.finish()
+}
+
+/// Everything inference changes, cloned to try one reading of `||`.
+#[derive(Clone)]
+struct State {
+    subst: Subst,
+    types: Vec<Option<Type>>,
+    bindings: Vec<Option<Scheme>>,
+    /// Lexical bindings by the span of the name that bound them.
+    locals: BTreeMap<(usize, usize), Local>,
+    obligations: Vec<Owed>,
+    errors: Vec<Error>,
+    /// Monomorphic types in scope: parameters and destructured values.
+    env: Vec<Type>,
+    /// Per item, how far its typing is.
+    status: Vec<Status>,
+    /// Uses of hoisted bindings inside their own group, unified with
+    /// the binding's type at the group's end.
+    uses: Vec<Use>,
+}
+
+impl State {
+    /// A fresh state over `subst` for a module of `size` expressions.
+    fn new(subst: Subst, size: usize) -> Self {
+        Self {
+            subst,
+            types: vec![None; size],
+            bindings: vec![None; size],
+            locals: BTreeMap::new(),
+            obligations: Vec::new(),
+            errors: Vec::new(),
+            env: Vec::new(),
+            status: Vec::new(),
+            uses: Vec::new(),
+        }
+    }
+}
+
+/// An obligation, where it arose, and the literal that raised it.
+#[derive(Clone)]
+struct Owed {
+    obligation: Obligation,
+    span: Span,
+    literal: Option<Lit>,
+    /// A member obligation already solved, left in place so that marks
+    /// into the list stay valid.
+    solved: bool,
+}
+
+impl Owed {
+    const fn new(obligation: Obligation, span: Span) -> Self {
+        Self {
+            obligation,
+            span,
+            literal: None,
+            solved: false,
+        }
+    }
+}
+
+/// A numeric literal whose type is left to a variable or a rigid name.
+#[derive(Clone, Copy)]
+enum Lit {
+    Int { negative: bool, magnitude: u64 },
+    Float,
+}
+
+#[derive(Clone)]
+enum Status {
+    /// Typed against its declared or skeleton type, never generalized.
+    Mono,
+    Pending,
+    Typing,
+    Done(Scheme),
+}
+
+#[derive(Clone)]
+struct Use {
+    item: usize,
+    ty: Type,
+    span: Span,
+}
+
+#[derive(Clone)]
+struct Local {
+    scheme: Scheme,
+    /// The spot list of a binding whose value is an arm list.
+    heads: Option<Vec<Head>>,
+}
+
+/// One head position of an arm list: its name, and whether it defaults.
+#[derive(Clone, Debug)]
+struct Head {
+    name: Option<String>,
+    default: bool,
+}
+
+/// A value of this module known before its line: a hoisted binding, an
+/// impl member, or a written constructor.
+struct Item {
+    key: Key,
+    ty: Type,
+    heads: Option<Vec<Head>>,
+    /// The line of a hoisted binding, and its group.
+    line: Option<ExprId>,
+    group: usize,
+    /// The name, and whether it is `pub`.
+    site: Span,
+    public: bool,
+}
+
+impl Item {
+    const fn new(
+        key: Key,
+        ty: Type,
+        heads: Option<Vec<Head>>,
+        site: Span,
+    ) -> Self {
+        Self {
+            key,
+            ty,
+            heads,
+            line: None,
+            group: 0,
+            site,
+            public: false,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Key {
+    Binding(String),
+    /// A member of a type's namespace: (type, member).
+    Member(String, String),
+    Constructor(String),
+}
+
+/// One spot of a callee.
+#[derive(Clone, Debug)]
+struct Slot {
+    name: Option<String>,
+    ty: Type,
+    default: bool,
+    /// A declared default and the spot's name, in the callee's home.
+    value: Option<ExprId>,
+    site: Span,
+}
+
+/// A value about to be applied.
+#[derive(Clone, Debug)]
+struct Callee {
+    /// The whole type without a spot list; the result with one.
+    ty: Type,
+    spots: Option<Vec<Slot>>,
+    /// The slot a dot fills with its head.
+    self_slot: Option<usize>,
+    /// A slot filled before application, by a dot.
+    supplied: Option<(usize, Type, Span)>,
+    /// Declared type parameters in order, for `name<τ…>`.
+    parameters: Vec<Type>,
+    /// The declaring module of a callee declared elsewhere.
+    home: Option<Origin>,
+}
+
+impl Callee {
+    const fn plain(ty: Type) -> Self {
+        Self {
+            ty,
+            spots: None,
+            self_slot: None,
+            supplied: None,
+            parameters: Vec::new(),
+            home: None,
+        }
+    }
+
+    /// The function type of every spot, then the result.
+    fn whole(&self) -> Type {
+        self.spots
+            .iter()
+            .flatten()
+            .rev()
+            .fold(self.ty.clone(), |ty, slot| {
+                Type::function(slot.ty.clone(), ty)
+            })
+    }
+}
+
+/// A type an expression is checked against, and where it came from.
+#[derive(Clone)]
+struct Expected {
+    ty: Type,
+    span: Span,
+    /// At a spot, where a word takes the spot's type.
+    spot: bool,
+}
+
+impl Expected {
+    const fn new(ty: Type, span: Span) -> Self {
+        Self {
+            ty,
+            span,
+            spot: false,
+        }
+    }
+}
+
+struct Infer<'a> {
+    module: &'a Module,
+    resolved: &'a Resolved,
+    declarations: &'a Declarations,
+    files: &'a [(String, Module)],
+    visiting: Vec<String>,
+    state: State,
+    items: Vec<Item>,
+    /// Hoisted binding groups, as item indices.
+    groups: Vec<Vec<usize>>,
+    /// `Self` inside an impl body.
+    self_type: Option<Type>,
+}
+
+impl Infer<'_> {
+    fn fresh(&mut self) -> Type {
+        Type::Var(self.state.subst.fresh())
+    }
+
+    fn apply(&self, ty: &Type) -> Type {
+        self.state.subst.apply(ty)
+    }
+
+    fn error(&mut self, span: Span, reason: Reason) {
+        self.state.errors.push(Error { span, reason });
+    }
+
+    fn span(&self, id: ExprId) -> Span {
+        self.module.expressions[id.0].span
+    }
+
+    /// Unify, reporting a failure at `span` against `other`.
+    fn unify(
+        &mut self,
+        expected: &Type,
+        actual: &Type,
+        span: Span,
+        other: Span,
+    ) {
+        if let Err(mismatch) = self.state.subst.unify(expected, actual) {
+            let reason = match *mismatch {
+                Mismatch::Different { .. } => Reason::Mismatch {
+                    expected: self.apply(expected),
+                    actual: self.apply(actual),
+                    other,
+                },
+                Mismatch::Occurs { .. } => Reason::Occurs,
+            };
+            self.error(span, reason);
+        }
+    }
+
+    /// Unify where a later check reports the failure.
+    fn hint(&mut self, expected: &Type, actual: &Type) {
+        let _ = self.state.subst.unify(expected, actual);
+    }
+
+    fn obligation(&mut self, class: &str, ty: Type, span: Span) {
+        let obligation = Obligation::Class {
+            class: String::from(class),
+            ty,
+        };
+        self.state.obligations.push(Owed::new(obligation, span));
+    }
+
+    fn item(&self, key: &Key) -> Option<&Item> {
+        self.items.iter().find(|item| item.key == *key)
+    }
+
+    fn item_index(&self, key: &Key) -> Option<usize> {
+        self.items.iter().position(|item| item.key == *key)
+    }
+
+    fn local(&mut self, site: Span, span: Span) -> Callee {
+        match self.state.locals.get(&(site.start, site.end)).cloned() {
+            Some(local) => {
+                let ty = self.instantiate(&local.scheme, span);
+                self.with_heads(ty, local.heads.as_deref())
+            }
+            None => Callee::plain(self.fresh()),
+        }
+    }
+
+    fn bind_local(&mut self, name: &Name, ty: Type) {
+        let local = Local {
+            scheme: Scheme::mono(ty),
+            heads: None,
+        };
+
+        self.state
+            .locals
+            .insert((name.span.start, name.span.end), local);
+    }
+
+    /// A type skeleton for an arm list: one fresh type per head
+    /// position, then the result.
+    fn skeleton(&mut self, arms: &[Arm]) -> Type {
+        let count = arms.first().map_or(0, |arm| arm.patterns.len());
+        let mut ty = self.fresh();
+        for _ in 0..count {
+            ty = Type::function(self.fresh(), ty);
+        }
+        ty
+    }
+
+    /// The values of this module known before their lines.
+    fn declare(&mut self) {
+        let module = self.module;
+        for entry in &module.entries {
+            match entry {
+                Entry::Line(id) => {
+                    if let Some((name, arms, annotation)) = hoisted(module, *id)
+                    {
+                        let ty = match annotation {
+                            Some(annotation) => self.lower_here(annotation),
+                            None => self.skeleton(arms),
+                        };
+                        let key = Key::Binding(last(name));
+                        let heads = Some(self.heads(arms));
+                        let mut item = Item::new(key, ty, heads, name.span);
+                        item.line = Some(*id);
+                        item.public = matches!(
+                            module.expressions[id.0].kind,
+                            ExprKind::Bind { public: true, .. }
+                        );
+                        self.items.push(item);
+                        self.state.status.push(Status::Pending);
+                    }
+                }
+                Entry::Item(item) => {
+                    if let ItemKind::Impl {
+                        target,
+                        implements,
+                        members,
+                    } = &item.kind
+                    {
+                        self.declare_impl(*target, *implements, members);
+                    }
+                }
+            }
+        }
+    }
+
+    fn declare_impl(
+        &mut self,
+        target: crate::ast::TypeId,
+        implements: Option<crate::ast::TypeId>,
+        members: &[ImplMember],
+    ) {
+        let module = self.module;
+        let ty = lower::named(module, target).unwrap_or_default();
+        self.self_type = Some(self.lower_here(target));
+        let mut constructor = Vec::new();
+        for member in members {
+            match member {
+                ImplMember::Named {
+                    public,
+                    name,
+                    annotation,
+                    value,
+                    ..
+                } => {
+                    let arms = match &module.expressions[value.0].kind {
+                        ExprKind::Arms(arms) => Some(arms.as_slice()),
+                        _ => None,
+                    };
+                    let member_ty = match (implements, annotation, arms) {
+                        (Some(implements), ..) => {
+                            self.impl_method(implements, &last(name))
+                        }
+                        (None, Some(annotation), _) => {
+                            self.lower_here(*annotation)
+                        }
+                        (None, None, Some(arms)) => self.skeleton(arms),
+                        (None, None, None) => self.fresh(),
+                    };
+                    let heads = arms.map(|arms| self.heads(arms));
+                    if let Some(heads) = &heads {
+                        self.self_parameter(&member_ty, heads, name.span);
+                    }
+                    if implements.is_none() {
+                        let key = Key::Binding(last(name));
+                        let (ty, heads) = (member_ty.clone(), heads.clone());
+                        self.push_mono(Item::new(key, ty, heads, name.span));
+                    }
+                    let key = Key::Member(ty.clone(), last(name));
+                    let mut item = Item::new(key, member_ty, heads, name.span);
+                    item.public = *public;
+                    self.push_mono(item);
+                }
+                ImplMember::Constructor(arm) => constructor.push(arm.clone()),
+                ImplMember::Type { .. } => {}
+            }
+        }
+        if !constructor.is_empty() {
+            let skeleton = self.skeleton(&constructor);
+            let heads = Some(self.heads(&constructor));
+            let site = item_span(&constructor);
+            self.push_mono(Item::new(
+                Key::Constructor(ty),
+                skeleton,
+                heads,
+                site,
+            ));
+        }
+        self.self_type = None;
+    }
+
+    fn push_mono(&mut self, item: Item) {
+        self.items.push(item);
+        self.state.status.push(Status::Mono);
+    }
+
+    /// In an impl member the parameter `self` has type `Self`.
+    fn self_parameter(&mut self, ty: &Type, heads: &[Head], span: Span) {
+        let Some(self_type) = self.self_type.clone() else {
+            return;
+        };
+        let Some((parameters, _)) = self.peel(ty, heads.len()) else {
+            return;
+        };
+        for (head, parameter) in heads.iter().zip(parameters) {
+            if head.name.as_deref() == Some("self") {
+                self.unify(&parameter, &self_type, span, span);
+            }
+        }
+    }
+
+    /// Impl member values and record field defaults, checked against
+    /// their declared or skeleton types.
+    fn item_bodies(&mut self) {
+        let module = self.module;
+        for entry in &module.entries {
+            let Entry::Item(item) = entry else { continue };
+            match &item.kind {
+                ItemKind::Impl {
+                    target, members, ..
+                } => {
+                    let ty = lower::named(module, *target).unwrap_or_default();
+                    self.self_type = Some(self.lower_here(*target));
+                    let mut constructor = Vec::new();
+                    for member in members {
+                        match member {
+                            ImplMember::Named { name, value, .. } => {
+                                let key = Key::Member(ty.clone(), last(name));
+                                let expected = self.item(&key).map(|item| {
+                                    Expected::new(item.ty.clone(), name.span)
+                                });
+                                self.expr(*value, expected.as_ref());
+                            }
+                            ImplMember::Constructor(arm) => {
+                                constructor.push(arm.clone());
+                            }
+                            ImplMember::Type { .. } => {}
+                        }
+                    }
+                    let key = Key::Constructor(ty);
+                    if let Some(item) = self.item(&key) {
+                        let expected = Expected::new(
+                            item.ty.clone(),
+                            item_span(&constructor),
+                        );
+                        self.arms(&constructor, Some(&expected));
+                    }
+                    self.self_type = None;
+                }
+                ItemKind::Type { name, members, .. } => {
+                    self.field_defaults(name, members.as_deref());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Obligations settle, members resolve or fail, and
+    /// every type is applied through the final substitution.
+    fn finish(mut self) -> (Typed, Vec<Error>) {
+        self.dots();
+        self.default_literals(0, &[], &[]);
+        self.left_members();
+        let unsolved = self.settle();
+        self.closed_members();
+        let subst = &self.state.subst;
+        let typed = Typed {
+            expressions: self
+                .state
+                .types
+                .iter()
+                .map(|ty| ty.as_ref().map(|ty| subst.apply(ty)))
+                .collect(),
+            bindings: self
+                .state
+                .bindings
+                .iter()
+                .map(|scheme| scheme.as_ref().map(|s| bind::applied(s, subst)))
+                .collect(),
+
+            unsolved,
+        };
+        let mut errors = self.state.errors;
+        errors.sort_by_key(|error| (error.span.start, error.span.end));
+        (typed, errors)
+    }
+}
+
+/// The `Num` stub: whether a type is numeric, `None` while unknown.
+/// Trait resolution (06) replaces it.
+fn num(ty: &Type) -> Option<bool> {
+    match ty {
+        Type::Var(_) => None,
+        Type::Named { name, arguments } => Some(
+            name.origin == Origin::Prelude
+                && arguments.is_empty()
+                && NUMERIC.contains(&name.name.as_str()),
+        ),
+        _ => Some(false),
+    }
+}
+
+const NUMERIC: [&str; 10] = [
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+];
+
+fn prelude(name: &str) -> Type {
+    Type::named(Origin::Prelude, name, Vec::new())
+}
+
+fn prelude_of(name: &str, arguments: Vec<Type>) -> Type {
+    Type::named(Origin::Prelude, name, arguments)
+}
+
+fn is_prelude(ty: &Type, name: &str) -> bool {
+    matches!(ty, Type::Named { name: n, .. }
+        if n.origin == Origin::Prelude && n.name == name)
+}
+
+fn last(name: &Name) -> String {
+    name.segments.last().cloned().unwrap_or_default()
+}
+
+fn item_span(arms: &[Arm]) -> Span {
+    arms.first().map_or_else(Span::default, |arm| arm.span)
+}
+
+/// A file-level `name = arms` line, collected with the items.
+fn hoisted(
+    module: &Module,
+    id: ExprId,
+) -> Option<(&Name, &[Arm], Option<crate::ast::TypeId>)> {
+    let ExprKind::Bind {
+        pattern,
+        annotation,
+        value,
+        ..
+    } = &module.expressions[id.0].kind
+    else {
+        return None;
+    };
+    let crate::ast::PatternKind::Name(name) = &module.patterns[pattern.0].kind
+    else {
+        return None;
+    };
+    match &module.expressions[value.0].kind {
+        ExprKind::Arms(arms) if !name.is_uppercase() => {
+            Some((name, arms.as_slice(), *annotation))
+        }
+        _ => None,
+    }
+}

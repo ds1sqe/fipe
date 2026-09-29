@@ -1,6 +1,6 @@
 # Types and checking
 
-Checking precedes all program effects. T1–T3 and E2 in
+Checking precedes all program effects. T3 and E2 in
 [open decisions](open.md) name the remaining choices.
 
 ## Type forms
@@ -57,12 +57,30 @@ Fresh variables in each instantiation are distinct from all surrounding ones.
 The semicolon in BIND is metalanguage. A head with several patterns is
 nested ARMs; an arm list shares one input and result type per position.
 Application first binds spots under [evaluation](evaluation.md), then APP
-applies, possibly after a checked cast at a known spot; a cast never
-manufactures a type to avoid a unification failure. T2 governs
-generalization for recursive groups, unresolved constraints and host
-effects. `name<τ…>` instantiates `name`'s declared type parameters in
+applies, possibly after a checked cast at a known spot; inference only
+unifies, and a cast is admitted only at a spot whose declared type is
+known. `name<τ…>` instantiates `name`'s declared type parameters in
 order, the target first for the conversion words; a line whose target is
 still unknown is an ambiguity error.
+
+**Generalization.** Every binding generalizes over the variables not free
+in the environment and keeps its unsolved obligations; there is no
+mutation, so no value restriction, and a host call in a value does not
+block it. Only hoisted file-level arm bindings can recurse: they form
+groups by reference, typed monomorphically within the group and generalized
+at its boundary, so there is no polymorphic recursion. An annotation's
+lowercase names are rigid variables and its value is checked against it; a
+`pub` binding ends closed, with no unsolved variable and no quantified
+variable it did not write. A variable constrained only by literals defaults
+to `i64` or `f64` at its binding, so `x = 1` is `i64`; a variable that
+leaves the type with a `Num`, `Float` or literal obligation and otherwise
+at most `Eq` and `Ord` defaults the same way where it leaves, so `even 4`
+is `Bool`; any other obligation whose variable left the type is the error
+"ambiguous". Where an expected type is known, from an annotation, a spot or
+a sibling arm, inference checks against it; a dot on a head whose type is
+not yet known is an obligation, `a.name`, solved field first and then
+`self`-spot function once the head's type is known, carried by the scheme
+until then, and the error at the dot if it never is.
 
 ## Fields, functions and branches
 
@@ -80,7 +98,8 @@ still unknown is an ambiguity error.
   matching arm with a true guard wins. `(name = v)` gives the parameter
   `v`'s type and a default.
 - Captures are values; shadowing never mutates a capture. A discarded
-  non-unit value in a body is a check error; `_ = e` discards.
+  non-unit value in a body is a check error; `_ = e` discards. A file's
+  top-level line is the implicit main's output, not a discard.
 - The case rule at declarations: a declared type, constructor or associated
   type is uppercase; a binding, field, parameter or method is not. A
   file-level binding whose value is an arm list is collected with the items
@@ -97,9 +116,10 @@ the type's module writes one: bare arms in `impl T { }` are `T`'s written
 constructor, joined in order, with its signature inferred from the record
 it builds and the type's visibility. A sum has no written constructor.
 Inside `type`, `trait` and `impl` bodies `Self` is the enclosing type and,
-in value position, its constructor. An impl is written only in its target's
-module; one definition per (type, name), and a name both inherent and
-trait-supplied is a check error.
+in value position, its constructor. In an impl member the parameter `self`
+has type `Self`. An impl is written only in its target's module; one
+definition per (type, name), and a name both inherent and trait-supplied
+is a check error.
 
 `pub type` exports the type. A private record field is readable,
 matchable and suppliable only inside its module; outside it is not a spot
@@ -144,8 +164,8 @@ Vec<Entry>`. An opaque type has no fields, constructors or derived
 classes; a declaration of its own name, `Rd: u64 -> Rd<api>`, is its
 constructor. In the prelude and host declarations an impl member with no
 value is supplied by the implementation, as a name with no value is.
-A declared `= value` overrides the type default and may name the spots
-before it. Duplicate parameter names and ambiguous Bool shorthand letters
+A declared `= value` overrides the type default, may name the spots
+before it, and is checked against its spot's type. Duplicate parameter names and ambiguous Bool shorthand letters
 are check errors. No parameter is `Maybe` or `Result`; defaults model
 optional arguments. A host boundary type has no unresolved variable and no
 function value. T3 limits default expressions.
@@ -155,6 +175,9 @@ function value. T3 limits default expressions.
 `Cast(A, B)` is the closed set of conversions a spot or annotation admits;
 nothing else fires at a spot. A missing pair is a check error, a failing
 admitted one a Fault, a statically invalid literal a check error.
+A word or path literal is text with no type of its own: at a spot whose
+type is `String`, or a host-declared type that implements `Read`, it
+takes that type; anywhere else it is `String`.
 
 | Spot | Admitted source | On failure |
 | --- | --- | --- |
@@ -198,8 +221,13 @@ with `Display` and `Read`: `show`, not `Into<String>`, prints a value.
 ## Outcome types
 
 `Either<L,R>` has `Left L` / `Right R`; `Maybe<T>` has `Nothing` / `Just T`;
-`Result<T,E>` has `Err E` / `Ok T`, with `E : Err`. T1 decides their
-identity: transparent aliases cannot differ in operator eligibility.
+`Result<T,E>` has `Err E` / `Ok T`, with `E : Err`. They are three
+nominal prelude types with no shared type; a backend may share their
+layout. Eligibility is per type: `|:`, `|!`, `||` and `&&` on `Maybe`
+and `Result`; `|:` and `|!` on `Either`, `Left` bad and `Right` good;
+`||` or `&&` on `Either` is the error "needs `Maybe` or `Result`", so
+`Either<(),i64> || 0` is rejected whatever `Right 1` looks like at run
+time.
 
 An outcome bracket names a side, not a family. Against `Maybe<T>`, `[:e]`
 binds `e : T` and `[!]` is `Nothing`; against `Result<T,E>`, `[:e]` binds

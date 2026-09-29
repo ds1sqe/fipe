@@ -16,6 +16,7 @@ count = big | len
 big | map .name | put ./big-logs                 # the host writes the bytes
 
 # A function is an arm; two head names curry, and it is used like any command.
+# older: b.age: a, Num a, Ord a => a -> b -> Bool
 older = days e => e.age > days * 86_400
 ls -l /tmp | filter (older 7) | map .name | append ./stale
 

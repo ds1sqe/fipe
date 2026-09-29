@@ -13,13 +13,14 @@ find ./config.toml
     || default_config
 
 # Bind on success; a miss ends this body with the miss.
+# load: Src -> Maybe<Vec<String>>
 load = path => {
     [:file] = find path
     file | cat | lines
 }
 
 # Arms are the match. `[:e]` is the hit with its payload, `[!]` the miss.
-describe = {
+describe: Maybe<Entry> -> String = {
     [:e] if e.size == 0 => "empty",
     [:e] => e.name,
     [!] => "-",
@@ -27,14 +28,15 @@ describe = {
 find ./x | describe
 
 # Result carries an error on the miss side; `[!err]` binds it.
+# read_port: String -> Result<u16, ParseError>
 read_port = text => text | read<u16> | {
     [:port] if port > 1024 => Ok port,
-    [:_] => Err "reserved port",
+    [:_] => Err (ParseError "reserved port"),
     [!err] => Err err,
 }
 
-# `&&` sequences on success; `||` supplies the fallback payload.
-find ./cache && rm ./cache || log "nothing to clear"
+# `&&` sequences on success; `||` supplies the fallback payload, a `Result`.
+find ./cache && rm ./cache || log (Ok ())
 port = read_port "8080" || 3000
 
 # Names fix a family when the spot does not.

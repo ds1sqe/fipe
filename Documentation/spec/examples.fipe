@@ -24,7 +24,7 @@ big: Rd<fs> -> u64 -> Result<Vec<String>, fs.Error> = dir min => {
     fs.list dir /etc |: filter (e => e.size > min) |: map .name
 }
 
-find x |: cat |! log || root
+find x |: cat |! log "gone" || root
 find x | {
     Just Entry { name, .. } if name != "" => name,
     [:e] => e.name,

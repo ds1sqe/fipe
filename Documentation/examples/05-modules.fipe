@@ -8,7 +8,7 @@ use cli 2
 # Exported bindings need a complete type; inferred ones stay private.
 pub area: f64 -> f64 -> f64 = w h => w * h
 pub main: Vec<String> -> Result<(), cli.Error> = args => {
-    [:name] = first args
+    name = first args || "0,0"
     p: Point = read name || Point 0 0
     p | Polar.from | show | put out
     Ok ()
@@ -19,7 +19,7 @@ dir = sys.lookup root /module/fs/root | Rd<fs>
 
 # A module member and a field use the same dot; the checker tells them
 # apart by what `fs` and `e` are.
-e = fs.list dir /etc | first
+[:e] = fs.list dir /etc | first
 e.name
 fs.size e
 
@@ -30,4 +30,5 @@ with cwd /tmp {
 with lang "C" { cat ./names | lines | sort }
 
 # Faults end the run; `Err` values do not.
+# check: Num a, Ord a => a -> Result<a, b>
 check = n => if n < 0 { fault "negative" } else { Ok n }

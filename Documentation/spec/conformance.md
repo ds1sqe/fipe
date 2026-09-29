@@ -87,6 +87,10 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `"42" | read<i64>` / `n: i64 = "42"` / `n: i64 = "x"` | `Result` / `42` / check error |
 | `read p | { [!e] => … }` with `read p : Maybe<T>` | check error: `Nothing` has no payload |
 | `Either<(),i64> || 0` | check error preserving outcome identity (T1) |
+| `older = d e => e.age > d` / `filter (older 7)` | member obligation in the scheme / solved at `Entry` |
+| `s = .name` / `(f => 1) .name` | `a.name: b => a -> b` / check error at the dot |
+| `find x |! log "gone"` / `find x |! find y` / `find x |! log` | `Maybe<Entry>`, the stage is a value / fallback / check error: open spot |
+| `x = 1`, `inc = x => x + 1`, `even 4`, `[] == []` | `i64` / `Num a => a -> a` / `Bool` / ambiguous |
 | non-total arms | check error, never runtime match failure |
 | `300` at a `u8` literal spot | check error |
 | dynamic numeric value outside `u8` | admitted cast then runtime Fault |

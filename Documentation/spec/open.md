@@ -4,26 +4,19 @@ These are proposals for review, not approved behavior. Examples distinguish
 choices; an implementation must not fill a gap without updating the owning
 rule. T/E/H concern checking and execution. Lexical choices are defined by
 [lexical structure](lexical.md). The user settled parser choices
-S1–S3 on 2026-09-27; [syntax](syntax.md) owns their rules.
+S1–S3 on 2026-09-27 and T1–T2 on 2026-09-29; [syntax](syntax.md) and
+[types](types.md) own their rules.
 
-## T1 — Outcome identity
+## T1 — Outcome identity (ruled)
 
-Transparent `Maybe<T> = Either<(),T>` / `Result<T,E> = Either<E,T>` aliases
-erase which names the checker saw, yet `Either` refuses `||` and `&&` while
-the other two allow them. **Proposed:** nominal prelude types with one shared
-two-sided representation; explicit conversions preserve constructor meaning.
-Alternative: introduce a specified alias/trait mechanism that retains identity.
-Discriminating case: a value typed `Either<(),i64>` must refuse `|| 0`, even
-when its runtime representation equals `Just 1`.
+Three nominal prelude types with per-type operator eligibility;
+[types](types.md) §Outcome types. Whether a backend shares their layout
+is E2/H1's.
 
-## T2 — Generalization, effects and recursion
+## T2 — Generalization, effects and recursion (ruled)
 
-“Haskell's type system” does not define Fipe's inference under host effects,
-casts and defaults. **Proposed:** generalize solved nonrecursive immutable
-bindings; infer recursive function groups monomorphically then generalize at
-the group boundary. Casts require a known target and do not manufacture a
-type to resolve ambiguity. Specify effectful/resource generalization and
-ambiguous trait defaulting before checking polymorphic host calls.
+[Types](types.md) §Core judgments, "Generalization". Effects are not
+typed in this draft; a host call is typed by its declared signature.
 
 ## T3 — Traits and declarations
 
