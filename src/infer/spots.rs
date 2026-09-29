@@ -81,6 +81,11 @@ impl Infer<'_> {
                 origin: Origin::File(stem),
                 name,
             } => self.file_value(stem, name, span),
+            // A method of a trait an accepted line declares: 06's.
+            Target::Value {
+                origin: Origin::Line(_),
+                ..
+            } => Callee::plain(self.fresh()),
             Target::Value { origin, name } => {
                 self.declared_value(origin, name, span)
             }
@@ -532,6 +537,7 @@ impl Infer<'_> {
             resolved: &resolved,
             declarations: self.declarations,
             files: self.files,
+            frame: self.frame,
             visiting: self.visiting.clone(),
             state: State::new(subst, module.expressions.len()),
             items: Vec::new(),

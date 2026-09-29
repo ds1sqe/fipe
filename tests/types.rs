@@ -117,7 +117,7 @@ fn schemes_generalize_over_the_environment_and_instantiate_fresh() {
     }];
     let scheme = Scheme::generalize(&ty, &obligations, &[b], &subst);
     assert_eq!(scheme.variables, [a]);
-    assert_eq!(scheme.to_string(), "Num a => a -> ?1");
+    assert_eq!(scheme.to_string(), "Num a => a -> b");
 
     let identity = Scheme::generalize(
         &Type::function(Type::Var(a), Type::Var(a)),

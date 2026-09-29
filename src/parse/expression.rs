@@ -466,6 +466,16 @@ impl Parser {
         let mut lines = Vec::new();
         while !self.at(close) && *self.peek() != Kind::Eof {
             let result = self.line(Context::Line).and_then(|line| {
+                // A stray closer inside the bracket wants this one.
+                if matches!(
+                    self.peek(),
+                    Kind::Symbol(
+                        Symbol::RParen | Symbol::RBracket | Symbol::RBrace
+                    )
+                ) && !self.at(close)
+                {
+                    return Err(self.expected(Expected::Symbol(close)));
+                }
                 self.line_end(Some(close))?;
                 Ok(line)
             });

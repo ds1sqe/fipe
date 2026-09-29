@@ -17,7 +17,7 @@ use crate::{
         TypeKind, TypeParameter,
     },
     decl::{Kind, Namespace},
-    resolve::{Origin, Target},
+    resolve::{Origin, Resolved, Target},
     token::Span,
     types::{Obligation, Type},
 };
@@ -30,6 +30,22 @@ pub(super) enum Scope<'m> {
     This,
     /// A declaration or file module, by name.
     Declared { module: &'m Module, origin: Origin },
+    /// A session's accepted line, through its resolved targets.
+    Line {
+        module: &'m Module,
+        resolved: &'m Resolved,
+        index: usize,
+    },
+}
+
+impl<'m> Scope<'m> {
+    /// The module whose syntax the scope reads; `this` for [`Self::This`].
+    pub(super) const fn module(&self, this: &'m Module) -> &'m Module {
+        match self {
+            Self::This => this,
+            Self::Declared { module, .. } | Self::Line { module, .. } => module,
+        }
+    }
 }
 
 /// What `Self` means while lowering.
@@ -87,6 +103,7 @@ impl<'a> Infer<'a> {
                 .iter()
                 .find(|(file, _)| file == stem)
                 .map(|(_, module)| module),
+            Origin::Line(_) => self.frame?.module(origin),
             _ => self.namespace(origin).map(|namespace| &namespace.module),
         }
     }
@@ -97,13 +114,21 @@ impl<'a> Infer<'a> {
             Origin::Prelude => Some(&declarations.prelude),
             Origin::Commands => declarations.commands.as_ref(),
             Origin::Host(name) => declarations.get_module(name),
-            Origin::This | Origin::File(_) => None,
+            Origin::This | Origin::File(_) | Origin::Line(_) => None,
         }
     }
 
     pub(super) fn scope(&self, origin: &Origin) -> Option<Scope<'a>> {
         if *origin == Origin::This {
             return Some(Scope::This);
+        }
+        if let Origin::Line(index) = origin {
+            let line = self.frame?.lines.get(*index)?;
+            return Some(Scope::Line {
+                module: &line.module,
+                resolved: &line.resolved,
+                index: *index,
+            });
         }
         Some(Scope::Declared {
             module: self.owner(origin)?,
@@ -127,10 +152,7 @@ impl<'a> Infer<'a> {
         id: TypeId,
         vars: &mut Vars,
     ) -> Type {
-        let module = match scope {
-            Scope::This => self.module,
-            Scope::Declared { module, .. } => module,
-        };
+        let module = scope.module(self.module);
         let Some(node) = module.ty(id) else {
             return self.fresh();
         };
@@ -142,7 +164,19 @@ impl<'a> Infer<'a> {
                     .map(|argument| self.lower(scope, *argument, vars))
                     .collect();
                 match scope {
-                    Scope::This => self.name_here(id, arguments, vars),
+                    Scope::This => {
+                        let resolved = self.resolved;
+                        self.name_resolved(resolved, None, id, arguments, vars)
+                    }
+                    Scope::Line {
+                        resolved, index, ..
+                    } => self.name_resolved(
+                        resolved,
+                        Some(*index),
+                        id,
+                        arguments,
+                        vars,
+                    ),
                     Scope::Declared { module, origin } => self
                         .name_declared(module, origin, name, arguments, vars),
                 }
@@ -191,16 +225,26 @@ impl<'a> Infer<'a> {
         }
     }
 
-    fn name_here(
+    /// A type name through a module's resolved targets; an accepted
+    /// line's own declarations are named by its `index`.
+    fn name_resolved(
         &mut self,
+        resolved: &Resolved,
+        index: Option<usize>,
         id: TypeId,
         arguments: Vec<Type>,
         vars: &Vars,
     ) -> Type {
-        match self.resolved.ty(id) {
+        match resolved.ty(id) {
             Some(
                 Target::Type { origin, name } | Target::Trait { origin, name },
-            ) => Type::named(origin.clone(), name, arguments),
+            ) => {
+                let origin = match (origin, index) {
+                    (Origin::This, Some(index)) => Origin::Line(index),
+                    _ => origin.clone(),
+                };
+                Type::named(origin, name, arguments)
+            }
             Some(Target::Variable(name)) => {
                 vars.names.iter().find(|(n, _)| n == name).map_or_else(
                     || Type::Rigid(name.clone()),
@@ -265,10 +309,7 @@ impl<'a> Infer<'a> {
         id: TypeId,
         vars: &mut Vars,
     ) -> (Vec<Slot>, Type, Option<usize>) {
-        let module = match scope {
-            Scope::This => self.module,
-            Scope::Declared { module, .. } => module,
-        };
+        let module = scope.module(self.module);
         let mut current = id;
         if let Some(TypeKind::Qualified { constraints, ty }) =
             module.ty(current).map(|node| &node.kind)
@@ -410,10 +451,7 @@ impl<'a> Infer<'a> {
         arguments: Option<&[Type]>,
         span: Span,
     ) -> Callee {
-        let module = match scope {
-            Scope::This => self.module,
-            Scope::Declared { module, .. } => module,
-        };
+        let module = scope.module(self.module);
         let Some((parameters, members)) = trait_item(module, class) else {
             return Callee::plain(self.fresh());
         };
@@ -528,7 +566,9 @@ impl<'a> Infer<'a> {
                     Member::Constructor { .. } => None,
                 })
                 // A private field outside its module is no spot.
-                .filter(|f| f.public || *origin == Origin::This)
+                .filter(|f| {
+                    f.public || matches!(origin, Origin::This | Origin::Line(_))
+                })
                 .collect()
         };
         let mut slots = Vec::new();
@@ -557,10 +597,19 @@ impl<'a> Infer<'a> {
         module: &'a Module,
         result: &Type,
     ) -> Option<Callee> {
+        let key = super::Key::Constructor(String::from(ty));
         if *origin == Origin::This {
-            let item = self.item(&super::Key::Constructor(String::from(ty)))?;
-            let (item_ty, heads) = (item.ty.clone(), item.heads.clone());
-            return Some(self.with_heads(item_ty, heads.as_deref()));
+            let index = self.item_index(&key)?;
+            return Some(self.item_callee(index, Span::default()));
+        }
+        if let Origin::Line(line) = origin {
+            // Written here, or by an accepted line.
+            if let Some(index) = self.item_index(&key) {
+                return Some(self.item_callee(index, Span::default()));
+            }
+            let key = (*line, String::from(ty));
+            let (start, end) = *self.frame?.constructors.get(&key)?;
+            return Some(self.local(Span { start, end }, Span::default()));
         }
         let arms: Vec<_> = impls(module, ty)
             .flat_map(|(_, members)| members)
@@ -614,7 +663,11 @@ impl<'a> Infer<'a> {
                 fields.push(Field {
                     name: super::last(&field.name),
                     ty: self.lower(&scope, field.ty, &mut vars),
-                    public: field.public || name.origin == Origin::This,
+                    public: field.public
+                        || matches!(
+                            name.origin,
+                            Origin::This | Origin::Line(_)
+                        ),
                     default: field.default.is_some(),
                 });
             }

@@ -9,8 +9,8 @@
 //! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
 
 use super::{
-    is_prelude, num, prelude, Error, Expected, Infer, Key, Lit, Local, Owed,
-    Reason, Status,
+    is_prelude, num, prelude, Error, Expected, Infer, Lit, Local, Owed, Reason,
+    Status,
 };
 use crate::{
     ast::{ExprId, ExprKind, PatternKind},
@@ -43,8 +43,8 @@ pub(super) struct Part {
 }
 
 impl Infer<'_> {
-    /// `pattern = value` (BIND). A hoisted file-level binding is typed
-    /// with its group.
+    /// `pattern = value` (BIND). An arm binding's own name is in scope
+    /// in its arms, monomorphic there and generalized after.
     pub(super) fn bind(&mut self, id: ExprId, file: bool) -> Option<Lift> {
         let module = self.module;
         let ExprKind::Bind {
@@ -56,24 +56,40 @@ impl Infer<'_> {
         else {
             return None;
         };
-        if let Some(index) = self.items.iter().position(|i| i.line == Some(id))
-        {
-            if matches!(self.state.status[index], Status::Pending) {
-                self.type_group(self.items[index].group);
-            }
-            return None;
-        }
         let mark = self.mark();
-        let expected = annotation.map(|annotation| {
+        let mut expected = annotation.map(|annotation| {
             let span = module.types[annotation.0].span;
             Expected::new(self.lower_here(annotation), span)
         });
+        if let (PatternKind::Name(name), ExprKind::Arms(arms)) = (
+            &module.patterns[pattern.0].kind,
+            &module.expressions[value.0].kind,
+        ) {
+            if !name.is_uppercase() {
+                let ty = expected.as_ref().map_or_else(
+                    || self.skeleton(arms),
+                    |expected| expected.ty.clone(),
+                );
+                let local = Local {
+                    scheme: Scheme::mono(ty.clone()),
+                    heads: Some(self.heads(arms)),
+                };
+                self.state
+                    .locals
+                    .insert((name.span.start, name.span.end), local);
+                if expected.is_none() {
+                    expected = Some(Expected::new(ty, name.span));
+                }
+            }
+        }
         let ty = self.expr(*value, expected.as_ref());
         let pattern_node = &module.patterns[pattern.0];
         match &pattern_node.kind {
             PatternKind::Name(name) if !name.is_uppercase() => {
                 let part = Part {
-                    ty: expected.map_or_else(|| ty.clone(), |e| e.ty),
+                    ty: expected
+                        .as_ref()
+                        .map_or_else(|| ty.clone(), |e| e.ty.clone()),
                     site: name.span,
                     annotated: annotation.is_some(),
                     public: *public,
@@ -148,7 +164,6 @@ impl Infer<'_> {
         }
         for (index, item) in self.items.iter().enumerate() {
             let live = match self.state.status[index] {
-                Status::Mono => true,
                 Status::Typing => !group.contains(&index),
                 Status::Pending | Status::Done(_) => false,
             };
@@ -347,8 +362,11 @@ impl Infer<'_> {
     }
 
     /// A line of the implicit main generalizes nothing: its variables
-    /// leave there and default if they can; an obligation whose
-    /// variable left the line's type is ambiguous, or `DotNeedsType`.
+    /// leave there and default if they can. A trait obligation still on
+    /// a variable is then ambiguous, in the line's type or not (types.md
+    /// §Core judgments: "a line whose target is still unknown is an
+    /// ambiguity error"); a member obligation is `DotNeedsType` once its
+    /// head has left the line's type.
     pub(super) fn line_boundary(&mut self, ty: &Type, span: Span, mark: Mark) {
         self.dots();
         self.derive(mark.obligations);
@@ -363,9 +381,11 @@ impl Infer<'_> {
             if owed.solved {
                 continue;
             }
+            let class = matches!(owed.obligation, Obligation::Class { .. });
             match self.apply(owed.obligation.subject()) {
                 Type::Var(var)
-                    if !env.contains(&var) && !stay.contains(&var) =>
+                    if !env.contains(&var)
+                        && (class || !stay.contains(&var)) =>
                 {
                     if !quiet {
                         left.push(owed.obligation);
@@ -377,15 +397,10 @@ impl Infer<'_> {
         self.left(left, span);
     }
 
-    /// At the end, a member obligation whose head is in no line's or
-    /// monomorphic item's type has left it: `DotNeedsType`.
+    /// At the end, a member obligation whose head is in no line's type
+    /// has left it: `DotNeedsType`.
     pub(super) fn left_members(&mut self) {
         let mut stay = Vec::new();
-        for (index, item) in self.items.iter().enumerate() {
-            if matches!(self.state.status[index], Status::Mono) {
-                self.apply(&item.ty).variables(&mut stay);
-            }
-        }
         for entry in &self.module.entries {
             let crate::ast::Entry::Line(id) = entry else {
                 continue;
@@ -532,24 +547,6 @@ impl Infer<'_> {
                 other: span,
             },
         );
-    }
-
-    /// A `pub` member ends closed.
-    pub(super) fn closed_members(&mut self) {
-        let open: Vec<Span> = self
-            .items
-            .iter()
-            .filter(|item| item.public && matches!(item.key, Key::Member(..)))
-            .filter(|item| {
-                let mut vars = Vec::new();
-                self.apply(&item.ty).variables(&mut vars);
-                !vars.is_empty()
-            })
-            .map(|item| item.site)
-            .collect();
-        for site in open {
-            self.error(site, Reason::NotComplete);
-        }
     }
 }
 

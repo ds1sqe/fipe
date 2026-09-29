@@ -8,6 +8,7 @@ use crate::{
         Name, PatternId, PatternKind, TypeId, TypeKind,
     },
     decl::{Declarations, Kind, Namespace},
+    frame::Frame,
     token::Span,
 };
 use alloc::{
@@ -29,6 +30,8 @@ pub enum Origin {
     Host(String),
     /// A file module supplied to `resolve`, by stem.
     File(String),
+    /// A declaration of a session's accepted line, by its index.
+    Line(usize),
 }
 
 /// What a name means.
@@ -38,7 +41,7 @@ pub enum Target {
     Local {
         site: Span,
     },
-    /// A declared or hoisted value, a trait method or an inherent member.
+    /// A declared value, a trait method or an inherent member.
     Value {
         origin: Origin,
         name: String,
@@ -83,6 +86,18 @@ pub struct Resolved {
     patterns: Vec<Option<Target>>,
     types: Vec<Option<Target>>,
     pub exports: Vec<Export>,
+    /// What the module defines at its top level, in order: a later
+    /// definition of a name shadows an earlier one.
+    pub(crate) definitions: Vec<Definition>,
+}
+
+/// A top-level name a module defines, in the type namespace or not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Definition {
+    pub name: String,
+    pub ty: bool,
+    pub target: Target,
+    pub site: Span,
 }
 
 impl Resolved {
@@ -156,6 +171,12 @@ pub enum Reason {
     PrivateField {
         field: String,
     },
+    /// A `use` that reaches its own module again, at the `use` that
+    /// closes the cycle.
+    ImportCycle,
+    /// A top-level line of a used module that is neither an item nor a
+    /// binding: a used module has no main.
+    NoMain,
 }
 
 /// Resolve one module against the prelude, the host's declarations and
@@ -168,13 +189,102 @@ pub fn resolve(
     declarations: &Declarations,
     files: &[(String, Module)],
 ) -> Result<Resolved, Vec<Error>> {
-    let mut resolver = Resolver::new(module, declarations, files);
-    resolver.collect();
-    resolver.walk();
-    if resolver.errors.is_empty() {
-        Ok(resolver.resolved)
+    let (resolved, errors) = resolve_in(module, declarations, files, None);
+    if errors.is_empty() {
+        Ok(resolved)
     } else {
-        Err(resolver.errors)
+        Err(errors)
+    }
+}
+
+/// [`resolve`] keeping what it resolved beside its errors: a name that
+/// failed has no target.
+pub(crate) fn resolve_partial(
+    module: &Module,
+    declarations: &Declarations,
+    files: &[(String, Module)],
+) -> (Resolved, Vec<Error>) {
+    resolve_in(module, declarations, files, None)
+}
+
+/// [`resolve_partial`] after the definitions of a session's accepted
+/// lines, which a name of the module finds after its own and before the
+/// prelude's.
+pub(crate) fn resolve_in(
+    module: &Module,
+    declarations: &Declarations,
+    files: &[(String, Module)],
+    frame: Option<&Frame>,
+) -> (Resolved, Vec<Error>) {
+    let mut resolver = Resolver::new(module, declarations, files);
+    resolver.frame_in = frame;
+    resolver.run()
+}
+
+/// [`resolve_partial`] of the file module `stem` among `files`, as a
+/// used module: a line that is neither an item nor a binding has no
+/// main, and a `use` that reaches `stem` again closes an import cycle.
+pub(crate) fn resolve_used(
+    module: &Module,
+    declarations: &Declarations,
+    files: &[(String, Module)],
+    stem: &str,
+) -> (Resolved, Vec<Error>) {
+    let mut resolver = Resolver::new(module, declarations, files);
+    resolver.own = Some(stem);
+    resolver.run()
+}
+
+impl Resolver<'_> {
+    fn run(mut self) -> (Resolved, Vec<Error>) {
+        self.collect();
+        self.walk();
+        let mut definitions: Vec<Definition> = self
+            .frame
+            .iter()
+            .map(|defined| Definition {
+                name: defined.name.clone(),
+                ty: defined.space == Space::Type,
+                target: defined.target.clone(),
+                site: defined.site,
+            })
+            .collect();
+        definitions.extend(self.top.iter().filter_map(|(name, target)| {
+            let Target::Local { site } = target else {
+                return None;
+            };
+            Some(Definition {
+                name: name.clone(),
+                ty: false,
+                target: target.clone(),
+                site: *site,
+            })
+        }));
+        self.resolved.definitions = definitions;
+        self.export_bindings();
+        (self.resolved, self.errors)
+    }
+
+    /// A module exports its final bindings: a name whose final
+    /// file-level binding is `pub`.
+    fn export_bindings(&mut self) {
+        let mut finals: Vec<(String, bool, Span)> = Vec::new();
+        for (name, public, site) in top_bindings(self.module) {
+            finals.retain(|(n, _, _)| *n != name);
+            finals.push((name, public, site));
+        }
+        for (name, public, span) in finals {
+            if public {
+                self.resolved.exports.push(Export {
+                    target: Target::Value {
+                        origin: Origin::This,
+                        name: name.clone(),
+                    },
+                    name,
+                    span,
+                });
+            }
+        }
     }
 }
 
@@ -224,8 +334,14 @@ struct Resolver<'a> {
     declarations: &'a Declarations,
     files: &'a [(String, Module)],
     resolved: Resolved,
-    /// The module frame: items, hoisted bindings, imports.
+    /// The module frame: items and imports.
     frame: Vec<Defined>,
+    /// A session's accepted lines, after the module frame.
+    frame_in: Option<&'a Frame>,
+    /// The file-level bindings after the walk.
+    top: Vec<(String, Target)>,
+    /// The stem of a used module being checked as one.
+    own: Option<&'a str>,
     /// Lexical scopes, innermost last; a file-level binding after its
     /// line lives in the first one.
     scopes: Vec<Vec<(String, Target)>>,
@@ -260,8 +376,12 @@ impl<'a> Resolver<'a> {
                 patterns: vec![None; module.patterns.len()],
                 types: vec![None; module.types.len()],
                 exports: Vec::new(),
+                definitions: Vec::new(),
             },
             frame: Vec::new(),
+            frame_in: None,
+            top: Vec::new(),
+            own: None,
             scopes: Vec::new(),
             self_type: None,
             members: Vec::new(),
@@ -269,8 +389,13 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Record an error once: a record type and its constructor share a
+    /// name, so a duplicate type is found twice at one site.
     fn error(&mut self, span: Span, reason: Reason) {
-        self.errors.push(Error { span, reason });
+        let error = Error { span, reason };
+        if !self.errors.contains(&error) {
+            self.errors.push(error);
+        }
     }
 
     // ---- the module frame -------------------------------------------
@@ -346,7 +471,7 @@ impl<'a> Resolver<'a> {
                         self.error(name.span, Reason::DeclarationForm);
                     }
                 },
-                Entry::Line(id) => self.hoist(*id),
+                Entry::Line(id) => self.main_line(*id),
             }
         }
         for entry in &self.module.entries {
@@ -370,6 +495,9 @@ impl<'a> Resolver<'a> {
             self.error(name.span, Reason::UnknownModule);
             return;
         };
+        if self.cycle(module) {
+            self.error(name.span, Reason::ImportCycle);
+        }
         if name.segments.len() == 1 {
             self.define(name, Space::Value, Target::Module(origin), false);
             return;
@@ -385,6 +513,36 @@ impl<'a> Resolver<'a> {
         if !found {
             self.error(name.span, Reason::NotExported);
         }
+    }
+
+    /// Whether `use stem` in the used module being checked closes an
+    /// import cycle: it names that module, or a module loaded before it
+    /// whose `use` lines reach it.
+    fn cycle(&self, stem: &str) -> bool {
+        let Some(own) = self.own else { return false };
+        if stem == own {
+            return true;
+        }
+        let position =
+            |name: &str| self.files.iter().position(|(s, _)| s == name);
+        if position(stem) >= position(own) {
+            return false;
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        let mut pending = alloc::vec![stem];
+        while let Some(next) = pending.pop() {
+            if next == own {
+                return true;
+            }
+            if seen.contains(&next) {
+                continue;
+            }
+            seen.push(next);
+            if let Some(module) = self.file(next) {
+                pending.extend(used(module));
+            }
+        }
+        false
     }
 
     /// A host module or a supplied file module, by name.
@@ -438,24 +596,14 @@ impl<'a> Resolver<'a> {
 
     /// The methods of a trait, when the trait is known.
     fn trait_methods(&self, name: &str) -> Option<Vec<String>> {
-        for entry in &self.module.entries {
-            if let Entry::Item(item) = entry {
-                if let ItemKind::Trait {
-                    name: trait_name,
-                    members,
-                    ..
-                } = &item.kind
-                {
-                    if last(trait_name) == name {
-                        return Some(
-                            members
-                                .iter()
-                                .filter(|m| !m.name.is_uppercase())
-                                .map(|m| last(&m.name))
-                                .collect(),
-                        );
-                    }
-                }
+        if let Some(methods) = trait_methods_in(self.module, name) {
+            return Some(methods);
+        }
+        if let Some(Target::Trait { origin, .. }) =
+            self.frame_in.and_then(|f| f.types.get(name))
+        {
+            if let Some(module) = self.frame_in.and_then(|f| f.module(origin)) {
+                return trait_methods_in(module, name);
             }
         }
         let declarations = self.declarations;
@@ -475,6 +623,21 @@ impl<'a> Resolver<'a> {
     /// type in the module that owns it, or a method of a trait it
     /// implements. `None` when the owner is not a module we can read.
     fn has_member(&self, ty: &Target, member: &str) -> Option<bool> {
+        if let Target::Type {
+            origin: Origin::Line(line),
+            name,
+        } = ty
+        {
+            // Its impls are in this module or in accepted lines.
+            let frame = self.frame_in?;
+            let lines = frame.impls.get(&(*line, name.clone()));
+            let found = core::iter::once(self.module)
+                .chain(lines.into_iter().flatten().filter_map(|index| {
+                    frame.lines.get(*index).map(|line| &line.module)
+                }))
+                .any(|module| self.impl_has(module, name, member));
+            return Some(found);
+        }
         let (module, name) = match ty {
             Target::Type {
                 origin: Origin::This,
@@ -498,6 +661,11 @@ impl<'a> Resolver<'a> {
             } => (self.file(stem)?, name),
             _ => return None,
         };
+        Some(self.impl_has(module, name, member))
+    }
+
+    /// Whether an impl of the type `name` in `module` has `member`.
+    fn impl_has(&self, module: &Module, name: &str, member: &str) -> bool {
         for entry in &module.entries {
             let Entry::Item(item) = entry else { continue };
             let ItemKind::Impl {
@@ -517,7 +685,7 @@ impl<'a> Resolver<'a> {
                 ImplMember::Constructor(_) => false,
             });
             if written {
-                return Some(true);
+                return true;
             }
             if let Some(trait_name) =
                 implements.and_then(|id| named(module, id))
@@ -526,24 +694,30 @@ impl<'a> Resolver<'a> {
                     .trait_methods(&trait_name)
                     .is_some_and(|methods| methods.iter().any(|m| m == member))
                 {
-                    return Some(true);
+                    return true;
                 }
             }
         }
-        Some(false)
+        false
     }
 
     /// A record's constructor is the type's name; a sum's are its members.
     fn constructors(&mut self, ty: &Name, members: &[Member], public: bool) {
         let mut sum = false;
+        let mut seen: Vec<&Name> = Vec::new();
         for member in members {
             match member {
-                Member::Field(field) => self.case(&field.name, false),
+                Member::Field(field) => {
+                    self.case(&field.name, false);
+                    self.field_once(&mut seen, &field.name);
+                }
                 Member::Constructor { name, fields, .. } => {
                     sum = true;
                     self.case(name, true);
+                    let mut own: Vec<&Name> = Vec::new();
                     for field in fields {
                         self.case(&field.name, false);
+                        self.field_once(&mut own, &field.name);
                     }
                     self.define(
                         name,
@@ -572,6 +746,17 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// One field per name in a record or a constructor.
+    fn field_once<'n>(&mut self, seen: &mut Vec<&'n Name>, name: &'n Name) {
+        let text = last(name);
+        if let Some(first) = seen.iter().find(|n| last(n) == text) {
+            let first = first.span;
+            self.error(name.span, Reason::Duplicate { first });
+        } else {
+            seen.push(name);
+        }
+    }
+
     /// `impl T` is written only in `T`'s module; an inherent impl's
     /// members are functions in scope there, and a trait impl's members
     /// are the trait's methods.
@@ -582,10 +767,24 @@ impl<'a> Resolver<'a> {
         members: &[ImplMember],
     ) {
         let span = self.module.types[target.0].span;
+        // An accepted line's type is the session's own.
         let local = named(self.module, target).is_some_and(|name| {
-            self.defined(&name, Space::Type).is_some_and(|defined| {
-                matches!(defined.target, Target::Type { .. })
-            })
+            self.defined(&name, Space::Type).map_or_else(
+                || {
+                    self.frame_in.and_then(|f| f.types.get(&name)).is_some_and(
+                        |target| {
+                            matches!(
+                                target,
+                                Target::Type {
+                                    origin: Origin::Line(_),
+                                    ..
+                                }
+                            )
+                        },
+                    )
+                },
+                |defined| matches!(defined.target, Target::Type { .. }),
+            )
         });
         if !local {
             self.error(span, Reason::ImplOutsideModule);
@@ -627,37 +826,11 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// A file-level binding whose value is an arm list is collected with
-    /// the items and may recurse.
-    fn hoist(&mut self, id: ExprId) {
-        let ExprKind::Bind {
-            public,
-            pattern,
-            value,
-            ..
-        } = &self.module.expressions[id.0].kind
-        else {
-            return;
-        };
-        let PatternKind::Name(name) = &self.module.patterns[pattern.0].kind
-        else {
-            return;
-        };
-        if !name.is_uppercase()
-            && matches!(
-                self.module.expressions[value.0].kind,
-                ExprKind::Arms(_)
-            )
-        {
-            self.define(
-                name,
-                Space::Value,
-                Target::Value {
-                    origin: Origin::This,
-                    name: last(name),
-                },
-                *public,
-            );
+    /// A used module holds items and bindings only.
+    fn main_line(&mut self, id: ExprId) {
+        let expr = &self.module.expressions[id.0];
+        if self.own.is_some() && !matches!(expr.kind, ExprKind::Bind { .. }) {
+            self.error(expr.span, Reason::NoMain);
         }
     }
 
@@ -712,6 +885,9 @@ impl<'a> Resolver<'a> {
         if let Some(defined) = self.defined(name, Space::Value) {
             return Some(defined.target.clone());
         }
+        if let Some(target) = self.frame_in.and_then(|f| f.values.get(name)) {
+            return Some(target.clone());
+        }
         let declarations = self.declarations;
         namespace_value(&declarations.prelude, Origin::Prelude, name)
             .or_else(|| {
@@ -735,6 +911,9 @@ impl<'a> Resolver<'a> {
     fn lookup_type(&self, name: &str) -> Option<Target> {
         if let Some(defined) = self.defined(name, Space::Type) {
             return Some(defined.target.clone());
+        }
+        if let Some(target) = self.frame_in.and_then(|f| f.types.get(name)) {
+            return Some(target.clone());
         }
         let declarations = self.declarations;
         namespace_type(&declarations.prelude, Origin::Prelude, name).or_else(
@@ -822,7 +1001,7 @@ impl<'a> Resolver<'a> {
                 Entry::Line(id) => self.line(*id),
             }
         }
-        self.scopes.pop();
+        self.top = self.scopes.pop().unwrap_or_default();
     }
 
     /// A line of a file, block or group: a binding is visible after it.
@@ -840,24 +1019,34 @@ impl<'a> Resolver<'a> {
         if let Some(annotation) = annotation {
             self.ty(*annotation);
         }
+        // An arm binding's own name is in scope in its arms.
+        let recursive = self.recursive(*pattern, *value);
+        if let Some(name) = recursive {
+            self.local(name);
+        }
         self.expr(*value, Position::Other);
-        let named = match &self.module.patterns[pattern.0].kind {
+        match &self.module.patterns[pattern.0].kind {
             PatternKind::Name(name) if name.is_uppercase() => {
-                // A binding is not uppercase; `hoist` defined nothing.
                 self.error(name.span, Reason::CaseRule { uppercase: false });
-                return;
             }
-            PatternKind::Name(_) => true,
-            _ => false,
-        };
-        let hoisted = named
-            && self.scopes.len() == 1
-            && matches!(
-                self.module.expressions[value.0].kind,
-                ExprKind::Arms(_)
-            );
-        if !hoisted {
-            self.bind(*pattern);
+            _ if recursive.is_some() => {}
+            _ => self.bind(*pattern),
+        }
+    }
+
+    /// The name of a binding `name = arms`, which its arms may call.
+    fn recursive(&self, pattern: PatternId, value: ExprId) -> Option<&'a Name> {
+        let module = self.module;
+        match (
+            &module.patterns[pattern.0].kind,
+            &module.expressions[value.0].kind,
+        ) {
+            (PatternKind::Name(name), ExprKind::Arms(_))
+                if !name.is_uppercase() =>
+            {
+                Some(name)
+            }
+            _ => None,
         }
     }
 
@@ -911,27 +1100,29 @@ impl<'a> Resolver<'a> {
                     self.expr(*payload, Position::Other);
                 }
             }
-            ExprKind::Binary { left, right, .. }
-            | ExprKind::Pipe { left, right, .. } => {
-                self.expr(*left, Position::Other);
-                self.expr(*right, Position::Other);
+            ExprKind::Binary { .. } | ExprKind::Pipe { .. } => {
+                // A flat chain nests to the left: walk its spine without
+                // a frame per operator, in source order.
+                let mut rights = Vec::new();
+                let mut node = id;
+                while let ExprKind::Binary { left, right, .. }
+                | ExprKind::Pipe { left, right, .. } =
+                    &self.module.expressions[node.0].kind
+                {
+                    rights.push(*right);
+                    node = *left;
+                }
+                self.expr(node, Position::Other);
+                for right in rights.into_iter().rev() {
+                    self.expr(right, Position::Other);
+                }
             }
             ExprKind::Bind {
                 pattern,
                 annotation,
                 value,
                 ..
-            } => {
-                // A binding as an arm body or a `with` body binds nothing
-                // visible after it.
-                if let Some(annotation) = annotation {
-                    self.ty(*annotation);
-                }
-                self.expr(*value, Position::Other);
-                self.scopes.push(Vec::new());
-                self.bind(*pattern);
-                self.scopes.pop();
-            }
+            } => self.inner_binding(*pattern, *annotation, *value),
             ExprKind::With { value, body, .. } => {
                 self.expr(*value, Position::Other);
                 self.expr(*body, Position::Other);
@@ -953,6 +1144,29 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+    }
+
+    /// A binding as an arm body or a `with` body binds nothing visible
+    /// after it; an arm binding still sees itself.
+    fn inner_binding(
+        &mut self,
+        pattern: PatternId,
+        annotation: Option<TypeId>,
+        value: ExprId,
+    ) {
+        if let Some(annotation) = annotation {
+            self.ty(annotation);
+        }
+        self.scopes.push(Vec::new());
+        let recursive = self.recursive(pattern, value);
+        if let Some(name) = recursive {
+            self.local(name);
+        }
+        self.expr(value, Position::Other);
+        if recursive.is_none() {
+            self.bind(pattern);
+        }
+        self.scopes.pop();
     }
 
     /// A callee stands in value position; an argument may be text.
@@ -1104,6 +1318,8 @@ impl<'a> Resolver<'a> {
                 (&self.declarations.get_module(host)?.module, true)
             }
             Origin::File(stem) => (self.file(stem)?, true),
+            // The session is one module for privacy.
+            Origin::Line(_) => (self.frame_in?.module(origin)?, false),
         })
     }
 
@@ -1398,30 +1614,77 @@ fn file_export(
                 }
                 _ => {}
             },
-            Entry::Line(id) if space == Space::Value => {
-                let ExprKind::Bind {
-                    public: true,
-                    pattern,
-                    ..
-                } = &module.expressions[id.0].kind
-                else {
-                    continue;
-                };
-                if let PatternKind::Name(bound) =
-                    &module.patterns[pattern.0].kind
-                {
-                    if last(bound) == name {
-                        return Some(Target::Value {
-                            origin,
-                            name: name.to_string(),
-                        });
-                    }
-                }
-            }
             _ => {}
         }
     }
-    None
+    // Its final binding of the name decides.
+    let exported = space == Space::Value
+        && top_bindings(module)
+            .filter(|(bound, _, _)| bound == name)
+            .last()
+            .is_some_and(|(_, public, _)| public);
+    exported.then(|| Target::Value {
+        origin,
+        name: name.to_string(),
+    })
+}
+
+/// Each file-level `name = …` binding: its name, whether it is `pub`,
+/// and its site, in order.
+fn top_bindings(
+    module: &Module,
+) -> impl Iterator<Item = (String, bool, Span)> + '_ {
+    module.entries.iter().filter_map(|entry| {
+        let Entry::Line(id) = entry else { return None };
+        let ExprKind::Bind {
+            public, pattern, ..
+        } = &module.expressions[id.0].kind
+        else {
+            return None;
+        };
+        match &module.patterns[pattern.0].kind {
+            PatternKind::Name(bound) => {
+                Some((last(bound), *public, bound.span))
+            }
+            _ => None,
+        }
+    })
+}
+
+/// The stems a module's `use` lines name.
+fn used(module: &Module) -> impl Iterator<Item = &str> {
+    module
+        .entries
+        .iter()
+        .flat_map(|entry| match entry {
+            Entry::Item(item) => match &item.kind {
+                ItemKind::Use { names, .. } => names.as_slice(),
+                _ => &[],
+            },
+            Entry::Line(_) => &[],
+        })
+        .filter_map(|name| name.segments.first().map(String::as_str))
+}
+
+/// The methods of trait `name` declared in `module`.
+fn trait_methods_in(module: &Module, name: &str) -> Option<Vec<String>> {
+    module.entries.iter().find_map(|entry| match entry {
+        Entry::Item(item) => match &item.kind {
+            ItemKind::Trait {
+                name: trait_name,
+                members,
+                ..
+            } if last(trait_name) == name => Some(
+                members
+                    .iter()
+                    .filter(|m| !m.name.is_uppercase())
+                    .map(|m| last(&m.name))
+                    .collect(),
+            ),
+            _ => None,
+        },
+        Entry::Line(_) => None,
+    })
 }
 
 fn last(name: &Name) -> String {

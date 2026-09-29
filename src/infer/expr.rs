@@ -6,8 +6,9 @@
 //! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
 
 use super::{
-    bind::in_range, is_prelude, prelude, prelude_of, Expected, Infer, Lit,
-    Owed, Reason, NUMERIC,
+    bind::{in_range, Part},
+    is_prelude, prelude, prelude_of, Expected, Infer, Lit, Owed, Reason,
+    NUMERIC,
 };
 use crate::{
     ast::{BinaryOp, ExprId, ExprKind, FieldValue, Literal, PipeOp},
@@ -85,18 +86,16 @@ impl Infer<'_> {
                 self.expr(*value, Some(&bool));
                 prelude("Bool")
             }
-            ExprKind::Binary {
-                op,
-                operator,
-                left,
-                right,
-            } => self.binary(*op, *operator, *left, *right, expected),
+            ExprKind::Binary { .. }
+            | ExprKind::Pipe {
+                op: PipeOp::Plain, ..
+            } => self.chain(id, expected),
             ExprKind::Pipe {
                 op,
                 operator,
                 left,
                 right,
-            } => self.pipe(*op, *left, *right, expected, *operator),
+            } => self.pipe(*op, *left, *right, *operator),
             ExprKind::Bind { .. } => {
                 self.bind(id, false);
                 Type::Unit
@@ -244,6 +243,25 @@ impl Infer<'_> {
         }
     }
 
+    /// A queried line: an expression is generalized like a binding's
+    /// value, its variables and obligations kept in its scheme.
+    pub(super) fn query_line(&mut self, id: ExprId) {
+        if matches!(self.module.expressions[id.0].kind, ExprKind::Bind { .. }) {
+            self.line(id, true);
+            return;
+        }
+        let mark = self.mark();
+        let ty = self.expr(id, None);
+        let part = Part {
+            ty,
+            site: self.span(id),
+            annotated: false,
+            public: false,
+        };
+        let scheme = self.generalize(&[part], mark, &[]).remove(0);
+        self.state.bindings[id.0] = Some(scheme);
+    }
+
     fn branch(
         &mut self,
         condition: ExprId,
@@ -266,27 +284,80 @@ impl Infer<'_> {
         Type::Unit
     }
 
+    /// Operators and plain pipes nested to the left, as a flat chain
+    /// parses, typed from the innermost left operand outward without a
+    /// frame per element. Each inner node is finished as [`Self::expr`]
+    /// finishes it; `id` itself is finished by its caller.
+    fn chain(&mut self, id: ExprId, expected: Option<&Expected>) -> Type {
+        let module = self.module;
+        // Each node, and whether `expected` reaches it: arithmetic
+        // passes it to its left operand, anything else does not.
+        let mut spine = Vec::new();
+        let mut node = id;
+        let mut reach = true;
+        loop {
+            match &module.expressions[node.0].kind {
+                ExprKind::Binary { op, left, .. } => {
+                    spine.push((node, reach));
+                    reach &= class(*op) == "Num";
+                    node = *left;
+                }
+                ExprKind::Pipe {
+                    op: PipeOp::Plain,
+                    left,
+                    ..
+                } => {
+                    spine.push((node, reach));
+                    reach = false;
+                    node = *left;
+                }
+                _ => break,
+            }
+        }
+        let mut ty = self.expr(node, expected.filter(|_| reach));
+        for (index, &(node, reach)) in spine.iter().enumerate().rev() {
+            let expected = expected.filter(|_| reach);
+            ty = match &module.expressions[node.0].kind {
+                ExprKind::Binary {
+                    op,
+                    operator,
+                    left,
+                    right,
+                } => self.binary(*op, *operator, (*left, ty), *right),
+                ExprKind::Pipe { left, right, .. } => {
+                    let expected = expected.map(|e| e.ty.clone());
+                    let span = self.span(*left);
+                    self.stage(*right, ty, span, expected.as_ref())
+                }
+                _ => unreachable!("the spine holds operators and pipes"),
+            };
+            if index > 0 {
+                if let Some(expected) = expected {
+                    self.unify(
+                        &expected.ty,
+                        &ty,
+                        self.span(node),
+                        expected.span,
+                    );
+                }
+                self.state.types[node.0] = Some(ty.clone());
+            }
+        }
+        ty
+    }
+
     /// Arithmetic needs one type and its `Num` obligation; comparison
-    /// one type and `Eq` or `Ord`, giving `Bool`.
+    /// one type and `Eq` or `Ord`, giving `Bool`. The left operand is
+    /// already typed.
     fn binary(
         &mut self,
         op: BinaryOp,
         operator: Span,
-        left: ExprId,
+        (left, left_ty): (ExprId, Type),
         right: ExprId,
-        expected: Option<&Expected>,
     ) -> Type {
-        let class = match op {
-            BinaryOp::Add
-            | BinaryOp::Subtract
-            | BinaryOp::Multiply
-            | BinaryOp::Divide
-            | BinaryOp::Remainder => "Num",
-            BinaryOp::Equal | BinaryOp::NotEqual => "Eq",
-            _ => "Ord",
-        };
+        let class = class(op);
         let arithmetic = class == "Num";
-        let left_ty = self.expr(left, expected.filter(|_| arithmetic));
         let sibling = Expected::new(left_ty.clone(), self.span(left));
         self.expr(right, Some(&sibling));
         self.obligation(class, left_ty.clone(), operator);
@@ -297,23 +368,19 @@ impl Infer<'_> {
         }
     }
 
+    /// A marked pipe, `||` or `&&`; a plain pipe is a [`Self::chain`].
     fn pipe(
         &mut self,
         op: PipeOp,
         left: ExprId,
         right: ExprId,
-        expected: Option<&Expected>,
         operator: Span,
     ) -> Type {
         match op {
-            PipeOp::Plain => {
-                let input = self.expr(left, None);
-                let expected = expected.map(|e| e.ty.clone());
-                self.stage(right, input, self.span(left), expected.as_ref())
-            }
             PipeOp::Good | PipeOp::Bad => {
                 self.marked(op == PipeOp::Good, left, right, operator)
             }
+            PipeOp::Plain => unreachable!("a plain pipe is a chain"),
             PipeOp::Or => self.or(left, right, operator),
             PipeOp::And => self.and(left, right, operator),
         }
@@ -412,5 +479,18 @@ impl Infer<'_> {
         };
         let fields = self.fields(&ty)?;
         Some((ty, fields))
+    }
+}
+
+/// The obligation an operator owes on its operands' type.
+const fn class(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add
+        | BinaryOp::Subtract
+        | BinaryOp::Multiply
+        | BinaryOp::Divide
+        | BinaryOp::Remainder => "Num",
+        BinaryOp::Equal | BinaryOp::NotEqual => "Eq",
+        _ => "Ord",
     }
 }

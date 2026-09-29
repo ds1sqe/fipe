@@ -186,3 +186,25 @@ fn blocks_in_heads_require_grouping() {
     }
     module("if ({ True }) { x }\nwith key ({ value }) { body }");
 }
+
+#[test]
+fn a_recovered_error_reports_no_cascade() {
+    let deep = format!("{}1{}", "(".repeat(70), ")".repeat(70));
+    let result = errors(&deep);
+    assert_eq!(result.len(), 1, "{result:?}");
+    assert_eq!(result[0].reason, Reason::NestingLimit);
+    let block = format!("f = {{\n    {deep}\n    y\n}}");
+    let result = errors(&block);
+    assert_eq!(result.len(), 1, "{result:?}");
+    assert_eq!(result[0].reason, Reason::NestingLimit);
+    let input = "q = (1 ]";
+    let result = errors(input);
+    assert_eq!(result.len(), 1, "{result:?}");
+    assert_eq!(
+        result[0].reason,
+        Reason::Expected(fipe::parse::Expected::Symbol(Symbol::RParen))
+    );
+    assert_eq!(Source::new(input).slice(result[0].span), Some("]"));
+    // A later entry's own error is still reported.
+    assert_eq!(errors("q = (1 ]\ny = (2").len(), 2);
+}

@@ -1,0 +1,293 @@
+//! What a session's accepted lines defined. A later line is resolved and
+//! typed against this frame, never against their text, so an accepted
+//! line is frozen: its names keep the targets and schemes they had.
+//!
+//! An accepted line's own declarations take `Origin::Line(index)`; its
+//! bindings stay lexical, `Target::Local` at their sites in the session's
+//! text, with their frozen schemes.
+
+use crate::{
+    ast::{Entry, ImplMember, ItemKind, Module},
+    infer::Local,
+    resolve::{Definition, Origin, Resolved, Target},
+    token::Span,
+    typed::Typed,
+    types::{Obligation, Scheme, Type, TypeName},
+};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
+
+/// A name's span in the session's text: the key of a frozen binding.
+pub type Site = (usize, usize);
+
+/// A type an accepted line declared: its line and its name.
+pub type Owner = (usize, String);
+
+/// The definitions of every accepted line, the latest winning.
+#[derive(Clone, Debug, Default)]
+pub struct Frame {
+    pub lines: Vec<Line>,
+    pub values: BTreeMap<String, Target>,
+    pub types: BTreeMap<String, Target>,
+    pub locals: BTreeMap<Site, Local>,
+    /// The lines holding impls of a type, in order.
+    pub impls: BTreeMap<Owner, Vec<usize>>,
+    /// An inherent member of a type, by name: its binding's site.
+    pub members: BTreeMap<(Owner, String), Site>,
+    /// A type's written constructor: its binding's site.
+    pub constructors: BTreeMap<Owner, Site>,
+}
+
+/// One accepted line: its parse, its resolution, what it added.
+#[derive(Clone, Debug)]
+pub struct Line {
+    pub module: Module,
+    pub resolved: Resolved,
+    delta: Delta,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Delta {
+    values: Vec<(String, Target)>,
+    types: Vec<(String, Target)>,
+    locals: Vec<(Site, Local)>,
+    impls: Vec<Owner>,
+    members: Vec<((Owner, String), Site)>,
+    constructors: Vec<(Owner, Site)>,
+}
+
+impl Frame {
+    /// The module of an accepted line's declaration.
+    pub fn module(&self, origin: &Origin) -> Option<&Module> {
+        match origin {
+            Origin::Line(index) => Some(&self.lines.get(*index)?.module),
+            _ => None,
+        }
+    }
+
+    /// Freeze a checked line as the next accepted one.
+    pub fn accept(
+        &mut self,
+        module: Module,
+        resolved: Resolved,
+        typed: &Typed,
+    ) {
+        let index = self.lines.len();
+        let delta = delta(index, &module, &resolved, typed);
+        self.add(index, &delta);
+        self.lines.push(Line {
+            module,
+            resolved,
+            delta,
+        });
+    }
+
+    /// Forget the last accepted line.
+    pub fn retract(&mut self) -> Option<Line> {
+        let line = self.lines.pop()?;
+        let lines = core::mem::take(&mut self.lines);
+        *self = Self::default();
+        for (index, line) in lines.iter().enumerate() {
+            self.add(index, &line.delta);
+        }
+        self.lines = lines;
+        Some(line)
+    }
+
+    fn add(&mut self, index: usize, delta: &Delta) {
+        self.values.extend(delta.values.iter().cloned());
+        self.types.extend(delta.types.iter().cloned());
+        self.locals.extend(delta.locals.iter().cloned());
+        for owner in &delta.impls {
+            self.impls.entry(owner.clone()).or_default().push(index);
+        }
+        self.members.extend(delta.members.iter().cloned());
+        self.constructors.extend(delta.constructors.iter().cloned());
+    }
+}
+
+/// What line `index` defines, with its declarations moved from
+/// `Origin::This` to `Origin::Line(index)`.
+fn delta(
+    index: usize,
+    module: &Module,
+    resolved: &Resolved,
+    typed: &Typed,
+) -> Delta {
+    let frozen: BTreeMap<Site, &Local> = typed
+        .frozen
+        .iter()
+        .map(|(site, local)| (*site, local))
+        .collect();
+    let mut delta = Delta::default();
+    let keep = |site: Span, delta: &mut Delta| -> bool {
+        let key = (site.start, site.end);
+        let Some(local) = frozen.get(&key) else {
+            return false;
+        };
+        delta.locals.push((key, rebase_local(local, index)));
+        true
+    };
+    for Definition {
+        name,
+        ty,
+        target,
+        site,
+    } in &resolved.definitions
+    {
+        let target = match target {
+            Target::Local { site } => {
+                if !keep(*site, &mut delta) {
+                    continue;
+                }
+                target.clone()
+            }
+            // A binding or an inherent member: its frozen scheme.
+            Target::Value {
+                origin: Origin::This,
+                name,
+            } => {
+                if keep(*site, &mut delta) {
+                    Target::Local { site: *site }
+                } else {
+                    Target::Value {
+                        origin: Origin::Line(index),
+                        name: name.clone(),
+                    }
+                }
+            }
+            other => rebase_target(other, index),
+        };
+        let list = if *ty {
+            &mut delta.types
+        } else {
+            &mut delta.values
+        };
+        list.push((name.clone(), target));
+    }
+    for entry in &module.entries {
+        let Entry::Item(item) = entry else { continue };
+        let ItemKind::Impl {
+            target,
+            implements,
+            members,
+        } = &item.kind
+        else {
+            continue;
+        };
+        let owner = match resolved.ty(*target) {
+            Some(Target::Type {
+                origin: Origin::This,
+                name,
+            }) => (index, name.clone()),
+            Some(Target::Type {
+                origin: Origin::Line(line),
+                name,
+            }) => (*line, name.clone()),
+            _ => continue,
+        };
+        delta.impls.push(owner.clone());
+        let mut constructor = None;
+        for member in members {
+            match member {
+                ImplMember::Named { name, .. } if implements.is_none() => {
+                    if keep(name.span, &mut delta) {
+                        let member = name.segments.last().cloned();
+                        let key = (owner.clone(), member.unwrap_or_default());
+                        delta
+                            .members
+                            .push((key, (name.span.start, name.span.end)));
+                    }
+                }
+                ImplMember::Constructor(arm) if constructor.is_none() => {
+                    constructor = Some(arm.span);
+                }
+                _ => {}
+            }
+        }
+        if let Some(site) = constructor {
+            if keep(site, &mut delta) {
+                let site = (site.start, site.end);
+                delta.constructors.push((owner, site));
+            }
+        }
+    }
+    delta
+}
+
+fn rebase_local(local: &Local, index: usize) -> Local {
+    let scheme = &local.scheme;
+    Local {
+        scheme: Scheme {
+            variables: scheme.variables.clone(),
+            obligations: scheme
+                .obligations
+                .iter()
+                .map(|o: &Obligation| o.map(|ty| rebase(ty, index)))
+                .collect(),
+            ty: rebase(&scheme.ty, index),
+        },
+        heads: local.heads.clone(),
+    }
+}
+
+fn rebase_target(target: &Target, index: usize) -> Target {
+    let line = || Origin::Line(index);
+    match target {
+        Target::Type {
+            origin: Origin::This,
+            name,
+        } => Target::Type {
+            origin: line(),
+            name: name.clone(),
+        },
+        Target::Trait {
+            origin: Origin::This,
+            name,
+        } => Target::Trait {
+            origin: line(),
+            name: name.clone(),
+        },
+        Target::Constructor {
+            origin: Origin::This,
+            ty,
+            name,
+        } => Target::Constructor {
+            origin: line(),
+            ty: ty.clone(),
+            name: name.clone(),
+        },
+        Target::Value {
+            origin: Origin::This,
+            name,
+        } => Target::Value {
+            origin: line(),
+            name: name.clone(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// `ty` with this line's declarations named by their line.
+pub fn rebase(ty: &Type, index: usize) -> Type {
+    match ty {
+        Type::Named { name, arguments } => Type::Named {
+            name: TypeName {
+                origin: if name.origin == Origin::This {
+                    Origin::Line(index)
+                } else {
+                    name.origin.clone()
+                },
+                name: name.name.clone(),
+            },
+            arguments: arguments.iter().map(|a| rebase(a, index)).collect(),
+        },
+        Type::Array { element, length } => Type::Array {
+            element: Box::new(rebase(element, index)),
+            length: *length,
+        },
+        Type::Function { parameter, result } => {
+            Type::function(rebase(parameter, index), rebase(result, index))
+        }
+        Type::Unit | Type::Var(_) | Type::Rigid(_) => ty.clone(),
+    }
+}

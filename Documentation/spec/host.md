@@ -14,11 +14,17 @@ main. The whole unit checks before any effect; a source, API or version
 that fails to resolve is a check error. A Rust driver supplies lines and
 file sources through the [embedding API](embed-api.md).
 
-`use module` imports a module once; `use module n` requests a host-declared
-API version; `use module.name …` brings names into scope. `pub` exports a
-binding, type or trait; a `pub` binding whose type is not complete is a
-check error, and an exported host-callable signature is monomorphic. This
-draft has no `mod`. H1 defines import identity and cycles.
+`use module` runs a module once per unit, where its first `use` stands:
+its bindings in order, effects included; a later `use` of it only brings
+names into scope. `use module n` requests a host-declared API version;
+`use module.name …` brings names into scope. A used module holds items
+and bindings only; another top-level line in it is the check error "a
+used module has no main", and a `use` that reaches its own module is the
+check error "import cycle" at that `use`. `pub` exports a binding, type
+or trait; a module exports its final bindings, a name when its final
+binding is `pub`; a `pub` binding whose type is not complete is a check
+error, and an exported host-callable signature is monomorphic. This draft
+has no `mod`. H1 defines import identity.
 
 A host declares in Fipe, with the declaration forms of
 [syntax](syntax.md): one file per host module, named by the module, and
@@ -31,9 +37,12 @@ it.
 
 ## Name lookup
 
-For a name in expression position: the nearest lexical binding, then
-this module's items and imports, then the prelude, then a host module's
-name, then the host's command namespace. An unbound name in an argument
+Bindings are sequential in every scope: a name is visible from its line
+onward, so a use above its binding does not see it; `type`, `trait` and
+`impl` are order-free, and the members of one `impl` see each other. For
+a name in expression position: the nearest lexical binding, then this
+module's items and imports, then the prelude, then a host module's name,
+then the host's command namespace. An unbound name in an argument
 position is text; anywhere else it is the check error "unknown name".
 Shadowing is lexical: `cat x` uses a bound `x`, `cat "x"` forces text. One
 dot serves every namespace. For `x.a`, resolve `x` as above, then take

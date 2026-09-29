@@ -68,7 +68,8 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `impl P { f = a => 1, b => 2 }` / `impl P { f = a => 1 b => 2 }` | member then constructor arm / error: bracket the arms |
 | `use x.inc x.Point` / `use text 2` / `use fs ver 2` | names / version / error |
 | `foo 1`, `foo` / `cat foo` | unknown name / text |
-| `f 1` before `f = a => …` / before `g = 2` | hoisted / unknown name |
+| `f 1` before `f = a => …` / `f = n => f n` / `impl P { a = … b …, b = … a … }` | unknown name / self-recursion / members see each other |
+| `pub x = 1` then `pub x = 2` in a file / `use a` inside `a` / a used module with a bare line | exports the final `x` / check error: import cycle / check error: no main |
 | `type point {}`, `type S { circle(r: f64) }`, `Point = 1` | case rule at the declaration |
 | `type T<a> {}`, `x: Show a => …`, `pub len: T` in a program | declaration form |
 | `sys.lookup`, `Polar.from`, `e.name`, `fs = e` then `fs.list` | module export / type member / members of a value, twice |

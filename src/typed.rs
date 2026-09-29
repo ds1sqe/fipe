@@ -3,6 +3,7 @@
 
 use crate::{
     ast::ExprId,
+    infer::Local,
     types::{Obligation, Scheme, Type},
 };
 use alloc::vec::Vec;
@@ -13,8 +14,10 @@ use alloc::vec::Vec;
 pub struct Typed {
     pub(crate) expressions: Vec<Option<Type>>,
     pub(crate) bindings: Vec<Option<Scheme>>,
-    /// Obligations left on variables, such as `Ord ?0`.
+    /// Obligations left on variables, such as `Ord a`.
     pub unsolved: Vec<Obligation>,
+    /// Every binding and item by its site, for a session's frame.
+    pub(crate) frozen: Vec<((usize, usize), Local)>,
 }
 
 impl Typed {

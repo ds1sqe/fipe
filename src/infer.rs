@@ -3,7 +3,8 @@
 //! The judgments of [types.md] with the arity half of spot binding from
 //! [evaluation.md] §Parameter binding. It unifies and never casts,
 //! evaluates no default and calls no host. Bindings generalize at their
-//! boundary; hoisted arm bindings are typed in reference groups.
+//! boundary; an arm binding and the members of one impl are typed as a
+//! group, monomorphic inside.
 //!
 //! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
 //! [evaluation.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/evaluation.md
@@ -20,6 +21,7 @@ mod spots;
 use crate::{
     ast::{Arm, Entry, ExprId, ExprKind, ImplMember, ItemKind, Module, Name},
     decl::Declarations,
+    frame::Frame,
     resolve::{Origin, Resolved},
     token::Span,
     typed::Typed,
@@ -114,23 +116,50 @@ pub fn infer_partial(
     declarations: &Declarations,
     files: &[(String, Module)],
 ) -> (Typed, Vec<Error>) {
-    run(module, resolved, declarations, files, &[])
+    run(module, resolved, declarations, files, None, &[], usize::MAX)
+}
+
+/// [`infer_partial`] after the definitions of a session's accepted
+/// lines, with the lines from byte `query` on queried rather than run: a
+/// queried expression line is generalized like a binding, not defaulted
+/// where it leaves, and its scheme is [`Typed::binding`] of the line.
+pub(crate) fn infer_in(
+    module: &Module,
+    resolved: &Resolved,
+    declarations: &Declarations,
+    files: &[(String, Module)],
+    frame: &Frame,
+    query: usize,
+) -> (Typed, Vec<Error>) {
+    run(
+        module,
+        resolved,
+        declarations,
+        files,
+        Some(frame),
+        &[],
+        query,
+    )
 }
 
 /// Inference with the file modules already being typed, which a cycle
-/// of `use` lines must not enter again.
+/// of `use` lines must not enter again; lines from byte `query` on are
+/// queried.
 fn run(
     module: &Module,
     resolved: &Resolved,
     declarations: &Declarations,
     files: &[(String, Module)],
+    frame: Option<&Frame>,
     visiting: &[String],
+    query: usize,
 ) -> (Typed, Vec<Error>) {
     let mut infer = Infer {
         module,
         resolved,
         declarations,
         files,
+        frame,
         visiting: visiting.to_vec(),
         state: State::new(Subst::default(), module.expressions.len()),
         items: Vec::new(),
@@ -138,11 +167,29 @@ fn run(
         self_type: None,
     };
     infer.declare();
-    infer.group_items();
-    infer.item_bodies();
+    infer.field_defaults_all();
+    let mut impls = 0;
     for entry in &module.entries {
-        if let Entry::Line(id) = entry {
-            infer.line(*id, true);
+        match entry {
+            Entry::Line(id) => {
+                if module.expressions[id.0].span.start >= query {
+                    infer.query_line(*id);
+                } else {
+                    infer.line(*id, true);
+                }
+            }
+            // An impl is order-free: typed here unless a use came first.
+            Entry::Item(item) if matches!(item.kind, ItemKind::Impl { .. }) => {
+                if infer.groups[impls]
+                    .members
+                    .iter()
+                    .any(|m| matches!(infer.state.status[*m], Status::Pending))
+                {
+                    infer.type_group(impls);
+                }
+                impls += 1;
+            }
+            Entry::Item(_) => {}
         }
     }
     infer.finish()
@@ -162,7 +209,7 @@ struct State {
     env: Vec<Type>,
     /// Per item, how far its typing is.
     status: Vec<Status>,
-    /// Uses of hoisted bindings inside their own group, unified with
+    /// Uses of impl members inside their own group, unified with
     /// the binding's type at the group's end.
     uses: Vec<Use>,
 }
@@ -215,8 +262,6 @@ enum Lit {
 
 #[derive(Clone)]
 enum Status {
-    /// Typed against its declared or skeleton type, never generalized.
-    Mono,
     Pending,
     Typing,
     Done(Scheme),
@@ -229,32 +274,50 @@ struct Use {
     span: Span,
 }
 
-#[derive(Clone)]
-struct Local {
-    scheme: Scheme,
+/// A lexical binding's scheme; a session's frame keeps its accepted
+/// lines' bindings in this form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Local {
+    pub(crate) scheme: Scheme,
     /// The spot list of a binding whose value is an arm list.
-    heads: Option<Vec<Head>>,
+    pub(crate) heads: Option<Vec<Head>>,
 }
 
 /// One head position of an arm list: its name, and whether it defaults.
-#[derive(Clone, Debug)]
-struct Head {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Head {
     name: Option<String>,
     default: bool,
 }
 
-/// A value of this module known before its line: a hoisted binding, an
-/// impl member, or a written constructor.
+/// A value of this module known before its line: an impl member, or
+/// a written constructor.
 struct Item {
     key: Key,
     ty: Type,
     heads: Option<Vec<Head>>,
-    /// The line of a hoisted binding, and its group.
-    line: Option<ExprId>,
+    /// Its impl's group, and the value it is checked with; a member's
+    /// second key has none.
     group: usize,
+    body: Option<Body>,
+    /// Typed against a written signature, whose names are rigid.
+    annotated: bool,
     /// The name, and whether it is `pub`.
     site: Span,
     public: bool,
+}
+
+/// What an impl item's type is checked against.
+#[derive(Clone)]
+enum Body {
+    Value(ExprId),
+    Arms(Vec<Arm>),
+}
+
+/// The items of one impl, typed together, and its `Self`.
+struct Group {
+    members: Vec<usize>,
+    self_type: Option<Type>,
 }
 
 impl Item {
@@ -268,8 +331,9 @@ impl Item {
             key,
             ty,
             heads,
-            line: None,
             group: 0,
+            body: None,
+            annotated: false,
             site,
             public: false,
         }
@@ -359,11 +423,13 @@ struct Infer<'a> {
     resolved: &'a Resolved,
     declarations: &'a Declarations,
     files: &'a [(String, Module)],
+    /// A session's accepted lines.
+    frame: Option<&'a Frame>,
     visiting: Vec<String>,
     state: State,
     items: Vec<Item>,
-    /// Hoisted binding groups, as item indices.
-    groups: Vec<Vec<usize>>,
+    /// The item groups, one per impl in order.
+    groups: Vec<Group>,
     /// `Self` inside an impl body.
     self_type: Option<Type>,
 }
@@ -419,16 +485,17 @@ impl Infer<'_> {
         self.state.obligations.push(Owed::new(obligation, span));
     }
 
-    fn item(&self, key: &Key) -> Option<&Item> {
-        self.items.iter().find(|item| item.key == *key)
-    }
-
     fn item_index(&self, key: &Key) -> Option<usize> {
         self.items.iter().position(|item| item.key == *key)
     }
 
     fn local(&mut self, site: Span, span: Span) -> Callee {
-        match self.state.locals.get(&(site.start, site.end)).cloned() {
+        let key = (site.start, site.end);
+        let local =
+            self.state.locals.get(&key).or_else(|| {
+                self.frame.and_then(|frame| frame.locals.get(&key))
+            });
+        match local.cloned() {
             Some(local) => {
                 let ty = self.instantiate(&local.scheme, span);
                 self.with_heads(ty, local.heads.as_deref())
@@ -459,39 +526,19 @@ impl Infer<'_> {
         ty
     }
 
-    /// The values of this module known before their lines.
+    /// The impl members of this module, known before their lines: one
+    /// group per impl, in order.
     fn declare(&mut self) {
         let module = self.module;
         for entry in &module.entries {
-            match entry {
-                Entry::Line(id) => {
-                    if let Some((name, arms, annotation)) = hoisted(module, *id)
-                    {
-                        let ty = match annotation {
-                            Some(annotation) => self.lower_here(annotation),
-                            None => self.skeleton(arms),
-                        };
-                        let key = Key::Binding(last(name));
-                        let heads = Some(self.heads(arms));
-                        let mut item = Item::new(key, ty, heads, name.span);
-                        item.line = Some(*id);
-                        item.public = matches!(
-                            module.expressions[id.0].kind,
-                            ExprKind::Bind { public: true, .. }
-                        );
-                        self.items.push(item);
-                        self.state.status.push(Status::Pending);
-                    }
-                }
-                Entry::Item(item) => {
-                    if let ItemKind::Impl {
-                        target,
-                        implements,
-                        members,
-                    } = &item.kind
-                    {
-                        self.declare_impl(*target, *implements, members);
-                    }
+            if let Entry::Item(item) = entry {
+                if let ItemKind::Impl {
+                    target,
+                    implements,
+                    members,
+                } = &item.kind
+                {
+                    self.declare_impl(*target, *implements, members);
                 }
             }
         }
@@ -504,8 +551,11 @@ impl Infer<'_> {
         members: &[ImplMember],
     ) {
         let module = self.module;
+        let group = self.groups.len();
         let ty = lower::named(module, target).unwrap_or_default();
-        self.self_type = Some(self.lower_here(target));
+        let self_type = self.lower_here(target);
+        self.self_type = Some(self_type.clone());
+        let first = self.items.len();
         let mut constructor = Vec::new();
         for member in members {
             match member {
@@ -537,12 +587,17 @@ impl Infer<'_> {
                     if implements.is_none() {
                         let key = Key::Binding(last(name));
                         let (ty, heads) = (member_ty.clone(), heads.clone());
-                        self.push_mono(Item::new(key, ty, heads, name.span));
+                        let mut item = Item::new(key, ty, heads, name.span);
+                        item.annotated = annotation.is_some();
+                        self.push_item(item, group);
                     }
                     let key = Key::Member(ty.clone(), last(name));
                     let mut item = Item::new(key, member_ty, heads, name.span);
                     item.public = *public;
-                    self.push_mono(item);
+                    item.annotated =
+                        implements.is_none() && annotation.is_some();
+                    item.body = Some(Body::Value(*value));
+                    self.push_item(item, group);
                 }
                 ImplMember::Constructor(arm) => constructor.push(arm.clone()),
                 ImplMember::Type { .. } => {}
@@ -552,19 +607,22 @@ impl Infer<'_> {
             let skeleton = self.skeleton(&constructor);
             let heads = Some(self.heads(&constructor));
             let site = item_span(&constructor);
-            self.push_mono(Item::new(
-                Key::Constructor(ty),
-                skeleton,
-                heads,
-                site,
-            ));
+            let mut item =
+                Item::new(Key::Constructor(ty), skeleton, heads, site);
+            item.body = Some(Body::Arms(constructor));
+            self.push_item(item, group);
         }
+        self.groups.push(Group {
+            members: (first..self.items.len()).collect(),
+            self_type: Some(self_type),
+        });
         self.self_type = None;
     }
 
-    fn push_mono(&mut self, item: Item) {
+    fn push_item(&mut self, mut item: Item, group: usize) {
+        item.group = group;
         self.items.push(item);
-        self.state.status.push(Status::Mono);
+        self.state.status.push(Status::Pending);
     }
 
     /// In an impl member the parameter `self` has type `Self`.
@@ -582,48 +640,14 @@ impl Infer<'_> {
         }
     }
 
-    /// Impl member values and record field defaults, checked against
-    /// their declared or skeleton types.
-    fn item_bodies(&mut self) {
+    /// Record field defaults, checked against their field's types.
+    fn field_defaults_all(&mut self) {
         let module = self.module;
         for entry in &module.entries {
-            let Entry::Item(item) = entry else { continue };
-            match &item.kind {
-                ItemKind::Impl {
-                    target, members, ..
-                } => {
-                    let ty = lower::named(module, *target).unwrap_or_default();
-                    self.self_type = Some(self.lower_here(*target));
-                    let mut constructor = Vec::new();
-                    for member in members {
-                        match member {
-                            ImplMember::Named { name, value, .. } => {
-                                let key = Key::Member(ty.clone(), last(name));
-                                let expected = self.item(&key).map(|item| {
-                                    Expected::new(item.ty.clone(), name.span)
-                                });
-                                self.expr(*value, expected.as_ref());
-                            }
-                            ImplMember::Constructor(arm) => {
-                                constructor.push(arm.clone());
-                            }
-                            ImplMember::Type { .. } => {}
-                        }
-                    }
-                    let key = Key::Constructor(ty);
-                    if let Some(item) = self.item(&key) {
-                        let expected = Expected::new(
-                            item.ty.clone(),
-                            item_span(&constructor),
-                        );
-                        self.arms(&constructor, Some(&expected));
-                    }
-                    self.self_type = None;
-                }
-                ItemKind::Type { name, members, .. } => {
+            if let Entry::Item(item) = entry {
+                if let ItemKind::Type { name, members, .. } = &item.kind {
                     self.field_defaults(name, members.as_deref());
                 }
-                _ => {}
             }
         }
     }
@@ -635,7 +659,7 @@ impl Infer<'_> {
         self.default_literals(0, &[], &[]);
         self.left_members();
         let unsolved = self.settle();
-        self.closed_members();
+        let frozen = self.frozen();
         let subst = &self.state.subst;
         let typed = Typed {
             expressions: self
@@ -652,10 +676,52 @@ impl Infer<'_> {
                 .collect(),
 
             unsolved,
+            frozen,
         };
         let mut errors = self.state.errors;
         errors.sort_by_key(|error| (error.span.start, error.span.end));
         (typed, errors)
+    }
+}
+
+impl Infer<'_> {
+    /// Every binding and item by its site, applied and quantified over
+    /// all its variables, which belong to this module's substitution.
+    fn frozen(&self) -> Vec<((usize, usize), Local)> {
+        let subst = &self.state.subst;
+        let freeze = |scheme: &Scheme| {
+            let scheme = bind::applied(scheme, subst);
+            Scheme::generalize(
+                &scheme.ty,
+                &scheme.obligations,
+                &[],
+                &Subst::default(),
+            )
+        };
+        let mut frozen: Vec<_> = self
+            .state
+            .locals
+            .iter()
+            .map(|(site, local)| {
+                let local = Local {
+                    scheme: freeze(&local.scheme),
+                    heads: local.heads.clone(),
+                };
+                (*site, local)
+            })
+            .collect();
+        for (item, status) in self.items.iter().zip(&self.state.status) {
+            let scheme = match status {
+                Status::Done(scheme) => freeze(scheme),
+                _ => freeze(&Scheme::mono(item.ty.clone())),
+            };
+            let local = Local {
+                scheme,
+                heads: item.heads.clone(),
+            };
+            frozen.push(((item.site.start, item.site.end), local));
+        }
+        frozen
     }
 }
 
@@ -696,30 +762,4 @@ fn last(name: &Name) -> String {
 
 fn item_span(arms: &[Arm]) -> Span {
     arms.first().map_or_else(Span::default, |arm| arm.span)
-}
-
-/// A file-level `name = arms` line, collected with the items.
-fn hoisted(
-    module: &Module,
-    id: ExprId,
-) -> Option<(&Name, &[Arm], Option<crate::ast::TypeId>)> {
-    let ExprKind::Bind {
-        pattern,
-        annotation,
-        value,
-        ..
-    } = &module.expressions[id.0].kind
-    else {
-        return None;
-    };
-    let crate::ast::PatternKind::Name(name) = &module.patterns[pattern.0].kind
-    else {
-        return None;
-    };
-    match &module.expressions[value.0].kind {
-        ExprKind::Arms(arms) if !name.is_uppercase() => {
-            Some((name, arms.as_slice(), *annotation))
-        }
-        _ => None,
-    }
 }

@@ -142,10 +142,11 @@ fn the_first_two_examples_resolve() {
                 target(&text, &parsed, &resolved, "map"),
                 &value(Origin::Prelude, "map")
             );
-            assert_eq!(
+            // A binding above its use, at its site.
+            assert!(matches!(
                 target(&text, &parsed, &resolved, "older"),
-                &value(Origin::This, "older")
-            );
+                Target::Local { .. }
+            ));
             let Target::Members { head, members } =
                 target(&text, &parsed, &resolved, "e.size")
             else {
@@ -212,29 +213,111 @@ fn bare_names_follow_the_lookup_order_and_shadow() {
 }
 
 #[test]
-fn file_level_arm_bindings_hoist_and_others_follow_their_line() {
-    let (parsed, resolved) = ok("f 1\nf = a => a + 1\ng = 2\ng");
+fn bindings_are_sequential_and_an_arm_binding_sees_itself() {
+    // No hoisting: a use above the binding does not see it.
+    assert_eq!(
+        errors("f 1\nf = a => a + 1"),
+        [(Reason::UnknownName, Some("f"))]
+    );
+    assert_eq!(errors("g 1\ng = 2"), [(Reason::UnknownName, Some("g"))]);
+    // In argument position an unbound name is still text.
+    let (parsed, resolved) = ok("cat f\nf = 1");
     let Entry::Line(call) = parsed.entries[0] else {
+        panic!()
+    };
+    let ExprKind::Call { arguments, .. } = &parsed.expr(call).unwrap().kind
+    else {
+        panic!()
+    };
+    let fipe::ast::ArgumentKind::Positional(word) = &arguments[0].kind else {
+        panic!()
+    };
+    assert_eq!(resolved.expr(*word), Some(&Target::Word));
+    // An arm binding's own name is in scope in its arms.
+    let (parsed, resolved) = ok("f = n => f n");
+    let Entry::Line(line) = parsed.entries[0] else {
+        panic!()
+    };
+    let ExprKind::Bind { value: arms, .. } = &parsed.expr(line).unwrap().kind
+    else {
+        panic!()
+    };
+    let ExprKind::Arms(arms) = &parsed.expr(*arms).unwrap().kind else {
+        panic!()
+    };
+    let ExprKind::Call { callee, .. } =
+        &parsed.expr(arms[0].body).unwrap().kind
+    else {
+        panic!()
+    };
+    assert_eq!(
+        resolved.expr(*callee),
+        Some(&Target::Local {
+            site: Span { start: 0, end: 1 }
+        })
+    );
+    // Mutual recursion across bindings is an unknown name at the first.
+    assert_eq!(
+        errors("even = n => odd n\nodd = n => even n"),
+        [(Reason::UnknownName, Some("odd"))]
+    );
+    // A second binding shadows, at file level as in a block.
+    let (parsed, resolved) = ok("f = a => 1\nf = b => 2\nf 3");
+    let Entry::Line(call) = parsed.entries[2] else {
         panic!()
     };
     let ExprKind::Call { callee, .. } = &parsed.expr(call).unwrap().kind else {
         panic!()
     };
-    assert_eq!(resolved.expr(*callee), Some(&value(Origin::This, "f")));
-    assert_eq!(errors("g 1\ng = 2"), [(Reason::UnknownName, Some("g"))]);
-    let dup = errors("f = a => 1\nf = b => 2");
     assert_eq!(
-        dup[0].0,
-        Reason::Duplicate {
-            first: Span { start: 0, end: 1 }
-        }
+        resolved.expr(*callee),
+        Some(&Target::Local {
+            site: Span { start: 11, end: 12 }
+        })
     );
-    assert_eq!(dup[0].1, Some("f"));
-    // Inside a block nothing hoists.
     assert_eq!(
         errors("{ h 1\n h = a => a }"),
         [(Reason::UnknownName, Some("h"))]
     );
+    // The members of one impl see each other in any order.
+    let (parsed, resolved) = ok("type P {}\n\
+        impl P { even = n => odd n, odd = n => even n }");
+    let text = "type P {}\nimpl P { even = n => odd n, odd = n => even n }";
+    assert_eq!(
+        target(text, &parsed, &resolved, "odd"),
+        &value(Origin::This, "odd")
+    );
+}
+
+#[test]
+fn exports_are_final_bindings_and_fields_are_declared_once() {
+    let (_, resolved) = ok("pub x = 1\npub x = 2");
+    let exported: Vec<_> = resolved
+        .exports
+        .iter()
+        .map(|e| (e.name.as_str(), e.span))
+        .collect();
+    assert_eq!(exported, [("x", Span { start: 14, end: 15 })]);
+    // A later private binding un-exports the name.
+    let (_, resolved) = ok("pub x = 1\nx = 2\npub y = 3");
+    let exported: Vec<_> =
+        resolved.exports.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(exported, ["y"]);
+    let duplicate = Reason::Duplicate {
+        first: Span { start: 9, end: 10 },
+    };
+    assert_eq!(
+        errors("type A { x: i64, x: i64 }"),
+        [(duplicate, Some("x"))]
+    );
+    assert_eq!(
+        errors("type S { C(a: i64, a: i64) }")[0].0,
+        Reason::Duplicate {
+            first: Span { start: 11, end: 12 }
+        }
+    );
+    // A field name may repeat across a sum's constructors.
+    ok("type S { C(a: i64), D(a: i64) }");
 }
 
 #[test]
@@ -288,12 +371,17 @@ fn the_case_rule_duplicates_and_declaration_forms_are_located() {
         errors("Point = 1"),
         [(Reason::CaseRule { uppercase: false }, Some("Point"))]
     );
-    let errors_ = errors("type A {}\ntype A {}");
+    // A record type and its constructor share the name: one duplicate.
+    let duplicate = Reason::Duplicate {
+        first: Span { start: 5, end: 6 },
+    };
     assert_eq!(
-        errors_[0].0,
-        Reason::Duplicate {
-            first: Span { start: 5, end: 6 }
-        }
+        errors("type A {}\ntype A {}"),
+        [(duplicate.clone(), Some("A"))]
+    );
+    assert_eq!(
+        errors("type A { x: i64 }\ntype A { x: i64 }"),
+        [(duplicate, Some("A"))]
     );
     for text in [
         "pub len: Vec<a> -> u64",

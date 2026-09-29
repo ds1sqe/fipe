@@ -29,8 +29,9 @@ implements the parameterized prelude traits `From<A>`, `Into<B>`,
 under the "`Self` is local" orphan rule, with at most one conversion impl
 per direction across the four traits. Fully define trait kinds, signatures,
 derived instances, default-expression evaluation and termination of
-recursive type detection before the checker milestone; hoisting, the case
-rule and name lookup are ruled and implemented by resolution.
+recursive type detection before the checker milestone; sequential
+binding, the case rule and name lookup are ruled and implemented by
+resolution.
 
 ## E1 — Evaluation and outcome rebuilding
 
@@ -52,8 +53,9 @@ backend equivalence. The current cast example requires `1.5 as i64` to Fault.
 
 ## H1 — Host and backend observables
 
-**Proposed:** identify modules by host-provided stable identity, reject import
-cycles, and fix a semantic charging schedule shared by backends. Specify
+Ruled 2026-09-29: `use` runs a module once where it stands and a cycle
+is a check error ([host](host.md)). **Proposed:** identify modules by
+host-provided stable identity and fix a semantic charging schedule shared by backends. Specify
 closure environment capture, cancellation, cleanup failure, external byte
 charging, declaration validation and codec/formatter failure in the embedding
 contract. No Reovim paths, wire hashes or placeholder budget numbers become

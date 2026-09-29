@@ -216,7 +216,7 @@ fn spots_bind_before_application() {
     assert_eq!(kinds("ls -nope"), [("UnknownSpot", "-nope")]);
     // Chained Bool flags are 07's.
     assert_eq!(kinds("ls -lr"), [("UnknownSpot", "-lr")]);
-    assert_eq!(ty("Just"), "?0 -> Maybe<?0>");
+    assert_eq!(ty("Just"), "a -> Maybe<a>");
     assert_eq!(ty("f = x => x\nf 1"), "i64");
 }
 
@@ -276,6 +276,32 @@ fn dots_read_fields_then_self_functions() {
         impl Point { dist: Point -> Point -> i64 = self q => self.x - q.x }\n";
     assert_eq!(ty(&format!("{point}p = Point 1\np.dist p")), "i64");
     assert_eq!(ty("\"3\" | read<i64>"), "Result<i64, ParseError>");
+}
+
+/// A line of main generalizes nothing: its variables leave there and
+/// default if they can, and a trait obligation still on a variable is
+/// ambiguous even when the variable is in the line's type.
+#[test]
+fn a_line_whose_target_is_unknown_is_ambiguous() {
+    let text = "read \"8080\"";
+    let [error] = errors(text).try_into().unwrap();
+    assert_eq!(
+        error.reason,
+        Reason::Ambiguous {
+            class: "Read".into()
+        }
+    );
+    assert_eq!(Source::new(text).slice(error.span), Some(text));
+    assert_eq!(kinds("x => x == x"), [("Ambiguous", "x => x == x")]);
+    // A binding generalizes instead; a known target resolves it.
+    assert_eq!(
+        ty("port = read \"8080\""),
+        "Read a => Result<a, ParseError>"
+    );
+    assert_eq!(ty("read<u16> \"8080\""), "Result<u16, ParseError>");
+    // `Num` alone defaults where the variable leaves the line.
+    assert_eq!(ty("add = a b => a + b\nadd"), "i64 -> i64 -> i64");
+    assert_eq!(ty("Just"), "a -> Maybe<a>");
 }
 
 /// Every example types, except lines whose failure is a row of 07

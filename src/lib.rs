@@ -7,6 +7,7 @@ extern crate alloc;
 pub mod ast;
 pub mod decl;
 pub mod embed;
+mod frame;
 pub mod infer;
 pub mod lex;
 pub mod parse;

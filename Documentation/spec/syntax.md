@@ -75,7 +75,9 @@ nearest unmatched `if`, across newlines.
 A line is a binding when a top-level `=` comes before its first `=>`,
 pipe, comma or newline, not counting a flag's `=` or a `=>` inside an
 annotation: `x = 1`, `[x, y] = e`, `Just x = e`, `x: i64 = e`. `=` always
-makes a new binding, so a second `x = …` shadows. `cmd -c=80` is a call
+makes a new binding, visible from its line to the end of its scope, so a
+second `x = …` shadows; an arm binding's own name is in scope in its
+arms. `cmd -c=80` is a call
 and `x => y = 1` an arm whose body binds. The value is a whole line:
 `add = a b => a + b` binds an arm list, `f: A -> B = x => …` puts the
 signature on the binding. `pub` before a file-level binding exports it;

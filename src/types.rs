@@ -355,24 +355,28 @@ impl Subst {
     }
 }
 
-/// A type in the spec's syntax; inference variables print as `?n`.
+/// A type in the spec's syntax; its inference variables print as `a`,
+/// `b`, … in order of appearance.
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write(self, f, &[])
+        let mut variables = Vec::new();
+        self.variables(&mut variables);
+        write(self, f, &letters(&variables))
     }
 }
 
 /// A scheme in the spec's syntax: `Num a => a -> a -> a`, or
 /// `a.age: b => b -> a -> Bool` for a member obligation, its quantified
-/// variables named `a`, `b`, … in order.
+/// variables named `a`, `b`, … in order, and any variable it does not
+/// quantify by the letters after them.
 impl fmt::Display for Scheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names: Vec<(Var, String)> = self
-            .variables
-            .iter()
-            .enumerate()
-            .map(|(index, var)| (*var, letter(index)))
-            .collect();
+        let mut variables = self.variables.clone();
+        for obligation in &self.obligations {
+            obligation.variables(&mut variables);
+        }
+        self.ty.variables(&mut variables);
+        let names = letters(&variables);
         for (index, obligation) in self.obligations.iter().enumerate() {
             if index > 0 {
                 f.write_str(", ")?;
@@ -394,6 +398,14 @@ impl fmt::Display for Scheme {
         }
         write(&self.ty, f, &names)
     }
+}
+
+fn letters(variables: &[Var]) -> Vec<(Var, String)> {
+    variables
+        .iter()
+        .enumerate()
+        .map(|(index, var)| (*var, letter(index)))
+        .collect()
 }
 
 fn letter(index: usize) -> String {
@@ -420,7 +432,8 @@ fn write(
         Type::Unit => f.write_str("()"),
         Type::Var(var) => match names.iter().find(|(v, _)| v == var) {
             Some((_, name)) => f.write_str(name),
-            None => write!(f, "?{}", var.0),
+            // Every variable is named before writing.
+            None => f.write_str("_"),
         },
         Type::Rigid(name) => f.write_str(name),
         Type::Named { name, arguments } => {

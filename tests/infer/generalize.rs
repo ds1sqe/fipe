@@ -26,24 +26,59 @@ fn bindings_generalize_and_uses_instantiate() {
 
 #[test]
 fn groups_are_monomorphic_inside() {
-    let parity = "even = n => if n == 0 { True } else { odd (n - 1) }\n\
-        odd = n => if n == 0 { False } else { even (n - 1) }\n";
-    assert_eq!(ty(parity.trim_end()), "Num a, Eq a => a -> Bool");
+    // The members of one impl call each other in any order: one group,
+    // generalized at its boundary.
+    let parity = "type P {}\nimpl P {\n    \
+        even = n => if n == 0 { True } else { odd (n - 1) },\n    \
+        odd = n => if n == 0 { False } else { even (n - 1) },\n}\n";
+    assert_eq!(
+        ty(&format!("{parity}e = P.even")),
+        "Num a, Eq a => a -> Bool"
+    );
     // `a` leaves at the line with numeric classes only: it defaults.
-    assert_eq!(ty(&format!("{parity}even 4")), "Bool");
-    let annotated =
-        "even: i64 -> Bool = n => if n == 0 { True } else { odd (n - 1) }\n\
-        odd = n => if n == 0 { False } else { even (n - 1) }\n";
-    assert_eq!(ty(&format!("{annotated}odd")), "i64 -> Bool");
-    // Used before its line: the group is typed first.
-    assert_eq!(ty("y = f 1\nf = x => x\ny"), "i64");
-    // No polymorphic recursion: the second use names the first.
+    assert_eq!(ty(&format!("{parity}P.even 4")), "Bool");
+    assert_eq!(ty(&format!("{parity}P.odd 4.0")), "Bool");
+    let annotated = "type P {}\nimpl P {\n    \
+        even: i64 -> Bool = n => if n == 0 { True } else { odd (n - 1) },\n    \
+        odd = n => if n == 0 { False } else { even (n - 1) },\n}\n";
+    assert_eq!(ty(&format!("{annotated}o = P.odd")), "i64 -> Bool");
+    // Used before its impl: the group is typed first.
+    assert_eq!(
+        ty("type P {}\ny = P.id 1\nimpl P { id = x => x }\ny"),
+        "i64"
+    );
+    // An arm binding calls itself, monomorphic inside, generalized after.
+    let count = "count = n => if n == 0 { 0 } else { count (n - 1) }";
+    // Its result is held only by the literal `0`: `i64`.
+    assert_eq!(ty(count), "Num a, Eq a => a -> i64");
+    assert_eq!(ty(&format!("{count}\ncount 2.0")), "i64");
+    // No polymorphic recursion: the first use fixes the parameter, so
+    // the second use's argument fails at that use.
     let text = "f = x => {\n    _ = f \"a\"\n    f True\n}";
+    let [error] = errors(text).try_into().unwrap();
+    let Reason::Mismatch {
+        expected,
+        actual,
+        other,
+    } = error.reason
+    else {
+        panic!("{:?}", error.reason)
+    };
+    let source = Source::new(text);
+    assert_eq!(source.slice(error.span), Some("True"));
+    assert_eq!(source.slice(other), Some("f True"));
+    assert_eq!(
+        (expected.to_string(), actual.to_string()),
+        ("String".into(), "Bool".into())
+    );
+    // Inside an impl the second use names the first.
+    let text =
+        "type P {}\nimpl P { f = x => {\n    _ = f \"a\"\n    f True\n} }";
     let [error] = errors(text).try_into().unwrap();
     let Reason::Mismatch { other, .. } = error.reason else {
         panic!("{:?}", error.reason)
     };
-    assert_eq!((error.span.start, other.start), (29, 19));
+    assert_eq!((error.span.start, other.start), (48, 38));
 }
 
 #[test]
@@ -70,8 +105,7 @@ fn literals_default_and_the_rest_is_ambiguous() {
     assert_eq!(ty(&format!("{inc}\ny = inc 2")), "Num a => a");
     let check = "check = n => if n < 0 { fault \"negative\" } else { Ok n }";
     assert_eq!(ty(check), "Num a, Ord a => a -> Result<a, b>");
-    let result = ty(&format!("{check}\ncheck 5"));
-    assert!(result.starts_with("Result<i64, ?"), "{result}");
+    assert_eq!(ty(&format!("{check}\ncheck 5")), "Result<i64, a>");
     // 07's cast row: `round` keeps `f64`.
     assert_eq!(kinds("n: i64 = round 2.5"), [("Mismatch", "2.5")]);
     let text = "f = s => {\n    _ = read s\n    ()\n}";

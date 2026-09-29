@@ -181,10 +181,15 @@ impl Parser {
     fn file(mut self) -> Result<Module, Vec<Error>> {
         self.newlines();
         while !matches!(self.peek(), Kind::Eof) {
+            let recorded = self.errors.len();
             match self.entry() {
                 Ok(entry) => self.module.entries.push(entry),
                 Err(error) => {
-                    self.errors.push(error);
+                    // An error recovered inside the entry is its cause;
+                    // what fails after it is a cascade.
+                    if self.errors.len() == recorded {
+                        self.errors.push(error);
+                    }
                     self.recover(None);
                 }
             }
@@ -499,11 +504,33 @@ impl Parser {
         }
     }
 
+    /// Skip to the end of the line, or inside a bracket to its `close`
+    /// outside any bracket opened while skipping, so the closer found is
+    /// the enclosing one.
     fn recover(&mut self, close: Option<Symbol>) {
+        let balance = close.is_some();
+        let mut depth = 0_usize;
         loop {
             match self.peek() {
-                Kind::Newline | Kind::Eof => break,
-                Kind::Symbol(symbol) if Some(*symbol) == close => break,
+                Kind::Newline if depth == 0 => break,
+                Kind::Eof => break,
+                Kind::Symbol(symbol)
+                    if depth == 0 && Some(*symbol) == close =>
+                {
+                    break;
+                }
+                Kind::Symbol(
+                    Symbol::LParen | Symbol::LBracket | Symbol::LBrace,
+                ) if balance => {
+                    depth += 1;
+                    self.bump();
+                }
+                Kind::Symbol(
+                    Symbol::RParen | Symbol::RBracket | Symbol::RBrace,
+                ) if balance => {
+                    depth = depth.saturating_sub(1);
+                    self.bump();
+                }
                 _ => {
                     self.bump();
                 }
