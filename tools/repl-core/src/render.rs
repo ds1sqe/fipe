@@ -47,7 +47,8 @@ pub fn syntax(reason: parse::Reason) -> String {
         | R::InvalidRestPattern
         | R::CommaBeforeLineBreak
         | R::RecordInHead
-        | R::NestingLimit => reason.to_string(),
+        | R::NestingLimit
+        | R::BindingValue => reason.to_string(),
     }
 }
 
@@ -117,6 +118,7 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::Ambiguous { class } => {
             format!("ambiguous: `{class}` on an unknown type")
         }
+        R::ImportCycle => "import cycle".into(),
     }
 }
 

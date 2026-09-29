@@ -9,10 +9,14 @@
 //! after `flush`.
 //!
 //! An entry continues onto the next line, prompted by `....> `, while it
-//! has an unclosed bracket or ends in an operator, `=` or a comma, and
-//! when the next line starts with an operator, which also takes back and
-//! continues the entry before it once that was accepted (and accepts it
-//! again if the joined entry is rejected); an empty line submits it.
+//! has an unclosed bracket or ends in an operator, `=` or a comma; an
+//! empty line submits it. A complete entry is submitted at once, and a
+//! next line that starts with an operator takes the accepted entry back
+//! and continues it (accepting it again if the joined entry is
+//! rejected), whether the lines arrive together or one at a time. A
+//! command, an empty line or a comment line ends that chance. A `:t` or
+//! `:r` query is held while its next line is read, which continues it
+//! when it starts with an operator.
 //!
 //! Commands: `:ast`, `:r [line]`, `:t [line]`, `:load <stem or path>`,
 //! `:host [dir]`, `:q`; any other line goes to the session.
@@ -36,7 +40,7 @@ use fipe::{
     embed::{Outcome, Reply, Request},
     lex::lex,
     session::{Diagnostic, Report, Session},
-    token::{Kind, Source, Span, Symbol},
+    token::{Keyword, Kind, Source, Span, Symbol, Token},
 };
 use render::Context;
 
@@ -92,6 +96,8 @@ enum Wait {
 #[derive(Clone, Copy)]
 enum Mode {
     Accept,
+    /// `:load`'s `use`, accepted like a line but never continued.
+    Load,
     Resolve,
     Types,
 }
@@ -203,6 +209,13 @@ impl Repl {
     fn run(&mut self, out: &mut Outs) {
         while !self.quit && self.wait.is_none() {
             if !self.entry.is_empty() && !opens(&self.entry) {
+                if !query(&self.entry) {
+                    // Submitted before a leading line is read, so that
+                    // line joins through `continue_last` as if typed
+                    // later.
+                    self.submit(out);
+                    continue;
+                }
                 match self.leads() {
                     Some(true) => {}
                     Some(false) => {
@@ -234,6 +247,7 @@ impl Repl {
                 if !self.entry.is_empty() {
                     self.submit(out);
                 }
+                self.retractable = None;
             } else if !self.entry.is_empty() {
                 self.entry.push('\n');
                 self.entry.push_str(line);
@@ -256,7 +270,7 @@ impl Repl {
     }
 
     /// Whether the next line starts with an operator that continues a
-    /// complete entry; `None` while that line is still arriving.
+    /// held query; `None` while that line is still arriving.
     fn leads(&self) -> Option<bool> {
         if self.input.is_empty() {
             return Some(false);
@@ -281,6 +295,7 @@ impl Repl {
             }
             return;
         };
+        self.retractable = None;
         let (name, arg) = command
             .split_once(' ')
             .map_or((command, ""), |(name, arg)| (name, arg.trim()));
@@ -330,12 +345,17 @@ impl Repl {
             let text = format!("{arg}: `{name}` is a host module\n");
             return out.write(text.as_bytes());
         }
+        let path = format!("{stem}.fipe");
+        if self.cached(&name).is_some() && self.path(&name) != path {
+            let text = format!("{file}: already loaded as `{name}`\n");
+            return out.write(text.as_bytes());
+        }
         if name != file {
             out.write(format!("{file} as {name}\n").as_bytes());
         }
         self.paths.retain(|(known, _)| *known != name);
-        self.paths.push((name.clone(), format!("{stem}.fipe")));
-        self.start(&format!("use {name}"), Mode::Accept, out);
+        self.paths.push((name.clone(), path));
+        self.start(&format!("use {name}"), Mode::Load, out);
     }
 
     fn path(&self, stem: &str) -> String {
@@ -347,7 +367,7 @@ impl Repl {
 
     fn start(&mut self, text: &str, mode: Mode, out: &mut Outs) {
         let outcome = match mode {
-            Mode::Accept => self.session.line(text),
+            Mode::Accept | Mode::Load => self.session.line(text),
             Mode::Resolve | Mode::Types => self.session.query(text),
         };
         self.step(text.to_string(), mode, outcome, out);
@@ -380,12 +400,16 @@ impl Repl {
             self.diagnostic(diagnostic, &text, out);
         }
         match mode {
-            Mode::Accept if report.diagnostics.iter().all(from_file) => {
+            Mode::Accept | Mode::Load
+                if report.diagnostics.iter().all(from_file) =>
+            {
                 self.restore = None;
-                self.retractable = Some(text.clone());
+                if matches!(mode, Mode::Accept) {
+                    self.retractable = Some(text.clone());
+                }
                 self.last = Some((report, text));
             }
-            Mode::Accept => {
+            Mode::Accept | Mode::Load => {
                 self.retractable = None;
                 if let Some(line) = self.restore.take() {
                     // Nothing is lost: the line before is kept as it was.
@@ -498,6 +522,8 @@ impl Repl {
             let report = self.replay(&line);
             self.done(report, line, Mode::Accept, out);
         }
+        // `:host` is a command: the next line starts a fresh entry.
+        self.retractable = None;
         out.write(format!("host: {dir}\n").as_bytes());
     }
 
@@ -544,12 +570,11 @@ fn located(prefix: &str, text: &str, span: Span, reason: &str, out: &mut Outs) {
         .map_or(0, |s| s.chars().count())
         .max(1);
     let row = &text[start..end];
-    let rendered = format!(
-        "{prefix}{line}:{col}: {reason}\n{row}\n{:pad$}{:^<width$}\n",
-        "",
-        "",
-        pad = col - 1,
-    );
+    // Padding by repetition: a format width panics above 65535.
+    let mut rendered = format!("{prefix}{line}:{col}: {reason}\n{row}\n");
+    rendered.push_str(&" ".repeat(col - 1));
+    rendered.push_str(&"^".repeat(width));
+    rendered.push('\n');
     out.write(rendered.as_bytes());
 }
 
@@ -643,6 +668,11 @@ fn comment(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
 
+/// A `:t` or `:r` entry, held for a next line that continues it.
+fn query(entry: &str) -> bool {
+    entry.trim_start().starts_with(':')
+}
+
 /// A fresh line may start an entry unless it is a command other than
 /// `:t` or `:r` with a line.
 fn continuable(line: &str) -> bool {
@@ -653,9 +683,10 @@ fn continuable(line: &str) -> bool {
     })
 }
 
-/// Whether an entry needs another line: an unclosed bracket, or a last
-/// token that is an operator, `=`, `->`, `=>` or a comma. A `>` touching
-/// what precedes it closes type arguments, as in `read<i64>`.
+/// Whether an entry needs another line: an unclosed bracket, a last
+/// token that is an operator, `=`, `->`, `=>` or a comma, or a bare
+/// signature waiting for its `= value`. A `>` touching what precedes it
+/// closes type arguments, as in `read<i64>`.
 fn opens(entry: &str) -> bool {
     let code = entry
         .trim_start()
@@ -663,9 +694,11 @@ fn opens(entry: &str) -> bool {
         .map_or(entry, |command| {
             command.split_once(' ').map_or("", |(_, arg)| arg)
         });
+    let tokens = lex(code).tokens;
     let mut depth = 0_isize;
     let mut trailing = false;
-    for token in lex(code).tokens {
+    let mut assigns = false;
+    for token in &tokens {
         let Kind::Symbol(symbol) = token.kind else {
             if !matches!(token.kind, Kind::Newline | Kind::Eof) {
                 trailing = false;
@@ -675,6 +708,7 @@ fn opens(entry: &str) -> bool {
         match symbol {
             Symbol::LParen | Symbol::LBracket | Symbol::LBrace => depth += 1,
             Symbol::RParen | Symbol::RBracket | Symbol::RBrace => depth -= 1,
+            Symbol::Assign if depth == 0 => assigns = true,
             _ => {}
         }
         let closes = symbol == Symbol::Greater
@@ -682,15 +716,31 @@ fn opens(entry: &str) -> bool {
         trailing = (operator(symbol) && !closes)
             || matches!(symbol, Symbol::Assign | Symbol::Arrow | Symbol::Comma);
     }
-    depth > 0 || trailing
+    depth > 0 || trailing || (!assigns && signature(&tokens))
+}
+
+/// Whether the entry starts `[pub] NAME :`, a signature's head. Only the
+/// head is scanned; the type after the colon is the parser's.
+fn signature(tokens: &[Token]) -> bool {
+    let mut kinds = tokens.iter().map(|token| &token.kind);
+    let mut first = kinds.next();
+    if matches!(first, Some(Kind::Kw(Keyword::Pub))) {
+        first = kinds.next();
+    }
+    matches!(first, Some(Kind::Name(segments)) if segments.len() == 1)
+        && matches!(kinds.next(), Some(Kind::Symbol(Symbol::Colon)))
 }
 
 /// Whether a line starts with an operator that continues the line
-/// before it: a pipe, `+ - * %`, a comparison or `=>`.
+/// before it: a pipe, `+ - * %`, a comparison, `=>` or `=`, so a
+/// signature may stand above its `= value`.
 fn leading(line: &str) -> bool {
-    lex(line).tokens.first().is_some_and(
-        |token| matches!(token.kind, Kind::Symbol(symbol) if operator(symbol)),
-    )
+    lex(line).tokens.first().is_some_and(|token| {
+        matches!(
+            token.kind,
+            Kind::Symbol(symbol) if operator(symbol) || symbol == Symbol::Assign
+        )
+    })
 }
 
 /// The operators that continue a line from either side; `/` does not,

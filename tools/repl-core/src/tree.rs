@@ -35,7 +35,9 @@ fn walk(module: &Module, node: Node, depth: usize, out: &mut String) {
         Node::L(label, children) => Some((label, children)),
     }
     .unwrap_or_default();
-    let _ = writeln!(out, "{:pad$}{label}", "", pad = depth * 2);
+    // Padding by repetition: a format width panics above 65535.
+    out.push_str(&" ".repeat(depth * 2));
+    let _ = writeln!(out, "{label}");
     for child in children {
         walk(module, child, depth + 1, out);
     }

@@ -333,3 +333,101 @@ fn a_rejected_continuation_keeps_the_line_before() {
     );
     assert_eq!(written(repl.feed(b":t y\n")), "y: i64\nfipe> ");
 }
+
+/// All written text with the prompts taken out.
+fn unprompted(outs: Vec<Out>) -> String {
+    written(outs).replace("fipe> ", "").replace("....> ", "")
+}
+
+#[test]
+fn a_rejected_join_in_one_read_keeps_the_line_before() {
+    let input = "x = 1\n+ \"a\"\n:t x\n";
+    let whole = unprompted(Repl::new().feed(input.as_bytes()));
+    let mut repl = Repl::new();
+    let mut lines = String::new();
+    for line in input.split_inclusive('\n') {
+        lines += &unprompted(repl.feed(line.as_bytes()));
+    }
+    assert_eq!(whole, lines);
+    assert!(
+        whole.starts_with("2:3: expected i64, found String\n"),
+        "{whole}"
+    );
+    assert!(whole.ends_with("x: i64\n"), "{whole}");
+}
+
+#[test]
+fn a_query_continues_onto_a_leading_line_in_the_same_read() {
+    let text = written(Repl::new().feed(b":t 1\n  + 2\n"));
+    assert_eq!(text, "1 + 2: i64\nfipe> ");
+}
+
+#[test]
+fn a_command_or_an_empty_line_ends_the_continuation() {
+    for input in [
+        "x = 1\n:t\n+ 2\n",
+        "x = 1\n\n\n+ 2\n",
+        "x = 1\n# note\n+ 2\n",
+    ] {
+        let text = written(Repl::new().feed(input.as_bytes()));
+        assert!(text.contains("1:1: expected "), "{input:?}: {text}");
+        assert!(text.contains("\n+ 2\n^"), "{input:?}: {text}");
+    }
+    let mut repl = Repl::new();
+    let outs = repl.feed(b":load k\n");
+    assert_eq!(outs, [Out::File("k.fipe".into())]);
+    written(repl.file("k.fipe", Some("pub k = 1\n")));
+    let text = written(repl.feed(b"+ 2\n"));
+    assert!(text.starts_with("1:1: expected "), "{text}");
+}
+
+#[test]
+fn load_of_a_second_file_for_a_loaded_module_changes_nothing() {
+    let mut repl = Repl::new();
+    repl.feed(b":load 01-files\n");
+    written(repl.file("01-files.fipe", Some("pub k = 1\n")));
+    let text = written(repl.feed(b":load 02-files\n"));
+    assert_eq!(text, "02-files: already loaded as `files`\nfipe> ");
+    assert_eq!(written(repl.feed(b":t files.k\n")), "files.k: i64\nfipe> ");
+    let outs = repl.feed(b":load 01-files\n");
+    assert_eq!(
+        outs,
+        [Out::Write(b"01-files as files\nfipe> ".to_vec())],
+        "reloading the same file is still allowed"
+    );
+}
+
+#[test]
+fn a_diagnostic_past_column_65535_underlines_without_a_panic() {
+    let line = format!("{}nope\n", " ".repeat(70_000));
+    let text = written(Repl::new().feed(line.as_bytes()));
+    let rows: Vec<&str> = text.lines().collect();
+    assert_eq!(rows[0], "1:70001: unknown name");
+    assert_eq!(rows[2], format!("{}^^^^", " ".repeat(70_000)));
+}
+
+#[test]
+fn a_leading_assign_continues_the_line_before() {
+    // Accepted: `  = 2` joins `x = 1` rather than standing alone,
+    // where it would be rejected at 1:3.
+    let text = written(Repl::new().feed(b"x = 1\n  = 2\n:t x\n"));
+    assert!(!text.starts_with("1:"), "{text}");
+    assert!(text.ends_with("fipe> "), "{text}");
+    // Held: a query's signature takes its `= value` line.
+    let text = written(Repl::new().feed(b":t f: i64 -> i64\n  = x => x + 1\n"));
+    assert!(!text.starts_with("1:"), "{text}");
+    // A bare signature waits for its `= value` and joins it: either the
+    // pair is accepted, or it is rejected at its second line, never the
+    // signature alone.
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"f: i64 -> i64\n")), "....> ");
+    let text = written(repl.feed(b"  = x => x + 1\n:t f\n"));
+    assert!(!text.contains("declaration form"), "{text}");
+    assert!(
+        text.starts_with("2:3: ") || text.starts_with("f: i64 -> i64\n"),
+        "{text}"
+    );
+    // An empty line submits it alone.
+    let text = written(Repl::new().feed(b"pub f: i64\n\n"));
+    assert!(text.contains("declaration form"), "{text}");
+}
