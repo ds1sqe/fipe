@@ -11,7 +11,8 @@ imports. A file is a module named by its stem; the host resolves the tree,
 supplies module identity for caching, and loads sources before evaluation.
 Items are collected before the executable top-level lines, the implicit
 main. The whole unit checks before any effect; a source, API or version
-that fails to resolve is a check error.
+that fails to resolve is a check error. A Rust driver supplies lines and
+file sources through the [embedding API](embed-api.md).
 
 `use module` imports a module once; `use module n` requests a host-declared
 API version; `use module.name …` brings names into scope. `pub` exports a

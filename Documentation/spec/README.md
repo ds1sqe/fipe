@@ -22,6 +22,7 @@ Each rule lives in one chapter; the others cite it.
 | [Types](types.md) | type identity, inference, traits, defaults, cast checking |
 | [Evaluation](evaluation.md) | application, pipelines, outcomes, pattern binding |
 | [Embedding](host.md) | compilation units, name lookup, host services, budget, backends |
+| [Embedding API](embed-api.md) | Rust request-and-reply boundary, sessions and their reports |
 | [Conformance](conformance.md) | observables and required discriminating cases |
 | [Open decisions](open.md) | proposals that are not yet language rulings |
 

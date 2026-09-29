@@ -1,3 +1,4 @@
 /target
 /tmp
 /CLAUDE.local.md
+/tools/*/target
