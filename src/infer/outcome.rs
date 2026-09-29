@@ -140,15 +140,14 @@ impl Infer<'_> {
         }
     }
 
-    /// `left |: right` and `left |! right`.
+    /// `left |: right` and `left |! right`, the left already typed.
     pub(super) fn marked(
         &mut self,
         good: bool,
-        left: ExprId,
+        (left, left_ty): (ExprId, Type),
         right: ExprId,
         operator: Span,
     ) -> Type {
-        let left_ty = self.expr(left, None);
         let left_span = self.span(left);
         let applied = self.apply(&left_ty);
         let Some((family, arguments)) = family(&applied) else {
@@ -220,14 +219,14 @@ impl Infer<'_> {
     }
 
     /// `left || right`: `Bool`, or the fallback of a `Maybe` or
-    /// `Result`: the same family first, else its good payload.
+    /// `Result`: the same family first, else its good payload. The left
+    /// is already typed.
     pub(super) fn or(
         &mut self,
-        left: ExprId,
+        (left, left_ty): (ExprId, Type),
         right: ExprId,
         operator: Span,
     ) -> Type {
-        let left_ty = self.expr(left, None);
         let left_span = self.span(left);
         let applied = self.apply(&left_ty);
         if super::is_prelude(&applied, "Bool") {
@@ -252,14 +251,14 @@ impl Infer<'_> {
         good
     }
 
-    /// `left && right` is `left |: (_ => right)`.
+    /// `left && right` is `left |: (_ => right)`, the left already
+    /// typed.
     pub(super) fn and(
         &mut self,
-        left: ExprId,
+        (left, left_ty): (ExprId, Type),
         right: ExprId,
         operator: Span,
     ) -> Type {
-        let left_ty = self.expr(left, None);
         let left_span = self.span(left);
         let applied = self.apply(&left_ty);
         if super::is_prelude(&applied, "Bool") {

@@ -86,16 +86,9 @@ impl Infer<'_> {
                 self.expr(*value, Some(&bool));
                 prelude("Bool")
             }
-            ExprKind::Binary { .. }
-            | ExprKind::Pipe {
-                op: PipeOp::Plain, ..
-            } => self.chain(id, expected),
-            ExprKind::Pipe {
-                op,
-                operator,
-                left,
-                right,
-            } => self.pipe(*op, *left, *right, *operator),
+            ExprKind::Binary { .. } | ExprKind::Pipe { .. } => {
+                self.chain(id, expected)
+            }
             ExprKind::Bind { .. } => {
                 self.bind(id, false);
                 Type::Unit
@@ -284,9 +277,9 @@ impl Infer<'_> {
         Type::Unit
     }
 
-    /// Operators and plain pipes nested to the left, as a flat chain
-    /// parses, typed from the innermost left operand outward without a
-    /// frame per element. Each inner node is finished as [`Self::expr`]
+    /// Operators and pipes nested to the left, as a flat chain parses,
+    /// typed from the innermost left operand outward without a frame
+    /// per element. Each inner node is finished as [`Self::expr`]
     /// finishes it; `id` itself is finished by its caller.
     fn chain(&mut self, id: ExprId, expected: Option<&Expected>) -> Type {
         let module = self.module;
@@ -302,11 +295,7 @@ impl Infer<'_> {
                     reach &= class(*op) == "Num";
                     node = *left;
                 }
-                ExprKind::Pipe {
-                    op: PipeOp::Plain,
-                    left,
-                    ..
-                } => {
+                ExprKind::Pipe { left, .. } => {
                     spine.push((node, reach));
                     reach = false;
                     node = *left;
@@ -324,11 +313,22 @@ impl Infer<'_> {
                     left,
                     right,
                 } => self.binary(*op, *operator, (*left, ty), *right),
-                ExprKind::Pipe { left, right, .. } => {
+                ExprKind::Pipe {
+                    op: PipeOp::Plain,
+                    left,
+                    right,
+                    ..
+                } => {
                     let expected = expected.map(|e| e.ty.clone());
                     let span = self.span(*left);
                     self.stage(*right, ty, span, expected.as_ref())
                 }
+                ExprKind::Pipe {
+                    op,
+                    operator,
+                    left,
+                    right,
+                } => self.pipe(*op, (*left, ty), *right, *operator),
                 _ => unreachable!("the spine holds operators and pipes"),
             };
             if index > 0 {
@@ -368,11 +368,12 @@ impl Infer<'_> {
         }
     }
 
-    /// A marked pipe, `||` or `&&`; a plain pipe is a [`Self::chain`].
+    /// A marked pipe, `||` or `&&` on its typed left; a plain pipe is a
+    /// stage of [`Self::chain`].
     fn pipe(
         &mut self,
         op: PipeOp,
-        left: ExprId,
+        left: (ExprId, Type),
         right: ExprId,
         operator: Span,
     ) -> Type {
@@ -380,7 +381,7 @@ impl Infer<'_> {
             PipeOp::Good | PipeOp::Bad => {
                 self.marked(op == PipeOp::Good, left, right, operator)
             }
-            PipeOp::Plain => unreachable!("a plain pipe is a chain"),
+            PipeOp::Plain => unreachable!("a plain pipe is a stage"),
             PipeOp::Or => self.or(left, right, operator),
             PipeOp::And => self.and(left, right, operator),
         }

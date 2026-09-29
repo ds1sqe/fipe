@@ -635,3 +635,80 @@ fn private_fields_are_located_outside_their_module() {
     let dup = check("type P { x: i64 }\ntype Q { y: i64 }\nimpl P { f = self => 1 }\nimpl Q { f = self => 2 }").unwrap_err();
     assert!(matches!(dup[0].0, Reason::Duplicate { .. }), "{dup:?}");
 }
+
+#[test]
+fn a_use_is_sequential_like_a_binding() {
+    // A name a `use` brings is unknown above its line.
+    assert_eq!(
+        errors("y = lookup\nuse sys.lookup"),
+        [(Reason::UnknownName, Some("lookup"))]
+    );
+    ok("use sys.lookup\ny = lookup");
+    let geometry = (
+        "geometry".to_string(),
+        module("pub type Point { pub x: i64 }\npub shown = 2"),
+    );
+    let text = "x = geometry.shown\nuse geometry";
+    let found = resolve(&module(text), &host(), &[geometry]).unwrap_err();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].reason, Reason::UnknownName);
+    assert_eq!(
+        Source::new(text).slice(found[0].span),
+        Some("geometry.shown")
+    );
+}
+
+/// The reasons and spellings of `resolve` over `text` with `files`.
+fn unit_errors(
+    text: &str,
+    files: &[(&str, &str)],
+) -> Vec<(Reason, Option<String>)> {
+    let files: Vec<_> = files
+        .iter()
+        .map(|(stem, text)| ((*stem).to_string(), module(text)))
+        .collect();
+    resolve(&module(text), &host(), &files).map_or_else(
+        |errors| {
+            errors
+                .into_iter()
+                .map(|e| {
+                    let spelled = Source::new(text).slice(e.span);
+                    (e.reason, spelled.map(str::to_string))
+                })
+                .collect()
+        },
+        |_| Vec::new(),
+    )
+}
+
+#[test]
+fn resolve_reports_an_import_cycle_without_a_session() {
+    let a = "use b\npub x = 1\n";
+    let b = "use a\npub y = 2\n";
+    // `a`, which uses `b`, which uses `a`: at the `use` that reaches it.
+    assert_eq!(
+        unit_errors(a, &[("a", a), ("b", b)]),
+        [(Reason::ImportCycle, Some("b".into()))]
+    );
+    // A module that uses itself, reported once for two `use` lines.
+    assert_eq!(
+        unit_errors("use s\nuse s.x", &[("s", "use s\npub x = 1\n")]),
+        [(Reason::ImportCycle, Some("s".into()))]
+    );
+    assert_eq!(
+        unit_errors("use b", &[("b", "use c\n"), ("c", "x = 1\n")]),
+        []
+    );
+}
+
+#[test]
+fn resolve_reports_a_used_module_with_a_main_without_a_session() {
+    let script = "pub x = 1\nls\ntype T {}\n";
+    assert_eq!(
+        unit_errors(
+            "use via\nvia.y",
+            &[("via", "use script\npub y = 1\n"), ("script", script)]
+        ),
+        [(Reason::NoMain, Some("via".into()))]
+    );
+}

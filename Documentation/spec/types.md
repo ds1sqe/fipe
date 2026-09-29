@@ -68,8 +68,9 @@ in the environment and keeps its unsolved obligations; there is no
 mutation, so no value restriction, and a host call in a value does not
 block it. An arm binding may call itself, and the members of one `impl`
 may call each other: such a group is typed monomorphically and
-generalized at its boundary, so there is no polymorphic recursion. An annotation's
-lowercase names are rigid variables and its value is checked against it; a
+generalized at its boundary, so there is no polymorphic recursion. An
+annotation's lowercase names are rigid variables and its value is checked
+against it; a
 `pub` binding ends closed, with no unsolved variable and no quantified
 variable it did not write. A variable constrained only by literals defaults
 to `i64` or `f64` at its binding, so `x = 1` is `i64`; a variable that

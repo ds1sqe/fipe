@@ -423,17 +423,20 @@ impl<'a> Infer<'a> {
         span: Span,
     ) -> Callee {
         let origin = Origin::File(String::from(stem));
-        let module = match self.owner(&origin) {
-            Some(module) if !self.visiting.iter().any(|s| s == stem) => module,
-            _ => return Callee::plain(self.fresh()),
+        let Some(module) = self.owner(&origin) else {
+            return Callee::plain(self.fresh());
         };
+        if self.visiting.iter().any(|s| s == stem) {
+            self.error(span, Reason::ImportCycle);
+            return Callee::plain(self.fresh());
+        }
         // A file whose other lines fail still types the ones that resolve;
         // the session reports its errors where it loads it.
         let (resolved, _) =
             resolve_partial(module, self.declarations, self.files);
         let mut visiting = self.visiting.clone();
         visiting.push(String::from(stem));
-        let (typed, _) = super::run(
+        let (typed, errors) = super::run(
             module,
             &resolved,
             self.declarations,
@@ -442,6 +445,11 @@ impl<'a> Infer<'a> {
             &visiting,
             usize::MAX,
         );
+        // A cycle below leaves the module's types unknown, not general.
+        if errors.iter().any(|e| e.reason == Reason::ImportCycle) {
+            self.error(span, Reason::ImportCycle);
+            return Callee::plain(self.fresh());
+        }
         // The module's final binding of the name is its export.
         let binding = module.entries.iter().rev().find_map(|entry| {
             let Entry::Line(id) = entry else { return None };

@@ -144,3 +144,29 @@ fn declared_defaults_and_self() {
         impl Point { dist = self q => self.x - q }\n";
     assert_eq!(ty(&format!("{point}p = Point 1\np.dist 2")), "i64");
 }
+
+#[test]
+fn an_inner_binding_does_not_generalize_over_the_recursive_name() {
+    // `g = f` inside `f`'s arms sees `f` monomorphic, as `f` itself is:
+    // `g` at two types is the polymorphic recursion the direct form
+    // already rejects.
+    let text = "f = n => {\n  g = f\n  a: i64 = g n\n  b: String = g n\n  a\n}";
+    assert_eq!(kinds(text), [("Mismatch", "g n")]);
+}
+
+#[test]
+fn an_early_use_of_an_impl_sees_the_bindings_its_members_name() {
+    // `id` names `k`, typed after the use: the group waits for its
+    // entry, and the use takes its scheme there.
+    let text = "type P {}\ny = P.id 1\nk = \"s\"\nimpl P { id = x => k }\ny";
+    assert_eq!(ty(text), "String");
+    // Held monomorphic until then: `f` at two types fails, at the
+    // literal that `"s"` fixed as `String`.
+    let text = "type P {}\nf = z => P.id z\na = f 1\nb = f \"s\"\n\
+        k = \"s\"\nimpl P { id = x => k }";
+    assert_eq!(kinds(text), [("Mismatch", "1")]);
+    // With `k` typed first, the early use sees the scheme at once.
+    let text = "type P {}\nk = \"s\"\nf = z => P.id z\na = f 1\n\
+        b = f \"s\"\nimpl P { id = x => k }\nb";
+    assert_eq!(ty(text), "String");
+}

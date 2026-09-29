@@ -37,13 +37,14 @@ it.
 
 ## Name lookup
 
-Bindings are sequential in every scope: a name is visible from its line
-onward, so a use above its binding does not see it; `type`, `trait` and
-`impl` are order-free, and the members of one `impl` see each other. For
-a name in expression position: the nearest lexical binding, then this
-module's items and imports, then the prelude, then a host module's name,
-then the host's command namespace. An unbound name in an argument
-position is text; anywhere else it is the check error "unknown name".
+Bindings and `use` are sequential in every scope: a name is visible from
+its line onward, so a use above its binding or `use` does not see it;
+`type`, `trait` and `impl` are order-free, and the members of one `impl`
+see each other. For a name in expression position: the nearest lexical
+binding, then this module's items and imports, then the prelude, then a
+host module's name, then the host's command namespace. An unbound name in
+an argument position is text; anywhere else it is the check error
+"unknown name".
 Shadowing is lexical: `cat x` uses a bound `x`, `cat "x"` forces text. One
 dot serves every namespace. For `x.a`, resolve `x` as above, then take
 field `a` of its type, else a function `a` in scope with a parameter named

@@ -57,6 +57,7 @@ impl Infer<'_> {
             return None;
         };
         let mark = self.mark();
+        let env = self.state.env.len();
         let mut expected = annotation.map(|annotation| {
             let span = module.types[annotation.0].span;
             Expected::new(self.lower_here(annotation), span)
@@ -77,12 +78,16 @@ impl Infer<'_> {
                 self.state
                     .locals
                     .insert((name.span.start, name.span.end), local);
+                // Monomorphic in its arms: a binding inside them must not
+                // generalize over it, or recursion would be polymorphic.
+                self.state.env.push(ty.clone());
                 if expected.is_none() {
                     expected = Some(Expected::new(ty, name.span));
                 }
             }
         }
         let ty = self.expr(*value, expected.as_ref());
+        self.state.env.truncate(env);
         let pattern_node = &module.patterns[pattern.0];
         match &pattern_node.kind {
             PatternKind::Name(name) if !name.is_uppercase() => {
@@ -156,11 +161,19 @@ impl Infer<'_> {
     }
 
     /// The free variables of the environment: every monomorphic type in
-    /// scope and every item typed without a scheme, except `group`.
+    /// scope, every use held until its group is typed, the session's
+    /// weak variables, and every item typed without a scheme, except
+    /// `group`.
     fn environment(&self, group: &[usize]) -> Vec<Var> {
         let mut vars = Vec::new();
         for ty in &self.state.env {
             self.apply(ty).variables(&mut vars);
+        }
+        for used in &self.state.deferred {
+            self.apply(&used.ty).variables(&mut vars);
+        }
+        for var in 0..self.weak {
+            self.apply(&Type::Var(Var(var))).variables(&mut vars);
         }
         for (index, item) in self.items.iter().enumerate() {
             let live = match self.state.status[index] {

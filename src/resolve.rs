@@ -172,15 +172,23 @@ pub enum Reason {
         field: String,
     },
     /// A `use` that reaches its own module again, at the `use` that
-    /// closes the cycle.
+    /// closes the cycle; from [`resolve`], at the module's `use` that
+    /// reaches the cycle.
     ImportCycle,
     /// A top-level line of a used module that is neither an item nor a
-    /// binding: a used module has no main.
+    /// binding: a used module has no main. From [`resolve`], at the
+    /// module's `use` that reaches that module.
     NoMain,
 }
 
 /// Resolve one module against the prelude, the host's declarations and
 /// the file modules its `use` lines may name.
+///
+/// The names a `use` brings
+/// are visible from its line onward, like a binding's. The file modules
+/// a `use` reaches, directly or through theirs, must hold items and
+/// bindings only and form no cycle; each fault is reported once, at the
+/// first `use` of this module that reaches it.
 ///
 /// # Errors
 /// Every located failure; the walk continues past each one.
@@ -189,7 +197,9 @@ pub fn resolve(
     declarations: &Declarations,
     files: &[(String, Module)],
 ) -> Result<Resolved, Vec<Error>> {
-    let (resolved, errors) = resolve_in(module, declarations, files, None);
+    let mut unit = Resolver::new(module, declarations, files);
+    unit.unit = true;
+    let (resolved, errors) = unit.run();
     if errors.is_empty() {
         Ok(resolved)
     } else {
@@ -197,8 +207,8 @@ pub fn resolve(
     }
 }
 
-/// [`resolve`] keeping what it resolved beside its errors: a name that
-/// failed has no target.
+/// [`resolve`] without its checks of the used modules, keeping what it
+/// resolved beside its errors: a name that failed has no target.
 pub(crate) fn resolve_partial(
     module: &Module,
     declarations: &Declarations,
@@ -342,6 +352,11 @@ struct Resolver<'a> {
     top: Vec<(String, Target)>,
     /// The stem of a used module being checked as one.
     own: Option<&'a str>,
+    /// Checking a whole unit: the file modules its `use` lines reach are
+    /// checked as used modules, reported at those lines.
+    unit: bool,
+    /// The file modules already checked for [`Self::unit`].
+    reached: Vec<String>,
     /// Lexical scopes, innermost last; a file-level binding after its
     /// line lives in the first one.
     scopes: Vec<Vec<(String, Target)>>,
@@ -382,6 +397,8 @@ impl<'a> Resolver<'a> {
             frame_in: None,
             top: Vec::new(),
             own: None,
+            unit: false,
+            reached: Vec::new(),
             scopes: Vec::new(),
             self_type: None,
             members: Vec::new(),
@@ -404,12 +421,8 @@ impl<'a> Resolver<'a> {
         for entry in &self.module.entries {
             match entry {
                 Entry::Item(item) => match &item.kind {
-                    ItemKind::Impl { .. } => {}
-                    ItemKind::Use { names, .. } => {
-                        for name in names {
-                            self.import(name);
-                        }
-                    }
+                    // A `use` is sequential: the walk brings its names.
+                    ItemKind::Impl { .. } | ItemKind::Use { .. } => {}
                     ItemKind::Type {
                         name,
                         parameters,
@@ -498,6 +511,9 @@ impl<'a> Resolver<'a> {
         if self.cycle(module) {
             self.error(name.span, Reason::ImportCycle);
         }
+        if self.unit && matches!(origin, Origin::File(_)) {
+            self.used_faults(name.span, module);
+        }
         if name.segments.len() == 1 {
             self.define(name, Space::Value, Target::Module(origin), false);
             return;
@@ -543,6 +559,56 @@ impl<'a> Resolver<'a> {
             }
         }
         false
+    }
+
+    /// Report at `span` a cycle among, or a bare line in, the file
+    /// modules `use stem` reaches that no earlier `use` reached.
+    fn used_faults(&mut self, span: Span, stem: &str) {
+        let mut reached = core::mem::take(&mut self.reached);
+        let (cycle, main) = self.reach(stem, &mut Vec::new(), &mut reached);
+        self.reached = reached;
+        if cycle {
+            self.error(span, Reason::ImportCycle);
+        }
+        if main {
+            self.error(span, Reason::NoMain);
+        }
+    }
+
+    /// Whether the file modules from `stem` on, past those `reached`,
+    /// return to one on the `path` of uses that led here, and whether one
+    /// has a line that is neither an item nor a binding.
+    fn reach<'s>(
+        &'s self,
+        stem: &'s str,
+        path: &mut Vec<&'s str>,
+        reached: &mut Vec<String>,
+    ) -> (bool, bool) {
+        if path.contains(&stem) {
+            return (true, false);
+        }
+        if reached.iter().any(|r| r == stem)
+            || self.declarations.get_module(stem).is_some()
+        {
+            return (false, false);
+        }
+        let Some(module) = self.file(stem) else {
+            return (false, false);
+        };
+        let mut main = module.entries.iter().any(|entry| {
+            matches!(entry, Entry::Line(id)
+                if !matches!(module.expressions[id.0].kind, ExprKind::Bind { .. }))
+        });
+        let mut cycle = false;
+        path.push(stem);
+        for next in used(module) {
+            let (c, m) = self.reach(next, path, reached);
+            cycle |= c;
+            main |= m;
+        }
+        path.pop();
+        reached.push(String::from(stem));
+        (cycle, main)
     }
 
     /// A host module or a supplied file module, by name.
@@ -932,7 +998,12 @@ impl<'a> Resolver<'a> {
         for entry in &self.module.entries {
             match entry {
                 Entry::Item(item) => match &item.kind {
-                    ItemKind::Use { .. } | ItemKind::Declare { .. } => {}
+                    ItemKind::Use { names, .. } => {
+                        for name in names {
+                            self.import(name);
+                        }
+                    }
+                    ItemKind::Declare { .. } => {}
                     ItemKind::Type { name, members, .. } => {
                         self.self_type = Some(last(name));
                         let mut fields = Vec::new();

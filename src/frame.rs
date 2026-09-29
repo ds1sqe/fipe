@@ -12,7 +12,7 @@ use crate::{
     resolve::{Definition, Origin, Resolved, Target},
     token::Span,
     typed::Typed,
-    types::{Obligation, Scheme, Type, TypeName},
+    types::{Obligation, Scheme, Subst, Type, TypeName},
 };
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 
@@ -35,6 +35,9 @@ pub struct Frame {
     pub members: BTreeMap<(Owner, String), Site>,
     /// A type's written constructor: its binding's site.
     pub constructors: BTreeMap<Owner, Site>,
+    /// The weak variables: a monomorphic binding's variables, which a
+    /// later line may solve. Every line's inference starts from them.
+    pub weak: Subst,
 }
 
 /// One accepted line: its parse, its resolution, what it added.
@@ -53,6 +56,8 @@ struct Delta {
     impls: Vec<Owner>,
     members: Vec<((Owner, String), Site)>,
     constructors: Vec<(Owner, Site)>,
+    /// The weak variables after the line.
+    weak: Subst,
 }
 
 impl Frame {
@@ -72,7 +77,8 @@ impl Frame {
         typed: &Typed,
     ) {
         let index = self.lines.len();
-        let delta = delta(index, &module, &resolved, typed);
+        let mut delta = delta(index, &module, &resolved, typed);
+        delta.weak = rebase_weak(&typed.weak, index);
         self.add(index, &delta);
         self.lines.push(Line {
             module,
@@ -102,6 +108,7 @@ impl Frame {
         }
         self.members.extend(delta.members.iter().cloned());
         self.constructors.extend(delta.constructors.iter().cloned());
+        self.weak = delta.weak.clone();
     }
 }
 
@@ -212,6 +219,15 @@ fn delta(
         }
     }
     delta
+}
+
+fn rebase_weak(weak: &Subst, index: usize) -> Subst {
+    let bindings = weak.bindings().iter();
+    Subst::from_bindings(
+        bindings
+            .map(|ty| ty.as_ref().map(|ty| rebase(ty, index)))
+            .collect(),
+    )
 }
 
 fn rebase_local(local: &Local, index: usize) -> Local {

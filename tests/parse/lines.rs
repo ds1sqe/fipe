@@ -130,6 +130,45 @@ fn a_new_line_starts_at_flags_literals_not_and_root_paths() {
 }
 
 #[test]
+fn a_leading_assign_continues_a_signature() {
+    // A signature above its `= value` is one binding.
+    let text = "describe: C -> String\n  = x => repr x.r";
+    let (parsed, id) = only(text);
+    let ExprKind::Bind {
+        annotation: Some(annotation),
+        value,
+        ..
+    } = node(&parsed, id)
+    else {
+        panic!("{:?}", node(&parsed, id))
+    };
+    let source = Source::new(text);
+    assert_eq!(
+        source.slice(parsed.ty(*annotation).unwrap().span),
+        Some("C -> String")
+    );
+    assert!(matches!(node(&parsed, *value), ExprKind::Arms(_)));
+    // A second `=` is an error at that `=`, on one line or leading.
+    for (text, at) in [("x = 1 = 2", 6), ("x = 1\n  = 2", 8)] {
+        let [error] = errors(text).try_into().unwrap();
+        assert_eq!(error.reason, Reason::BindingValue, "{text:?}");
+        assert_eq!(error.span.start, at, "{text:?}");
+    }
+    // A binding as an arm body or a block line is still a binding.
+    only("f = x => y = 1");
+    only("f = x => {\n  [a] = x\n  a\n}");
+    // A first-line `=` and one after a blank line continue nothing.
+    let reasons = |text: &str| -> Vec<Reason> {
+        errors(text).into_iter().map(|e| e.reason).collect()
+    };
+    assert_eq!(reasons("= 2"), [Reason::Expected(Expected::Pattern)]);
+    assert_eq!(
+        reasons("describe: C -> String\n\n  = x => x"),
+        [Reason::Expected(Expected::Pattern)]
+    );
+}
+
+#[test]
 fn a_blank_or_comment_line_ends_continuation() {
     for input in [
         "a\n\n|: b",

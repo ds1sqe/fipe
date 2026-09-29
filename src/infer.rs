@@ -22,10 +22,10 @@ use crate::{
     ast::{Arm, Entry, ExprId, ExprKind, ImplMember, ItemKind, Module, Name},
     decl::Declarations,
     frame::Frame,
-    resolve::{Origin, Resolved},
+    resolve::{Origin, Resolved, Target},
     token::Span,
     typed::Typed,
-    types::{Mismatch, Obligation, Scheme, Subst, Type},
+    types::{replace, Mismatch, Obligation, Scheme, Subst, Type, Var},
 };
 use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 
@@ -86,6 +86,9 @@ pub enum Reason {
     Ambiguous {
         class: String,
     },
+    /// A value of a file module reached again through its own `use`
+    /// lines, which has no type; resolve reports the cycle at its `use`.
+    ImportCycle,
 }
 
 /// Type one resolved module. `files` are the file modules its `use`
@@ -154,6 +157,7 @@ fn run(
     visiting: &[String],
     query: usize,
 ) -> (Typed, Vec<Error>) {
+    let subst = frame.map_or_else(Subst::default, |f| f.weak.clone());
     let mut infer = Infer {
         module,
         resolved,
@@ -161,7 +165,8 @@ fn run(
         files,
         frame,
         visiting: visiting.to_vec(),
-        state: State::new(Subst::default(), module.expressions.len()),
+        weak: subst.count(),
+        state: State::new(subst, module.expressions.len()),
         items: Vec::new(),
         groups: Vec::new(),
         self_type: None,
@@ -178,7 +183,8 @@ fn run(
                     infer.line(*id, true);
                 }
             }
-            // An impl is order-free: typed here unless a use came first.
+            // An impl is order-free: typed here unless a use typed it
+            // first (`groups.rs`).
             Entry::Item(item) if matches!(item.kind, ItemKind::Impl { .. }) => {
                 if infer.groups[impls]
                     .members
@@ -212,6 +218,9 @@ struct State {
     /// Uses of impl members inside their own group, unified with
     /// the binding's type at the group's end.
     uses: Vec<Use>,
+    /// Uses of impl members before their group could be typed, held
+    /// monomorphic until it is and then unified with its scheme.
+    deferred: Vec<Use>,
 }
 
 impl State {
@@ -227,6 +236,7 @@ impl State {
             env: Vec::new(),
             status: Vec::new(),
             uses: Vec::new(),
+            deferred: Vec::new(),
         }
     }
 }
@@ -318,6 +328,8 @@ enum Body {
 struct Group {
     members: Vec<usize>,
     self_type: Option<Type>,
+    /// The sites of the file-level bindings its members name.
+    names: Vec<Span>,
 }
 
 impl Item {
@@ -426,6 +438,9 @@ struct Infer<'a> {
     /// A session's accepted lines.
     frame: Option<&'a Frame>,
     visiting: Vec<String>,
+    /// The session's weak variables, `Var(0)` up to this: free in every
+    /// line after the one that left them.
+    weak: u32,
     state: State,
     items: Vec<Item>,
     /// The item groups, one per impl in order.
@@ -539,9 +554,31 @@ impl Infer<'_> {
                 } = &item.kind
                 {
                     self.declare_impl(*target, *implements, members);
+                    let names = self.outside_names(item.span);
+                    if let Some(group) = self.groups.last_mut() {
+                        group.names = names;
+                    }
                 }
             }
         }
+    }
+
+    /// The sites of the bindings named inside `span` but bound outside.
+    fn outside_names(&self, span: Span) -> Vec<Span> {
+        let inside = |s: Span| span.start <= s.start && s.end <= span.end;
+        let mut names = Vec::new();
+        for (id, target) in self.resolved.expressions() {
+            let mut target = target;
+            while let Target::Members { head, .. } = target {
+                target = head;
+            }
+            if let Target::Local { site } = target {
+                if inside(self.span(id)) && !inside(*site) {
+                    names.push(*site);
+                }
+            }
+        }
+        names
     }
 
     fn declare_impl(
@@ -615,6 +652,7 @@ impl Infer<'_> {
         self.groups.push(Group {
             members: (first..self.items.len()).collect(),
             self_type: Some(self_type),
+            names: Vec::new(),
         });
         self.self_type = None;
     }
@@ -659,7 +697,7 @@ impl Infer<'_> {
         self.default_literals(0, &[], &[]);
         self.left_members();
         let unsolved = self.settle();
-        let frozen = self.frozen();
+        let (frozen, weak) = self.frozen();
         let subst = &self.state.subst;
         let typed = Typed {
             expressions: self
@@ -677,6 +715,7 @@ impl Infer<'_> {
 
             unsolved,
             frozen,
+            weak,
         };
         let mut errors = self.state.errors;
         errors.sort_by_key(|error| (error.span.start, error.span.end));
@@ -684,19 +723,62 @@ impl Infer<'_> {
     }
 }
 
+/// Every binding and item of a module by its site, frozen.
+type Frozen = Vec<((usize, usize), Local)>;
+
+/// The first variable a frozen scheme quantifies: its variables are
+/// numbered apart from the weak ones, which later lines extend.
+const QUANTIFIED: u32 = 1 << 31;
+
 impl Infer<'_> {
-    /// Every binding and item by its site, applied and quantified over
-    /// all its variables, which belong to this module's substitution.
-    fn frozen(&self) -> Vec<((usize, usize), Local)> {
+    /// Every binding and item by its site, applied and generalized
+    /// against the file-level environment, and the weak variables after
+    /// this module. A pattern-bound binding is monomorphic in a file, so
+    /// it freezes monomorphic: its variables stay weak, shared with the
+    /// lines after it, which may solve them as the file's later lines
+    /// would. Every other variable is quantified.
+    fn frozen(&self) -> (Frozen, Subst) {
         let subst = &self.state.subst;
+        // The earlier lines' weak variables and the file-level
+        // monomorphic types: parameters and blocks have left `env`.
+        let mut env = Vec::new();
+        for var in 0..self.weak {
+            subst.apply(&Type::Var(Var(var))).variables(&mut env);
+        }
+        for ty in &self.state.env {
+            subst.apply(ty).variables(&mut env);
+        }
+        self.close(&mut env);
+        // New weak variables follow the earlier ones.
+        let mut weak: Vec<(Var, Type)> = Vec::new();
+        for var in env.iter().filter(|var| var.0 >= self.weak) {
+            let next = self.weak.saturating_add(count(weak.len()));
+            weak.push((*var, Type::Var(Var(next))));
+        }
         let freeze = |scheme: &Scheme| {
             let scheme = bind::applied(scheme, subst);
-            Scheme::generalize(
+            let general = Scheme::generalize(
                 &scheme.ty,
                 &scheme.obligations,
-                &[],
+                &env,
                 &Subst::default(),
-            )
+            );
+            let mut names = weak.clone();
+            let mut variables = Vec::new();
+            for (index, var) in general.variables.iter().enumerate() {
+                let name = Var(QUANTIFIED.saturating_add(count(index)));
+                names.push((*var, Type::Var(name)));
+                variables.push(name);
+            }
+            Scheme {
+                variables,
+                obligations: general
+                    .obligations
+                    .iter()
+                    .map(|o| o.map(|ty| replace(ty, &names)))
+                    .collect(),
+                ty: replace(&general.ty, &names),
+            }
         };
         let mut frozen: Vec<_> = self
             .state
@@ -721,8 +803,17 @@ impl Infer<'_> {
             };
             frozen.push(((item.site.start, item.site.end), local));
         }
-        frozen
+        let earlier = (0..self.weak).map(|var| {
+            let ty = subst.apply(&Type::Var(Var(var)));
+            (ty != Type::Var(Var(var))).then(|| replace(&ty, &weak))
+        });
+        let later = weak.iter().map(|_| None);
+        (frozen, Subst::from_bindings(earlier.chain(later).collect()))
     }
+}
+
+fn count(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
 }
 
 /// The `Num` stub: whether a type is numeric, `None` while unknown.

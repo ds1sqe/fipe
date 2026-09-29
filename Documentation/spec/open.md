@@ -55,8 +55,8 @@ backend equivalence. The current cast example requires `1.5 as i64` to Fault.
 
 Ruled 2026-09-29: `use` runs a module once where it stands and a cycle
 is a check error ([host](host.md)). **Proposed:** identify modules by
-host-provided stable identity and fix a semantic charging schedule shared by backends. Specify
-closure environment capture, cancellation, cleanup failure, external byte
-charging, declaration validation and codec/formatter failure in the embedding
-contract. No Reovim paths, wire hashes or placeholder budget numbers become
+host-provided stable identity and fix a semantic charging schedule shared
+by backends. Specify closure environment capture, cancellation, cleanup
+failure, external byte charging, declaration validation and
+codec/formatter failure in the embedding contract. No Reovim paths, wire hashes or placeholder budget numbers become
 language constants. Tests replay one host response/effect trace on each backend.

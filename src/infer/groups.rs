@@ -1,38 +1,53 @@
 //! The members of one impl ([types.md] Generalization): they see each
 //! other in any order, so they are typed as one group, monomorphically,
-//! and generalized at its boundary, when the impl's entry or a first
-//! outside use comes. A use inside the group takes a copy of the
-//! member's type, unified with it at the group's end, so a use at a
-//! second type names both uses: there is no polymorphic recursion. An
-//! arm binding calling itself is the one-binding case, in `bind.rs`.
+//! and generalized at its boundary. A use inside the group takes a copy
+//! of the member's type, unified with it at the group's end, so a use
+//! at a second type names both uses: there is no polymorphic recursion.
+//! An arm binding calling itself is the one-binding case, in `bind.rs`.
+//!
+//! An impl is order-free, but the bindings its members name are
+//! sequential. The group is typed at its first use when every
+//! file-level binding it names is typed by then, so an early use sees
+//! its scheme; otherwise at the impl's own entry, where they all are,
+//! and a use before that holds a copy that stays monomorphic until the
+//! group is generalized, then is unified with an instance of its scheme.
+//! Typing the group early would read those bindings as unknown, and
+//! typing them out of order would break their sequence.
 //!
 //! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
 
 use super::{bind::Part, Body, Callee, Expected, Infer, Status, Use};
 use crate::{
     token::Span,
-    types::{Scheme, Subst},
+    types::{Scheme, Subst, Type},
 };
 use alloc::vec::Vec;
 
 impl Infer<'_> {
     /// A value of this module's impls: an instance of the member's
-    /// scheme, typing its group first; a copy inside the group.
+    /// scheme, typing its group first when it can be; a copy inside the
+    /// group or before it can be typed.
     pub(super) fn item_callee(&mut self, index: usize, span: Span) -> Callee {
-        let (ty, heads) = {
+        let (ty, heads, group) = {
             let item = &self.items[index];
-            (item.ty.clone(), item.heads.clone())
+            (item.ty.clone(), item.heads.clone(), item.group)
         };
         let ty = match self.state.status[index].clone() {
-            Status::Pending => {
-                self.type_group(self.items[index].group);
+            Status::Pending if self.ready(group) => {
+                self.type_group(group);
                 return self.item_callee(index, span);
             }
+            Status::Pending => {
+                let copy = self.copy(&ty);
+                self.state.deferred.push(Use {
+                    item: index,
+                    ty: copy.clone(),
+                    span,
+                });
+                copy
+            }
             Status::Typing => {
-                let applied = self.apply(&ty);
-                let whole =
-                    Scheme::generalize(&applied, &[], &[], &Subst::default());
-                let (copy, _) = whole.instantiate(&mut self.state.subst);
+                let copy = self.copy(&ty);
                 self.state.uses.push(Use {
                     item: index,
                     ty: copy.clone(),
@@ -43,6 +58,22 @@ impl Infer<'_> {
             Status::Done(scheme) => self.instantiate(&scheme, span),
         };
         self.with_heads(ty, heads.as_deref())
+    }
+
+    /// A member's type with fresh variables throughout.
+    fn copy(&mut self, ty: &Type) -> Type {
+        let applied = self.apply(ty);
+        let whole = Scheme::generalize(&applied, &[], &[], &Subst::default());
+        whole.instantiate(&mut self.state.subst).0
+    }
+
+    /// Whether every file-level binding the group names is typed.
+    fn ready(&self, group: usize) -> bool {
+        self.groups[group].names.iter().all(|site| {
+            let key = (site.start, site.end);
+            self.state.locals.contains_key(&key)
+                || self.frame.is_some_and(|f| f.locals.contains_key(&key))
+        })
     }
 
     /// Type one impl's members, then generalize them together.
@@ -66,6 +97,26 @@ impl Infer<'_> {
             self.state.status[*member] = Status::Done(scheme);
         }
         self.self_type = outer;
+        self.flush_deferred(&members);
+    }
+
+    /// Unify each use made before the group was typed with an instance
+    /// of its member's scheme, at that use.
+    fn flush_deferred(&mut self, members: &[usize]) {
+        let (mine, rest): (Vec<Use>, Vec<Use>) =
+            core::mem::take(&mut self.state.deferred)
+                .into_iter()
+                .partition(|u| members.contains(&u.item));
+        self.state.deferred = rest;
+        for used in mine {
+            let Status::Done(scheme) = self.state.status[used.item].clone()
+            else {
+                continue;
+            };
+            let ty = self.instantiate(&scheme, used.span);
+            let site = self.items[used.item].site;
+            self.unify(&ty, &used.ty, used.span, site);
+        }
     }
 
     /// A member's value, checked against its item's type.

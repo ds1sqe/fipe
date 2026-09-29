@@ -28,8 +28,9 @@ fixed-array type. A line continues across one newline exactly when:
   `=>`. A trailing `/` is the root path, not a continuation, so `ls /` ends
   there.
 - **Before a leading operator**, when no blank line intervenes: a pipe,
-  `+ - * %`, `/` followed by an operand, a comparison or `=>`. `!`, a
-  negative literal, a flag such as `-b` and a lone `/` begin a new line.
+  `+ - * %`, `/` followed by an operand, a comparison, `=>` or `=`, so a
+  signature may stand above its `= value`. `!`, a negative literal, a
+  flag such as `-b` and a lone `/` begin a new line.
 - **After a trailing comma** inside a list, and after a list's opener or
   before its closer.
 - **Across a backslash join**, which the lexer performs.

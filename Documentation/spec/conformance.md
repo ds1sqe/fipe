@@ -46,6 +46,7 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `add 2 - 1` / `add (2 - 1)` | rejected argument operator / grouped operand |
 | `cat x > y` / `x > y` | rejected argument operator / comparison, at every position |
 | `find x` LF `|: cat` LF `|! log` | one pipeline: leading operators continue |
+| `f: A -> B` LF `  = x => x` / `x = 1` LF `  = 2` | one binding: leading `=` continues / error as `x = 1 = 2` |
 | `a` LF `- b` / `a` LF `-b` / `a` LF `-5` | `a - b` / two lines, flag / two lines, literal |
 | `a` LF LF `|: b`; `a` LF `# c` LF `|: b` | blank line ends continuation: error at `|:` |
 | `ls /` LF `next` / `8` LF `/ 2` | root path, then a line / division |
@@ -68,7 +69,7 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `impl P { f = a => 1, b => 2 }` / `impl P { f = a => 1 b => 2 }` | member then constructor arm / error: bracket the arms |
 | `use x.inc x.Point` / `use text 2` / `use fs ver 2` | names / version / error |
 | `foo 1`, `foo` / `cat foo` | unknown name / text |
-| `f 1` before `f = a => …` / `f = n => f n` / `impl P { a = … b …, b = … a … }` | unknown name / self-recursion / members see each other |
+| `f 1` before `f = a => …` / `lookup` before `use sys.lookup` / `f = n => f n` / `impl P { a = … b …, b = … a … }` | unknown name, twice / self-recursion / members see each other |
 | `pub x = 1` then `pub x = 2` in a file / `use a` inside `a` / a used module with a bare line | exports the final `x` / check error: import cycle / check error: no main |
 | `type point {}`, `type S { circle(r: f64) }`, `Point = 1` | case rule at the declaration |
 | `type T<a> {}`, `x: Show a => …`, `pub len: T` in a program | declaration form |

@@ -605,3 +605,76 @@ fn a_module_exports_its_final_bindings() {
     let report = done(session.query("m.y"));
     assert_eq!(only_resolve(&report), (Reason::UnknownMember, span(0, 3)));
 }
+
+#[test]
+fn a_value_reached_through_an_import_cycle_has_no_type() {
+    let mut session = Session::new(host());
+    let Outcome::Request(_) = session.line("use a") else {
+        panic!()
+    };
+    let a = "use b\npub x = b.y\n";
+    let Outcome::Request(_) = session.reply(Reply::File(Some(a.into()))) else {
+        panic!()
+    };
+    let b = "use a\npub y = a.x\n";
+    done(session.reply(Reply::File(Some(b.into()))));
+    // Not a fresh variable that would type `a.x` as anything.
+    let report = done(session.query("a.x"));
+    let cycle = report.diagnostics.iter().any(|diagnostic| {
+        matches!(diagnostic, Diagnostic::Type(error)
+            if error.reason == fipe::infer::Reason::ImportCycle
+                && error.span == span(0, 3))
+    });
+    assert!(cycle, "{:?}", report.diagnostics);
+}
+
+/// The reasons of a line's type diagnostics.
+fn type_reasons(report: &Report) -> Vec<fipe::infer::Reason> {
+    report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| match diagnostic {
+            Diagnostic::Type(error) => error.reason.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_pattern_bound_binding_stays_monomorphic_across_lines() {
+    // As in a file: the first use fixes `f`, the second fails.
+    let mut session = Session::new(host());
+    ok(&mut session, "[f] = [(x => x)]");
+    ok(&mut session, "a = f 1");
+    let report = done(session.line("b = f \"s\""));
+    assert!(matches!(
+        type_reasons(&report).as_slice(),
+        [fipe::infer::Reason::Mismatch { .. }]
+    ));
+    assert_eq!(query(&mut session, "f"), "i64 -> i64");
+    // Retracting the line that fixed it frees it again.
+    assert_eq!(session.retract().as_deref(), Some("a = f 1"));
+    ok(&mut session, "b = f \"s\"");
+    // A binding over it shares its variable; a constructor pattern too.
+    let mut session = Session::new(host());
+    ok(&mut session, "Just g = Just (x => x)");
+    ok(&mut session, "h = y => g y");
+    ok(&mut session, "c = h \"s\"");
+    assert_eq!(query(&mut session, "g"), "String -> String");
+    assert!(matches!(
+        type_reasons(&done(session.line("h 1"))).as_slice(),
+        [fipe::infer::Reason::Mismatch { .. }, ..]
+    ));
+    // A generalized binding still freezes as a scheme.
+    ok(&mut session, "id = x => x");
+    ok(&mut session, "d = id 1");
+    ok(&mut session, "e = id \"s\"");
+}
+
+#[test]
+fn a_signature_above_its_value_is_one_line() {
+    let mut session = Session::new(host());
+    let report = ok(&mut session, "describe: i64 -> String\n  = x => show x");
+    assert_eq!(report.entries().len(), 1);
+    assert_eq!(query(&mut session, "describe"), "i64 -> String");
+}

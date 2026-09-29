@@ -4,7 +4,7 @@
 use crate::{
     ast::ExprId,
     infer::Local,
-    types::{Obligation, Scheme, Type},
+    types::{Obligation, Scheme, Subst, Type},
 };
 use alloc::vec::Vec;
 
@@ -18,6 +18,9 @@ pub struct Typed {
     pub unsolved: Vec<Obligation>,
     /// Every binding and item by its site, for a session's frame.
     pub(crate) frozen: Vec<((usize, usize), Local)>,
+    /// The weak variables after this module: those its frozen
+    /// monomorphic types share with the lines after it.
+    pub(crate) weak: Subst,
 }
 
 impl Typed {

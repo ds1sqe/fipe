@@ -539,6 +539,7 @@ impl Infer<'_> {
             files: self.files,
             frame: self.frame,
             visiting: self.visiting.clone(),
+            weak: self.weak,
             state: State::new(subst, module.expressions.len()),
             items: Vec::new(),
             groups: Vec::new(),

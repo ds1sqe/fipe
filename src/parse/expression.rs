@@ -35,6 +35,12 @@ impl Parser {
             None
         };
         self.expect(Symbol::Assign)?;
+        if let Some(span) = self.assign_ahead() {
+            return Err(Error {
+                span,
+                reason: Reason::BindingValue,
+            });
+        }
         let value = self.line(context)?;
         Ok(self.expression(
             ExprKind::Bind {

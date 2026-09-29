@@ -212,7 +212,8 @@ impl Scheme {
     }
 }
 
-fn replace(ty: &Type, fresh: &[(Var, Type)]) -> Type {
+/// `ty` with each listed variable replaced.
+pub(crate) fn replace(ty: &Type, fresh: &[(Var, Type)]) -> Type {
     match ty {
         Type::Var(var) => fresh
             .iter()
@@ -254,6 +255,24 @@ pub struct Subst {
 }
 
 impl Subst {
+    /// A substitution over `bindings`, one per variable from `Var(0)`.
+    #[must_use]
+    pub(crate) const fn from_bindings(bindings: Vec<Option<Type>>) -> Self {
+        Self { bindings }
+    }
+
+    /// Each variable's solution, from `Var(0)`.
+    #[must_use]
+    pub(crate) fn bindings(&self) -> &[Option<Type>] {
+        &self.bindings
+    }
+
+    /// How many variables it has made.
+    #[must_use]
+    pub(crate) fn count(&self) -> u32 {
+        u32::try_from(self.bindings.len()).unwrap_or(u32::MAX)
+    }
+
     pub fn fresh(&mut self) -> Var {
         self.bindings.push(None);
         Var(u32::try_from(self.bindings.len() - 1).unwrap_or(u32::MAX))

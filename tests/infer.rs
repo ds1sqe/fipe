@@ -101,6 +101,7 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::OutOfRange => "OutOfRange",
         Reason::NotComplete => "NotComplete",
         Reason::Ambiguous { .. } => "Ambiguous",
+        Reason::ImportCycle => "ImportCycle",
     }
 }
 
@@ -491,3 +492,15 @@ mod generalize;
 
 #[path = "infer/members.rs"]
 mod members;
+
+#[test]
+fn long_marked_and_fallback_chains_type_without_deep_recursion() {
+    // Flat chains nest to the left; each element must not take a frame.
+    let marked = "|: f ".repeat(5_000);
+    let text = format!("f = x => x + 1\nm = Just 1\nm {marked}");
+    assert_eq!(ty(&text), "Maybe<i64>");
+    let fallback = "|| False ".repeat(20_000);
+    assert_eq!(ty(&format!("True {fallback}")), "Bool");
+    let and = "&& True ".repeat(20_000);
+    assert_eq!(ty(&format!("True {and}")), "Bool");
+}

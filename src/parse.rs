@@ -38,6 +38,8 @@ pub enum Reason {
     /// A record literal in an `if` or `with` head, where `{` is the body.
     RecordInHead,
     NestingLimit,
+    /// A second top-level `=`: a binding's value is not a binding.
+    BindingValue,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +81,9 @@ impl fmt::Display for Reason {
                 f.write_str("group a record used in an `if` or `with` head")
             }
             Self::NestingLimit => f.write_str("parser nesting limit exceeded"),
+            Self::BindingValue => {
+                f.write_str("a binding's value is not a binding")
+            }
         }
     }
 }
@@ -223,14 +228,21 @@ impl Parser {
     }
 
     /// Whether this line is a binding: a depth-zero `=` before its first
-    /// `=>`, pipe, comma or newline, not counting an `=` after a flag. A
-    /// `=>` after a depth-zero `:` belongs to the annotation's constraints.
+    /// `=>`, pipe, comma or newline, not counting an `=` after a flag; a
+    /// leading `=` on the next line counts. A `=>` after a depth-zero `:`
+    /// belongs to the annotation's constraints.
     fn binding_ahead(&mut self) -> bool {
+        self.assign_ahead().is_some()
+    }
+
+    /// The `=` that makes this line a binding, per [`Self::binding_ahead`].
+    fn assign_ahead(&mut self) -> Option<Span> {
         self.peek();
         let mut depth = 0_usize;
         let mut after_flag = false;
         let mut annotated = false;
-        for token in &self.tokens[self.position..] {
+        let tokens = &self.tokens[self.position..];
+        for (index, token) in tokens.iter().enumerate() {
             match token.kind {
                 Kind::Symbol(Symbol::Colon) if depth == 0 => annotated = true,
                 // Inside an annotation, `,` separates constraints and `=>`
@@ -248,30 +260,32 @@ impl Parser {
                     | Symbol::RBracket
                     | Symbol::RBrace
                     | Symbol::Greater,
-                ) => match depth.checked_sub(1) {
-                    Some(less) => depth = less,
-                    None => return false,
-                },
+                ) => depth = depth.checked_sub(1)?,
                 Kind::Symbol(Symbol::Assign) if depth == 0 => {
-                    return !after_flag;
+                    return (!after_flag).then_some(token.span);
                 }
                 Kind::Symbol(Symbol::FatArrow | Symbol::Comma)
                     if depth == 0 =>
                 {
-                    return false;
+                    return None;
                 }
                 Kind::Symbol(symbol)
                     if depth == 0 && symbol.continues_line() =>
                 {
-                    return false;
+                    return None;
                 }
-                Kind::Newline if depth == 0 => return false,
-                Kind::Eof => return false,
+                Kind::Newline if depth == 0 => {
+                    let next = tokens.get(index + 1).map(|next| &next.kind);
+                    if next != Some(&Kind::Symbol(Symbol::Assign)) {
+                        return None;
+                    }
+                }
+                Kind::Eof => return None,
                 _ => {}
             }
             after_flag = matches!(token.kind, Kind::Flag(_));
         }
-        false
+        None
     }
 
     fn nested<T>(
@@ -323,6 +337,7 @@ impl Parser {
                             | Symbol::Greater
                             | Symbol::GreaterEq
                             | Symbol::FatArrow
+                            | Symbol::Assign
                     )
             }
             _ => false,

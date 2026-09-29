@@ -15,6 +15,7 @@ use crate::{
     resolve::{self, resolve_in, resolve_used, Resolved},
     token::Span,
     typed::Typed,
+    types::Subst,
 };
 use alloc::{string::String, vec::Vec};
 
@@ -129,6 +130,7 @@ impl Session {
                 impls: alloc::collections::BTreeMap::new(),
                 members: alloc::collections::BTreeMap::new(),
                 constructors: alloc::collections::BTreeMap::new(),
+                weak: Subst::from_bindings(Vec::new()),
             },
             files: Vec::new(),
             pending: None,
