@@ -1,5 +1,12 @@
-//! Linux on `x86_64` without `std`: raw syscalls, a bump allocator over a
-//! static arena, `_start` and the panic handler. The only unsafe code.
+//! Linux on `x86_64` without `std`: raw syscalls, `_start` with its
+//! arguments, the panic handler and the allocator. The only unsafe code.
+//!
+//! The allocator bumps through a static arena and reuses freed blocks:
+//! a request of alignment at most 16 is rounded up to a power-of-two size
+//! class of at least 16 bytes; `dealloc` pushes the block onto its class's
+//! free list, threaded through the blocks' first word, and `alloc` pops
+//! from that list before bumping. Other alignments bump and are never
+//! reused; a `realloc` within one class keeps its block.
 
 #![allow(unsafe_code)]
 
@@ -11,7 +18,7 @@ use core::{
     alloc::{GlobalAlloc, Layout},
     arch::{asm, naked_asm},
     cell::UnsafeCell,
-    ffi::c_void,
+    ffi::{c_char, c_void, CStr},
     fmt::{self, Write as _},
     panic::PanicInfo,
     ptr,
@@ -23,6 +30,7 @@ const WRITE: usize = 1;
 const OPEN: usize = 2;
 const CLOSE: usize = 3;
 const EXIT: usize = 60;
+const CHDIR: usize = 80;
 
 const ARENA: usize = 64 << 20;
 
@@ -102,21 +110,58 @@ pub fn read_file(path: &str) -> Option<String> {
     String::from_utf8(text).ok()
 }
 
-fn exit(code: usize) -> ! {
+pub fn exit(code: usize) -> ! {
     // SAFETY: `exit` takes no pointer and does not return.
     unsafe { syscall(EXIT, code, 0, 0) };
     unreachable!()
 }
 
-/// The kernel enters with rsp 16-byte aligned; a call realigns it for
-/// the Rust function.
+/// Whether the working directory is now `path`.
+pub fn chdir(path: &str) -> bool {
+    let mut name = Vec::with_capacity(path.len() + 1);
+    name.extend_from_slice(path.as_bytes());
+    name.push(0);
+    // SAFETY: `name` is NUL-terminated.
+    unsafe { syscall(CHDIR, name.as_ptr() as usize, 0, 0) == 0 }
+}
+
+/// Where `_start` found the initial stack: `argc`, then `argv`.
+static STACK: AtomicUsize = AtomicUsize::new(0);
+
+/// The arguments after the program's name.
+pub fn args() -> Vec<String> {
+    let stack = STACK.load(Ordering::Relaxed) as *const usize;
+    if stack.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the kernel's initial stack holds `argc` and then `argc`
+    // pointers to NUL-terminated strings, which live for the whole run.
+    let argc = unsafe { *stack };
+    (1..argc)
+        .map(|index| {
+            // SAFETY: as above, `index < argc`.
+            let arg = unsafe { CStr::from_ptr(*stack.add(1 + index) as _) };
+            String::from_utf8_lossy(arg.to_bytes()).into_owned()
+        })
+        .collect()
+}
+
+/// The kernel enters with rsp 16-byte aligned at `argc`; a call
+/// realigns it for the Rust function.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
-    naked_asm!("xor ebp, ebp", "call {start}", "ud2", start = sym start);
+    naked_asm!(
+        "xor ebp, ebp",
+        "mov rdi, rsp",
+        "call {start}",
+        "ud2",
+        start = sym start,
+    );
 }
 
-extern "C" fn start() -> ! {
+extern "C" fn start(stack: *const usize) -> ! {
+    STACK.store(stack as usize, Ordering::Relaxed);
     crate::run();
     exit(0)
 }
@@ -134,37 +179,127 @@ fn panic(info: &PanicInfo) -> ! {
     exit(101)
 }
 
-/// Never frees; the arena lives in `.bss`.
-struct Bump {
+/// Size classes `16 << k` for every `k` a `usize` size can need.
+const CLASSES: usize = usize::BITS as usize - 4;
+
+/// The arena lives in `.bss`; see the module documentation.
+struct Heap {
     arena: UnsafeCell<[u8; ARENA]>,
-    next: AtomicUsize,
+    state: UnsafeCell<State>,
 }
 
-// SAFETY: the program is single-threaded, and `next` is atomic anyway.
-unsafe impl Sync for Bump {}
+struct State {
+    next: usize,
+    free: [*mut u8; CLASSES],
+}
 
-// SAFETY: every block is aligned, in bounds and handed out once.
-unsafe impl GlobalAlloc for Bump {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+/// A layout's size class, when its block may be reused.
+fn class(layout: Layout) -> Option<usize> {
+    if layout.align() > 16 {
+        return None;
+    }
+    let size = layout.size().max(16).checked_next_power_of_two()?;
+    Some(size.trailing_zeros() as usize - 4)
+}
+
+impl Heap {
+    /// A fresh block from the arena, or null when it is exhausted.
+    ///
+    /// # Safety
+    /// No other reference to the state is live.
+    unsafe fn bump(&self, size: usize, align: usize) -> *mut u8 {
+        // SAFETY: the program is single-threaded; the caller vouches.
+        let state = unsafe { &mut *self.state.get() };
         let base = self.arena.get().cast::<u8>();
-        let next = self.next.load(Ordering::Relaxed);
-        let start = next + base.wrapping_add(next).align_offset(layout.align());
-        match start.checked_add(layout.size()) {
+        let next = state.next;
+        let start = next + base.wrapping_add(next).align_offset(align);
+        match start.checked_add(size) {
             Some(end) if end <= ARENA => {
-                self.next.store(end, Ordering::Relaxed);
+                state.next = end;
                 base.wrapping_add(start)
             }
             _ => ptr::null_mut(),
         }
     }
+}
 
-    unsafe fn dealloc(&self, _: *mut u8, _: Layout) {}
+// SAFETY: the program is single-threaded.
+unsafe impl Sync for Heap {}
+
+// SAFETY: a block is aligned, in bounds, at least its layout's size, and
+// owned by one caller: a freed block sits on one list until popped once.
+unsafe impl GlobalAlloc for Heap {
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "a block of a class is 16-aligned"
+    )]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let Some(k) = class(layout) else {
+            // SAFETY: no reference to the state is live.
+            return unsafe { self.bump(layout.size(), layout.align()) };
+        };
+        // SAFETY: single-threaded; the reference ends before `bump`.
+        let head = unsafe { &mut (*self.state.get()).free[k] };
+        if head.is_null() {
+            // SAFETY: as above.
+            return unsafe { self.bump(16 << k, 16) };
+        }
+        let block = *head;
+        // SAFETY: a listed block is 16-aligned, at least 16 bytes, and
+        // holds the next block of its list in its first word.
+        *head = unsafe { *block.cast::<*mut u8>() };
+        block
+    }
+
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "a block of a class is 16-aligned"
+    )]
+    unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
+        let Some(k) = class(layout) else { return };
+        // SAFETY: single-threaded; the caller gives up `block`, which was
+        // handed out for this class, so its first word is ours.
+        unsafe {
+            let head = &mut (*self.state.get()).free[k];
+            *block.cast::<*mut u8>() = *head;
+            *head = block;
+        }
+    }
+
+    unsafe fn realloc(
+        &self,
+        block: *mut u8,
+        layout: Layout,
+        size: usize,
+    ) -> *mut u8 {
+        // SAFETY: the caller vouches that `size` is valid with this
+        // alignment, as for `GlobalAlloc::realloc`.
+        let grown =
+            unsafe { Layout::from_size_align_unchecked(size, layout.align()) };
+        if class(layout).is_some() && class(layout) == class(grown) {
+            return block;
+        }
+        // SAFETY: the caller's contract for `realloc`, passed on.
+        let new = unsafe { self.alloc(grown) };
+        if !new.is_null() {
+            // SAFETY: both blocks hold at least the smaller size and
+            // are distinct, as `block` is still owned by the caller.
+            unsafe {
+                ptr::copy_nonoverlapping(block, new, layout.size().min(size));
+                self.dealloc(block, layout);
+            }
+        }
+        new
+    }
 }
 
 #[global_allocator]
-static ALLOCATOR: Bump = Bump {
+static ALLOCATOR: Heap = Heap {
     arena: UnsafeCell::new([0; ARENA]),
-    next: AtomicUsize::new(0),
+    state: UnsafeCell::new(State {
+        next: 0,
+        free: [ptr::null_mut(); CLASSES],
+    }),
 };
 
 // Without libc, the memory routines the compiler emits calls to come
@@ -267,6 +402,25 @@ unsafe extern "C" fn memcmp(
 unsafe extern "C" fn bcmp(a: *const c_void, b: *const c_void, n: usize) -> i32 {
     // SAFETY: the same contract.
     unsafe { memcmp(a, b, n) }
+}
+
+/// # Safety
+/// `text` is NUL-terminated.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn strlen(text: *const c_char) -> usize {
+    let left: usize;
+    // SAFETY: the caller vouches for the terminator, where `scasb` stops;
+    // it counts `rcx` down from all ones past the terminator.
+    unsafe {
+        asm!(
+            "repne scasb",
+            inout("rcx") usize::MAX => left,
+            inout("rdi") text => _,
+            in("al") 0_u8,
+            options(nostack, readonly),
+        );
+    }
+    !left - 1
 }
 
 // The prebuilt `alloc` is compiled for unwinding and names these; with

@@ -54,14 +54,14 @@ fn a_local_resolves_to_its_site() {
 #[test]
 fn a_diagnostic_underlines_its_span() {
     let text = written(Repl::new().feed(b"nope 1\n"));
-    assert_eq!(text, "1:1: UnknownName\nnope 1\n^^^^\nfipe> ");
+    assert_eq!(text, "1:1: unknown name\nnope 1\n^^^^\nfipe> ");
 }
 
 #[test]
 fn a_partial_line_waits_for_its_end_or_a_flush() {
     let mut repl = Repl::new();
     assert_eq!(repl.feed(b"nope"), []);
-    assert_eq!(written(repl.flush()), "1:1: UnknownName\nnope\n^^^^\n");
+    assert_eq!(written(repl.flush()), "1:1: unknown name\nnope\n^^^^\n");
     assert_eq!(repl.flush(), []);
 }
 
@@ -86,12 +86,59 @@ fn load_asks_for_the_stem() {
         repl.feed(b":load geometry\n"),
         [Out::File("geometry.fipe".into())]
     );
-    assert_eq!(
-        written(repl.file("geometry.fipe", Some(GEOMETRY))),
-        "fipe> "
-    );
+    // Its four `hypot`/`atan2` rows are 07's casts; the line is accepted.
+    let text = written(repl.file("geometry.fipe", Some(GEOMETRY)));
+    assert_eq!(text.matches("expected f64, found i64").count(), 4, "{text}");
+    assert!(text.starts_with("geometry.fipe:12:55: "), "{text}");
+    assert!(text.ends_with("fipe> "), "{text}");
     let text = written(repl.feed(b":r geometry.Point 1\n"));
     assert!(text.contains("Constructor"), "{text}");
+}
+
+#[test]
+fn load_takes_a_stem_or_a_path() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b":load 01-files\n");
+    assert_eq!(
+        outs,
+        [
+            Out::Write(b"01-files as files\n".to_vec()),
+            Out::File("01-files.fipe".into())
+        ]
+    );
+    let text = written(repl.file("01-files.fipe", Some("pub k = 1\n")));
+    assert_eq!(text, "fipe> ");
+    assert_eq!(written(repl.feed(b":t files.k\n")), "files.k: i64\nfipe> ");
+    let outs = repl.feed(b":load ./x/y.fipe\n");
+    assert_eq!(outs, [Out::File("./x/y.fipe".into())]);
+    let text = written(repl.file("./x/y.fipe", None));
+    assert!(text.starts_with("1:5: unknown module\nuse y\n"), "{text}");
+    let outs = repl.feed(b":load shapes.fipe\n");
+    assert_eq!(outs, [Out::File("shapes.fipe".into())]);
+}
+
+#[test]
+fn load_without_a_stem_and_unknown_commands_say_so() {
+    let text = written(Repl::new().feed(b":load\n:bogus 1\n:ast x\n"));
+    assert_eq!(
+        text,
+        "usage: :load <stem>\nunknown command :bogus\n\
+         usage: :ast (the last accepted line)\nfipe> "
+    );
+}
+
+#[test]
+fn a_file_diagnostic_is_located_in_its_file() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b":load bad\n");
+    assert_eq!(outs, [Out::File("bad.fipe".into())]);
+    let text =
+        written(repl.file("bad.fipe", Some("x = 1\npub g = 1 + \"a\"\n")));
+    assert_eq!(
+        text,
+        "bad.fipe:2:13: expected i64, found String\n\
+         pub g = 1 + \"a\"\n            ^^^\nfipe> "
+    );
 }
 
 #[test]
@@ -100,27 +147,54 @@ fn an_absent_file_is_an_unknown_module() {
     let outs = repl.feed(b"use missing\n");
     assert_eq!(outs, [Out::File("missing.fipe".into())]);
     let text = written(repl.file("missing.fipe", None));
-    assert_eq!(text, "1:5: UnknownModule\nuse missing\n    ^^^^^^^\nfipe> ");
+    assert_eq!(
+        text,
+        "1:5: unknown module\nuse missing\n    ^^^^^^^\nfipe> "
+    );
+}
+
+/// Answer `:host`'s five requests with the fixtures.
+fn host(repl: &mut Repl, mut outs: Vec<Out>) -> String {
+    for (index, (path, text)) in HOST.iter().enumerate() {
+        assert_eq!(outs, [Out::File((*path).into())], "{index}");
+        outs = repl.file(path, Some(text));
+    }
+    written(outs)
 }
 
 #[test]
 fn host_loads_the_fixtures_and_keeps_accepted_lines() {
     let mut repl = Repl::new();
-    let mut outs = repl.feed(b"x = 1\n:host\n");
-    for (index, (path, text)) in HOST.iter().enumerate() {
-        assert_eq!(outs, [Out::File((*path).into())], "{index}");
-        outs = repl.file(path, Some(text));
-    }
-    assert_eq!(written(outs), "fipe> ");
+    let outs = repl.feed(b"x = 1\n:host\n");
+    assert_eq!(host(&mut repl, outs), "host: tests/fixtures/host\nfipe> ");
     let text = written(repl.feed(b"ls -l /etc\n:r ls\n:r x\n"));
     assert!(text.contains("ls: Value { origin: Commands"), "{text}");
     assert!(text.contains("x: Local"), "{text}");
 }
 
 #[test]
-fn ast_shows_the_last_accepted_line() {
-    let text = written(Repl::new().feed(b"x = 1\n:ast\n"));
-    assert!(text.starts_with("Expr {\n    kind: Bind {"), "{text}");
+fn a_vertical_pipeline_is_one_entry() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b":host\n");
+    host(&mut repl, outs);
+    let text = written(repl.feed(
+        b"ls -l /var/log\n    | filter (e => e.size > 1)\n    | map .name\n:t\n",
+    ));
+    assert_eq!(
+        text,
+        "ls -l /var/log | filter (e => e.size > 1) | map .name: \
+         Vec<String>\nfipe> "
+    );
+}
+
+#[test]
+fn ast_shows_the_last_accepted_line_as_a_tree() {
+    let text = written(Repl::new().feed(b"f = x => x + 1\n:ast\n"));
+    assert_eq!(
+        text,
+        "Bind\n  Name f\n  Arms\n    Arm\n      Name x\n      Binary +\n\
+         \x20       Name x\n        Int 1\nfipe> "
+    );
 }
 
 #[test]
@@ -148,4 +222,114 @@ fn t_reports_a_type_mismatch() {
 #[test]
 fn q_exits() {
     assert_eq!(Repl::new().feed(b":q\nx\n"), [Out::Exit]);
+}
+
+#[test]
+fn a_redefinition_in_a_later_line_shadows() {
+    let text = written(Repl::new().feed(b"f = x => x\nf = x => x + 1\n:t f\n"));
+    assert_eq!(text, "f: Num a => a -> a\nfipe> ");
+}
+
+#[test]
+fn a_duplicate_in_one_entry_names_its_first_site() {
+    let text = written(Repl::new().feed(b"type B { C,\n  C }\n"));
+    assert_eq!(
+        text,
+        "2:3: already defined: first defined at 1:10\n  C }\n  ^\nfipe> "
+    );
+}
+
+#[test]
+fn an_ambiguity_names_its_class() {
+    let text = written(Repl::new().feed(b"[] == []\n"));
+    let line = text.lines().next().unwrap();
+    assert_eq!(line, "1:1: ambiguous: `Eq` on an unknown type");
+}
+
+#[test]
+fn a_syntax_error_names_what_it_expected_in_words() {
+    let text = written(Repl::new().feed(b"q = (1 ]\n"));
+    assert!(text.starts_with("1:8: expected )\n"), "{text}");
+    assert!(!text.contains("Symbol"), "{text}");
+}
+
+#[test]
+fn a_mismatch_prints_types_by_display() {
+    let text = written(Repl::new().feed(b"1 + \"a\"\n"));
+    assert_eq!(
+        text,
+        "1:5: expected i64, found String\n1 + \"a\"\n    ^^^\nfipe> "
+    );
+}
+
+#[test]
+fn an_open_bracket_or_trailing_operator_continues_the_entry() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"y = (1 +\n")), "....> ");
+    assert_eq!(written(repl.feed(b"2\n")), "....> ");
+    assert_eq!(written(repl.feed(b")\n")), "fipe> ");
+    assert_eq!(written(repl.feed(b":t\n")), "y: i64\nfipe> ");
+    assert_eq!(written(repl.feed(b":t 1 +\n")), "....> ");
+    assert_eq!(written(repl.feed(b"  2\n")), "1 + 2: i64\nfipe> ");
+}
+
+#[test]
+fn a_leading_operator_continues_a_line_given_with_it() {
+    let text = written(Repl::new().feed(b"z = 1\n  + 2\n:t\n"));
+    assert_eq!(text, "z: i64\nfipe> ");
+}
+
+#[test]
+fn an_empty_line_submits_an_open_entry() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"w = (1\n")), "....> ");
+    let text = written(repl.feed(b"\n"));
+    assert!(text.starts_with("1:7: expected )\nw = (1\n"), "{text}");
+    assert!(text.ends_with("fipe> "), "{text}");
+}
+
+#[test]
+fn type_arguments_do_not_continue() {
+    let text = written(Repl::new().feed(b"r = read<i64>\n:t\n"));
+    assert!(text.starts_with("r: "), "{text}");
+}
+
+#[test]
+fn end_of_input_at_a_prompt_ends_its_line() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(&[])), "fipe> ");
+    assert_eq!(written(repl.flush()), "\n");
+}
+
+#[test]
+fn a_leading_operator_typed_later_continues_the_accepted_line() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b":host\n");
+    host(&mut repl, outs);
+    for line in [
+        "ls -l /var/log\n",
+        "    | filter (e => e.size > 1_000_000)\n",
+        "    | sort -by .size -desc\n",
+        "    | take 10\n",
+        "    | map .name\n",
+    ] {
+        assert_eq!(written(repl.feed(line.as_bytes())), "fipe> ", "{line}");
+    }
+    let text = written(repl.feed(b":t\n"));
+    assert!(text.ends_with(": Vec<String>\nfipe> "), "{text}");
+    assert_eq!(repl.feed(b"x = 1\n").len(), 1);
+    let text = written(repl.feed(b":r ls\n"));
+    assert_eq!(text.matches("ls: Value").count(), 1, "{text}");
+}
+
+#[test]
+fn a_rejected_continuation_keeps_the_line_before() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"y = 1\n")), "fipe> ");
+    let text = written(repl.feed(b"  + \"a\"\n"));
+    assert!(
+        text.starts_with("2:5: expected i64, found String\n"),
+        "{text}"
+    );
+    assert_eq!(written(repl.feed(b":t y\n")), "y: i64\nfipe> ");
 }

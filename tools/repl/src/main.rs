@@ -1,5 +1,9 @@
 //! The Fipe REPL: one pump over `fipe-repl-core`, with I/O from the
 //! platform chosen by feature.
+//!
+//! `fipe-repl [--cwd <dir>] [--host <dir>]`: the working directory
+//! changes first, so a relative host directory is found from it; with
+//! `--host` the session starts as after `:host <dir>`.
 
 #![cfg_attr(feature = "linux", no_std, no_main)]
 #![deny(unsafe_code)]
@@ -19,8 +23,10 @@ mod platform;
 #[path = "platform/linux.rs"]
 mod platform;
 
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, format, string::String};
 use fipe_repl_core::{Out, Repl};
+
+const USAGE: &str = "usage: fipe-repl [--cwd <dir>] [--host <dir>]\n";
 
 #[cfg(feature = "std")]
 fn main() {
@@ -30,8 +36,16 @@ fn main() {
 /// Read, feed, act on every output; stop at `Out::Exit` or end of input.
 /// File paths are relative to the working directory.
 fn run() {
+    let host = match arguments() {
+        Ok(host) => host,
+        Err(message) => {
+            platform::write(message.as_bytes());
+            platform::exit(2);
+        }
+    };
     let mut repl = Repl::new();
-    let mut outs = VecDeque::from(repl.feed(&[]));
+    let first = host.map_or_else(String::new, |dir| format!(":host {dir}\n"));
+    let mut outs = VecDeque::from(repl.feed(first.as_bytes()));
     let mut buffer = [0; 4096];
     let mut end = false;
     loop {
@@ -56,4 +70,21 @@ fn run() {
             repl.feed(&buffer[..read])
         });
     }
+}
+
+/// The host directory, after acting on `--cwd`.
+fn arguments() -> Result<Option<String>, String> {
+    let mut args = platform::args().into_iter();
+    let mut host = None;
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), args.next()) {
+            ("--host", Some(dir)) => host = Some(dir),
+            ("--cwd", Some(dir)) if platform::chdir(&dir) => {}
+            ("--cwd", Some(dir)) => {
+                return Err(format!("{dir}: no such directory\n"))
+            }
+            _ => return Err(USAGE.into()),
+        }
+    }
+    Ok(host)
 }

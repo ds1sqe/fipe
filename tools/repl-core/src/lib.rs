@@ -8,13 +8,22 @@
 //! nothing is awaited, so `feed(&[])` yields the first one; none comes
 //! after `flush`.
 //!
-//! Commands: `:ast`, `:r [line]`, `:t [line]`, `:load <stem>`,
+//! An entry continues onto the next line, prompted by `....> `, while it
+//! has an unclosed bracket or ends in an operator, `=` or a comma, and
+//! when the next line starts with an operator, which also takes back and
+//! continues the entry before it once that was accepted (and accepts it
+//! again if the joined entry is rejected); an empty line submits it.
+//!
+//! Commands: `:ast`, `:r [line]`, `:t [line]`, `:load <stem or path>`,
 //! `:host [dir]`, `:q`; any other line goes to the session.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+
+mod render;
+mod tree;
 
 use alloc::{
     format,
@@ -25,12 +34,14 @@ use fipe::{
     ast::{Entry, ExprKind},
     decl::{self, Declarations},
     embed::{Outcome, Reply, Request},
-    infer::Reason,
+    lex::lex,
     session::{Diagnostic, Report, Session},
-    token::{Source, Span},
+    token::{Kind, Source, Span, Symbol},
 };
+use render::Context;
 
 const PROMPT: &[u8] = b"fipe> ";
+const MORE: &[u8] = b"....> ";
 const HOST_DIR: &str = "tests/fixtures/host";
 /// The command namespace first, then the host modules by name.
 const HOST: [&str; 5] = ["commands", "fs", "sys", "cli", "text"];
@@ -46,11 +57,22 @@ pub enum Out {
 pub struct Repl {
     session: Session,
     input: Vec<u8>,
+    /// The entry's lines so far.
+    entry: String,
     wait: Option<Wait>,
     /// Replied file texts by stem, for replays and file diagnostics.
     files: Vec<(String, String)>,
+    /// Paths `:load` chose for module names; others are `<name>.fipe`.
+    paths: Vec<(String, String)>,
+    /// Whether the last output was a prompt, which exit ends with LF.
+    prompted: bool,
     /// The last accepted line, for `:ast` and `:r`.
     last: Option<(Report, String)>,
+    /// The session's last line when the entry before this one was it,
+    /// which a line starting with an operator continues.
+    retractable: Option<String>,
+    /// A retracted line, accepted again if its continuation is rejected.
+    restore: Option<String>,
     quit: bool,
     ended: bool,
 }
@@ -101,9 +123,14 @@ impl Repl {
         Self {
             session: Session::new(Declarations::new()),
             input: Vec::new(),
+            entry: String::new(),
             wait: None,
             files: Vec::new(),
+            paths: Vec::new(),
+            prompted: false,
             last: None,
+            retractable: None,
+            restore: None,
             quit: false,
             ended: false,
         }
@@ -113,16 +140,29 @@ impl Repl {
         self.input.extend_from_slice(bytes);
         let mut out = Outs::default();
         self.run(&mut out);
-        out.0
+        self.finish(out)
     }
 
-    /// End of input: a trailing line without LF runs as complete.
+    /// End of input: a trailing line without LF and a buffered entry run
+    /// as complete, after an LF that ends the prompt's line.
     pub fn flush(&mut self) -> Vec<Out> {
+        let mut out = Outs::default();
+        if !self.ended && self.prompted {
+            out.write(b"\n");
+        }
         self.ended = true;
         if !self.input.is_empty() && !self.input.ends_with(b"\n") {
             self.input.push(b'\n');
         }
-        self.feed(&[])
+        self.run(&mut out);
+        self.finish(out)
+    }
+
+    fn finish(&mut self, out: Outs) -> Vec<Out> {
+        if let Some(Out::Write(bytes)) = out.0.last() {
+            self.prompted = bytes.ends_with(PROMPT) || bytes.ends_with(MORE);
+        }
+        out.0
     }
 
     /// The answer to the last [`Out::File`]: its text, or `None` when
@@ -157,25 +197,81 @@ impl Repl {
             None => out.write(format!("{path}: not requested\n").as_bytes()),
         }
         self.run(&mut out);
-        out.0
+        self.finish(out)
     }
 
     fn run(&mut self, out: &mut Outs) {
         while !self.quit && self.wait.is_none() {
+            if !self.entry.is_empty() && !opens(&self.entry) {
+                match self.leads() {
+                    Some(true) => {}
+                    Some(false) => {
+                        self.submit(out);
+                        continue;
+                    }
+                    None => break,
+                }
+            }
             let Some(end) = self.input.iter().position(|&b| b == b'\n') else {
+                if self.ended && !self.entry.is_empty() {
+                    self.submit(out);
+                    continue;
+                }
                 break;
             };
+            if !self.entry.is_empty()
+                && self.input[..end].trim_ascii_start().starts_with(b":")
+            {
+                // A command ends the entry before it.
+                self.submit(out);
+                continue;
+            }
             let bytes: Vec<u8> = self.input.drain(..=end).collect();
             let line = String::from_utf8_lossy(&bytes);
-            self.command(line.trim_end_matches(['\n', '\r']), out);
+            let line = line.trim_end_matches(['\n', '\r']);
+            let blank = line.trim().is_empty();
+            if blank || (self.entry.is_empty() && comment(line)) {
+                if !self.entry.is_empty() {
+                    self.submit(out);
+                }
+            } else if !self.entry.is_empty() {
+                self.entry.push('\n');
+                self.entry.push_str(line);
+            } else if continuable(line) {
+                self.entry = line.to_string();
+                if leading(line) && self.retractable.take().is_some() {
+                    self.continue_last();
+                }
+            } else {
+                self.command(line, out);
+            }
         }
         if !self.quit
             && !self.ended
             && self.wait.is_none()
             && self.input.is_empty()
         {
-            out.write(PROMPT);
+            out.write(if self.entry.is_empty() { PROMPT } else { MORE });
         }
+    }
+
+    /// Whether the next line starts with an operator that continues a
+    /// complete entry; `None` while that line is still arriving.
+    fn leads(&self) -> Option<bool> {
+        if self.input.is_empty() {
+            return Some(false);
+        }
+        let end = self.input.iter().position(|&b| b == b'\n');
+        if end.is_none() && !self.ended {
+            return None;
+        }
+        let next = &self.input[..end.unwrap_or(self.input.len())];
+        Some(leading(&String::from_utf8_lossy(next)))
+    }
+
+    fn submit(&mut self, out: &mut Outs) {
+        let entry = core::mem::take(&mut self.entry);
+        self.command(&entry, out);
     }
 
     fn command(&mut self, line: &str, out: &mut Outs) {
@@ -199,14 +295,14 @@ impl Repl {
             },
             ("t", arg) => self.start(arg, Mode::Types, out),
             ("ast", "") => self.ast(out),
+            ("ast", _) => out.write(b"usage: :ast (the last accepted line)\n"),
             ("r", "") => match &self.last {
                 Some((report, text)) => names(report, text, out),
                 None => out.write(b"no accepted line\n"),
             },
             ("r", line) => self.start(line, Mode::Resolve, out),
-            ("load", stem) if !stem.is_empty() => {
-                self.start(&format!("use {stem}"), Mode::Accept, out);
-            }
+            ("load", "") => out.write(b"usage: :load <stem>\n"),
+            ("load", arg) => self.load(arg, out),
             ("host", dir) => {
                 let dir = if dir.is_empty() { HOST_DIR } else { dir };
                 out.0.push(Out::File(host_path(dir, HOST[0])));
@@ -215,8 +311,38 @@ impl Repl {
                     texts: Vec::new(),
                 });
             }
-            _ => out.write(format!("unknown command :{command}\n").as_bytes()),
+            _ => out.write(format!("unknown command :{name}\n").as_bytes()),
         }
+    }
+
+    /// `use` the module of a stem or path; a file name that is not a
+    /// Name, such as `01-files`, is used by its name part, `files`.
+    fn load(&mut self, arg: &str, out: &mut Outs) {
+        let stem = arg.strip_suffix(".fipe").unwrap_or(arg);
+        let file = stem.rsplit('/').next().unwrap_or(stem);
+        let name = module_name(file);
+        if name.is_empty() {
+            let text = format!("{arg}: no module name in the file name\n");
+            return out.write(text.as_bytes());
+        }
+        // The host's modules shadow file modules once `:host` runs.
+        if HOST[1..].contains(&name.as_str()) {
+            let text = format!("{arg}: `{name}` is a host module\n");
+            return out.write(text.as_bytes());
+        }
+        if name != file {
+            out.write(format!("{file} as {name}\n").as_bytes());
+        }
+        self.paths.retain(|(known, _)| *known != name);
+        self.paths.push((name.clone(), format!("{stem}.fipe")));
+        self.start(&format!("use {name}"), Mode::Accept, out);
+    }
+
+    fn path(&self, stem: &str) -> String {
+        self.paths
+            .iter()
+            .find(|(name, _)| name == stem)
+            .map_or_else(|| format!("{stem}.fipe"), |(_, path)| path.clone())
     }
 
     fn start(&mut self, text: &str, mode: Mode, out: &mut Outs) {
@@ -236,7 +362,7 @@ impl Repl {
     ) {
         match outcome {
             Outcome::Request(Request::File { stem }) => {
-                out.0.push(Out::File(format!("{stem}.fipe")));
+                out.0.push(Out::File(self.path(&stem)));
                 self.wait = Some(Wait::Line { stem, text, mode });
             }
             Outcome::Done(report) => self.done(report, text, mode, out),
@@ -254,43 +380,66 @@ impl Repl {
             self.diagnostic(diagnostic, &text, out);
         }
         match mode {
-            Mode::Accept if report.diagnostics.is_empty() => {
+            Mode::Accept if report.diagnostics.iter().all(from_file) => {
+                self.restore = None;
+                self.retractable = Some(text.clone());
                 self.last = Some((report, text));
             }
-            Mode::Accept => {}
+            Mode::Accept => {
+                self.retractable = None;
+                if let Some(line) = self.restore.take() {
+                    // Nothing is lost: the line before is kept as it was.
+                    let report = self.replay(&line);
+                    if report.diagnostics.iter().all(from_file) {
+                        self.retractable = Some(line.clone());
+                        self.last = Some((report, line));
+                    }
+                }
+            }
             Mode::Resolve => names(&report, &text, out),
             Mode::Types => types(&report, &text, out),
         }
     }
 
     fn diagnostic(&self, diagnostic: &Diagnostic, line: &str, out: &mut Outs) {
+        let at = Context {
+            source: self.session.source(),
+            line,
+        };
         match diagnostic {
             Diagnostic::Syntax(error) => {
-                located("", line, error.span, &error.reason.to_string(), out);
+                let reason = render::syntax(error.reason);
+                located("", line, error.span, &reason, out);
             }
             Diagnostic::Resolve(error) => {
-                let reason = format!("{:?}", error.reason);
+                let reason = render::resolve(&error.reason, &at);
                 located("", line, error.span, &reason, out);
             }
             Diagnostic::Type(error) => {
-                let reason = match &error.reason {
-                    Reason::Mismatch {
-                        expected, actual, ..
-                    } => format!("expected {expected}, found {actual}"),
-                    reason => format!("{reason:?}"),
-                };
+                let reason = render::infer(&error.reason);
                 located("", line, error.span, &reason, out);
             }
             Diagnostic::File { stem, error } => {
                 let text = self.cached(stem).unwrap_or_default();
-                let path = format!("{stem}.fipe:");
-                located(
-                    &path,
-                    text,
-                    error.span,
-                    &error.reason.to_string(),
-                    out,
-                );
+                let path = format!("{}:", self.path(stem));
+                let reason = render::syntax(error.reason);
+                located(&path, text, error.span, &reason, out);
+            }
+            Diagnostic::FileResolve { stem, error } => {
+                let text = self.cached(stem).unwrap_or_default();
+                let path = format!("{}:", self.path(stem));
+                let at = Context {
+                    source: "",
+                    line: text,
+                };
+                let reason = render::resolve(&error.reason, &at);
+                located(&path, text, error.span, &reason, out);
+            }
+            Diagnostic::FileType { stem, error } => {
+                let text = self.cached(stem).unwrap_or_default();
+                let path = format!("{}:", self.path(stem));
+                let reason = render::infer(&error.reason);
+                located(&path, text, error.span, &reason, out);
             }
         }
     }
@@ -309,13 +458,7 @@ impl Repl {
         };
         let Some(module) = &report.module else { return };
         for entry in report.entries() {
-            let text = match entry {
-                Entry::Item(item) => format!("{item:#?}\n"),
-                Entry::Line(id) => module
-                    .expr(*id)
-                    .map_or_else(String::new, |expr| format!("{expr:#?}\n")),
-            };
-            out.write(text.as_bytes());
+            out.write(tree::entry(module, entry).as_bytes());
         }
     }
 
@@ -334,7 +477,8 @@ impl Repl {
                 failed = true;
                 let path = format!("{}:", host_path(dir, name));
                 for decl::Error { span, reason } in errors {
-                    located(&path, text, span, &format!("{reason:?}"), out);
+                    let reason = render::declaration(&reason, text);
+                    located(&path, text, span, &reason, out);
                 }
             }
         }
@@ -351,18 +495,34 @@ impl Repl {
         self.session = Session::new(declarations);
         self.last = None;
         for line in lines {
-            let mut outcome = self.session.line(&line);
-            let report = loop {
-                match outcome {
-                    Outcome::Request(Request::File { stem }) => {
-                        let text = self.cached(&stem).map(String::from);
-                        outcome = self.session.reply(Reply::File(text));
-                    }
-                    Outcome::Done(report) => break report,
-                }
-            };
+            let report = self.replay(&line);
             self.done(report, line, Mode::Accept, out);
         }
+        out.write(format!("host: {dir}\n").as_bytes());
+    }
+
+    /// Accept a line again, answering its `use` requests from the cache.
+    fn replay(&mut self, line: &str) -> Report {
+        let mut outcome = self.session.line(line);
+        loop {
+            match outcome {
+                Outcome::Request(Request::File { stem }) => {
+                    let text = self.cached(&stem).map(String::from);
+                    outcome = self.session.reply(Reply::File(text));
+                }
+                Outcome::Done(report) => return report,
+            }
+        }
+    }
+
+    /// The fresh entry starts with an operator and the entry before it
+    /// was accepted: take that line back and continue it.
+    fn continue_last(&mut self) {
+        let Some(last) = self.session.retract() else {
+            return;
+        };
+        self.entry = format!("{last}\n{}", self.entry);
+        self.restore = Some(last);
     }
 }
 
@@ -450,11 +610,114 @@ fn types(report: &Report, line: &str, out: &mut Outs) {
         } else {
             let source =
                 text_of(line, report.offset, expr.span).unwrap_or_default();
-            let Some(ty) = typed.expr(*id) else {
+            let source: Vec<&str> = source.lines().map(str::trim).collect();
+            let source = source.join(" ");
+            // A query's line has a generalized scheme; an accepted
+            // line's expression only its type.
+            if let Some(scheme) = typed.binding(*id) {
+                format!("{source}: {scheme}\n")
+            } else if let Some(ty) = typed.expr(*id) {
+                format!("{source}: {ty}\n")
+            } else {
                 continue;
-            };
-            format!("{source}: {ty}\n")
+            }
         };
         out.write(rendered.as_bytes());
     }
+}
+
+/// A diagnostic of a file the line loaded, which does not reject it.
+const fn from_file(diagnostic: &Diagnostic) -> bool {
+    match diagnostic {
+        Diagnostic::File { .. }
+        | Diagnostic::FileResolve { .. }
+        | Diagnostic::FileType { .. } => true,
+        Diagnostic::Syntax(_)
+        | Diagnostic::Resolve(_)
+        | Diagnostic::Type(_) => false,
+    }
+}
+
+/// A comment-only line, which is blank to the grammar.
+fn comment(line: &str) -> bool {
+    line.trim_start().starts_with('#')
+}
+
+/// A fresh line may start an entry unless it is a command other than
+/// `:t` or `:r` with a line.
+fn continuable(line: &str) -> bool {
+    line.trim_start().strip_prefix(':').is_none_or(|command| {
+        command.split_once(' ').is_some_and(|(name, arg)| {
+            matches!(name, "t" | "r") && !arg.trim().is_empty()
+        })
+    })
+}
+
+/// Whether an entry needs another line: an unclosed bracket, or a last
+/// token that is an operator, `=`, `->`, `=>` or a comma. A `>` touching
+/// what precedes it closes type arguments, as in `read<i64>`.
+fn opens(entry: &str) -> bool {
+    let code = entry
+        .trim_start()
+        .strip_prefix(':')
+        .map_or(entry, |command| {
+            command.split_once(' ').map_or("", |(_, arg)| arg)
+        });
+    let mut depth = 0_isize;
+    let mut trailing = false;
+    for token in lex(code).tokens {
+        let Kind::Symbol(symbol) = token.kind else {
+            if !matches!(token.kind, Kind::Newline | Kind::Eof) {
+                trailing = false;
+            }
+            continue;
+        };
+        match symbol {
+            Symbol::LParen | Symbol::LBracket | Symbol::LBrace => depth += 1,
+            Symbol::RParen | Symbol::RBracket | Symbol::RBrace => depth -= 1,
+            _ => {}
+        }
+        let closes = symbol == Symbol::Greater
+            && !code[..token.span.start].ends_with([' ', '\t']);
+        trailing = (operator(symbol) && !closes)
+            || matches!(symbol, Symbol::Assign | Symbol::Arrow | Symbol::Comma);
+    }
+    depth > 0 || trailing
+}
+
+/// Whether a line starts with an operator that continues the line
+/// before it: a pipe, `+ - * %`, a comparison or `=>`.
+fn leading(line: &str) -> bool {
+    lex(line).tokens.first().is_some_and(
+        |token| matches!(token.kind, Kind::Symbol(symbol) if operator(symbol)),
+    )
+}
+
+/// The operators that continue a line from either side; `/` does not,
+/// as a lone `/` is the root path.
+const fn operator(symbol: Symbol) -> bool {
+    symbol.continues_line()
+        || matches!(
+            symbol,
+            Symbol::Plus
+                | Symbol::Minus
+                | Symbol::Star
+                | Symbol::Percent
+                | Symbol::Eq
+                | Symbol::NotEq
+                | Symbol::Less
+                | Symbol::LessEq
+                | Symbol::Greater
+                | Symbol::GreaterEq
+                | Symbol::FatArrow
+        )
+}
+
+/// The Name part of a file stem: from its first letter or `_`, with
+/// every other character that a Name cannot hold as `_`.
+fn module_name(file: &str) -> String {
+    file.trim_start_matches(|ch: char| !ch.is_ascii_alphabetic() && ch != '_')
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
 }
