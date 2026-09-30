@@ -1,6 +1,6 @@
 use fipe::{
     lex::{lex, Reason},
-    token::{Kind, Source, Span, Symbol, Token},
+    token::{Kind, Magnitude, Source, Span, Symbol, Token},
 };
 
 #[test]
@@ -59,15 +59,11 @@ fn recovery_respects_escaped_quote_and_reports_first_error() {
 }
 
 #[test]
-fn control_and_ampersand_errors_never_truncate_the_source() {
+fn control_errors_never_truncate_the_source() {
     let result = lex("a\0b & c\u{85}d");
     assert_eq!(
         result.errors.iter().map(|e| e.reason).collect::<Vec<_>>(),
-        vec![
-            Reason::Stray('\0'),
-            Reason::Stray('&'),
-            Reason::Stray('\u{85}')
-        ]
+        vec![Reason::Stray('\0'), Reason::Stray('\u{85}')]
     );
     assert_eq!(
         result
@@ -78,6 +74,7 @@ fn control_and_ampersand_errors_never_truncate_the_source() {
         vec![
             Kind::Name(vec!["a".into()]),
             Kind::Name(vec!["b".into()]),
+            Kind::Symbol(Symbol::Ampersand),
             Kind::Name(vec!["c".into()]),
             Kind::Name(vec!["d".into()]),
             Kind::Eof
@@ -88,7 +85,6 @@ fn control_and_ampersand_errors_never_truncate_the_source() {
             Source::new("a\0b & c\u{85}d").slice(error.span),
             Some(match error.reason {
                 Reason::Stray('\0') => "\0",
-                Reason::Stray('&') => "&",
                 _ => "\u{85}",
             })
         );
@@ -284,19 +280,27 @@ fn large_literals_and_deep_delimiters_do_not_need_recursion() {
     let digits = "9".repeat(100_000);
     let input = format!("{digits} -{digits} 1e{digits} \"{digits}\" next");
     let result = lex(&input);
+    assert_eq!(result.errors, []);
+    let exact = Magnitude::parse(&digits, 10).unwrap();
+    for (token, negative) in result.tokens[..2].iter().zip([false, true]) {
+        let Kind::Int {
+            negative: sign,
+            magnitude,
+        } = &token.kind
+        else {
+            panic!("expected an integer: {:?}", token.kind);
+        };
+        assert_eq!((*sign, magnitude), (negative, &exact));
+    }
+    assert_eq!(result.tokens[2].kind, Kind::Float(format!("1e{digits}")));
     assert_eq!(
-        result.errors.iter().map(|e| e.reason).collect::<Vec<_>>(),
-        [Reason::IntegerRange, Reason::IntegerRange]
-    );
-    assert_eq!(result.tokens[0].kind, Kind::Float(format!("1e{digits}")));
-    assert_eq!(
-        result.tokens[1].kind,
+        result.tokens[3].kind,
         Kind::Str {
             value: digits,
             raw: false
         }
     );
-    assert_eq!(result.tokens[2].kind, Kind::Name(vec!["next".into()]));
+    assert_eq!(result.tokens[4].kind, Kind::Name(vec!["next".into()]));
     let nested = format!("{}x{}", "(".repeat(10_000), ")".repeat(10_000));
     let result = lex(&nested);
     assert_eq!(result.errors, []);

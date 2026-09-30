@@ -33,9 +33,9 @@ U+FEFF, U+200B and:
 
 Thus `a+b`, `x*2`, `my-file`, `2024-01-01` and `fs.Entry` are whole words,
 and arithmetic needs boundaries: `x * 2`. A word is classified only once it
-is complete. Before word scanning: `"` and `'` begin quoted literals, `b"`
-at a boundary begins bytes, the word `->` is a symbol, and a backslash line
-join is consumed (below).
+is complete. Before word scanning: `"` and `'` begin quoted literals, the
+word `->` is a symbol, and a backslash line join is consumed (below). A
+word that is a prefix and touches a quote begins it (§Quoted literals).
 
 Symbols use longest match from this finite set:
 
@@ -55,7 +55,7 @@ row.
 
 | Condition | Token/payload |
 | --- | --- |
-| valid integer or float | `INTEGER` or `FLOAT`, exact source spelling |
+| number, with a prefix or suffix (§Numbers) | `INTEGER` or `FLOAT`, exact source spelling |
 | exactly `+`, `-`, `*`, `/`, `%`, `++` | the corresponding symbol |
 | one/two dashes then an ASCII letter | `FLAG`, text after the dashes |
 | starts `/`, `./` or `../` | `PATH`, original text |
@@ -95,9 +95,24 @@ float    = sign, ( dec, ".", dec, [ exponent ] | dec, exponent ) ;
 ```
 
 `dec`, `hex`, `oct`, `bin` use radices 10, 16, 8, 2; hex admits either
-case. A sign is adjacent; there are no suffixes or leading `+`. `1.`, `.5`,
-`1e`, `0xZZ`, `1__0` and `1st` are words; a lone minus is a symbol. `-0`
+case. A sign is adjacent; there is no leading `+`. `1.`, `.5`, `0x`,
+`0xZZ`, `1__0` and `2024-01-01` are words; a lone minus is a symbol. `-0`
 keeps its sign.
+
+A number may carry a program's prefix or suffix, read with no type
+([members](members.md) §Literals). A numeric word is read in order:
+
+1. After `0x`, `0o` or `0b` come that radix's digits, else it is a word.
+2. The longest number from the start; the whole word is that number, so
+   `1e5` is an exponent and `0x1Fe` all hex digits.
+3. After a lone `0`, a lowercase letter other than `x`, `o` and `b`, then
+   one or more letters and digits: a prefix and its digits, as written,
+   with no suffix: `0r7Z`, `0ms`.
+4. A letter, then letters, digits and underscores: a suffix, `10ms`,
+   `2i`, `1st`, `1e`, `0x1Fg`. Anything else makes the word a word.
+
+A name before digits is a name: `x10`. `0x`, `0o` and `0b` arrive
+decoded; the digits after a program's prefix arrive as written.
 
 An integer payload is sign and magnitude with no width. The lexer has no
 bound on a number; a place has, and ranges are the checker's. A float
@@ -109,8 +124,14 @@ There is no resource literal: `rd:4` is `NAME("rd")`, `:`, `INTEGER(4)`.
 
 ## Quoted literals
 
-`"…"` is a decoded string, `'…'` a raw string, `b"…"` decoded bytes; spans
-include prefix and quotes. A quote does not cross LF. A raw quote closes at
+`"…"` is a decoded string, `'…'` a raw string; spans include the quotes,
+prefix and suffix. A name with no uppercase letter touching the opening
+quote is its prefix, `re"a+b"`; a one-segment name touching the closing
+quote is its suffix, `"a+b"i`. A keyword is neither, and another word
+beside a quote is a token of its own. `f "abc"` applies `f`; `f"abc"` is
+a prefix. `b"…"` is the prefix `b`, bytes by the prelude's claim. With a
+prefix or suffix a decoded quote carries its bytes, which need not be
+UTF-8. A quote does not cross LF. A raw quote closes at
 the next `'` and has no escapes. No interpolation exists. Decoded literals
 admit exactly:
 
@@ -124,7 +145,7 @@ admit exactly:
 An escape consumes exactly its spelling: `\x414` is `A4`. Unknown or
 incomplete escapes are `BadEscape`. Literal U+FEFF, U+200B and controls
 other than TAB are `Stray`; LF before the closing quote is
-`UnterminatedQuote`. A decoded string must be valid UTF-8 after escapes:
+`UnterminatedQuote`. A decoded string with neither must be valid UTF-8:
 `"\xFF"` is `InvalidUtf8`, `"\xC3\xA9"` is `é`, `b"\xFF"` is valid.
 
 ## Comments and logical lines

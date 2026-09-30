@@ -1,12 +1,15 @@
 use super::{Context, Error, Expected, Parser, Reason};
 use crate::{
-    ast::{Constraint, ExprId, ExprKind, Name, Type, TypeId, TypeKind},
+    ast::{
+        Constraint, ConstraintKind, ExprId, ExprKind, Name, Type, TypeId,
+        TypeKind,
+    },
     token::{Kind, Span, Symbol},
 };
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 impl Parser {
-    /// The type of an annotation: `Show a, Num b => type`, or a type.
+    /// The type of an annotation: `Show a, b.age: c => type`, or a type.
     /// Constraints live only here, at the top; a nested type has none.
     pub(super) fn annotation(&mut self) -> Result<TypeId, Error> {
         if !self.constraints_ahead() {
@@ -15,17 +18,19 @@ impl Parser {
         let start = self.here().start;
         let mut constraints = Vec::new();
         loop {
-            let class = self.type_atom()?;
-            let variable = self.name(true)?;
-            let span = Span {
-                start: self.module.types[class.0].span.start,
-                end: variable.span.end,
+            let first = self.here().start;
+            let kind = if self.colon_follows() {
+                let member = self.name(false)?;
+                self.expect(Symbol::Colon)?;
+                let ty = self.type_syntax()?;
+                ConstraintKind::Member { member, ty }
+            } else {
+                let class = self.type_atom()?;
+                let variable = self.name(true)?;
+                ConstraintKind::Named { class, variable }
             };
-            constraints.push(Constraint {
-                class,
-                variable,
-                span,
-            });
+            let span = self.since(first);
+            constraints.push(Constraint { kind, span });
             if !self.eat(Symbol::Comma) {
                 break;
             }
@@ -40,13 +45,23 @@ impl Parser {
     }
 
     /// A depth-zero `=>` before this annotation ends: a constraint list.
-    /// An annotation ends at `=`, `:`, a newline, a pipe, a brace or an
-    /// unmatched closer, so a later member's `=>` is never taken.
+    /// An annotation ends at `=`, `:`, a newline, a pipe other than `|`,
+    /// a brace or an unmatched closer, so a later member's `=>` is never
+    /// taken; a `:` after a qualified name is a member constraint's.
     fn constraints_ahead(&mut self) -> bool {
         self.peek();
         let mut depth = 0_usize;
-        for token in &self.tokens[self.position..] {
+        let tokens = &self.tokens[self.position..];
+        for (index, token) in tokens.iter().enumerate() {
             match token.kind {
+                Kind::Symbol(Symbol::Colon) if depth == 0 => {
+                    let member = index > 0
+                        && matches!(&tokens[index - 1].kind,
+                            Kind::Name(parts) if parts.len() > 1);
+                    if !member {
+                        return false;
+                    }
+                }
                 Kind::Symbol(
                     Symbol::LParen | Symbol::LBracket | Symbol::Less,
                 ) => {
@@ -64,12 +79,11 @@ impl Parser {
                     }
                     let ends = matches!(
                         symbol,
-                        Symbol::Assign
-                            | Symbol::Colon
-                            | Symbol::LBrace
-                            | Symbol::RBrace
+                        Symbol::Assign | Symbol::LBrace | Symbol::RBrace
                     );
-                    if ends || symbol.continues_line() {
+                    if ends
+                        || (symbol.continues_line() && symbol != Symbol::Pipe)
+                    {
                         return false;
                     }
                 }
@@ -80,11 +94,16 @@ impl Parser {
         false
     }
 
-    /// A type: an atom, or `atom -> type`, which nests to the right.
+    /// A type: signs over atoms, then `-> type`, which nests to the
+    /// right. `!` binds tightest, then `&`, `|` and `*`.
     pub(super) fn type_syntax(&mut self) -> Result<TypeId, Error> {
         self.nested(|parser| {
             let start = parser.here().start;
-            let parameter = parser.type_atom()?;
+            let parameter = parser.type_chain(
+                Symbol::Star,
+                Self::type_term,
+                TypeKind::Tuple,
+            )?;
             if !parser.eat(Symbol::Arrow) {
                 return Ok(parameter);
             }
@@ -95,6 +114,49 @@ impl Parser {
                 parser.since(start),
             ))
         })
+    }
+
+    /// `A | B`; `|!` is the error that asks for `| !`.
+    fn type_term(&mut self) -> Result<TypeId, Error> {
+        let term =
+            self.type_chain(Symbol::Pipe, Self::type_both, TypeKind::Either)?;
+        if self.at(Symbol::PipeBad) {
+            return Err(self.error(Reason::EitherNot));
+        }
+        Ok(term)
+    }
+
+    /// `A & B`, also a type parameter's bound.
+    pub(super) fn type_both(&mut self) -> Result<TypeId, Error> {
+        self.type_chain(Symbol::Ampersand, Self::type_not, TypeKind::Both)
+    }
+
+    fn type_not(&mut self) -> Result<TypeId, Error> {
+        if !self.eat(Symbol::Not) {
+            return self.type_atom();
+        }
+        let start = self.previous.start;
+        let inner = self.type_atom()?;
+        Ok(self.add_type(TypeKind::Not(inner), self.since(start)))
+    }
+
+    /// One part, or two or more joined by `sign` into one flat node.
+    fn type_chain(
+        &mut self,
+        sign: Symbol,
+        part: fn(&mut Self) -> Result<TypeId, Error>,
+        node: fn(Vec<TypeId>) -> TypeKind,
+    ) -> Result<TypeId, Error> {
+        let start = self.here().start;
+        let first = part(self)?;
+        if !self.at(sign) {
+            return Ok(first);
+        }
+        let mut parts = vec![first];
+        while self.eat(sign) {
+            parts.push(part(self)?);
+        }
+        Ok(self.add_type(node(parts), self.since(start)))
     }
 
     fn type_atom(&mut self) -> Result<TypeId, Error> {
@@ -137,13 +199,16 @@ impl Parser {
                 self.bump();
                 let element = self.type_syntax()?;
                 self.expect(Symbol::Semicolon)?;
-                let (length, length_span) = self.nonnegative()?;
+                let length = if matches!(self.peek(), Kind::Name(_)) {
+                    let name = self.name(true)?;
+                    let span = name.span;
+                    let arguments = Vec::new();
+                    self.add_type(TypeKind::Named { name, arguments }, span)
+                } else {
+                    self.number()?
+                };
                 self.expect(Symbol::RBracket)?;
-                TypeKind::Array {
-                    element,
-                    length,
-                    length_span,
-                }
+                TypeKind::Array { element, length }
             }
             _ => return Err(self.expected(Expected::Type)),
         };
@@ -161,9 +226,22 @@ impl Parser {
             .is_some_and(|token| token.kind == Kind::Symbol(Symbol::Colon))
     }
 
-    /// The list after an opening `<`; at least one type, closed by `>`.
+    /// A non-negative integer in a type.
+    fn number(&mut self) -> Result<TypeId, Error> {
+        let (value, span) = self.nonnegative()?;
+        Ok(self.add_type(TypeKind::Number(value), span))
+    }
+
+    /// The list after an opening `<`; at least one type or number,
+    /// closed by `>`.
     pub(super) fn type_arguments(&mut self) -> Result<Vec<TypeId>, Error> {
-        let arguments = self.list(Symbol::Greater, Self::type_syntax)?;
+        let arguments = self.list(Symbol::Greater, |parser| {
+            if matches!(parser.peek(), Kind::Int { .. }) {
+                parser.number()
+            } else {
+                parser.type_syntax()
+            }
+        })?;
         if arguments.is_empty() {
             return Err(Error {
                 span: self.previous,

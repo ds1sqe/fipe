@@ -1,9 +1,44 @@
-use super::{invisible, Reason, Scanner};
-use crate::token::Kind;
-use alloc::{string::String, vec::Vec};
+use super::{invisible, word, Reason, Scanner};
+use crate::token::{Affixed, Kind, Written};
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 impl Scanner<'_> {
-    pub(super) fn quoted(&mut self, bytes: bool) -> Result<Kind, Reason> {
+    /// A quote after its `prefix`, which is empty when not written, then
+    /// a suffix that touches it. With either the bytes need not be UTF-8.
+    pub(super) fn quoted(&mut self, prefix: String) -> Result<Kind, Reason> {
+        let raw = self.peek() == Some('\'');
+        let value = self.quote();
+        // A failed quote still owns its suffix, so the span covers it; an
+        // unterminated one stopped at LF or EOF, where no word follows.
+        let suffix = self.suffix();
+        let value = value?;
+        if prefix.is_empty() && suffix.is_empty() {
+            return String::from_utf8(value)
+                .map(|value| Kind::Str { value, raw })
+                .map_err(|_| Reason::InvalidUtf8);
+        }
+        Ok(Kind::Affixed(Box::new(Affixed {
+            prefix,
+            form: Written::Text { value, raw },
+            suffix,
+        })))
+    }
+
+    /// A name touching the closing quote, when the whole word is one.
+    fn suffix(&mut self) -> String {
+        let start = self.offset;
+        let end = self.word_end(start);
+        let word = &self.text[start..end];
+        if !word::suffix(word) {
+            return String::new();
+        }
+        while self.offset < end {
+            self.bump();
+        }
+        String::from(word)
+    }
+
+    fn quote(&mut self) -> Result<Vec<u8>, Reason> {
         let quote = self.bump().expect("quoted starts at a quote");
         let raw = quote == '\'';
         let mut value = Vec::new();
@@ -24,15 +59,7 @@ impl Scanner<'_> {
                 }
             }
         }
-        if let Some(reason) = error {
-            return Err(reason);
-        }
-        if bytes {
-            return Ok(Kind::Bytes(value));
-        }
-        String::from_utf8(value)
-            .map(|value| Kind::Str { value, raw })
-            .map_err(|_| Reason::InvalidUtf8)
+        error.map_or(Ok(value), Err)
     }
 
     fn quoted_char(

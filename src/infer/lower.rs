@@ -13,8 +13,8 @@
 use super::{Callee, Infer, Slot};
 use crate::{
     ast::{
-        Entry, ImplMember, ItemKind, Member, Module, Name, TraitMember, TypeId,
-        TypeKind, TypeParameter,
+        Constraint, ConstraintKind, Entry, ImplMember, ItemKind, Member,
+        Module, Name, TraitMember, TypeId, TypeKind, TypeParameter,
     },
     decl::{Kind, Namespace},
     resolve::{Origin, Resolved, Target},
@@ -181,29 +181,60 @@ impl<'a> Infer<'a> {
                         .name_declared(module, origin, name, arguments, vars),
                 }
             }
-            TypeKind::Array {
-                element, length, ..
-            } => Type::Array {
-                element: alloc::boxed::Box::new(
-                    self.lower(scope, *element, vars),
-                ),
-                length: *length,
-            },
+            TypeKind::Array { element, length } => {
+                let element = self.lower(scope, *element, vars);
+                match module.ty(*length).map(|node| &node.kind) {
+                    Some(TypeKind::Number(value)) => {
+                        if let Some(length) = value.to_u64() {
+                            return Type::Array {
+                                element: alloc::boxed::Box::new(element),
+                                length,
+                            };
+                        }
+                        // Another module reports its own.
+                        if matches!(scope, Scope::This) {
+                            let span = module.types[length.0].span;
+                            self.error(span, super::Reason::OutOfRange);
+                        }
+                        self.fresh()
+                    }
+                    // A number parameter, which resolve reports.
+                    _ => self.fresh(),
+                }
+            }
+            // Forms resolve reports as not yet checked.
+            TypeKind::Number(_)
+            | TypeKind::Tuple(_)
+            | TypeKind::Both(_)
+            | TypeKind::Either(_)
+            | TypeKind::Not(_) => self.fresh(),
             TypeKind::Function { parameter, result } => {
                 let parameter = self.lower(scope, *parameter, vars);
                 Type::function(parameter, self.lower(scope, *result, vars))
             }
             TypeKind::Qualified { constraints, ty } => {
-                for constraint in constraints {
-                    let class =
-                        named(module, constraint.class).unwrap_or_default();
-                    let ty =
-                        self.variable(&super::last(&constraint.variable), vars);
-                    vars.obligations.push(Obligation::Class { class, ty });
-                }
+                self.constraints(module, constraints, vars);
                 self.lower(scope, *ty, vars)
             }
             TypeKind::Labeled { ty, .. } => self.lower(scope, *ty, vars),
+        }
+    }
+
+    /// Named constraints as obligations; a member constraint is not yet
+    /// checked, and reported where it is written.
+    fn constraints(
+        &mut self,
+        module: &Module,
+        constraints: &[Constraint],
+        vars: &mut Vars,
+    ) {
+        for constraint in constraints {
+            if let ConstraintKind::Named { class, variable } = &constraint.kind
+            {
+                let class = named(module, *class).unwrap_or_default();
+                let ty = self.variable(&super::last(variable), vars);
+                vars.obligations.push(Obligation::Class { class, ty });
+            }
         }
     }
 
@@ -314,12 +345,7 @@ impl<'a> Infer<'a> {
         if let Some(TypeKind::Qualified { constraints, ty }) =
             module.ty(current).map(|node| &node.kind)
         {
-            for constraint in constraints {
-                let class = named(module, constraint.class).unwrap_or_default();
-                let ty =
-                    self.variable(&super::last(&constraint.variable), vars);
-                vars.obligations.push(Obligation::Class { class, ty });
-            }
+            self.constraints(module, constraints, vars);
             current = *ty;
         }
         let mut slots = Vec::new();
@@ -482,7 +508,7 @@ impl<'a> Infer<'a> {
                 ty: var.clone(),
             });
         }
-        // `read<i64>`: the receiver is the first type parameter.
+        // `read<I64>`: the receiver is the first type parameter.
         let mut callee =
             self.finish_callee(slots, result, self_slot, vars, span);
         callee.parameters.insert(0, var);
@@ -819,6 +845,7 @@ pub(super) fn type_item<'m>(
                 name: n,
                 parameters,
                 members,
+                ..
             } if super::last(n) == name => {
                 Some((parameters.as_slice(), members.as_ref()))
             }

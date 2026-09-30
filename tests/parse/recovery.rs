@@ -51,7 +51,7 @@ fn invalid_grammar_is_rejected_at_the_offending_token() {
         ("P { .., x } = value", "x"),
         ("type qualified.name {}", "qualified.name"),
         ("use fs -1", "-1"),
-        ("x: [u8; -1] = []", "-1"),
+        ("x: [U8; -1] = []", "-1"),
         ("{ use fs }", "use"),
         ("x; y", ";"),
         ("f(1", ""),
@@ -62,7 +62,7 @@ fn invalid_grammar_is_rejected_at_the_offending_token() {
         ("f x = 3", "x"),
         ("Just e rest = v", "rest"),
         ("type T { pub A }", "}"),
-        ("impl T { a: b }", "}"),
+        ("impl T { a }", "}"),
     ] {
         let result = errors(input);
         assert_eq!(
@@ -125,7 +125,7 @@ fn malformed_token_streams_are_diagnostics() {
 fn deep_sources_return_a_nesting_diagnostic() {
     for input in [
         format!("{}x{}", "(".repeat(1_000), ")".repeat(1_000)),
-        format!("x: {}u8{} = y", "Vec<".repeat(1_000), ">".repeat(1_000)),
+        format!("x: {}U8{} = y", "Vec<".repeat(1_000), ">".repeat(1_000)),
         format!("{}x = value", "Just ".repeat(1_000)),
         format!("f: {}A{} = g", "(".repeat(1_000), " -> B)".repeat(1_000)),
         format!("{}x", "(\n".repeat(5_000)),

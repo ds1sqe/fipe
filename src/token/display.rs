@@ -1,4 +1,4 @@
-use super::{fmt, Kind};
+use super::{fmt, Affixed, Kind, Written};
 use alloc::string::String;
 
 /// Canonical spelling for diagnostics; use `Source::slice` for exact spelling.
@@ -27,13 +27,35 @@ impl fmt::Display for Kind {
             }
             Self::Str { value, raw: true } => write!(f, "'{value}'"),
             Self::Str { value, raw: false } => quoted(f, value.as_bytes()),
-            Self::Bytes(bytes) => {
-                f.write_str("b")?;
-                quoted(f, bytes)
-            }
+            Self::Affixed(affixed) => affixed.fmt(f),
             Self::Newline => f.write_str("\n"),
             Self::Eof => f.write_str("<eof>"),
         }
+    }
+}
+
+impl fmt::Display for Affixed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sign = |negative: bool| if negative { "-" } else { "" };
+        match &self.form {
+            Written::Int {
+                negative,
+                magnitude,
+            } => write!(f, "{}{magnitude}", sign(*negative))?,
+            Written::Float(spelling) => f.write_str(spelling)?,
+            Written::Digits { negative, digits } => {
+                write!(f, "{}0{}{digits}", sign(*negative), self.prefix)?;
+            }
+            Written::Text { value, raw } => {
+                f.write_str(&self.prefix)?;
+                // A raw quote holds source text, so it is UTF-8.
+                match core::str::from_utf8(value) {
+                    Ok(text) if *raw => write!(f, "'{text}'")?,
+                    _ => quoted(f, value)?,
+                }
+            }
+        }
+        f.write_str(&self.suffix)
     }
 }
 

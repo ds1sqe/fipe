@@ -3,7 +3,7 @@
 use crate::{
     ast::{self, Entry, ExprId, ExprKind, Module, Name, PatternId},
     lex::Lexed,
-    token::{Keyword, Kind, Span, Symbol, Token},
+    token::{Keyword, Kind, Magnitude, Span, Symbol, Token},
 };
 use alloc::{vec, vec::Vec};
 use core::fmt;
@@ -40,6 +40,8 @@ pub enum Reason {
     NestingLimit,
     /// A second top-level `=`: a binding's value is not a binding.
     BindingValue,
+    /// `|!` in a type, where either and not are written `| !`.
+    EitherNot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +86,7 @@ impl fmt::Display for Reason {
             Self::BindingValue => {
                 f.write_str("a binding's value is not a binding")
             }
+            Self::EitherNot => f.write_str("in a type, write `| !`"),
         }
     }
 }
@@ -245,10 +248,12 @@ impl Parser {
         for (index, token) in tokens.iter().enumerate() {
             match token.kind {
                 Kind::Symbol(Symbol::Colon) if depth == 0 => annotated = true,
-                // Inside an annotation, `,` separates constraints and `=>`
-                // ends them; neither ends the line.
+                // Inside an annotation, `,` separates constraints, `=>`
+                // ends them and `|` joins types; none ends the line.
                 Kind::Symbol(Symbol::FatArrow | Symbol::Comma)
                     if depth == 0 && annotated => {}
+                Kind::Symbol(symbol)
+                    if depth == 0 && annotated && symbol.continues_line() => {}
                 Kind::Symbol(
                     Symbol::LParen
                     | Symbol::LBracket
@@ -330,6 +335,7 @@ impl Parser {
                             | Symbol::Minus
                             | Symbol::Star
                             | Symbol::Percent
+                            | Symbol::Concat
                             | Symbol::Eq
                             | Symbol::NotEq
                             | Symbol::Less
@@ -442,25 +448,94 @@ impl Parser {
             if self.at(close) {
                 break;
             }
-            if self.tokens[self.position].kind == Kind::Newline {
-                let newline = self.tokens[self.position].span;
-                let mut index = self.position;
-                while self.tokens[index].kind == Kind::Newline {
-                    index += 1;
-                }
-                if self.tokens[index].kind == Kind::Symbol(close) {
-                    self.position = index;
-                    break;
-                }
-                return Err(Error {
-                    span: newline,
-                    reason: Reason::CommaBeforeLineBreak,
-                });
-            }
-            return Err(self.expected(Expected::Symbol(close)));
+            self.before_closer(close)?;
+            break;
         }
         self.expect(close)?;
         Ok(items)
+    }
+
+    /// Only newlines before `close`, which are skipped; any other line
+    /// break in a list needs a comma first.
+    fn before_closer(&mut self, close: Symbol) -> Result<(), Error> {
+        if self.tokens[self.position].kind != Kind::Newline {
+            return Err(self.expected(Expected::Symbol(close)));
+        }
+        let newline = self.tokens[self.position].span;
+        let mut index = self.position;
+        while self.tokens[index].kind == Kind::Newline {
+            index += 1;
+        }
+        if self.tokens[index].kind != Kind::Symbol(close) {
+            return Err(Error {
+                span: newline,
+                reason: Reason::CommaBeforeLineBreak,
+            });
+        }
+        self.position = index;
+        Ok(())
+    }
+
+    /// Whether the `( )` whose contents start at token `from` holds a
+    /// depth-zero comma before any depth-zero `=>`: a tuple. A `<`
+    /// touching a name opens type arguments, whose commas are theirs.
+    fn tuple_at(&self, from: usize) -> bool {
+        let mut depth = 0_usize;
+        let mut angles = 0_usize;
+        let mut previous: Option<&Token> = None;
+        for token in self.tokens.iter().skip(from) {
+            let top = depth == 0 && angles == 0;
+            match token.kind {
+                Kind::Symbol(Symbol::Comma) if top => return true,
+                Kind::Symbol(Symbol::FatArrow) if top => return false,
+                Kind::Symbol(
+                    Symbol::LParen | Symbol::LBracket | Symbol::LBrace,
+                ) => depth += 1,
+                Kind::Symbol(Symbol::Less)
+                    if previous.is_some_and(|p| {
+                        matches!(p.kind, Kind::Name(_))
+                            && p.span.end == token.span.start
+                    }) =>
+                {
+                    angles += 1;
+                }
+                // Outside type arguments `>` compares.
+                Kind::Symbol(Symbol::Greater) => {
+                    angles = angles.saturating_sub(1);
+                }
+                Kind::Symbol(
+                    Symbol::RParen | Symbol::RBracket | Symbol::RBrace,
+                ) => match depth.checked_sub(1) {
+                    Some(less) => depth = less,
+                    None => return false,
+                },
+                Kind::Eof => return false,
+                _ => {}
+            }
+            previous = Some(token);
+        }
+        false
+    }
+
+    /// The parts of a tuple after its opener: two or more, comma
+    /// separated, with a list's newlines and no trailing comma.
+    fn tuple<T>(
+        &mut self,
+        mut part: impl FnMut(&mut Self) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
+        let mut parts = Vec::new();
+        loop {
+            self.newlines();
+            parts.push(part(self)?);
+            if !self.eat(Symbol::Comma) {
+                break;
+            }
+        }
+        if !self.at(Symbol::RParen) {
+            self.before_closer(Symbol::RParen)?;
+        }
+        self.expect(Symbol::RParen)?;
+        Ok(parts)
     }
 
     fn name(&mut self, single: bool) -> Result<Name, Error> {
@@ -483,15 +558,15 @@ impl Parser {
         })
     }
 
-    fn nonnegative(&mut self) -> Result<(u64, Span), Error> {
-        if let Kind::Int {
-            negative,
-            magnitude,
-        } = *self.peek()
-        {
-            if !negative || magnitude == 0 {
-                let span = self.bump().span;
-                return Ok((magnitude, span));
+    fn nonnegative(&mut self) -> Result<(Magnitude, Span), Error> {
+        if matches!(
+            self.peek(),
+            Kind::Int { negative, magnitude }
+                if !negative || magnitude.is_zero()
+        ) {
+            let token = self.bump();
+            if let Kind::Int { magnitude, .. } = token.kind {
+                return Ok((magnitude, token.span));
             }
         }
         Err(self.expected(Expected::NonnegativeInteger))

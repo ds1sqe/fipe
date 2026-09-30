@@ -3,29 +3,29 @@
 # value is implemented by the crate.
 
 # Primitive types, opaque: their values come from literals and words.
-pub type i8
-pub type i16
-pub type i32
-pub type i64
-pub type u8
-pub type u16
-pub type u32
-pub type u64
-pub type f32
-pub type f64
+pub type I8
+pub type I16
+pub type I32
+pub type I64
+pub type U8
+pub type U16
+pub type U32
+pub type U64
+pub type F32
+pub type F64
 pub type Vec<T>
 pub type Deque<T>
 
 # Prelude types.
 pub type Bool { True, False }
-pub type String { bytes: Vec<u8> }
+pub type String { bytes: Vec<U8> }
 pub type Ordering { Less, Equal, Greater }
 pub type Maybe<T> { Just(v: T), Nothing }
 pub type Result<T, E: Err> { Ok(v: T), Err(e: E) }
 pub type Either<L, R> { Left(l: L), Right(r: R) }
 pub type ParseError { pub message: String }
-pub type Utf8Error { pub at: u64 }
-pub type Count<T> { pub item: T, pub n: u64 }
+pub type Utf8Error { pub at: U64 }
+pub type Count<T> { pub item: T, pub n: U64 }
 
 # Derived classes: the checker supplies every instance; no user impl.
 pub trait Eq { eq: Self -> Self -> Bool }
@@ -44,7 +44,7 @@ pub trait Float: Num {}
 pub trait Display { display: Self -> String }
 pub trait Err: Display {}
 pub trait Read { read: String -> Result<Self, ParseError> }
-pub trait Len { len: Self -> u64 }
+pub trait Len { len: Self -> U64 }
 pub trait From<A> { from: A -> Self }
 pub trait Into<B> { into: Self -> B }
 pub trait TryFrom<A> { Error: Err, try_from: A -> Result<Self, Self.Error> }
@@ -96,8 +96,8 @@ pub to: a -> b
 pub try: a -> Result<b, e>
 
 # Text and bytes; the value comes last, so the pipe fills it.
-pub bytes: String -> Vec<u8>
-pub utf8: Vec<u8> -> Result<String, Utf8Error>
+pub bytes: String -> Vec<U8>
+pub utf8: Vec<U8> -> Result<String, Utf8Error>
 pub lines: String -> Vec<String>
 pub words: String -> Vec<String>
 pub split: (at: String) -> String -> Vec<String>
@@ -110,18 +110,18 @@ pub round: Float a => a -> a
 pub trunc: Float a => a -> a
 pub floor: Float a => a -> a
 pub ceil: Float a => a -> a
-pub sqrt: f64 -> f64
-pub sin: f64 -> f64
-pub cos: f64 -> f64
-pub atan2: (y: f64) -> (x: f64) -> f64
-pub hypot: (x: f64) -> (y: f64) -> f64
+pub sqrt: F64 -> F64
+pub sin: F64 -> F64
+pub cos: F64 -> F64
+pub atan2: (y: F64) -> (x: F64) -> F64
+pub hypot: (x: F64) -> (y: F64) -> F64
 
 # Collections.
 pub filter: (a -> Bool) -> Vec<a> -> Vec<a>
 pub fold: b -> (b -> a -> b) -> Vec<a> -> b
 pub first: Vec<a> -> Maybe<a>
 pub head: Vec<a> -> a
-pub take: (n: u64) -> Vec<a> -> Vec<a>
+pub take: (n: U64) -> Vec<a> -> Vec<a>
 pub flatten: Vec<Vec<a>> -> Vec<a>
 pub collect: Vec<Result<a, e>> -> Result<Vec<a>, e>
 pub sum: Num a => Vec<a> -> a

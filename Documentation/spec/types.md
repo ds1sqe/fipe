@@ -41,7 +41,8 @@ in a type is a variable, a number parameter ([containers](containers.md)
 §Parameters), or a used module as an API reference, `Rd<fs>`
 ([embedding](host.md)); the host type that takes one declares the
 parameter uppercase, `type Rd<Api>`, since a lowercase parameter is a
-number. One that spells an old lowercase numeric type earns a hint.
+number. One that spells an old lowercase numeric type, `i64`, is a check
+error with the hint `I64`.
 
 Three **signs** join types, the ones of a Bool, since a limit is a Bool
 over `self`; [syntax](syntax.md) gives their precedence:

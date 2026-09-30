@@ -1,7 +1,8 @@
 use super::{errors, integer, module, name, node, only};
 use fipe::{
     ast::{
-        Entry, ExprKind, ImplMember, ItemKind, Member, PatternKind, TypeKind,
+        ConstraintKind, Entry, ExprKind, ImplMember, ItemKind, Member,
+        PatternKind, TypeKind,
     },
     parse::Reason,
     token::Source,
@@ -9,7 +10,7 @@ use fipe::{
 
 #[test]
 fn declaration_forms_carry_parameters_constraints_and_types() {
-    let input = "pub trait From<A> { from: A -> Self }\npub show: Show a => a -> String\nf: Show a, Num b => a -> b = x => x\nimpl P: TryFrom<S> { Error = Vec<u8>, try_from = s => Ok s }\ntrait T { m: Read a => String -> a, n: A }";
+    let input = "pub trait From<A> { from: A -> Self }\npub show: Show a => a -> String\nf: Show a, Num b => a -> b = x => x\nimpl P: TryFrom<S> { Error = Vec<U8>, try_from = s => Ok s }\ntrait T { m: Read a => String -> a, n: A }";
     let parsed = module(input);
     let [Entry::Item(from), Entry::Item(show), Entry::Line(f), Entry::Item(try_from), Entry::Item(t)] =
         parsed.entries.as_slice()
@@ -31,9 +32,12 @@ fn declaration_forms_carry_parameters_constraints_and_types() {
         panic!()
     };
     assert_eq!(constraints.len(), 1);
-    assert_eq!(constraints[0].variable.segments, ["a"]);
+    let ConstraintKind::Named { class, variable } = &constraints[0].kind else {
+        panic!()
+    };
+    assert_eq!(variable.segments, ["a"]);
     assert_eq!(
-        Source::new(input).slice(parsed.ty(constraints[0].class).unwrap().span),
+        Source::new(input).slice(parsed.ty(*class).unwrap().span),
         Some("Show")
     );
     assert_eq!(
@@ -71,7 +75,7 @@ fn declaration_forms_carry_parameters_constraints_and_types() {
     assert_eq!(error.segments, ["Error"]);
     assert_eq!(
         Source::new(input).slice(parsed.ty(*ty).unwrap().span),
-        Some("Vec<u8>")
+        Some("Vec<U8>")
     );
     let ItemKind::Trait { members, .. } = &t.kind else {
         panic!()
@@ -85,10 +89,10 @@ fn declaration_forms_carry_parameters_constraints_and_types() {
         TypeKind::Named { .. }
     ));
     for (input, offending) in [
-        ("{ x: i64 }", ":"),
+        ("{ x: I64 }", ":"),
         ("f: Vec<Show a => a> = x", "a"),
         ("pub x", "x"),
-        ("x: i64 =>", "=>"),
+        ("x: I64 =>", "=>"),
     ] {
         let result = errors(input);
         assert_eq!(
@@ -112,7 +116,7 @@ fn imports_take_names_and_a_version() {
         matches!(&fs.kind, ItemKind::Use { names, version: None } if names[0].segments == ["fs"])
     );
     assert!(
-        matches!(&text.kind, ItemKind::Use { names, version: Some(2) } if names.len() == 1)
+        matches!(&text.kind, ItemKind::Use { names, version: Some(v) } if names.len() == 1 && v.to_u64() == Some(2))
     );
     let ItemKind::Use {
         names,
@@ -128,7 +132,7 @@ fn imports_take_names_and_a_version() {
 
 #[test]
 fn bindings_carry_patterns_annotations_and_arm_heads() {
-    let input = "pub add: i64 -> i64 -> i64 = a (b = 0) => a + b";
+    let input = "pub add: I64 -> I64 -> I64 = a (b = 0) => a + b";
     let (parsed, id) = only(input);
     let ExprKind::Bind {
         public: true,
@@ -149,7 +153,7 @@ fn bindings_carry_patterns_annotations_and_arm_heads() {
     };
     assert_eq!(
         Source::new(input).slice(parsed.ty(*parameter).unwrap().span),
-        Some("i64")
+        Some("I64")
     );
     assert!(matches!(
         parsed.ty(*result).unwrap().kind,
@@ -207,7 +211,7 @@ fn bindings_carry_patterns_annotations_and_arm_heads() {
         parsed.pattern(*payload).unwrap().kind,
         PatternKind::Constructor { .. }
     ));
-    for input in ["x = 1", "[x, y] = e", "Just x = e", "x: i64 = e"] {
+    for input in ["x = 1", "[x, y] = e", "Just x = e", "x: I64 = e"] {
         let (parsed, id) = only(input);
         assert!(
             matches!(node(&parsed, id), ExprKind::Bind { .. }),
@@ -224,7 +228,7 @@ fn bindings_carry_patterns_annotations_and_arm_heads() {
     reason = "One item corpus, checked member by member"
 )]
 fn types_traits_and_impls_have_member_lists() {
-    let input = "pub type Point { pub x: i64, pub y: i64 = 0, len: u64 }\ntype Shape { Circle(r: f64), Dot }\ntype Maybe<T: Show> { Just(v: T), Nothing }\ntrait Ord: Eq { cmp: Self -> Self -> Ordering, max: Self -> Self -> Self = a b => a }\nimpl Point { x (y = 0) => Self { x, y, len: 0 }, pub line: i64 -> Self = p => Self p p }\nimpl Point: From<Polar> { from = pl => Self { x: 1, y: 2, len: 3 } }";
+    let input = "pub type Point { pub x: I64, pub y: I64 = 0, len: U64 }\ntype Shape { Circle(r: F64), Dot }\ntype Maybe<T: Show> { Just(v: T), Nothing }\ntrait Ord: Eq { cmp: Self -> Self -> Ordering, max: Self -> Self -> Self = a b => a }\nimpl Point { x (y = 0) => Self { x, y, len: 0 }, pub line: I64 -> Self = p => Self p p }\nimpl Point: From<Polar> { from = pl => Self { x: 1, y: 2, len: 3 } }";
     let parsed = module(input);
     let [Entry::Item(point), Entry::Item(shape), Entry::Item(maybe), Entry::Item(ord), Entry::Item(inherent), Entry::Item(from)] =
         parsed.entries.as_slice()
@@ -235,13 +239,16 @@ fn types_traits_and_impls_have_member_lists() {
     let ItemKind::Type {
         name: type_name,
         parameters,
+        base: None,
         members,
+        limits,
     } = &point.kind
     else {
         panic!()
     };
     assert_eq!(type_name.segments, ["Point"]);
     assert_eq!(parameters.len(), 0);
+    assert_eq!(limits.as_slice(), []);
     let [Member::Field(x), Member::Field(y), Member::Field(len)] =
         members.as_deref().unwrap()
     else {
@@ -252,7 +259,7 @@ fn types_traits_and_impls_have_member_lists() {
     integer(&parsed, y.default.unwrap(), 0);
     assert_eq!(
         Source::new(input).slice(parsed.ty(len.ty).unwrap().span),
-        Some("u64")
+        Some("U64")
     );
     let ItemKind::Type { members, .. } = &shape.kind else {
         panic!()
@@ -277,7 +284,11 @@ fn types_traits_and_impls_have_member_lists() {
         panic!()
     };
     assert_eq!(parameters[0].name.segments, ["T"]);
-    assert_eq!(parameters[0].bound.as_ref().unwrap().segments, ["Show"]);
+    let bound = parameters[0].bound.unwrap();
+    assert_eq!(
+        Source::new(input).slice(parsed.ty(bound).unwrap().span),
+        Some("Show")
+    );
 
     let ItemKind::Trait {
         name: trait_name,
@@ -314,7 +325,7 @@ fn types_traits_and_impls_have_member_lists() {
         public: true,
         name: line,
         annotation: Some(_),
-        value,
+        value: Some(value),
         ..
     }] = members.as_slice()
     else {
@@ -362,7 +373,7 @@ fn types_traits_and_impls_have_member_lists() {
 
 #[test]
 fn nested_generic_closers_have_separate_source_spans() {
-    let input = "x: Vec<Vec<u8>> = values";
+    let input = "x: Vec<Vec<U8>> = values";
     let parsed = module(input);
     let [Entry::Line(id)] = parsed.entries.as_slice() else {
         panic!()
@@ -377,7 +388,7 @@ fn nested_generic_closers_have_separate_source_spans() {
     };
     name(&parsed, *value, "values");
     let outer = parsed.ty(*outer).unwrap();
-    assert_eq!(Source::new(input).slice(outer.span), Some("Vec<Vec<u8>>"));
+    assert_eq!(Source::new(input).slice(outer.span), Some("Vec<Vec<U8>>"));
     let TypeKind::Named { arguments, .. } = &outer.kind else {
         panic!()
     };
@@ -385,14 +396,14 @@ fn nested_generic_closers_have_separate_source_spans() {
         panic!()
     };
     let inner = parsed.ty(*inner).unwrap();
-    assert_eq!(Source::new(input).slice(inner.span), Some("Vec<u8>"));
+    assert_eq!(Source::new(input).slice(inner.span), Some("Vec<U8>"));
     assert_eq!(inner.span.end + 1, outer.span.end);
 }
 
 #[test]
 fn function_types_nest_right_and_array_extents_are_preserved() {
     let input =
-        "f: (T -> [u8; 4]) -> () -> Vec<Vec<T>> = g => g\nunit: () = ()";
+        "f: (T -> [U8; 4]) -> () -> Vec<Vec<T>> = g => g\nunit: () = ()";
     let parsed = module(input);
     let [Entry::Line(binding), Entry::Line(unit)] = parsed.entries.as_slice()
     else {
@@ -421,19 +432,16 @@ fn function_types_nest_right_and_array_extents_are_preserved() {
         Source::new(input).slice(parsed.ty(*argument).unwrap().span),
         Some("T")
     );
-    let TypeKind::Array {
-        element,
-        length,
-        length_span,
-    } = &parsed.ty(*array).unwrap().kind
+    let TypeKind::Array { element, length } = &parsed.ty(*array).unwrap().kind
     else {
         panic!()
     };
-    assert_eq!(*length, 4);
-    assert_eq!(Source::new(input).slice(*length_span), Some("4"));
+    let length = parsed.ty(*length).unwrap();
+    assert_eq!(length.kind, TypeKind::Number(4.into()));
+    assert_eq!(Source::new(input).slice(length.span), Some("4"));
     assert_eq!(
         Source::new(input).slice(parsed.ty(*element).unwrap().span),
-        Some("u8")
+        Some("U8")
     );
     let TypeKind::Function {
         parameter: unit_parameter,
@@ -475,7 +483,7 @@ fn function_types_nest_right_and_array_extents_are_preserved() {
 
 #[test]
 fn labeled_parameters_and_opaque_types_are_declaration_forms() {
-    let input = "pub ls: (path: Src = \".\") -> (long: Bool = False) -> Vec<Entry>\ntype Rd<api>\nf: (A -> B) -> C";
+    let input = "pub ls: (path: Src = \".\") -> (long: Bool = False) -> Vec<Entry>\ntype Rd<Api>\nf: (A -> B) -> C";
     let parsed = module(input);
     let [Entry::Item(ls), Entry::Item(rd), Entry::Item(f)] =
         parsed.entries.as_slice()
@@ -535,8 +543,8 @@ fn labeled_parameters_and_opaque_types_are_declaration_forms() {
     ));
     for (input, at) in [
         ("x: (a: )", ")"),
-        ("x: (a: i64 = )", ")"),
-        ("x: (a: i64", ""),
+        ("x: (a: I64 = )", ")"),
+        ("x: (a: I64", ""),
     ] {
         let errors = errors(input);
         assert_eq!(

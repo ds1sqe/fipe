@@ -7,6 +7,8 @@ use fipe::{
 
 #[path = "parse/expressions.rs"]
 mod expressions;
+#[path = "parse/forms.rs"]
+mod forms;
 #[path = "parse/items.rs"]
 mod items;
 #[path = "parse/lines.rs"]
@@ -55,7 +57,7 @@ fn integer(module: &Module, id: ExprId, expected: u64) {
         node(module, id),
         &ExprKind::Literal(Literal::Int {
             negative: false,
-            magnitude: expected,
+            magnitude: expected.into(),
         })
     );
 }
@@ -108,6 +110,25 @@ fn documentation_examples_parse() {
         });
         assert_eq!(Source::new(&text).slice(parsed.span), Some(text.as_str()));
         assert!(!parsed.entries.is_empty(), "{}", path.display());
+    }
+}
+
+/// Every example block of the type model's chapters parses whole.
+#[test]
+fn type_model_chapter_examples_parse() {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("Documentation/spec");
+    for chapter in ["limits.md", "members.md", "containers.md"] {
+        let text = std::fs::read_to_string(directory.join(chapter)).unwrap();
+        let blocks: Vec<_> = text
+            .split("```text\n")
+            .skip(1)
+            .map(|rest| rest.split("```").next().unwrap())
+            .collect();
+        assert!(!blocks.is_empty(), "{chapter}");
+        for block in blocks {
+            module(block);
+        }
     }
 }
 

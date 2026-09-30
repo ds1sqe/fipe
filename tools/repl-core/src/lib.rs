@@ -16,9 +16,11 @@
 //! rejected), whether the lines arrive together or one at a time. A
 //! command, an empty line or a comment line ends that chance. A `:t` or
 //! `:r` query is held while its next line is read, which continues it
-//! when it starts with an operator.
+//! when it starts with an operator. A line that starts with `where`
+//! continues an accepted `type` item the same way.
 //!
-//! Commands: `:ast`, `:r [line]`, `:t [line]`, `:load <stem or path>`,
+//! `:ast` prints the last line that parsed, accepted or not: a tree
+//! never depends on checking. Commands: `:ast`, `:r [line]`, `:t [line]`, `:load <stem or path>`,
 //! `:host [dir]`, `:q`; any other line goes to the session.
 
 #![no_std]
@@ -70,8 +72,10 @@ pub struct Repl {
     paths: Vec<(String, String)>,
     /// Whether the last output was a prompt, which exit ends with LF.
     prompted: bool,
-    /// The last accepted line, for `:ast` and `:r`.
+    /// The last accepted line, for `:t` and `:r`.
     last: Option<(Report, String)>,
+    /// The last line that parsed, accepted or not, for `:ast`.
+    parsed: Option<Report>,
     /// The session's last line when the entry before this one was it,
     /// which a line starting with an operator continues.
     retractable: Option<String>,
@@ -135,6 +139,7 @@ impl Repl {
             paths: Vec::new(),
             prompted: false,
             last: None,
+            parsed: None,
             retractable: None,
             restore: None,
             quit: false,
@@ -253,7 +258,10 @@ impl Repl {
                 self.entry.push_str(line);
             } else if continuable(line) {
                 self.entry = line.to_string();
-                if leading(line) && self.retractable.take().is_some() {
+                let joins = leading(line)
+                    || (limits(line)
+                        && self.retractable.as_deref().is_some_and(type_item));
+                if joins && self.retractable.take().is_some() {
                     self.continue_last();
                 }
             } else {
@@ -310,7 +318,9 @@ impl Repl {
             },
             ("t", arg) => self.start(arg, Mode::Types, out),
             ("ast", "") => self.ast(out),
-            ("ast", _) => out.write(b"usage: :ast (the last accepted line)\n"),
+            ("ast", _) => {
+                out.write(b"usage: :ast (the last line that parsed)\n");
+            }
             ("r", "") => match &self.last {
                 Some((report, text)) => names(report, text, out),
                 None => out.write(b"no accepted line\n"),
@@ -399,6 +409,9 @@ impl Repl {
         for diagnostic in &report.diagnostics {
             self.diagnostic(diagnostic, &text, out);
         }
+        if matches!(mode, Mode::Accept) && report.module.is_some() {
+            self.parsed = Some(report.clone());
+        }
         match mode {
             Mode::Accept | Mode::Load
                 if report.diagnostics.iter().all(from_file) =>
@@ -477,8 +490,8 @@ impl Repl {
     }
 
     fn ast(&self, out: &mut Outs) {
-        let Some((report, _)) = &self.last else {
-            return out.write(b"no accepted line\n");
+        let Some(report) = &self.parsed else {
+            return out.write(b"no line has parsed\n");
         };
         let Some(module) = &report.module else { return };
         for entry in report.entries() {
@@ -684,9 +697,9 @@ fn continuable(line: &str) -> bool {
 }
 
 /// Whether an entry needs another line: an unclosed bracket, a last
-/// token that is an operator, `=`, `->`, `=>` or a comma, or a bare
-/// signature waiting for its `= value`. A `>` touching what precedes it
-/// closes type arguments, as in `read<i64>`.
+/// token that is an operator, `=`, `->`, `=>`, a comma or a type item's
+/// `where`, or a bare signature waiting for its `= value`. A `>`
+/// touching what precedes it closes type arguments, as in `read<I64>`.
 fn opens(entry: &str) -> bool {
     let code = entry
         .trim_start()
@@ -695,13 +708,14 @@ fn opens(entry: &str) -> bool {
             command.split_once(' ').map_or("", |(_, arg)| arg)
         });
     let tokens = lex(code).tokens;
+    let limited = type_item(code);
     let mut depth = 0_isize;
     let mut trailing = false;
     let mut assigns = false;
     for token in &tokens {
         let Kind::Symbol(symbol) = token.kind else {
             if !matches!(token.kind, Kind::Newline | Kind::Eof) {
-                trailing = false;
+                trailing = limited && where_word(&token.kind);
             }
             continue;
         };
@@ -731,6 +745,29 @@ fn signature(tokens: &[Token]) -> bool {
         && matches!(kinds.next(), Some(Kind::Symbol(Symbol::Colon)))
 }
 
+/// Whether an entry is a `type` item, which a `where` line continues.
+fn type_item(entry: &str) -> bool {
+    let tokens = lex(entry).tokens;
+    let mut kinds = tokens.iter().map(|token| &token.kind);
+    let mut first = kinds.next();
+    if matches!(first, Some(Kind::Kw(Keyword::Pub))) {
+        first = kinds.next();
+    }
+    matches!(first, Some(Kind::Kw(Keyword::Type)))
+}
+
+/// Whether a line starts with `where`, a type item's limits.
+fn limits(line: &str) -> bool {
+    lex(line)
+        .tokens
+        .first()
+        .is_some_and(|token| where_word(&token.kind))
+}
+
+fn where_word(kind: &Kind) -> bool {
+    matches!(kind, Kind::Name(parts) if parts.len() == 1 && parts[0] == "where")
+}
+
 /// Whether a line starts with an operator that continues the line
 /// before it: a pipe, `+ - * %`, a comparison, `=>` or `=`, so a
 /// signature may stand above its `= value`.
@@ -753,6 +790,7 @@ const fn operator(symbol: Symbol) -> bool {
                 | Symbol::Minus
                 | Symbol::Star
                 | Symbol::Percent
+                | Symbol::Concat
                 | Symbol::Eq
                 | Symbol::NotEq
                 | Symbol::Less

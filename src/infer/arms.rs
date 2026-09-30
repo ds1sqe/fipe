@@ -98,6 +98,13 @@ impl Infer<'_> {
                 self.bind_local(name, ty.clone());
             }
             PatternKind::Group(inner) => self.pattern(*inner, ty, input),
+            // Not yet checked, which resolve reports: its names bind.
+            PatternKind::Tuple(parts) => {
+                for part in parts {
+                    let part_ty = self.fresh();
+                    self.pattern(*part, &part_ty, span);
+                }
+            }
             PatternKind::List(items) => {
                 let element = self.fresh();
                 let list = prelude_of("Vec", alloc::vec![element.clone()]);

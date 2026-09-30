@@ -6,7 +6,7 @@ use geometry.Point geometry.Polar
 use cli 2
 
 # Exported bindings need a complete type; inferred ones stay private.
-pub area: f64 -> f64 -> f64 = w h => w * h
+pub area: F64 -> F64 -> F64 = w h => w * h
 pub main: Vec<String> -> Result<(), cli.Error> = args => {
     name = first args || "0,0"
     p: Point = read name || Point 0 0

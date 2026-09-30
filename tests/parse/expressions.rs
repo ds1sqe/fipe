@@ -5,7 +5,7 @@ use fipe::{
         PatternKind, PipeOp,
     },
     parse::Reason,
-    token::Source,
+    token::{Affixed, Source, Written},
 };
 
 #[test]
@@ -133,10 +133,28 @@ fn call_styles_keep_argument_order_and_explicit_empty_calls() {
         panic!()
     };
     integer(&parsed, lines[0], 1);
-    assert_eq!(
-        errors("f (1,2)")[0].reason,
-        Reason::Expected(fipe::parse::Expected::LineEnd)
-    );
+    // A spaced `( )` with a comma is one tuple argument; touching, a
+    // list of two.
+    let (parsed, id) = only("f (1,2)");
+    let ExprKind::Call {
+        arguments,
+        style: CallStyle::Space,
+        ..
+    } = node(&parsed, id)
+    else {
+        panic!()
+    };
+    let [argument] = arguments.as_slice() else {
+        panic!()
+    };
+    let ArgumentKind::Positional(id) = argument.kind else {
+        panic!()
+    };
+    let ExprKind::Tuple(parts) = node(&parsed, id) else {
+        panic!()
+    };
+    integer(&parsed, parts[0], 1);
+    integer(&parsed, parts[1], 2);
 }
 
 #[test]
@@ -231,7 +249,7 @@ fn flags_retain_attached_values_and_separate_operands() {
         node(&parsed, value),
         &ExprKind::Literal(Literal::Int {
             negative: true,
-            magnitude: 5
+            magnitude: 5.into()
         })
     );
     let ArgumentKind::Positional(value) = arguments[4].kind else {
@@ -411,7 +429,7 @@ fn explicit_instantiation_is_an_operand() {
         panic!()
     };
     assert_eq!(head.segments, ["pl", "into"]);
-    let (parsed, id) = only("\"42\" | read<i64> |: add 1");
+    let (parsed, id) = only("\"42\" | read<I64> |: add 1");
     assert!(matches!(node(&parsed, id), ExprKind::Pipe { .. }));
     let (parsed, id) = only("(round x) < y");
     assert!(matches!(
@@ -423,7 +441,7 @@ fn explicit_instantiation_is_an_operand() {
     ));
     let (parsed, id) = only("a < b");
     assert!(matches!(node(&parsed, id), ExprKind::Binary { .. }));
-    let (parsed, id) = only("f read<Vec<u8>> x");
+    let (parsed, id) = only("f read<Vec<U8>> x");
     let ExprKind::Call { arguments, .. } = node(&parsed, id) else {
         panic!()
     };
@@ -644,7 +662,7 @@ fn pattern_bindings_and_scoped_values_preserve_structure() {
         parsed.pattern(*zero).unwrap().kind,
         PatternKind::Literal(Literal::Int {
             negative: false,
-            magnitude: 0
+            magnitude: 0.into()
         })
     );
     let (parsed, id) = only("with cwd /tmp { ls }");
@@ -675,7 +693,7 @@ fn literals_retain_payloads_without_type_checking() {
             ExprKind::Literal(Literal::Unit),
             ExprKind::Literal(Literal::Int {
                 negative: true,
-                magnitude: 5
+                magnitude: 5.into()
             }),
             ExprKind::Literal(Literal::Float("1e999".into())),
             ExprKind::Literal(Literal::Str {
@@ -686,7 +704,14 @@ fn literals_retain_payloads_without_type_checking() {
                 value: "raw".into(),
                 raw: true
             }),
-            ExprKind::Literal(Literal::Bytes(vec![255])),
+            ExprKind::Literal(Literal::Affixed(Box::new(Affixed {
+                prefix: "b".into(),
+                form: Written::Text {
+                    value: vec![255],
+                    raw: false
+                },
+                suffix: String::new(),
+            }))),
             ExprKind::Word("héllo".into()),
             ExprKind::Path("./x".into()),
         ]

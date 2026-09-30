@@ -1,9 +1,12 @@
 //! Source positions and the parser-facing lexical vocabulary.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use core::fmt;
 
 mod display;
+mod magnitude;
+
+pub use magnitude::Magnitude;
 
 /// Half-open byte offsets into one source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,9 +71,10 @@ pub enum Kind {
     Flag(String),
     Path(String),
     Selector(Vec<String>),
+    /// Sign and exact magnitude; the lexer has no bound.
     Int {
         negative: bool,
-        magnitude: u64,
+        magnitude: Magnitude,
     },
     /// Exact decimal spelling; the checker chooses width and rounds once.
     Float(String),
@@ -79,9 +83,37 @@ pub enum Kind {
         value: String,
         raw: bool,
     },
-    Bytes(Vec<u8>),
+    /// A number or quote with a program's prefix or suffix.
+    Affixed(Box<Affixed>),
     Newline,
     Eof,
+}
+
+/// A written form with a prefix or suffix, each read with no type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Affixed {
+    /// A quote's prefix name, or the letter after a number's `0`; empty
+    /// when not written.
+    pub prefix: String,
+    pub form: Written,
+    /// Empty when not written.
+    pub suffix: String,
+}
+
+/// What an [`Affixed`] form holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Written {
+    /// Decimal, `0x`, `0o` or `0b`, decoded.
+    Int {
+        negative: bool,
+        magnitude: Magnitude,
+    },
+    /// Exact spelling, sign included, suffix excluded.
+    Float(String),
+    /// The digits after a program's prefix, as written.
+    Digits { negative: bool, digits: String },
+    /// A quote's decoded bytes; whether they are UTF-8 is the reader's.
+    Text { value: Vec<u8>, raw: bool },
 }
 
 /// Reserved words. Prelude constructors and host API names are not keywords.
@@ -91,7 +123,6 @@ pub enum Keyword {
     Else,
     With,
     Type,
-    Trait,
     Impl,
     Use,
     Pub,
@@ -105,7 +136,6 @@ impl Keyword {
             "else" => Self::Else,
             "with" => Self::With,
             "type" => Self::Type,
-            "trait" => Self::Trait,
             "impl" => Self::Impl,
             "use" => Self::Use,
             "pub" => Self::Pub,
@@ -120,7 +150,6 @@ impl Keyword {
             Self::Else => "else",
             Self::With => "with",
             Self::Type => "type",
-            Self::Trait => "trait",
             Self::Impl => "impl",
             Self::Use => "use",
             Self::Pub => "pub",
@@ -136,6 +165,8 @@ pub enum Symbol {
     Star,
     Slash,
     Percent,
+    /// `++`, a whole word.
+    Concat,
     LParen,
     RParen,
     LBrace,
@@ -160,6 +191,8 @@ pub enum Symbol {
     PipeBad,
     Or,
     And,
+    /// `&`, which joins types.
+    Ampersand,
 }
 
 impl Symbol {
@@ -171,6 +204,7 @@ impl Symbol {
             Self::Star => "*",
             Self::Slash => "/",
             Self::Percent => "%",
+            Self::Concat => "++",
             Self::LParen => "(",
             Self::RParen => ")",
             Self::LBrace => "{",
@@ -195,6 +229,7 @@ impl Symbol {
             Self::PipeBad => "|!",
             Self::Or => "||",
             Self::And => "&&",
+            Self::Ampersand => "&",
         }
     }
 

@@ -1,7 +1,7 @@
 //! Linear UTF-8 scanning with byte spans and recoverable diagnostics.
 
 use crate::token::{Kind, Span, Symbol, Token};
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use core::{fmt, iter::Peekable, str::CharIndices};
 
 mod quoted;
@@ -31,7 +31,6 @@ pub enum Reason {
     BadEscape,
     InvalidUtf8,
     Stray(char),
-    IntegerRange,
 }
 
 impl fmt::Display for Reason {
@@ -41,7 +40,6 @@ impl fmt::Display for Reason {
             Self::BadEscape => f.write_str("invalid escape"),
             Self::InvalidUtf8 => f.write_str("string is not valid UTF-8"),
             Self::Stray(ch) => write!(f, "unexpected character {ch:?}"),
-            Self::IntegerRange => f.write_str("integer magnitude exceeds u64"),
         }
     }
 }
@@ -130,11 +128,13 @@ impl Scanner<'_> {
 
     /// A backslash followed only by spacing before LF or EOF joins lines.
     fn join_ahead(&self) -> bool {
-        self.text[self.offset..]
-            .strip_prefix('\\')
-            .is_some_and(|rest| {
-                rest.chars().take_while(|&ch| ch != '\n').all(spacing)
-            })
+        self.join_at(self.offset)
+    }
+
+    fn join_at(&self, offset: usize) -> bool {
+        self.text[offset..].strip_prefix('\\').is_some_and(|rest| {
+            rest.chars().take_while(|&ch| ch != '\n').all(spacing)
+        })
     }
 
     fn join(&mut self) {
@@ -164,12 +164,8 @@ impl Scanner<'_> {
     }
 
     fn token(&mut self) -> Result<Kind, Reason> {
-        if self.text[self.offset..].starts_with("b\"") {
-            self.bump();
-            return self.quoted(true);
-        }
         if matches!(self.peek(), Some('"' | '\'')) {
-            return self.quoted(false);
+            return self.quoted(String::new());
         }
         if self.peek().is_some_and(boundary) {
             return self.symbol().map(Kind::Symbol);
@@ -179,10 +175,8 @@ impl Scanner<'_> {
 
     fn word(&mut self) -> Result<Kind, Reason> {
         let start = self.offset;
-        while let Some(ch) = self.peek() {
-            if boundary(ch) || (ch == '\\' && self.join_ahead()) {
-                break;
-            }
+        let end = self.word_end(start);
+        while self.offset < end {
             self.bump();
         }
         let word = &self.text[start..self.offset];
@@ -190,7 +184,20 @@ impl Scanner<'_> {
             self.bump();
             return Ok(Kind::Symbol(Symbol::Arrow));
         }
-        word::classify(word)
+        if matches!(self.peek(), Some('"' | '\'')) && word::prefix(word) {
+            return self.quoted(String::from(word));
+        }
+        Ok(word::classify(word))
+    }
+
+    /// Where the word from `start` ends: at a boundary or a line join.
+    fn word_end(&self, start: usize) -> usize {
+        self.text[start..]
+            .char_indices()
+            .find(|&(at, ch)| {
+                boundary(ch) || (ch == '\\' && self.join_at(start + at))
+            })
+            .map_or(self.text.len(), |(at, _)| start + at)
     }
 
     fn symbol(&mut self) -> Result<Symbol, Reason> {
@@ -226,6 +233,7 @@ impl Scanner<'_> {
             '<' => Ok(Symbol::Less),
             '>' => Ok(Symbol::Greater),
             '|' => Ok(Symbol::Pipe),
+            '&' => Ok(Symbol::Ampersand),
             _ => Err(Reason::Stray(ch)),
         }
     }

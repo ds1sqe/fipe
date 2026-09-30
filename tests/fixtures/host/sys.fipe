@@ -1,2 +1,2 @@
 # The conformance host's `sys` module: resource lookup by path.
-pub lookup: (from: Rd<sys>) -> (path: Src) -> u64
+pub lookup: (from: Rd<sys>) -> (path: Src) -> U64

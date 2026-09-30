@@ -13,12 +13,12 @@ cat (Rd 4)                                    # a handle by number
 
 # `=` binds and never reassigns. The arm is the one function form; it curries.
 add = a b => a + b                            # T -> T -> T where T: Num
-add2 = add 2                                  # i64 -> i64
+add2 = add 2                                  # I64 -> I64
 add2 4                                        # 6
 
 # `pub` exports; the signature sits on the binding. Outcomes are values:
 # the marked pipes feel their side, and `||` leaves the outcome.
-pub big: Rd<fs> -> u64 -> Result<Vec<String>, fs.Error> = dir min => {
+pub big: Rd<fs> -> U64 -> Result<Vec<String>, fs.Error> = dir min => {
     Ok _ = fs.remove dir /tmp/x               # binds on Ok; an Err ends the body with it
     fs.list dir /etc |: filter (e => e.size > min) |: map .name
 }
@@ -35,7 +35,7 @@ find x | {                                    # arms are the match, and a functi
 }
 
 # A type is its shape; its impl is its code. The type name is its constructor.
-pub type Point { pub x: i64, pub y: i64 = 0, len: u64 }
+pub type Point { pub x: I64, pub y: I64 = 0, len: U64 }
 impl Point {
     x (y = 0) => Self { x, y, len: hypot x y }, # the written constructor; braces are raw
     dist = self q => hypot (self.x - q.x) (self.y - q.y),

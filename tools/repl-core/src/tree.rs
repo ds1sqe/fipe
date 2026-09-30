@@ -4,8 +4,9 @@
 use alloc::{format, string::String, vec, vec::Vec};
 use core::fmt::Write as _;
 use fipe::ast::{
-    ArgumentKind, Arm, BinaryOp, CallStyle, Entry, ExprKind, ImplMember,
-    ItemKind, Literal, Module, Name, PatternKind, PipeOp, TypeKind,
+    ArgumentKind, Arm, BinaryOp, CallStyle, ConstraintKind, Entry, ExprKind,
+    ImplMember, ItemKind, Limit, Literal, Module, Name, PatternKind, PipeOp,
+    TypeKind,
 };
 use fipe::ast::{ExprId as E, PatternId as P, TypeId as T};
 
@@ -55,6 +56,10 @@ fn es(ids: &[E]) -> Vec<Node> {
     ids.iter().map(|id| Node::E(*id)).collect()
 }
 
+fn ts(ids: &[T]) -> Vec<Node> {
+    ids.iter().map(|id| Node::T(*id)).collect()
+}
+
 fn expr(kind: &ExprKind) -> (String, Vec<Node>) {
     match kind {
         ExprKind::Literal(value) => leaf(literal(value)),
@@ -64,6 +69,7 @@ fn expr(kind: &ExprKind) -> (String, Vec<Node>) {
         ExprKind::Selector(name) => leaf(format!("Selector .{}", dotted(name))),
         ExprKind::Group(lines) => ("Group".into(), es(lines)),
         ExprKind::Block(lines) => ("Block".into(), es(lines)),
+        ExprKind::Tuple(parts) => ("Tuple".into(), es(parts)),
         ExprKind::List(items) => ("List".into(), es(items)),
         ExprKind::Outcome { good, payload } => {
             let side = if *good { ":" } else { "!" };
@@ -157,6 +163,9 @@ fn pattern(kind: &PatternKind) -> (String, Vec<Node>) {
             (format!("Default {}", dotted(name)), vec![Node::E(*value)])
         }
         PatternKind::Group(inner) => ("Group".into(), vec![Node::P(*inner)]),
+        PatternKind::Tuple(parts) => {
+            ("Tuple".into(), parts.iter().map(|p| Node::P(*p)).collect())
+        }
         PatternKind::List(items) => {
             ("List".into(), items.iter().map(|p| Node::P(*p)).collect())
         }
@@ -191,9 +200,14 @@ fn ty(kind: &TypeKind) -> (String, Vec<Node>) {
             format!("Type {}", dotted(name)),
             arguments.iter().map(|t| Node::T(*t)).collect(),
         ),
-        TypeKind::Array {
-            element, length, ..
-        } => (format!("Array {length}"), vec![Node::T(*element)]),
+        TypeKind::Array { element, length } => {
+            ("Array".into(), vec![Node::T(*element), Node::T(*length)])
+        }
+        TypeKind::Number(value) => leaf(format!("Number {value}")),
+        TypeKind::Tuple(parts) => ("Tuple".into(), ts(parts)),
+        TypeKind::Both(parts) => ("Both &".into(), ts(parts)),
+        TypeKind::Either(parts) => ("Either |".into(), ts(parts)),
+        TypeKind::Not(inner) => ("Not !".into(), vec![Node::T(*inner)]),
         TypeKind::Function { parameter, result } => (
             "Function".into(),
             vec![Node::T(*parameter), Node::T(*result)],
@@ -201,9 +215,15 @@ fn ty(kind: &TypeKind) -> (String, Vec<Node>) {
         TypeKind::Qualified { constraints, ty } => {
             let mut children: Vec<_> = constraints
                 .iter()
-                .map(|c| {
-                    let label = format!("Constraint {}", dotted(&c.variable));
-                    Node::L(label, vec![Node::T(c.class)])
+                .map(|c| match &c.kind {
+                    ConstraintKind::Named { class, variable } => {
+                        let label = format!("Constraint {}", dotted(variable));
+                        Node::L(label, vec![Node::T(*class)])
+                    }
+                    ConstraintKind::Member { member, ty } => {
+                        let label = format!("Constraint {}", dotted(member));
+                        Node::L(label, vec![Node::T(*ty)])
+                    }
                 })
                 .collect();
             children.push(Node::T(*ty));
@@ -225,7 +245,32 @@ fn item_node(kind: &ItemKind) -> Node {
             let names: Vec<_> = names.iter().map(dotted).collect();
             Node::L(format!("Use {}", names.join(" ")), Vec::new())
         }
-        ItemKind::Type { name, .. } => Node::L(label("Type", name), Vec::new()),
+        ItemKind::Type {
+            name,
+            parameters,
+            base,
+            limits,
+            ..
+        } => {
+            let mut children: Vec<_> = parameters
+                .iter()
+                .map(|p| {
+                    let bound = p.bound.iter().map(|t| Node::T(*t)).collect();
+                    Node::L(label("Parameter", &p.name), bound)
+                })
+                .collect();
+            children
+                .extend(base.map(|t| Node::L("Base".into(), vec![Node::T(t)])));
+            children.extend(limits.iter().map(|limit| match limit {
+                Limit::Member { name, ty, .. } => {
+                    Node::L(label("Where", name), vec![Node::T(*ty)])
+                }
+                Limit::Test(test) => {
+                    Node::L("Where".into(), vec![Node::E(*test)])
+                }
+            }));
+            Node::L(label("Type", name), children)
+        }
         ItemKind::Trait { name, .. } => {
             Node::L(label("Trait", name), Vec::new())
         }
@@ -237,8 +282,16 @@ fn item_node(kind: &ItemKind) -> Node {
         } => {
             let mut children = vec![Node::T(*target)];
             children.extend(members.iter().map(|member| match member {
-                ImplMember::Named { name, value, .. } => {
-                    Node::L(label("Member", name), vec![Node::E(*value)])
+                ImplMember::Named {
+                    name,
+                    annotation,
+                    value,
+                    ..
+                } => {
+                    let mut children: Vec<_> =
+                        annotation.iter().map(|t| Node::T(*t)).collect();
+                    children.extend(value.map(Node::E));
+                    Node::L(label("Member", name), children)
                 }
                 ImplMember::Type { name, ty, .. } => {
                     Node::L(label("Associated", name), vec![Node::T(*ty)])
@@ -261,9 +314,7 @@ fn literal(literal: &Literal) -> String {
         Literal::Str { value, .. } => {
             format!("Str \"{}\"", value.escape_default())
         }
-        Literal::Bytes(bytes) => {
-            format!("Bytes b\"{}\"", bytes.escape_ascii())
-        }
+        Literal::Affixed(affixed) => format!("Affixed {affixed}"),
     }
 }
 
@@ -274,6 +325,7 @@ const fn binary(op: BinaryOp) -> &'static str {
         BinaryOp::Multiply => "*",
         BinaryOp::Divide => "/",
         BinaryOp::Remainder => "%",
+        BinaryOp::Concat => "++",
         BinaryOp::Equal => "==",
         BinaryOp::NotEqual => "!=",
         BinaryOp::Less => "<",

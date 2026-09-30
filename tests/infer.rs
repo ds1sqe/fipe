@@ -149,8 +149,8 @@ fn example(stem: &str) -> Vec<(usize, &'static str, String)> {
 
 #[test]
 fn literals_and_arithmetic() {
-    assert_eq!(ty("1 + 2"), "i64");
-    assert_eq!(ty("x: u8 = 1 + 2"), "u8");
+    assert_eq!(ty("1 + 2"), "I64");
+    assert_eq!(ty("x: U8 = 1 + 2"), "U8");
     let text = "1 + \"a\"";
     let [error] = errors(text).try_into().unwrap();
     assert_eq!(Source::new(text).slice(error.span), Some("\"a\""));
@@ -164,7 +164,7 @@ fn literals_and_arithmetic() {
     };
     assert_eq!(
         (expected.to_string(), actual.to_string()),
-        ("i64".into(), "String".into())
+        ("I64".into(), "String".into())
     );
     assert_eq!(Source::new(text).slice(other), Some("1"));
     assert_eq!(kinds("\"a\" + \"b\""), [("NotNumeric", "+")]);
@@ -205,13 +205,13 @@ fn spots_bind_before_application() {
         ty("ls -l /var/log | filter (e => e.size > 1) | map .name"),
         "Vec<String>"
     );
-    assert_eq!(ty("add = a b => a + b\nadd 2"), "i64 -> i64");
+    assert_eq!(ty("add = a b => a + b\nadd 2"), "I64 -> I64");
     assert_eq!(ty("ls | sort -by .size -desc"), "Vec<Entry>");
     assert_eq!(ty("ls -r -depth 2 /etc -name \"*.conf\""), "Vec<Entry>");
-    let point = "type Point { x: i64, y: i64 = 0 }\n";
+    let point = "type Point { x: I64, y: I64 = 0 }\n";
     assert_eq!(ty(&format!("{point}Point 3")), "Point");
     assert_eq!(ty(&format!("{point}Point -y 1 -x 2")), "Point");
-    assert_eq!(ty(&format!("{point}Point")), "i64 -> Point");
+    assert_eq!(ty(&format!("{point}Point")), "I64 -> Point");
     let text = format!("{point}Point 3 4 5");
     assert_eq!(kinds(&text), [("ExtraArgument", "5")]);
     assert_eq!(kinds("ls | cat x"), [("FilledSpot", "cat x")]);
@@ -219,15 +219,15 @@ fn spots_bind_before_application() {
     // Chained Bool flags are 07's.
     assert_eq!(kinds("ls -lr"), [("UnknownSpot", "-lr")]);
     assert_eq!(ty("Just"), "a -> Maybe<a>");
-    assert_eq!(ty("f = x => x\nf 1"), "i64");
+    assert_eq!(ty("f = x => x\nf 1"), "I64");
 }
 
 #[test]
 fn words_take_a_read_spot_type() {
     assert_eq!(ty("cat foo"), "String");
     assert_eq!(ty("find ./x"), "Maybe<Entry>");
-    // A String at a `u16` spot is a cast, 07's.
-    let text = "port: u16 = \"8080\"";
+    // A String at a `U16` spot is a cast, 07's.
+    let text = "port: U16 = \"8080\"";
     let [error] = errors(text).try_into().unwrap();
     assert!(matches!(error.reason, Reason::Mismatch { .. }));
     assert_eq!(Source::new(text).slice(error.span), Some("\"8080\""));
@@ -236,18 +236,18 @@ fn words_take_a_read_spot_type() {
 #[test]
 fn outcomes_follow_their_family() {
     assert_eq!(ty("find x |: cat"), "Maybe<String>");
-    assert_eq!(ty("Just 1 |: (x => x + 1)"), "Maybe<i64>");
+    assert_eq!(ty("Just 1 |: (x => x + 1)"), "Maybe<I64>");
     assert_eq!(ty("find a && rm a"), "Maybe<Result<(), Error>>");
-    assert_eq!(ty("x: Result<i64, String> = Ok 1\nx || 0"), "i64");
-    assert_eq!(ty("m: Maybe<i64> = [:1]"), "Maybe<i64>");
+    assert_eq!(ty("x: Result<I64, String> = Ok 1\nx || 0"), "I64");
+    assert_eq!(ty("m: Maybe<I64> = [:1]"), "Maybe<I64>");
     assert_eq!(
         ty("g = p => {\n    [:x] = find p\n    x | cat\n}"),
         "Src -> Maybe<String>"
     );
     assert_eq!(kinds("m = [:1]"), [("UnknownFamily", "[:1]")]);
-    assert_eq!(kinds("m: Maybe<i64> = [!1]"), [("Mismatch", "[!1]")]);
-    let either = "e: Either<(), i64> = Right 1\n";
-    assert_eq!(ty(&format!("{either}e |: (x => x + 1)")), "Either<(), i64>");
+    assert_eq!(kinds("m: Maybe<I64> = [!1]"), [("Mismatch", "[!1]")]);
+    let either = "e: Either<(), I64> = Right 1\n";
+    assert_eq!(ty(&format!("{either}e |: (x => x + 1)")), "Either<(), I64>");
     let text = format!("{either}e || 0");
     assert_eq!(kinds(&text), [("NeedsMaybeOrResult", "||")]);
     // `|!` on `Maybe` supplies nothing: its stage is a value, and a
@@ -261,8 +261,8 @@ fn outcomes_follow_their_family() {
         [("Mismatch", "\"d\"")]
     );
     // On `Result`, `|!` still passes the error payload.
-    let result = "r: Result<i64, String> = Ok 1\n";
-    assert_eq!(ty(&format!("{result}r |! (e => e)")), "Result<i64, String>");
+    let result = "r: Result<I64, String> = Ok 1\n";
+    assert_eq!(ty(&format!("{result}r |! (e => e)")), "Result<I64, String>");
 }
 
 #[test]
@@ -274,10 +274,10 @@ fn dots_read_fields_then_self_functions() {
         panic!()
     };
     assert_eq!(head, Type::named(Origin::Commands, "Entry", Vec::new()));
-    let point = "type Point { x: i64, y: i64 = 0 }\n\
-        impl Point { dist: Point -> Point -> i64 = self q => self.x - q.x }\n";
-    assert_eq!(ty(&format!("{point}p = Point 1\np.dist p")), "i64");
-    assert_eq!(ty("\"3\" | read<i64>"), "Result<i64, ParseError>");
+    let point = "type Point { x: I64, y: I64 = 0 }\n\
+        impl Point { dist: Point -> Point -> I64 = self q => self.x - q.x }\n";
+    assert_eq!(ty(&format!("{point}p = Point 1\np.dist p")), "I64");
+    assert_eq!(ty("\"3\" | read<I64>"), "Result<I64, ParseError>");
 }
 
 /// A line of main generalizes nothing: its variables leave there and
@@ -300,9 +300,9 @@ fn a_line_whose_target_is_unknown_is_ambiguous() {
         ty("port = read \"8080\""),
         "Read a => Result<a, ParseError>"
     );
-    assert_eq!(ty("read<u16> \"8080\""), "Result<u16, ParseError>");
+    assert_eq!(ty("read<U16> \"8080\""), "Result<U16, ParseError>");
     // `Num` alone defaults where the variable leaves the line.
-    assert_eq!(ty("add = a b => a + b\nadd"), "i64 -> i64 -> i64");
+    assert_eq!(ty("add = a b => a + b\nadd"), "I64 -> I64 -> I64");
     assert_eq!(ty("Just"), "a -> Maybe<a>");
 }
 
@@ -311,11 +311,11 @@ fn a_line_whose_target_is_unknown_is_ambiguous() {
 #[test]
 fn the_examples_type_except_assigned_rows() {
     let mismatch = "Mismatch";
-    // 07, Cast: a `Vec<u8>` spot admits any `T` via `Display`.
+    // 07, Cast: a `Vec<U8>` spot admits any `T` via `Display`.
     let bytes = |line: usize, text: &str| (line, mismatch, text.to_string());
-    // 07, Cast: an `i64` at `hypot`'s or `atan2`'s `f64` spot.
+    // 07, Cast: an `I64` at `hypot`'s or `atan2`'s `F64` spot.
     let float = bytes;
-    // 07, Cast: `round`'s `f64` where an `i64` is expected.
+    // 07, Cast: `round`'s `F64` where an `I64` is expected.
     let round = bytes;
     let expected = [
         (
@@ -349,11 +349,11 @@ fn the_examples_type_except_assigned_rows() {
         (
             "04-text",
             vec![
-                // 07, Cast: a `String` at a `u16` spot.
+                // 07, Cast: a `String` at a `U16` spot.
                 (34, mismatch, "\"8080\"".into()),
-                // 07, Cast: `round 2.5` is `f64`, the binding `i64`.
+                // 07, Cast: `round 2.5` is `F64`, the binding `I64`.
                 round(36, "2.5"),
-                // 07, Cast: a `String` at a `Vec<u8>` spot.
+                // 07, Cast: a `String` at a `Vec<U8>` spot.
                 bytes(39, "[\"a\", \"b\", \"c\"] | join \"\\n\""),
             ],
         ),
@@ -427,7 +427,10 @@ fn the_example_comments_state_the_inferred_types() {
                     };
                     for member in members {
                         let ImplMember::Named {
-                            name, value, span, ..
+                            name,
+                            value: Some(value),
+                            span,
+                            ..
                         } = member
                         else {
                             continue;
@@ -498,14 +501,14 @@ fn long_marked_and_fallback_chains_type_without_deep_recursion() {
     // Flat chains nest to the left; each element must not take a frame.
     let marked = "|: f ".repeat(5_000);
     let text = format!("f = x => x + 1\nm = Just 1\nm {marked}");
-    assert_eq!(ty(&text), "Maybe<i64>");
+    assert_eq!(ty(&text), "Maybe<I64>");
     let fallback = "|| False ".repeat(20_000);
     assert_eq!(ty(&format!("True {fallback}")), "Bool");
     let and = "&& True ".repeat(20_000);
     assert_eq!(ty(&format!("True {and}")), "Bool");
 }
 
-const PRIMES: &str = "pub type Prime { pub n: u64 }
+const PRIMES: &str = "pub type Prime { pub n: U64 }
 impl Prime {
     pub check: Prime -> Bool = self => self.n > 1,
     hidden: Prime -> Bool = self => True,
@@ -611,22 +614,22 @@ fn one_mismatch_is_reported_once() {
         .map(|e| (kind(&e.reason), Source::new(text).slice(e.span)))
         .collect();
     assert_eq!(located, [("Mismatch", Some("p.n"))]);
-    let text = "f: String -> String = s => s\nx: u64 = 1\nf (x + 2 * 3)";
+    let text = "f: String -> String = s => s\nx: U64 = 1\nf (x + 2 * 3)";
     assert_eq!(kinds(text), [("Mismatch", "x")]);
 }
 
 #[test]
 fn literal_operands_take_their_type_in_any_order() {
     for text in ["2 + 2.5", "2.5 + 2", "2 + 2 + 2.5", "x = 2.5\n2 + x"] {
-        assert_eq!(ty(text), "f64", "{text}");
+        assert_eq!(ty(text), "F64", "{text}");
     }
-    assert_eq!(ty("x = 2 * 2.5"), "f64");
-    assert_eq!(ty("y: u8 = 3\n2 + y"), "u8");
+    assert_eq!(ty("x = 2 * 2.5"), "F64");
+    assert_eq!(ty("y: U8 = 3\n2 + y"), "U8");
     assert_eq!(ty("2 < 2.5"), "Bool");
-    assert_eq!(ty("1 + 1"), "i64");
-    assert_eq!(kinds("y: u8 = 3\n300 + y"), [("OutOfRange", "300")]);
+    assert_eq!(ty("1 + 1"), "I64");
+    assert_eq!(kinds("y: U8 = 3\n300 + y"), [("OutOfRange", "300")]);
     // A float does not take an integer operand's type.
-    assert_eq!(kinds("y: u8 = 3\n2.5 + y"), [("Mismatch", "y")]);
+    assert_eq!(kinds("y: U8 = 3\n2.5 + y"), [("Mismatch", "y")]);
 }
 
 #[test]

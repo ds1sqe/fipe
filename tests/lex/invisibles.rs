@@ -157,7 +157,7 @@ fn escaped_invisible_marks_remain_literal_data() {
                     raw: false,
                 },
             ),
-            ("b", Kind::Bytes(value.as_bytes().to_vec())),
+            ("b", super::text("b", value.as_bytes(), "")),
         ] {
             let result = lex(&format!("{prefix}\"{spelling}\""));
             assert_eq!(result.errors, []);

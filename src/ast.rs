@@ -1,7 +1,7 @@
 //! Owned syntax with flat, module-local arenas for recursive node references.
 
-use crate::token::Span;
-use alloc::{string::String, vec::Vec};
+use crate::token::{Affixed, Magnitude, Span};
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 /// A reference to an expression in its originating module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,13 +82,15 @@ pub enum ExprKind {
     Selector(Name),
     /// A parenthesized line sequence; `( )` alone is the unit literal.
     Group(Vec<ExprId>),
+    /// `(a, b)`, two parts or more, not touching a callee.
+    Tuple(Vec<ExprId>),
     List(Vec<ExprId>),
     /// `[:e]`, `[:]`, `[!e]` or `[!]`: a side of an outcome.
     Outcome {
         good: bool,
         payload: Option<ExprId>,
     },
-    /// A name with explicit type arguments, such as `read<i64>` or `Rd<fs>`.
+    /// A name with explicit type arguments, such as `read<I64>` or `Rd<fs>`.
     Instance {
         name: Name,
         arguments: Vec<TypeId>,
@@ -147,10 +149,17 @@ pub enum ExprKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Literal {
     Unit,
-    Int { negative: bool, magnitude: u64 },
+    Int {
+        negative: bool,
+        magnitude: Magnitude,
+    },
     Float(String),
-    Str { value: String, raw: bool },
-    Bytes(Vec<u8>),
+    Str {
+        value: String,
+        raw: bool,
+    },
+    /// A number or quote with a prefix or suffix; `b"…"` is one.
+    Affixed(Box<Affixed>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +195,8 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Remainder,
+    /// `++`, which spells `concat`.
+    Concat,
     Equal,
     NotEqual,
     Less,
@@ -235,6 +246,8 @@ pub enum PatternKind {
         value: ExprId,
     },
     Group(PatternId),
+    /// `(a, b)`, two parts or more.
+    Tuple(Vec<PatternId>),
     List(Vec<PatternId>),
     Outcome {
         good: bool,
@@ -267,17 +280,28 @@ pub enum TypeKind {
         name: Name,
         arguments: Vec<TypeId>,
     },
+    /// `[T; n]`: the length is a [`TypeKind::Number`] or a lowercase
+    /// name, a number parameter.
     Array {
         element: TypeId,
-        length: u64,
-        length_span: Span,
+        length: TypeId,
     },
+    /// A number as a type argument, `Bits<8>`, or an array's length.
+    Number(Magnitude),
+    /// `A * B * C`, flat, two parts or more.
+    Tuple(Vec<TypeId>),
+    /// `A & B`, flat: holds both.
+    Both(Vec<TypeId>),
+    /// `A | B`, flat: holds either.
+    Either(Vec<TypeId>),
+    /// `!A`: fails at least one of `A`'s tests.
+    Not(TypeId),
     /// `A -> B`; `A -> B -> C` nests to the right.
     Function {
         parameter: TypeId,
         result: TypeId,
     },
-    /// `Show a, Num b => type`: constraints at the top of an annotation.
+    /// `Show a, b.age: c => type`: constraints at the top of an annotation.
     /// A prelude and declaration form.
     Qualified {
         constraints: Vec<Constraint>,
@@ -292,12 +316,18 @@ pub enum TypeKind {
     },
 }
 
-/// One constraint `Class<args> variable`, such as `Show a` or `From<a> b`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Constraint {
-    pub class: TypeId,
-    pub variable: Name,
+    pub kind: ConstraintKind,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConstraintKind {
+    /// `Class<args> variable`, such as `Show a` or `From<a> b`.
+    Named { class: TypeId, variable: Name },
+    /// `b.age: a`: a member limit on a variable.
+    Member { member: Name, ty: TypeId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -312,16 +342,19 @@ pub enum ItemKind {
     /// `use x`, `use x.inc x.Point`, `use text 2`.
     Use {
         names: Vec<Name>,
-        version: Option<u64>,
+        version: Option<Magnitude>,
     },
-    /// `type Name<params> { members }`; with no body, an opaque type,
-    /// which is a declaration form.
+    /// `type Name<params>: base { members } where limits`, each part
+    /// optional; with none, an opaque type, which is a declaration form.
     Type {
         name: Name,
         parameters: Vec<TypeParameter>,
+        base: Option<TypeId>,
         members: Option<Vec<Member>>,
+        limits: Vec<Limit>,
     },
-    /// `trait Name<params>: Parent { members }`.
+    /// `trait Name<params>: Parent { members }`, a form kept until the
+    /// prelude is written with members; `trait` is a name elsewhere.
     Trait {
         name: Name,
         parameters: Vec<TypeParameter>,
@@ -368,15 +401,26 @@ pub struct TraitMember {
     pub span: Span,
 }
 
-/// A named member `name = value`, an associated type `Name = type`, or a
-/// bare arm of the written constructor.
+/// One limit after `where`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// `self.area: F64`.
+    Member { name: Name, ty: TypeId, span: Span },
+    /// A Bool over `self`, a pipeline.
+    Test(ExprId),
+}
+
+/// A named member `name = value`, or `name: type` with no value, an
+/// associated type `Name = type`, or a bare arm of the written
+/// constructor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImplMember {
     Named {
         public: bool,
         name: Name,
         annotation: Option<TypeId>,
-        value: ExprId,
+        /// `None` for a member with no value, a declaration form.
+        value: Option<ExprId>,
         span: Span,
     },
     Type {
@@ -390,6 +434,7 @@ pub enum ImplMember {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeParameter {
     pub name: Name,
-    pub bound: Option<Name>,
+    /// `T: Ord`: a type the parameter must meet.
+    pub bound: Option<TypeId>,
     pub span: Span,
 }

@@ -199,7 +199,7 @@ fn a_comma_lives_at_the_end_of_a_line() {
         panic!()
     };
     assert_eq!(arguments.len(), 2);
-    module("[\n  1,\n  2,\n]\nP {\n  x: 1,\n  y: 2\n}\nf(\n)\ntype T {\n  a: A,\n  b: B\n}\nt: Vec<\n  u8\n> = []");
+    module("[\n  1,\n  2,\n]\nP {\n  x: 1,\n  y: 2\n}\nf(\n)\ntype T {\n  a: A,\n  b: B\n}\nt: Vec<\n  U8\n> = []");
     for input in [
         "f(x\n  , y)",
         "[1\n2]",

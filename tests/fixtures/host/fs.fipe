@@ -5,4 +5,4 @@ impl Error: Err {}
 
 pub list: (dir: Rd<fs>) -> (path: Src) -> (long: Bool = False) -> Vec<Entry>
 pub remove: (dir: Rd<fs>) -> (path: Src) -> Result<(), Error>
-pub size: Entry -> u64
+pub size: Entry -> U64

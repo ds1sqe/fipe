@@ -9,6 +9,7 @@ use crate::{
     },
     lex::lex,
     parse::{self, parse},
+    resolve::{scan, Unchecked},
     token::Span,
 };
 use alloc::{string::String, vec::Vec};
@@ -42,7 +43,8 @@ impl Declarations {
     /// The host's command namespace, replacing any earlier one.
     ///
     /// # Errors
-    /// Syntax errors, lines that declare nothing, and duplicate names.
+    /// Syntax errors, lines that declare nothing, duplicate names, and
+    /// forms the checker does not check yet.
     pub fn commands(&mut self, text: &str) -> Result<(), Vec<Error>> {
         self.commands = Some(Namespace::parse("commands", text)?);
         Ok(())
@@ -51,7 +53,8 @@ impl Declarations {
     /// A host module, replacing an earlier one of the same name.
     ///
     /// # Errors
-    /// Syntax errors, lines that declare nothing, and duplicate names.
+    /// Syntax errors, lines that declare nothing, duplicate names, and
+    /// forms the checker does not check yet.
     pub fn module(&mut self, name: &str, text: &str) -> Result<(), Vec<Error>> {
         let namespace = Namespace::parse(name, text)?;
         self.modules.retain(|module| module.name != name);
@@ -86,7 +89,8 @@ pub struct Namespace {
 
 impl Namespace {
     /// # Errors
-    /// Syntax errors, lines that declare nothing, and duplicate names.
+    /// Syntax errors, lines that declare nothing, duplicate names, and
+    /// forms the checker does not check yet.
     pub fn parse(name: &str, text: &str) -> Result<Self, Vec<Error>> {
         let module = parse(lex(text)).map_err(|errors| {
             errors
@@ -103,7 +107,13 @@ impl Namespace {
             types: Vec::new(),
             values: Vec::new(),
         };
-        let mut errors = Vec::new();
+        let mut errors: Vec<Error> = scan(&namespace.module)
+            .into_iter()
+            .map(|(span, form)| Error {
+                span,
+                reason: Reason::NotYetChecked { form },
+            })
+            .collect();
         for index in 0..namespace.module.entries.len() {
             if let Err(error) = namespace.collect(index) {
                 errors.push(error);
@@ -219,6 +229,10 @@ pub enum Reason {
     Duplicate {
         first: Span,
     },
+    /// A form the parser accepts that the checker does not check yet.
+    NotYetChecked {
+        form: Unchecked,
+    },
 }
 
 /// The types and the values one item declares.
@@ -230,13 +244,17 @@ fn item_names(module: &Module, item: &Item) -> (Vec<Declared>, Vec<Declared>) {
         ItemKind::Type {
             name,
             parameters,
+            base,
             members,
+            limits,
         } => types.push(Declared {
             name: last(name),
             public: item.public,
             kind: Kind::Type {
                 parameters: parameters.len(),
-                opaque: members.is_none(),
+                opaque: members.is_none()
+                    && base.is_none()
+                    && limits.is_empty(),
                 constructors: members
                     .as_ref()
                     .map_or_else(Vec::new, |members| {

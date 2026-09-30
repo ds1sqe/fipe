@@ -1,6 +1,9 @@
 use fipe::{
     lex::lex,
-    token::{Keyword as K, Kind, Kind::Symbol as S, Source, Span, Symbol::*},
+    token::{
+        Affixed, Keyword as K, Kind, Kind::Symbol as S, Magnitude, Source,
+        Span, Symbol::*, Written,
+    },
 };
 
 #[path = "lex/invisibles.rs"]
@@ -16,18 +19,36 @@ fn name(text: &str) -> Kind {
     Kind::Name(text.split('.').map(str::to_owned).collect())
 }
 
-const fn int(magnitude: u64) -> Kind {
+fn int(magnitude: u64) -> Kind {
     Kind::Int {
         negative: false,
-        magnitude,
+        magnitude: Magnitude::from(magnitude),
     }
 }
 
-const fn negative(magnitude: u64) -> Kind {
+fn negative(magnitude: u64) -> Kind {
     Kind::Int {
         negative: true,
-        magnitude,
+        magnitude: Magnitude::from(magnitude),
     }
+}
+
+/// A written form with a prefix and a suffix, each empty when absent.
+fn affixed(prefix: &str, form: Written, suffix: &str) -> Kind {
+    Kind::Affixed(Box::new(Affixed {
+        prefix: prefix.into(),
+        form,
+        suffix: suffix.into(),
+    }))
+}
+
+/// Decoded text with a prefix and a suffix.
+fn text(prefix: &str, value: &[u8], suffix: &str) -> Kind {
+    let form = Written::Text {
+        value: value.to_vec(),
+        raw: false,
+    };
+    affixed(prefix, form, suffix)
 }
 
 fn string(value: &str, raw: bool) -> Kind {
@@ -87,7 +108,7 @@ fn literal_forms_and_payloads() {
             r#""a b" 'a b'"#,
             vec![string("a b", false), string("a b", true)],
         ),
-        (r#"b"text""#, vec![Kind::Bytes(b"text".to_vec())]),
+        (r#"b"text""#, vec![text("b", b"text", "")]),
         ("rd:4", vec![name("rd"), S(Colon), int(4)]),
         (
             "/module/fs/root ./x ../x",
@@ -236,24 +257,15 @@ fn every_flag_form_has_one_value_grammar() {
 
 #[test]
 fn all_keywords_and_symbols() {
-    for keyword in [
-        K::If,
-        K::Else,
-        K::With,
-        K::Type,
-        K::Trait,
-        K::Impl,
-        K::Use,
-        K::Pub,
-    ] {
+    for keyword in [K::If, K::Else, K::With, K::Type, K::Impl, K::Use, K::Pub] {
         tokens(keyword.spelling(), vec![Kind::Kw(keyword)]);
         assert_eq!(keyword.to_string(), keyword.spelling());
     }
     for symbol in [
-        Plus, Minus, Star, Slash, Percent, LParen, RParen, LBrace, RBrace,
-        LBracket, RBracket, Comma, Semicolon, Colon, Assign, Eq, Not, NotEq,
-        Less, LessEq, Greater, GreaterEq, Arrow, FatArrow, Pipe, PipeGood,
-        PipeBad, Or, And,
+        Plus, Minus, Star, Slash, Percent, Concat, LParen, RParen, LBrace,
+        RBrace, LBracket, RBracket, Comma, Semicolon, Colon, Assign, Eq, Not,
+        NotEq, Less, LessEq, Greater, GreaterEq, Arrow, FatArrow, Pipe,
+        PipeGood, PipeBad, Or, And, Ampersand,
     ] {
         tokens(symbol.spelling(), vec![S(symbol)]);
         assert_eq!(symbol.to_string(), symbol.spelling());
@@ -283,13 +295,28 @@ fn all_keywords_and_symbols() {
         ],
     );
     tokens("!b", vec![S(Not), name("b")]);
+    tokens(
+        "A & B && C &B a ++ b a++b",
+        vec![
+            name("A"),
+            S(Ampersand),
+            name("B"),
+            S(And),
+            name("C"),
+            S(Ampersand),
+            name("B"),
+            name("a"),
+            S(Concat),
+            name("b"),
+            Kind::Word("a++b".into()),
+        ],
+    );
 }
 
 #[test]
 fn word_boundaries_are_not_arithmetic_or_name_resolution() {
     for text in [
         "2024-01-01",
-        "1st",
         "0xZZ",
         "a+b",
         "x*2",
@@ -323,7 +350,10 @@ fn word_boundaries_are_not_arithmetic_or_name_resolution() {
             S(Slash),
         ],
     );
-    tokens("rd:4x", vec![name("rd"), S(Colon), Kind::Word("4x".into())]);
+    tokens(
+        "rd:4-x",
+        vec![name("rd"), S(Colon), Kind::Word("4-x".into())],
+    );
     tokens("rd:-4", vec![name("rd"), S(Colon), negative(4)]);
     tokens("rd:0004", vec![name("rd"), S(Colon), int(4)]);
     tokens("rd:", vec![name("rd"), S(Colon)]);
@@ -380,22 +410,22 @@ fn type_spellings_remain_context_free_tokens() {
         ],
     );
     tokens(
-        "Vec<Vec<u8>>",
+        "Vec<Vec<U8>>",
         vec![
             name("Vec"),
             S(Less),
             name("Vec"),
             S(Less),
-            name("u8"),
+            name("U8"),
             S(Greater),
             S(Greater),
         ],
     );
     tokens(
-        "[u8; 4096]",
+        "[U8; 4096]",
         vec![
             S(LBracket),
-            name("u8"),
+            name("U8"),
             S(Semicolon),
             int(4096),
             S(RBracket),
@@ -414,7 +444,7 @@ fn type_spellings_remain_context_free_tokens() {
         ],
     );
     tokens(
-        "let fn struct enum for ver as",
+        "let fn struct enum for ver as trait where",
         vec![
             name("let"),
             name("fn"),
@@ -423,6 +453,8 @@ fn type_spellings_remain_context_free_tokens() {
             name("for"),
             name("ver"),
             name("as"),
+            name("trait"),
+            name("where"),
         ],
     );
 }
@@ -521,7 +553,9 @@ fn migrated_donor_lexer_forms() {
 #[test]
 fn canonical_display_retains_semantic_payloads() {
     let source = r#"let _ = -0 0xFF 1_0.5e-2 b"\xFF\0" "한글\n" 'raw \xFF'
-        --width ../x .field fs.Entry + - * / % | |: |! || &&"#;
+        --width ../x .field fs.Entry + - * / % ++ & | |: |! || &&
+        10ms -0x1Fg 2.5e re"a+b"i re'a\d' "\xFF"i 0r7Z -0ms 0i
+        18446744073709551616"#;
     for token in lex(source).tokens {
         if token.kind != Kind::Eof {
             tokens(&token.kind.to_string(), vec![token.kind]);
@@ -619,7 +653,7 @@ fn opening_module_is_one_complete_token_stream() {
             name("fs"),
             S(Greater),
             S(Arrow),
-            name("u64"),
+            name("U64"),
             S(Arrow),
             name("Result"),
             S(Less),
@@ -736,18 +770,18 @@ fn opening_module_is_one_complete_token_stream() {
             Kind::Kw(K::Pub),
             name("x"),
             S(Colon),
-            name("i64"),
+            name("I64"),
             S(Comma),
             Kind::Kw(K::Pub),
             name("y"),
             S(Colon),
-            name("i64"),
+            name("I64"),
             S(Assign),
             int(0),
             S(Comma),
             name("len"),
             S(Colon),
-            name("u64"),
+            name("U64"),
             S(RBrace),
             Kind::Newline,
             Kind::Kw(K::Impl),

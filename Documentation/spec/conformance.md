@@ -15,9 +15,12 @@ Compare kinds, payloads, source slices and diagnostics.
 | --- | --- |
 | `x * 2` / `x*2` | name/operator/integer versus one word |
 | `0x199 0o17 0b1010 1_000 -5` | magnitudes 409, 15, 10, 1000, negative 5 |
-| `1st 2024-01-01 0xZZ 1__0` | words, not partial numbers or lexical errors |
-| `18446744073709551616` | one exact integer: the lexer has no bound *06.1* |
-| `1e999` / `1e` | float spelling versus word |
+| `2024-01-01 0xZZ 1__0` / `1st` | words, not partial numbers or lexical errors / `1` with the suffix `st` |
+| `18446744073709551616` | one exact integer: the lexer has no bound |
+| `1e999` / `1e` | float spelling versus `1` with the suffix `e` |
+| `10ms` / `2i` / `0r7Z` / `x10` | suffix `ms` / suffix `i` / prefix `r` and the digits `7Z` as written / a name |
+| `0x1Fe` / `0ms` / `1e5` | all hex digits / the prefix `m` / an exponent |
+| `re"a+b"i` / `f"abc"` / `f "abc"` | prefix and suffix / a prefix / a name and a string |
 | `-n=-5 -l=False --la -- -` | attached flag tokens, word `--`, minus |
 | `rd:4` | name, colon, integer; no resource literal exists |
 | `Vec<Vec<U8>>` | two `>` symbols; no `>>` token |
@@ -26,14 +29,14 @@ Compare kinds, payloads, source slices and diagnostics.
 | `a\b`, `\x` | words; `# note \` LF `y` | comment, newline, name |
 | `/ ./x ../x /a` | slash symbol, three paths |
 | `fs.Entry .name _ héllo` | qualified name, selector, wildcard name, word |
-| `"\xC3\xA9" b"\xFF"` | UTF-8 string é, byte 255 |
+| `"\xC3\xA9" b"\xFF"` / `"\xFF"i` | UTF-8 string é, byte 255 with the prefix `b` / byte 255 with the suffix `i` |
 | `"\xFF"` | invalid UTF-8 string error |
 | `'a\nb'` / `"a\nb"` | raw backslash+n versus LF byte |
 | `"#" # tail` | string hash, discarded comment |
 | `a |` then LF then `b` | pipe continuation without that newline |
 | `a ||` then two LFs then `b` | second newline retained |
 | broken quote, LF, `x = 1` | one diagnostic; following line survives |
-| `&` / `&&` / source NUL | symbol *06.1*, pipe, stray; NUL never truncates source |
+| `&` / `&&` / source NUL | symbol, pipe, stray; NUL never truncates source |
 | initial U+FEFF then `ls` | name `ls` at byte 3, scalar column 2 |
 | other U+FEFF / any literal U+200B | stray, including in comments and quotes |
 | `"\xEF\xBB\xBF"` / `"\xE2\x80\x8B"` | escaped marks are valid string data |
@@ -68,14 +71,14 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `f(a,b)` / `f (x)` / `f()` | explicit arguments / grouped argument / empty call |
 | `(e).name` / `f .name` | postfix field / selector argument |
 | `type P { pub x: I64, y: I64 = 0 }` / `type S { C(r: F64), D }` | fields / constructors |
-| `impl P { x (y = 0) => Self { x, y }, f = p => … }` / `impl P: T { f = … }` | constructor arm and member / syntax error *06.1* |
+| `impl P { x (y = 0) => Self { x, y }, f = p => … }` / `impl P: T { f = … }` | constructor arm and member / syntax error *06.2* |
 | `impl P { f = a => 1, b => 2 }` / `impl P { f = a => 1 b => 2 }` | member then constructor arm / error: bracket the arms |
 | `use x.inc x.Point` / `use text 2` / `use fs ver 2` | names / version / error |
 | `foo 1`, `foo` / `cat foo` | unknown name / text |
 | `f 1` before `f = a => …` / `lookup` before `use sys.lookup` / `f = n => f n` / `impl P { a = … b …, b = … a … }` | unknown name, twice / self-recursion / members see each other |
 | `pub x = 1` then `pub x = 2` in a file / `use a` inside `a` / a used module with a bare line | exports the final `x` / check error: import cycle / check error: no main |
 | `type point {}`, `type S { circle(r: F64) }`, `Point = 1` | case rule at the declaration |
-| `type Rd<Api>` / `Rd<fs>` | a host type's uppercase parameter / an API reference at the use site *06.1* |
+| `type Rd<Api>` / `Rd<fs>` | a host type's uppercase parameter / an API reference at the use site |
 | `pub len: T`, `impl P { n: I64 }` in a program | declaration form *06.2* |
 | `sys.lookup`, `Polar.from`, `e.name`, `fs = e` then `fs.list` | module export / type member / members of a value, twice |
 | `use nowhere`, `use geometry.Nope`, `fs.nope`, `Point.nope` | unknown module / not exported / unknown member, twice |
@@ -85,25 +88,27 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | wrong record field | check error before any host call |
 | `Maybe<Entry> | cat` versus `|: cat` | whole-value mismatch / payload bind |
 | `find x | put out` / `find x || "" | put out` | outcome at a byte spot: check error / text written |
-| `m = [:1]` / `m: Maybe<Integer> = [:1]` | family unknown: check error / `Just 1` *06.1* |
+| `m = [:1]` / `m: Maybe<Integer> = [:1]` | family unknown: check error / `Just 1` *06.2* |
 | `Point 3 4`, `Point 3`, `1 | Point 1` / `Point 3 4 5` | constructor, default, pipe fills `y` / extra argument |
 | `Point { x: 3, y: 4, len: 5 }`, `Point 3 4 5`, `Point -len 5` outside its module | check error at the field or argument: `len` is private |
 | a member without `pub` reached from another module | check error: the member is private |
 | `pl | Point.from`, `pl | to<Point>`, `"3,4" | try<Point>` / `pl | Point` | conversions / `Point pl`: check error at an `I64` spot *06.2* |
 | `from` and `try_from` on one target for one source / `Point.from x`, `x` of unknown meaning | check error: never both / check error naming the candidates *06.2* |
-| `"42" | read<I64>` / `n: I64 = "42"` / `n: I64 = "x"` | `Result` / `42` (T5) / check error *06.1* |
+| `"42" | read<I64>` / `n: I64 = "42"` / `n: I64 = "x"` | `Result` / `42` (T5) / check error |
 | `read p | { [!e] => … }` with `read p : Maybe<T>` | check error: `Nothing` has no payload |
-| `Either<(),Integer> || 0` | check error preserving outcome identity (T1) *06.1* |
+| `Either<(),Integer> || 0` | check error preserving outcome identity (T1) *06.2* |
 | `older = d e => e.age > d` / `filter (older 7)` | `b.age: a, Ord a => a -> b -> Bool` / solved at `Entry` *06.2* |
 | `s = .name` / `(f => 1) .name` | `a.name: b => a -> b` / check error at the dot |
 | `find x |! log "gone"` / `find x |! find y` / `find x |! log` | `Maybe<Entry>`, the stage is a value / fallback / check error: open spot |
 | `x = 1`, `inc = x => x + 1`, `even 4`, `[] == []` | `Integer` / `Add a, Literal a => a -> a` / `Bool` (T5) / ambiguous *06.2* |
 | `z = if c { 2 } else { 2.5 }` / `w = if c { n } else { 2.5 }`, `n: Integer = 2` / `u = if c { 2 } else { "a" }` | `F64`, in either order / check error: `n` has a meaning / check error: no meaning reads both *06.2* |
 | non-total arms | check error, never runtime match failure |
-| `x: i64 = 1` / `g: I46 -> I46 = x => x` | hint: `I64` / unknown type *06.1* |
-| `a ++ b` / `a++b` / `trait` / `grep where` | `a.concat b` / one word / a name / a command *06.1* |
-| `[!T; 3]` in a type / `A |! B` in a type | array / error with the hint `| !` *06.1* |
-| `type U8: Natural & Bits<8> where self <= 255`, `type I8: Integer & Bits<8> where …`, `where` on the next line | limited type, chained; signed; the line continues *06.1* |
+| `x: i64 = 1` / `g: I46 -> I46 = x => x` | check error with the hint `I64` / unknown type |
+| `a++b` / `trait` / `grep where` | one word / a name / a command |
+| `a ++ b` | `a.concat b` *06.2* |
+| `[!T; 3]` in a type / `A |! B` in a type | array / error with the hint `| !` |
+| `!A & B | C * D -> E` / `f (a, b)` / `f(a, b)` | `((!A & B) | C) * D -> E` / one tuple argument / two arguments |
+| `type U8: Natural & Bits<8> where self <= 255`, `type I8: Integer & Bits<8> where …`, `where` on the next line | limited type, chained; signed; the line continues |
 | `type Shape where self.area: F64` / `type Key: Eq & Show` | member limits, no gate / named combination *06.2* |
 | `double = n => n + n` / `same = p q => p == q` | `Add a => a -> a` / `Eq a => a -> a -> Bool` *06.2* |
 | `(Vec2 1.0 2.0) + (Vec2 3.0 4.0)` / written `show` / `impl Maybe { map: … }` in the prelude | `Vec2`'s `add` / replaces the derived one / a supplied member *06.2* |
@@ -138,7 +143,7 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `map` / `filter` on an array | keeps its length / a `Vec` *06.5* |
 | `[T; n + m]` / `[T; m + n]` | one type: sums are equal in any order *06.5* |
 
-The [corpus](examples.fipe) follows the parser in 06.1; check AST shape, inferred types and diagnostics, not only successful parses.
+The [corpus](examples.fipe) follows the grammar; check AST shape, inferred types and diagnostics, not only successful parses.
 
 ## Evaluation and hosts
 

@@ -31,9 +31,9 @@ raw | utf8 |: len || 0
 'no\nescapes' | len
 
 # Numbers from text: the spot trusts, the word returns an outcome.
-port: u16 = "8080"
-"8080" | read<u16> |: (n => n + 1) || 0
-n: i64 = round 2.5
+port: U16 = "8080"
+"8080" | read<U16> |: (n => n + 1) || 0
+n: I64 = round 2.5
 
 # Building lines to write: `join` and `put` take the value last.
 ["a", "b", "c"] | join "\n" | put ./letters

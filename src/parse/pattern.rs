@@ -160,8 +160,15 @@ impl Parser {
 
     fn pattern_inner(&mut self, context: Context) -> Result<PatternId, Error> {
         let start = self.here().start;
+        let tuple = self.tuple_at(self.position + 1);
         let kind = match self.peek() {
             Kind::Name(_) => return self.name_pattern(context),
+            Kind::Symbol(Symbol::LParen) if tuple => {
+                self.bump();
+                let parts =
+                    self.tuple(|parser| parser.pattern(Context::Element))?;
+                PatternKind::Tuple(parts)
+            }
             Kind::Symbol(Symbol::LParen) => {
                 self.bump();
                 let kind = if self.at(Symbol::RParen) {
@@ -284,7 +291,7 @@ const fn pattern_start(kind: &Kind) -> bool {
             | Kind::Int { .. }
             | Kind::Float(_)
             | Kind::Str { .. }
-            | Kind::Bytes(_)
+            | Kind::Affixed(_)
             | Kind::Symbol(Symbol::LParen | Symbol::LBracket)
     )
 }

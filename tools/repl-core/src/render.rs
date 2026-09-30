@@ -48,7 +48,8 @@ pub fn syntax(reason: parse::Reason) -> String {
         | R::CommaBeforeLineBreak
         | R::RecordInHead
         | R::NestingLimit
-        | R::BindingValue => reason.to_string(),
+        | R::BindingValue
+        | R::EitherNot => reason.to_string(),
     }
 }
 
@@ -92,6 +93,10 @@ pub fn resolve(reason: &resolve::Reason, at: &Context) -> String {
         R::UnknownField => "the type declares no such field".into(),
         R::PrivateField { field } => format!("field `{field}` is private"),
         R::PrivateMember { member } => format!("member `{member}` is private"),
+        R::NotYetChecked { form } => format!("{form} is not yet checked"),
+        R::NumericName { upper } => {
+            format!("numeric types are uppercase: write `{upper}`")
+        }
     }
 }
 
@@ -138,5 +143,6 @@ pub fn declaration(reason: &decl::Reason, text: &str) -> String {
             let (line, col) = Source::new(text).line_col(first.start);
             format!("already declared: first declared at {line}:{col}")
         }
+        R::NotYetChecked { form } => format!("{form} is not yet checked"),
     }
 }

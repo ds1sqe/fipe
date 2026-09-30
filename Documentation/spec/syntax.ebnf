@@ -1,7 +1,9 @@
 (* Token grammar; continuation, adjacency, the binding rule, the case rule
    and the list newline rule are in syntax.md. `newlines` marks where a
    list admits line breaks. A quoted keyword is a token spelling, except
-   "where", a NAME read as a word only in a type item (lexical.md). *)
+   "where", a NAME read as a word only in a type item (lexical.md).
+   INTEGER, FLOAT and STRING include a prefix or suffix; `b"…"` is a
+   STRING with the prefix `b`. *)
 file = newlines, { entry, NEWLINE, newlines }, [ entry ], EOF ;
 entry = [ "pub" ], ( item | declaration | line ) ;
 newlines = { NEWLINE } ;
@@ -70,7 +72,7 @@ product = unary, { ( "*" | "/" | "%" ), unary } ;
 unary = { "!" }, operand ;
 primary = literal | NAME | instance | WORD | PATH | SELECTOR | "/"
         | group | tuple | list | outcome | record | block ;
-literal = INTEGER | FLOAT | STRING | BYTES | unit ;
+literal = INTEGER | FLOAT | STRING | unit ;
 unit = "(", newlines, ")" ;
 instance = NAME, type_arguments ;
 group = "(", newlines, body, newlines, ")" ;

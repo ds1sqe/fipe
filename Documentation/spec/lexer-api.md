@@ -27,16 +27,21 @@ them remain; a unit with errors is never parsed or executed.
 | NAME, SELECTOR | Name/Selector(Vec<String>), segments without dots |
 | WORD, PATH | Word/Path(String), exact spelling |
 | FLAG | Flag(String), without leading dash(es) |
-| INTEGER | Int { negative: bool, magnitude: u64 }, as implemented |
+| INTEGER | Int { negative: bool, magnitude: Magnitude } |
 | FLOAT | Float(String), exact spelling including separators/sign |
 | STRING | Str { value: String, raw: bool } |
-| BYTES | Bytes(Vec<u8>) |
+| with a prefix or suffix | Affixed(Box<Affixed>) |
 | NEWLINE, EOF | Newline, Eof |
 
-`raw` distinguishes single quotes. Until 06.1 the implementation bounds
-`magnitude` by `u64` and reports a larger integer with the extra reason
-`IntegerRange`; [lexical structure](lexical.md) has no bound. `Symbol` and
-`Keyword` are finite enums; `Keyword::from_word` recognizes exact keywords
+`raw` distinguishes single quotes. `Magnitude` is an exact natural of
+any size held in `alloc`: `to_u64`, `is_zero`, `parse(text, radix)`,
+order and decimal `Display`. `Affixed { prefix, form, suffix }` holds a
+number or quote with a prefix or suffix, each `String` empty when not
+written; for a number the prefix is the letter after `0`. `form` is a
+`Written`: `Int` and `Float` as above, `Digits { negative, digits }` as
+written after a program's prefix, or `Text { value: Vec<u8>, raw }`, so
+`b"…"` is `Affixed` with the prefix `b`. `Symbol` and `Keyword` are
+finite enums; `Keyword::from_word` recognizes exact keywords
 and `Symbol::continues_line` the five pipes. `Reason` is the lexical
 contract's diagnostic enum; `Stray` carries the scalar. `Display` gives a
 canonical spelling that lexes back to the same kind and payload, not the
@@ -49,5 +54,7 @@ reversed, out-of-bounds or non-boundary span. `line_col(offset)` is
 one-based line and scalar column, computed on demand in O(offset); an
 offset beyond EOF clamps to EOF and one inside a scalar to its start.
 
-Lexing is O(n) time and storage in the source length and never recurses.
+Lexing is O(n) time and storage in the source length and never recurses,
+except that a decimal integer's magnitude takes time quadratic in its
+digits.
 Allocation failure is not a lexical diagnostic.

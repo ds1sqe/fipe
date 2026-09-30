@@ -28,8 +28,8 @@ describe: Maybe<Entry> -> String = {
 find ./x | describe
 
 # Result carries an error on the miss side; `[!err]` binds it.
-# read_port: String -> Result<u16, ParseError>
-read_port = text => text | read<u16> | {
+# read_port: String -> Result<U16, ParseError>
+read_port = text => text | read<U16> | {
     [:port] if port > 1024 => Ok port,
     [:_] => Err (ParseError "reserved port"),
     [!err] => Err err,
@@ -41,5 +41,5 @@ port = read_port "8080" || 3000
 
 # Names fix a family when the spot does not.
 maybe_head = xs => if (len xs) > 0 { Just (head xs) } else { Nothing }
-m: Maybe<i64> = [:1]
-r: Result<i64, String> = [!"bad"]
+m: Maybe<I64> = [:1]
+r: Result<I64, String> = [!"bad"]

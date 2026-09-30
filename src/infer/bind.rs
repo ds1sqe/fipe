@@ -440,7 +440,7 @@ impl Infer<'_> {
     }
 
     /// Among the obligations since `mark`, a variable outside `env`
-    /// that only literals hold becomes `i64`, or `f64` for a float
+    /// that only literals hold becomes `I64`, or `F64` for a float
     /// literal. One not in `stay` becomes the same where it leaves when
     /// it owes `Num`, `Float` or a literal and otherwise at most `Eq`
     /// and `Ord`.
@@ -453,7 +453,7 @@ impl Infer<'_> {
         struct Held {
             var: Var,
             only_literals: bool,
-            /// `f64` for a `Float`, else `i64` for a `Num`.
+            /// `F64` for a `Float`, else `I64` for a `Num`.
             numeric: Option<&'static str>,
             other: bool,
         }
@@ -483,8 +483,8 @@ impl Infer<'_> {
             };
             let class = class.as_str();
             match class {
-                "Float" => held.numeric = Some("f64"),
-                "Num" => held.numeric = held.numeric.or(Some("i64")),
+                "Float" => held.numeric = Some("F64"),
+                "Num" => held.numeric = held.numeric.or(Some("I64")),
                 "Eq" | "Ord" => {}
                 _ => held.other = true,
             }
@@ -535,7 +535,7 @@ impl Infer<'_> {
         ty: &Type,
         span: Span,
     ) {
-        let float = is_prelude(ty, "f32") || is_prelude(ty, "f64");
+        let float = is_prelude(ty, "F32") || is_prelude(ty, "F64");
         let actual = match literal {
             _ if matches!(ty, Type::Var(_)) || float => return,
             Lit::Int {
@@ -547,9 +547,9 @@ impl Infer<'_> {
                     self.error(span, Reason::OutOfRange);
                     return;
                 }
-                None => prelude("i64"),
+                None => prelude("I64"),
             },
-            Lit::Float => prelude("f64"),
+            Lit::Float => prelude("F64"),
         };
         let expected = ty.clone();
         self.error(
@@ -568,11 +568,14 @@ impl Infer<'_> {
 pub(super) fn in_range(
     ty: &Type,
     negative: bool,
-    magnitude: u64,
+    magnitude: Option<u64>,
 ) -> Option<bool> {
     const INTEGERS: [&str; 8] =
-        ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"];
+        ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
     let index = INTEGERS.iter().position(|name| is_prelude(ty, name))?;
+    let Some(magnitude) = magnitude else {
+        return Some(false);
+    };
     let width = 8u32 << (index % 4);
     Some(if index < 4 {
         let bound = 1u64 << (width - 1);

@@ -4,7 +4,7 @@ use fipe::{
 };
 
 fn i64() -> Type {
-    Type::named(Origin::Prelude, "i64", vec![])
+    Type::named(Origin::Prelude, "I64", vec![])
 }
 
 fn vec(of: Type) -> Type {
@@ -150,7 +150,7 @@ fn schemes_generalize_over_the_environment_and_instantiate_fresh() {
     assert_eq!(
         Type::function(Type::function(i64(), i64()), vec(Type::Unit))
             .to_string(),
-        "(i64 -> i64) -> Vec<()>"
+        "(I64 -> I64) -> Vec<()>"
     );
-    assert_eq!(Scheme::mono(i64()).to_string(), "i64");
+    assert_eq!(Scheme::mono(i64()).to_string(), "I64");
 }

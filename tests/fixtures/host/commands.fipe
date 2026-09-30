@@ -2,23 +2,23 @@
 # and the types they share. Every name is implemented by the host.
 use fs
 
-pub type Rd<api>
-pub Rd: u64 -> Rd<api>
+pub type Rd<Api>
+pub Rd: U64 -> Rd<api>
 pub type Src
 impl Src: Read {}
 pub type Sink
 impl Sink: Read {}
-pub type Entry { pub name: String, pub path: String, pub size: u64, pub age: u64 }
+pub type Entry { pub name: String, pub path: String, pub size: U64, pub age: U64 }
 impl Entry: Read {}
 
 pub root: Rd<sys>
 pub out: Sink
 
 pub ls: (path: Src = ".") -> (long: Bool = False) -> (recursive: Bool = False) ->
-    (depth: u64 = 1) -> (name: String = "*") -> Vec<Entry>
+    (depth: U64 = 1) -> (name: String = "*") -> Vec<Entry>
 pub cat: Entry -> String
 pub find: Src -> Maybe<Entry>
 pub grep: (pattern: String) -> String -> String
 pub rm: Src -> Result<(), fs.Error>
-pub put: (to: Sink) -> Vec<u8> -> ()
-pub append: (to: Sink) -> Vec<u8> -> ()
+pub put: (to: Sink) -> Vec<U8> -> ()
+pub append: (to: Sink) -> Vec<U8> -> ()

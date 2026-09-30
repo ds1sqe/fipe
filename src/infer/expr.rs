@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     ast::{BinaryOp, ExprId, ExprKind, FieldValue, Literal, PipeOp},
-    resolve::{Origin, Target},
+    resolve::{bytes, Origin, Target},
     token::Span,
     types::{Obligation, Type},
 };
@@ -67,6 +67,13 @@ impl Infer<'_> {
                 self.block(lines, expected)
             }
             ExprKind::List(items) => self.list(items, expected, span),
+            // Not yet checked, which resolve reports: its parts are typed.
+            ExprKind::Tuple(parts) => {
+                for part in parts {
+                    self.expr(*part, None);
+                }
+                self.fresh()
+            }
             ExprKind::Outcome { good, payload } => {
                 self.bracket(*good, *payload, expected, span)
             }
@@ -111,7 +118,7 @@ impl Infer<'_> {
         }
     }
 
-    /// Integer literals default to `i64` and float literals to `f64`
+    /// Integer literals default to `I64` and float literals to `F64`
     /// unless the expected type is numeric: any for an integer, a float
     /// for a float. An expected variable or rigid name is the literal's
     /// type, owing `Num` or `Float`; an integer out of its type's range
@@ -131,15 +138,17 @@ impl Infer<'_> {
         let lit = match literal {
             Literal::Unit => return Type::Unit,
             Literal::Str { .. } => return prelude("String"),
-            Literal::Bytes(_) => {
-                return prelude_of("Vec", alloc::vec![prelude("u8")]);
+            Literal::Affixed(affixed) if bytes(affixed).is_some() => {
+                return prelude_of("Vec", alloc::vec![prelude("U8")]);
             }
+            // A program's prefix or suffix, which resolve reports.
+            Literal::Affixed(_) => return self.fresh(),
             Literal::Int {
                 negative,
                 magnitude,
             } => Lit::Int {
                 negative: *negative,
-                magnitude: *magnitude,
+                magnitude: magnitude.to_u64(),
             },
             Literal::Float(_) => Lit::Float,
         };
@@ -163,15 +172,15 @@ impl Infer<'_> {
                 negative,
                 magnitude,
             } => {
-                let ty = numeric.unwrap_or_else(|| prelude("i64"));
+                let ty = numeric.unwrap_or_else(|| prelude("I64"));
                 if in_range(&ty, negative, magnitude) == Some(false) {
                     self.error(span, Reason::OutOfRange);
                 }
                 ty
             }
             Lit::Float => numeric
-                .filter(|ty| is_prelude(ty, "f32") || is_prelude(ty, "f64"))
-                .unwrap_or_else(|| prelude("f64")),
+                .filter(|ty| is_prelude(ty, "F32") || is_prelude(ty, "F64"))
+                .unwrap_or_else(|| prelude("F64")),
         }
     }
 
@@ -381,6 +390,12 @@ impl Infer<'_> {
     ) -> Type {
         let class = class(op);
         let arithmetic = class == "Num";
+        if op == BinaryOp::Concat {
+            // Not yet checked, which resolve reports: one type both sides.
+            let sibling = Expected::new(left_ty.clone(), self.span(left));
+            self.expr(right, Some(&sibling));
+            return left_ty;
+        }
         if run.is_some() {
             self.run_operand(&left_ty, left, right, run);
         } else {
@@ -421,8 +436,8 @@ impl Infer<'_> {
         let applied = self.apply(&ty);
         let fits = num(&applied) == Some(true)
             && (!float
-                || is_prelude(&applied, "f32")
-                || is_prelude(&applied, "f64"));
+                || is_prelude(&applied, "F32")
+                || is_prelude(&applied, "F64"));
         if fits {
             *run = None;
         } else {
@@ -431,11 +446,11 @@ impl Infer<'_> {
         self.unify(var, &ty, self.span(right), self.span(left));
     }
 
-    /// A literal run ends at its default, `f64` when a float literal is
-    /// in it, else `i64`, unless an operand gave it a type.
+    /// A literal run ends at its default, `F64` when a float literal is
+    /// in it, else `I64`, unless an operand gave it a type.
     fn end_run(&mut self, var: &Type, run: &mut Option<bool>) {
         if let Some(float) = run.take() {
-            let name = if float { "f64" } else { "i64" };
+            let name = if float { "F64" } else { "I64" };
             self.hint(var, &prelude(name));
         }
     }
@@ -573,6 +588,7 @@ const fn class(op: BinaryOp) -> &'static str {
         | BinaryOp::Divide
         | BinaryOp::Remainder => "Num",
         BinaryOp::Equal | BinaryOp::NotEqual => "Eq",
+        BinaryOp::Concat => "Concat",
         _ => "Ord",
     }
 }

@@ -21,8 +21,8 @@ fn a_scheme_carries_the_member_to_its_use() {
 
 #[test]
 fn a_member_solves_field_first_then_self_function() {
-    let point = "type P { x: i64 }\nimpl P { dist = self q => self.x - q.x }\n";
-    assert_eq!(ty(&format!("{point}(P 1).dist (P 2)")), "i64");
+    let point = "type P { x: I64 }\nimpl P { dist = self q => self.x - q.x }\n";
+    assert_eq!(ty(&format!("{point}(P 1).dist (P 2)")), "I64");
     let text = "g = e => e.nope\ng (ls | head)";
     let [error] = errors(text).try_into().unwrap();
     let Reason::NoField { other, .. } = error.reason else {

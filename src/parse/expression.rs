@@ -65,7 +65,10 @@ impl Parser {
             .expression(ExprKind::With { key, value, body }, self.since(start)))
     }
 
-    fn pipeline(&mut self, context: Context) -> Result<ExprId, Error> {
+    pub(super) fn pipeline(
+        &mut self,
+        context: Context,
+    ) -> Result<ExprId, Error> {
         let mut left = self.stage(context)?;
         while let Some(op) = pipe(self.peek()) {
             let operator = self.bump().span;
@@ -301,6 +304,12 @@ impl Parser {
         if self.arm_arrow(Context::Line).is_some() {
             return self.arm_list(start, Symbol::RParen);
         }
+        if self.tuple_at(self.position) {
+            let parts = self.tuple(|parser| parser.line(Context::Element))?;
+            return Ok(
+                self.expression(ExprKind::Tuple(parts), self.since(start))
+            );
+        }
         let lines = self.lines(Symbol::RParen)?;
         Ok(self.expression(ExprKind::Group(lines), self.since(start)))
     }
@@ -510,7 +519,7 @@ pub(super) fn literal(kind: Kind) -> Option<Literal> {
         },
         Kind::Float(text) => Literal::Float(text),
         Kind::Str { value, raw } => Literal::Str { value, raw },
-        Kind::Bytes(bytes) => Literal::Bytes(bytes),
+        Kind::Affixed(affixed) => Literal::Affixed(affixed),
         _ => return None,
     })
 }
@@ -524,7 +533,7 @@ pub(super) const fn operand_start(kind: &Kind, context: Context) -> bool {
         | Kind::Int { .. }
         | Kind::Float(_)
         | Kind::Str { .. }
-        | Kind::Bytes(_)
+        | Kind::Affixed(_)
         | Kind::Symbol(Symbol::LParen | Symbol::LBracket | Symbol::Slash) => {
             true
         }
@@ -558,6 +567,7 @@ const fn binary(kind: &Kind) -> Option<(BinaryOp, u8)> {
         Kind::Symbol(Symbol::GreaterEq) => (BinaryOp::GreaterEqual, 2),
         Kind::Symbol(Symbol::Plus) => (BinaryOp::Add, 3),
         Kind::Symbol(Symbol::Minus) => (BinaryOp::Subtract, 3),
+        Kind::Symbol(Symbol::Concat) => (BinaryOp::Concat, 3),
         Kind::Symbol(Symbol::Star) => (BinaryOp::Multiply, 4),
         Kind::Symbol(Symbol::Slash) => (BinaryOp::Divide, 4),
         Kind::Symbol(Symbol::Percent) => (BinaryOp::Remainder, 4),

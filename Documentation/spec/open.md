@@ -73,6 +73,24 @@ parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays
 - Marked pipes on a user meaning through `then`, `pure`, `or`, `empty`.
 - A checked claim, `impl Circle: Shape`, if accidental matches bite.
 
+## L1 — Written forms
+
+Ruled 2026-09-30: a program's prefix and suffix on a number or quote
+([lexical](lexical.md) §Numbers, §Quoted literals; [members](members.md)
+§Literals). Open:
+
+- The claim's spelling. **Proposed:** in the type's `impl`, exported by
+  `pub` and brought in by `use`: `impl Regex { literal re"" = f => … }`,
+  `impl Complex { literal ""i = f => … }`.
+- Whether a path, a word and a bracket take a prefix or suffix.
+- New operators from operator characters, precedence by the first
+  character, pipe symbols reserved: a direction, not ruled.
+- The longest-match cases of a number's prefix and suffix; lexical.md
+  states the reading implemented: `0x1Fe` is all digits, `0ms` the
+  prefix `m`, `1e` the suffix `e`.
+- The `Form` of a quote whose bytes are not UTF-8, and of the digits
+  after a program's prefix.
+
 ## E1 — Evaluation and outcome rebuilding
 
 **Proposed:** strict left-to-right evaluation, each supplied expression once,

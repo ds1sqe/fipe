@@ -1,3 +1,3 @@
 # The conformance host's `text` module, API version 2.
-pub wrap: (width: u64 = 72) -> String -> String
+pub wrap: (width: U64 = 72) -> String -> String
 pub trim: String -> String

@@ -1,10 +1,10 @@
 use super::{Context, Error, Expected, Parser};
 use crate::{
     ast::{
-        ExprId, ExprKind, Field, ImplMember, Item, ItemKind, Member,
+        ExprId, ExprKind, Field, ImplMember, Item, ItemKind, Limit, Member,
         TraitMember, TypeParameter,
     },
-    token::{Keyword, Kind, Symbol},
+    token::{Keyword, Kind, Symbol, Token},
 };
 use alloc::{vec, vec::Vec};
 
@@ -12,10 +12,20 @@ impl Parser {
     pub(super) fn item_start(&mut self) -> bool {
         matches!(
             self.peek(),
-            Kind::Kw(
-                Keyword::Use | Keyword::Type | Keyword::Trait | Keyword::Impl
-            )
-        )
+            Kind::Kw(Keyword::Use | Keyword::Type | Keyword::Impl)
+        ) || self.trait_start()
+    }
+
+    /// `trait Name`, the 05 form kept until members replace it: `trait`
+    /// is a name, and an item only before an uppercase name at the start
+    /// of an entry.
+    fn trait_start(&mut self) -> bool {
+        self.peek();
+        word(self.tokens.get(self.position), "trait")
+            && self.tokens.get(self.position + 1).is_some_and(|token| {
+                matches!(&token.kind, Kind::Name(parts)
+                    if parts.len() == 1 && parts[0].starts_with(char::is_uppercase))
+            })
     }
 
     pub(super) fn item(&mut self, public: bool) -> Result<Item, Error> {
@@ -23,8 +33,8 @@ impl Parser {
         let kind = match self.peek() {
             Kind::Kw(Keyword::Use) if !public => self.import()?,
             Kind::Kw(Keyword::Type) => self.type_item()?,
-            Kind::Kw(Keyword::Trait) => self.trait_item()?,
             Kind::Kw(Keyword::Impl) if !public => self.impl_item()?,
+            Kind::Name(_) => self.trait_item()?,
             _ => return Err(self.expected(Expected::Name)),
         };
         Ok(Item {
@@ -65,22 +75,65 @@ impl Parser {
         })
     }
 
-    /// `type Name<params> { members }`, or `type Name<params>` alone, an
-    /// opaque type.
+    /// `type Name<params>: base { members } where limits`, each part
+    /// optional; `type Name<params>` alone is an opaque type.
     fn type_item(&mut self) -> Result<ItemKind, Error> {
         self.bump();
         let name = self.name(true)?;
         let parameters = self.type_parameters()?;
+        let base = if self.eat(Symbol::Colon) {
+            Some(self.type_syntax()?)
+        } else {
+            None
+        };
         let members = if self.eat(Symbol::LBrace) {
             Some(self.list(Symbol::RBrace, Self::member)?)
         } else {
             None
         };
+        let limits = self.limits()?;
         Ok(ItemKind::Type {
             name,
             parameters,
+            base,
             members,
+            limits,
         })
+    }
+
+    /// `where` and its comma list of limits; a `where` that begins the
+    /// next line continues the item.
+    fn limits(&mut self) -> Result<Vec<Limit>, Error> {
+        if self.tokens[self.position].kind == Kind::Newline
+            && word(self.tokens.get(self.position + 1), "where")
+        {
+            self.position += 1;
+        }
+        self.peek();
+        if !word(self.tokens.get(self.position), "where") {
+            return Ok(Vec::new());
+        }
+        self.bump();
+        let mut limits = Vec::new();
+        loop {
+            self.newlines();
+            limits.push(self.limit()?);
+            if !self.eat(Symbol::Comma) {
+                return Ok(limits);
+            }
+        }
+    }
+
+    /// `self.area: F64`, a member limit, or a test.
+    fn limit(&mut self) -> Result<Limit, Error> {
+        if !self.colon_follows() {
+            return self.pipeline(Context::Element).map(Limit::Test);
+        }
+        let name = self.name(false)?;
+        self.expect(Symbol::Colon)?;
+        let ty = self.type_syntax()?;
+        let span = self.since(name.span.start);
+        Ok(Limit::Member { name, ty, span })
     }
 
     /// `<T, U: Bound>` after a `type` or `trait` name, when present.
@@ -91,7 +144,7 @@ impl Parser {
         self.list(Symbol::Greater, |parser| {
             let name = parser.name(true)?;
             let bound = if parser.eat(Symbol::Colon) {
-                Some(parser.name(false)?)
+                Some(parser.type_both()?)
             } else {
                 None
             };
@@ -172,8 +225,8 @@ impl Parser {
         })
     }
 
-    /// `impl Target [: Trait] { members }`: named members, and bare arms
-    /// that are the written constructor.
+    /// `impl Target [: Trait] { members }`: named members, with or
+    /// without a value, and bare arms that are the written constructor.
     fn impl_item(&mut self) -> Result<ItemKind, Error> {
         self.bump();
         let target = self.type_syntax()?;
@@ -202,8 +255,12 @@ impl Parser {
             } else {
                 None
             };
-            parser.expect(Symbol::Assign)?;
-            let value = parser.member_value()?;
+            let value = if annotation.is_none() || parser.at(Symbol::Assign) {
+                parser.expect(Symbol::Assign)?;
+                Some(parser.member_value()?)
+            } else {
+                None
+            };
             Ok(ImplMember::Named {
                 public,
                 name,
@@ -242,4 +299,11 @@ impl Parser {
     fn at_keyword(&mut self, keyword: Keyword) -> bool {
         *self.peek() == Kind::Kw(keyword)
     }
+}
+
+/// Whether a token is the one-segment name `text`, a word of an item.
+fn word(token: Option<&Token>, text: &str) -> bool {
+    token.is_some_and(|token| {
+        matches!(&token.kind, Kind::Name(parts) if parts.len() == 1 && parts[0] == text)
+    })
 }

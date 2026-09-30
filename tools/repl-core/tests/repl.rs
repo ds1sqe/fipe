@@ -88,7 +88,7 @@ fn load_asks_for_the_stem() {
     );
     // Its four `hypot`/`atan2` rows are 07's casts; the line is accepted.
     let text = written(repl.file("geometry.fipe", Some(GEOMETRY)));
-    assert_eq!(text.matches("expected f64, found i64").count(), 4, "{text}");
+    assert_eq!(text.matches("expected F64, found I64").count(), 4, "{text}");
     assert!(text.starts_with("geometry.fipe:12:55: "), "{text}");
     assert!(text.ends_with("fipe> "), "{text}");
     let text = written(repl.feed(b":r geometry.Point 1\n"));
@@ -108,7 +108,7 @@ fn load_takes_a_stem_or_a_path() {
     );
     let text = written(repl.file("01-files.fipe", Some("pub k = 1\n")));
     assert_eq!(text, "fipe> ");
-    assert_eq!(written(repl.feed(b":t files.k\n")), "files.k: i64\nfipe> ");
+    assert_eq!(written(repl.feed(b":t files.k\n")), "files.k: I64\nfipe> ");
     let outs = repl.feed(b":load ./x/y.fipe\n");
     assert_eq!(outs, [Out::File("./x/y.fipe".into())]);
     let text = written(repl.file("./x/y.fipe", None));
@@ -123,7 +123,7 @@ fn load_without_a_stem_and_unknown_commands_say_so() {
     assert_eq!(
         text,
         "usage: :load <stem>\nunknown command :bogus\n\
-         usage: :ast (the last accepted line)\nfipe> "
+         usage: :ast (the last line that parsed)\nfipe> "
     );
 }
 
@@ -136,7 +136,7 @@ fn a_file_diagnostic_is_located_in_its_file() {
         written(repl.file("bad.fipe", Some("x = 1\npub g = 1 + \"a\"\n")));
     assert_eq!(
         text,
-        "bad.fipe:2:13: expected i64, found String\n\
+        "bad.fipe:2:13: expected I64, found String\n\
          pub g = 1 + \"a\"\n            ^^^\nfipe> "
     );
 }
@@ -160,7 +160,7 @@ fn a_private_inherent_member_is_named() {
     assert_eq!(outs, [Out::File("shapes.fipe".into())]);
     let text = written(repl.file(
         "shapes.fipe",
-        Some("pub type P { pub x: i64 }\nimpl P { hidden = self => 1 }\n"),
+        Some("pub type P { pub x: I64 }\nimpl P { hidden = self => 1 }\n"),
     ));
     assert_eq!(text, "fipe> ");
     let text = written(repl.feed(b"P.hidden\n"));
@@ -222,7 +222,7 @@ fn t_shows_the_last_binding_s_scheme() {
 #[test]
 fn t_queries_an_expression_s_type() {
     let text = written(Repl::new().feed(b":t 1 + 2\n"));
-    assert_eq!(text, "1 + 2: i64\nfipe> ");
+    assert_eq!(text, "1 + 2: I64\nfipe> ");
 }
 
 #[test]
@@ -272,11 +272,11 @@ fn a_mismatch_prints_types_by_display() {
     let text = written(Repl::new().feed(b"1 + \"a\"\n"));
     assert_eq!(
         text,
-        "1:5: expected i64, found String\n1 + \"a\"\n    ^^^\nfipe> "
+        "1:5: expected I64, found String\n1 + \"a\"\n    ^^^\nfipe> "
     );
 }
 
-const PRIMES: &str = "pub type Prime { pub n: u64 }
+const PRIMES: &str = "pub type Prime { pub n: U64 }
 impl Prime { pub check: Prime -> Bool = self => self.n > 1 }
 pub next: Prime -> Prime = p => Prime { n: p.n + 1 }
 ";
@@ -303,11 +303,11 @@ fn the_identity_and_literal_smokes() {
     repl.feed(b"use primes.Prime primes.next\n");
     written(repl.file("primes.fipe", Some(PRIMES)));
     let text = written(repl.feed(b":t Prime.check\n:t 2 + 2.5\n"));
-    assert_eq!(text, "Prime.check: Prime -> Bool\n2 + 2.5: f64\nfipe> ");
+    assert_eq!(text, "Prime.check: Prime -> Bool\n2 + 2.5: F64\nfipe> ");
     let text = written(repl.feed(b"p = Prime 7\nnext (p.n + 2)\n"));
     assert_eq!(
         text,
-        "1:7: expected Prime, found u64\n\
+        "1:7: expected Prime, found U64\n\
          next (p.n + 2)\n      ^^^\nfipe> "
     );
 }
@@ -318,15 +318,15 @@ fn an_open_bracket_or_trailing_operator_continues_the_entry() {
     assert_eq!(written(repl.feed(b"y = (1 +\n")), "....> ");
     assert_eq!(written(repl.feed(b"2\n")), "....> ");
     assert_eq!(written(repl.feed(b")\n")), "fipe> ");
-    assert_eq!(written(repl.feed(b":t\n")), "y: i64\nfipe> ");
+    assert_eq!(written(repl.feed(b":t\n")), "y: I64\nfipe> ");
     assert_eq!(written(repl.feed(b":t 1 +\n")), "....> ");
-    assert_eq!(written(repl.feed(b"  2\n")), "1 + 2: i64\nfipe> ");
+    assert_eq!(written(repl.feed(b"  2\n")), "1 + 2: I64\nfipe> ");
 }
 
 #[test]
 fn a_leading_operator_continues_a_line_given_with_it() {
     let text = written(Repl::new().feed(b"z = 1\n  + 2\n:t\n"));
-    assert_eq!(text, "z: i64\nfipe> ");
+    assert_eq!(text, "z: I64\nfipe> ");
 }
 
 #[test]
@@ -340,7 +340,7 @@ fn an_empty_line_submits_an_open_entry() {
 
 #[test]
 fn type_arguments_do_not_continue() {
-    let text = written(Repl::new().feed(b"r = read<i64>\n:t\n"));
+    let text = written(Repl::new().feed(b"r = read<I64>\n:t\n"));
     assert!(text.starts_with("r: "), "{text}");
 }
 
@@ -378,10 +378,10 @@ fn a_rejected_continuation_keeps_the_line_before() {
     assert_eq!(written(repl.feed(b"y = 1\n")), "fipe> ");
     let text = written(repl.feed(b"  + \"a\"\n"));
     assert!(
-        text.starts_with("2:5: expected i64, found String\n"),
+        text.starts_with("2:5: expected I64, found String\n"),
         "{text}"
     );
-    assert_eq!(written(repl.feed(b":t y\n")), "y: i64\nfipe> ");
+    assert_eq!(written(repl.feed(b":t y\n")), "y: I64\nfipe> ");
 }
 
 /// All written text with the prompts taken out.
@@ -400,16 +400,16 @@ fn a_rejected_join_in_one_read_keeps_the_line_before() {
     }
     assert_eq!(whole, lines);
     assert!(
-        whole.starts_with("2:3: expected i64, found String\n"),
+        whole.starts_with("2:3: expected I64, found String\n"),
         "{whole}"
     );
-    assert!(whole.ends_with("x: i64\n"), "{whole}");
+    assert!(whole.ends_with("x: I64\n"), "{whole}");
 }
 
 #[test]
 fn a_query_continues_onto_a_leading_line_in_the_same_read() {
     let text = written(Repl::new().feed(b":t 1\n  + 2\n"));
-    assert_eq!(text, "1 + 2: i64\nfipe> ");
+    assert_eq!(text, "1 + 2: I64\nfipe> ");
 }
 
 #[test]
@@ -438,7 +438,7 @@ fn load_of_a_second_file_for_a_loaded_module_changes_nothing() {
     written(repl.file("01-files.fipe", Some("pub k = 1\n")));
     let text = written(repl.feed(b":load 02-files\n"));
     assert_eq!(text, "02-files: already loaded as `files`\nfipe> ");
-    assert_eq!(written(repl.feed(b":t files.k\n")), "files.k: i64\nfipe> ");
+    assert_eq!(written(repl.feed(b":t files.k\n")), "files.k: I64\nfipe> ");
     let outs = repl.feed(b":load 01-files\n");
     assert_eq!(
         outs,
@@ -464,20 +464,55 @@ fn a_leading_assign_continues_the_line_before() {
     assert!(!text.starts_with("1:"), "{text}");
     assert!(text.ends_with("fipe> "), "{text}");
     // Held: a query's signature takes its `= value` line.
-    let text = written(Repl::new().feed(b":t f: i64 -> i64\n  = x => x + 1\n"));
+    let text = written(Repl::new().feed(b":t f: I64 -> I64\n  = x => x + 1\n"));
     assert!(!text.starts_with("1:"), "{text}");
     // A bare signature waits for its `= value` and joins it: either the
     // pair is accepted, or it is rejected at its second line, never the
     // signature alone.
     let mut repl = Repl::new();
-    assert_eq!(written(repl.feed(b"f: i64 -> i64\n")), "....> ");
+    assert_eq!(written(repl.feed(b"f: I64 -> I64\n")), "....> ");
     let text = written(repl.feed(b"  = x => x + 1\n:t f\n"));
     assert!(!text.contains("declaration form"), "{text}");
     assert!(
-        text.starts_with("2:3: ") || text.starts_with("f: i64 -> i64\n"),
+        text.starts_with("2:3: ") || text.starts_with("f: I64 -> I64\n"),
         "{text}"
     );
     // An empty line submits it alone.
-    let text = written(Repl::new().feed(b"pub f: i64\n\n"));
+    let text = written(Repl::new().feed(b"pub f: I64\n\n"));
     assert!(text.contains("declaration form"), "{text}");
+}
+
+#[test]
+fn a_lowercase_numeric_type_earns_its_hint() {
+    let text = written(Repl::new().feed(b"x: i64 = 1\n"));
+    assert_eq!(
+        text,
+        "1:4: numeric types are uppercase: write `I64`\n\
+         x: i64 = 1\n   ^^^\nfipe> "
+    );
+}
+
+#[test]
+fn ast_shows_a_parsed_line_the_checker_rejects() {
+    let text = written(Repl::new().feed(b"pair = (1, 2)\n:ast\n"));
+    assert_eq!(
+        text,
+        "1:8: a tuple is not yet checked\npair = (1, 2)\n       ^^^^^^\n\
+         Bind\n  Name pair\n  Tuple\n    Int 1\n    Int 2\nfipe> "
+    );
+}
+
+#[test]
+fn a_where_line_continues_an_accepted_type_item() {
+    let text = written(
+        Repl::new()
+            .feed(b"type P { x: I64 }\nwhere 0 <= self.x\n:ast\n:t P 1\n"),
+    );
+    assert_eq!(
+        text,
+        "1:6: a limited type is not yet checked\n\
+         type P { x: I64 }\n     ^\n\
+         Type P\n  Where\n    Binary <=\n      Int 0\n      Name self.x\n\
+         P 1: P\nfipe> "
+    );
 }

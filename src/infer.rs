@@ -271,7 +271,11 @@ impl Owed {
 /// A numeric literal whose type is left to a variable or a rigid name.
 #[derive(Clone, Copy)]
 enum Lit {
-    Int { negative: bool, magnitude: u64 },
+    /// `magnitude` is `None` past `u64`, outside every width.
+    Int {
+        negative: bool,
+        magnitude: Option<u64>,
+    },
     Float,
 }
 
@@ -601,11 +605,15 @@ impl Infer<'_> {
         let mut constructor = Vec::new();
         for member in members {
             match member {
+                // A member with no value, which resolve reports, and an
+                // associated type.
+                ImplMember::Named { value: None, .. }
+                | ImplMember::Type { .. } => {}
                 ImplMember::Named {
                     public,
                     name,
                     annotation,
-                    value,
+                    value: Some(value),
                     ..
                 } => {
                     let arms = match &module.expressions[value.0].kind {
@@ -642,7 +650,6 @@ impl Infer<'_> {
                     self.push_item(item, group);
                 }
                 ImplMember::Constructor(arm) => constructor.push(arm.clone()),
-                ImplMember::Type { .. } => {}
             }
         }
         if !constructor.is_empty() {
@@ -836,7 +843,7 @@ fn num(ty: &Type) -> Option<bool> {
 }
 
 const NUMERIC: [&str; 10] = [
-    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+    "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64", "F32", "F64",
 ];
 
 fn prelude(name: &str) -> Type {

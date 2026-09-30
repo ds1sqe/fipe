@@ -4,8 +4,8 @@
 
 use crate::{
     ast::{
-        Arm, Entry, ExprId, ExprKind, ImplMember, ItemKind, Member, Module,
-        Name, PatternId, PatternKind, TypeId, TypeKind,
+        Arm, BinaryOp, Entry, ExprId, ExprKind, ImplMember, ItemKind, Literal,
+        Member, Module, Name, PatternId, PatternKind, TypeId, TypeKind,
     },
     decl::{Declarations, Kind, Namespace},
     frame::Frame,
@@ -17,6 +17,11 @@ use alloc::{
     vec,
     vec::Vec,
 };
+
+mod unchecked;
+
+pub use unchecked::Unchecked;
+pub(crate) use unchecked::{bytes, scan};
 
 /// Where a declaration lives.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,7 +65,8 @@ pub enum Target {
         name: String,
     },
     Module(Origin),
-    /// A lowercase name in a type: a type variable.
+    /// A lowercase name in a type, or a `type` item's own parameter: a
+    /// type variable.
     Variable(String),
     /// `Self` inside a `type`, `trait` or `impl` body.
     SelfType,
@@ -184,6 +190,15 @@ pub enum Reason {
     /// binding: a used module has no main. From [`resolve`], at the
     /// module's `use` that reaches that module.
     NoMain,
+    /// A form the parser accepts that the checker does not check yet.
+    NotYetChecked {
+        form: Unchecked,
+    },
+    /// A lowercase name in a type that spells an old numeric type, such
+    /// as `i64`: the numeric types are uppercase, `upper`.
+    NumericName {
+        upper: String,
+    },
 }
 
 /// Resolve one module against the prelude, the host's declarations and
@@ -375,6 +390,8 @@ struct Resolver<'a> {
     /// line lives in the first one.
     scopes: Vec<Vec<(String, Target)>>,
     self_type: Option<String>,
+    /// The type parameters of the `type` item being walked.
+    parameters: Vec<String>,
     /// Every impl member of this module, by (type, name), for coherence.
     members: Vec<(String, String, Span)>,
     errors: Vec<Error>,
@@ -415,6 +432,7 @@ impl<'a> Resolver<'a> {
             reached: Vec::new(),
             scopes: Vec::new(),
             self_type: None,
+            parameters: Vec::new(),
             members: Vec::new(),
             errors: Vec::new(),
         }
@@ -429,6 +447,10 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    fn unchecked(&mut self, span: Span, form: Unchecked) {
+        self.error(span, Reason::NotYetChecked { form });
+    }
+
     // ---- the module frame -------------------------------------------
 
     fn collect(&mut self) {
@@ -440,16 +462,21 @@ impl<'a> Resolver<'a> {
                     ItemKind::Type {
                         name,
                         parameters,
+                        base,
                         members,
+                        limits,
                     } => {
                         self.case(name, true);
                         if !parameters.is_empty() {
-                            self.error(name.span, Reason::DeclarationForm);
+                            self.unchecked(name.span, Unchecked::TypeParameter);
                         }
-                        let Some(members) = members else {
+                        let limited = base.is_some() || !limits.is_empty();
+                        if limited {
+                            self.unchecked(name.span, Unchecked::LimitedType);
+                        } else if members.is_none() {
                             self.error(name.span, Reason::DeclarationForm);
                             continue;
-                        };
+                        }
                         self.define(
                             name,
                             Space::Type,
@@ -459,7 +486,9 @@ impl<'a> Resolver<'a> {
                             },
                             item.public,
                         );
-                        self.constructors(name, members, item.public);
+                        if let Some(members) = members {
+                            self.constructors(name, members, item.public);
+                        }
                     }
                     ItemKind::Trait {
                         name,
@@ -1046,8 +1075,15 @@ impl<'a> Resolver<'a> {
                         }
                     }
                     ItemKind::Declare { .. } => {}
-                    ItemKind::Type { name, members, .. } => {
+                    ItemKind::Type {
+                        name,
+                        parameters,
+                        members,
+                        ..
+                    } => {
                         self.self_type = Some(last(name));
+                        self.parameters =
+                            parameters.iter().map(|p| last(&p.name)).collect();
                         let mut fields = Vec::new();
                         for member in members.iter().flatten() {
                             match member {
@@ -1073,6 +1109,7 @@ impl<'a> Resolver<'a> {
                             }
                         }
                         self.self_type = None;
+                        self.parameters.clear();
                     }
                     ItemKind::Trait { name, members, .. } => {
                         self.self_type = Some(last(name));
@@ -1097,12 +1134,23 @@ impl<'a> Resolver<'a> {
                         for member in members {
                             match member {
                                 ImplMember::Named {
-                                    annotation, value, ..
+                                    name,
+                                    annotation,
+                                    value,
+                                    ..
                                 } => {
                                     if let Some(annotation) = annotation {
                                         self.ty(*annotation);
                                     }
-                                    self.expr(*value, Position::Other);
+                                    match value {
+                                        Some(value) => {
+                                            self.expr(*value, Position::Other);
+                                        }
+                                        None => self.error(
+                                            name.span,
+                                            Reason::DeclarationForm,
+                                        ),
+                                    }
                                 }
                                 ImplMember::Type { ty, .. } => self.ty(*ty),
                                 ImplMember::Constructor(arm) => self.arm(arm),
@@ -1166,6 +1214,11 @@ impl<'a> Resolver<'a> {
     fn expr(&mut self, id: ExprId, position: Position) {
         let expr = &self.module.expressions[id.0];
         match &expr.kind {
+            ExprKind::Literal(Literal::Affixed(affixed))
+                if bytes(affixed).is_none() =>
+            {
+                self.unchecked(expr.span, Unchecked::Affix);
+            }
             ExprKind::Literal(_)
             | ExprKind::Word(_)
             | ExprKind::Path(_)
@@ -1203,6 +1256,12 @@ impl<'a> Resolver<'a> {
                 }
                 self.scopes.pop();
             }
+            ExprKind::Tuple(items) => {
+                self.unchecked(expr.span, Unchecked::Tuple);
+                for item in items {
+                    self.expr(*item, Position::Other);
+                }
+            }
             ExprKind::List(items) => {
                 for item in items {
                     self.expr(*item, Position::Other);
@@ -1213,23 +1272,7 @@ impl<'a> Resolver<'a> {
                     self.expr(*payload, Position::Other);
                 }
             }
-            ExprKind::Binary { .. } | ExprKind::Pipe { .. } => {
-                // A flat chain nests to the left: walk its spine without
-                // a frame per operator, in source order.
-                let mut rights = Vec::new();
-                let mut node = id;
-                while let ExprKind::Binary { left, right, .. }
-                | ExprKind::Pipe { left, right, .. } =
-                    &self.module.expressions[node.0].kind
-                {
-                    rights.push(*right);
-                    node = *left;
-                }
-                self.expr(node, Position::Other);
-                for right in rights.into_iter().rev() {
-                    self.expr(right, Position::Other);
-                }
-            }
+            ExprKind::Binary { .. } | ExprKind::Pipe { .. } => self.chain(id),
             ExprKind::Bind {
                 pattern,
                 annotation,
@@ -1256,6 +1299,32 @@ impl<'a> Resolver<'a> {
                     self.arm(arm);
                 }
             }
+        }
+    }
+
+    /// A flat chain nests to the left: walk its spine without a frame
+    /// per operator, in source order.
+    fn chain(&mut self, id: ExprId) {
+        let mut rights = Vec::new();
+        let mut node = id;
+        while let ExprKind::Binary { left, right, .. }
+        | ExprKind::Pipe { left, right, .. } =
+            &self.module.expressions[node.0].kind
+        {
+            if let ExprKind::Binary {
+                op: BinaryOp::Concat,
+                operator,
+                ..
+            } = &self.module.expressions[node.0].kind
+            {
+                self.unchecked(*operator, Unchecked::Concat);
+            }
+            rights.push(*right);
+            node = *left;
+        }
+        self.expr(node, Position::Other);
+        for right in rights.into_iter().rev() {
+            self.expr(right, Position::Other);
         }
     }
 
@@ -1455,6 +1524,11 @@ impl<'a> Resolver<'a> {
     fn bind(&mut self, id: PatternId) {
         let pattern = &self.module.patterns[id.0];
         match &pattern.kind {
+            PatternKind::Literal(Literal::Affixed(affixed))
+                if bytes(affixed).is_none() =>
+            {
+                self.unchecked(pattern.span, Unchecked::Affix);
+            }
             PatternKind::Wildcard | PatternKind::Literal(_) => {}
             PatternKind::Name(name) => {
                 if name.is_uppercase() {
@@ -1466,8 +1540,12 @@ impl<'a> Resolver<'a> {
                 }
             }
             PatternKind::Constructor { name, payload } => {
-                let target = self.value_name(name, Position::Other);
-                self.resolved.patterns[id.0] = target;
+                if self.gate(name) {
+                    self.unchecked(pattern.span, Unchecked::GatePattern);
+                } else {
+                    let target = self.value_name(name, Position::Other);
+                    self.resolved.patterns[id.0] = target;
+                }
                 self.bind(*payload);
             }
             PatternKind::Default { name, value } => {
@@ -1475,6 +1553,12 @@ impl<'a> Resolver<'a> {
                 self.local(name);
             }
             PatternKind::Group(inner) => self.bind(*inner),
+            PatternKind::Tuple(items) => {
+                self.unchecked(pattern.span, Unchecked::Tuple);
+                for item in items {
+                    self.bind(*item);
+                }
+            }
             PatternKind::List(items) => {
                 for item in items {
                     self.bind(*item);
@@ -1498,6 +1582,14 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+    }
+
+    /// A pattern head that names a type and no value: a gate.
+    fn gate(&self, name: &Name) -> bool {
+        let [first] = name.segments.as_slice() else {
+            return false;
+        };
+        self.lookup_value(first).is_none() && self.lookup_type(first).is_some()
     }
 
     fn local(&mut self, name: &Name) {
@@ -1656,6 +1748,9 @@ impl<'a> Resolver<'a> {
             self.error(name.span, Reason::UnknownType);
             return None;
         }
+        if name.segments.len() == 1 && self.parameters.contains(first) {
+            return Some(Target::Variable(first.clone()));
+        }
         if let Some(target) = self.lookup_type(first) {
             return Some(target);
         }
@@ -1665,6 +1760,10 @@ impl<'a> Resolver<'a> {
         } else if let Some(origin) = self.module_origin(first) {
             // `Rd<fs>`: an API reference.
             Some(Target::Module(origin))
+        } else if NUMERIC.contains(&first.as_str()) {
+            let upper = first.to_ascii_uppercase();
+            self.error(name.span, Reason::NumericName { upper });
+            None
         } else {
             Some(Target::Variable(first.clone()))
         }
@@ -1681,10 +1780,37 @@ impl<'a> Resolver<'a> {
                     self.ty(*argument);
                 }
             }
-            TypeKind::Array { element, .. } => self.ty(*element),
+            TypeKind::Array { element, length } => {
+                self.ty(*element);
+                if !matches!(
+                    self.module.types[length.0].kind,
+                    TypeKind::Number(_)
+                ) {
+                    let span = self.module.types[length.0].span;
+                    self.unchecked(span, Unchecked::Number);
+                }
+            }
+            TypeKind::Number(_) => self.unchecked(ty.span, Unchecked::Number),
             TypeKind::Function { parameter, result } => {
                 self.ty(*parameter);
                 self.ty(*result);
+            }
+            TypeKind::Tuple(parts)
+            | TypeKind::Both(parts)
+            | TypeKind::Either(parts) => {
+                let form = match ty.kind {
+                    TypeKind::Tuple(_) => Unchecked::Tuple,
+                    TypeKind::Both(_) => Unchecked::Both,
+                    _ => Unchecked::Either,
+                };
+                self.unchecked(ty.span, form);
+                for part in parts {
+                    self.ty(*part);
+                }
+            }
+            TypeKind::Not(inner) => {
+                self.unchecked(ty.span, Unchecked::Not);
+                self.ty(*inner);
             }
             TypeKind::Qualified { .. } | TypeKind::Labeled { .. } => {
                 self.error(ty.span, Reason::DeclarationForm);
@@ -1692,6 +1818,11 @@ impl<'a> Resolver<'a> {
         }
     }
 }
+
+/// The numeric types' spellings before 06, which earn a hint.
+const NUMERIC: [&str; 10] = [
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+];
 
 /// `head.a.b`: the remaining segments as members of the checker's.
 fn members(head: Target, rest: &[String]) -> Target {

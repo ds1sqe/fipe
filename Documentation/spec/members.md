@@ -146,6 +146,16 @@ literal is prepared there. With nothing fixed a number in any radix is an
 ([types](types.md) §Core judgments). A program's own meaning takes
 literals by writing `literal`.
 
+A written form may carry a prefix and a suffix ([lexical](lexical.md)):
+each constructor of `Form` also holds `prefix: String` and `suffix:
+String`, empty when not written. A place decides as for any literal, and
+its type's `literal` reads both; with no place the claim in scope, a
+type's statement that it reads a prefix or suffix, decides the type.
+Two claims of one prefix or suffix in scope with no place to decide are
+a check error; one with neither is a check error that names the missing
+claim, never an application. `b"…"` is the prelude's claim. The claim's
+spelling is open ([open decisions](open.md) L1).
+
 ## Number types
 
 `Integer` is the one integer meaning, exact and unbounded; its arithmetic

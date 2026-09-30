@@ -3,23 +3,23 @@
 
 # A record. Lowercase members are fields; `len` is private and computed
 # from the fields before it. A default is an operand, so a call is grouped.
-pub type Point { pub x: i64, pub y: i64 = 0, len: u64 = (hypot x y) }
+pub type Point { pub x: I64, pub y: I64 = 0, len: U64 = (hypot x y) }
 
 # A sum. Uppercase members are constructors, each with named fields.
-pub type Shape { Circle(r: f64), Rect(w: f64, h: f64), Dot }
+pub type Shape { Circle(r: F64), Rect(w: F64, h: F64), Dot }
 
 # A newtype is a record with one field.
-type Width { w: u64 = 80 }
+type Width { w: U64 = 80 }
 
 # Code lives in the impl. Bare arms are the written constructor; `Self { }`
 # is the raw construction, legal here because the fields are visible.
 impl Point {
     x (y = 0) => Self { x, y, len: hypot x y },
     pub origin = Self 0 0,
-    pub line: i64 -> Self = p => Self p p,
-    # dist: Point -> Point -> f64
+    pub line: I64 -> Self = p => Self p p,
+    # dist: Point -> Point -> F64
     dist = self q => hypot (self.x - q.x) (self.y - q.y),
-    # scale: Point -> i64 -> Point
+    # scale: Point -> I64 -> Point
     scale = self k => Self (self.x * k) (self.y * k),
 }
 
@@ -34,15 +34,15 @@ impl Shape {
 # Traits: `Display` prints, `Read` parses, and each is on the type it reads.
 impl Point: Display { display = self => join "," [show self.x, show self.y] }
 impl Point: Read {
-    read = s => s | split "," | map read<i64> | collect |: {
+    read = s => s | split "," | map read<I64> | collect |: {
         [x, y] => Ok (Self x y),
         _ => Err (ParseError "two numbers"),
     },
 }
 
 # Conversion: the word names the trait, the trait names the side that works.
-pub type Polar { pub r: f64, pub t: f64 }
-pub type RangeError { pub r: f64 }
+pub type Polar { pub r: F64, pub t: F64 }
+pub type RangeError { pub r: F64 }
 impl RangeError: Display { display = self => join " " ["out of range:", show self.r] }
 impl RangeError: Err {}
 impl Polar: From<Point> { from = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x } }

@@ -1,9 +1,10 @@
 (* Character-level forms. lexical.md defines maximal word boundaries,
-   ordered classification, initial BOM skipping, symbol matching,
-   newline suppression and errors.
+   ordered classification, the order that reads a number's prefix and
+   suffix, initial BOM skipping, symbol matching, newline suppression
+   and errors. A keyword is not a quote's prefix or suffix.
    A ? ... ? sequence denotes the exact character set described within it. *)
 token = keyword | symbol | name | selector | word | flag | path
-      | integer | float | string | raw_string | bytes | newline ;
+      | number | text | newline ;
 (* A line join, backslash then spacing then LF or EOF outside quotes and
    comments, is discarded before tokenization and yields no token. *)
 
@@ -33,12 +34,19 @@ sign = [ "-" ] ;
 integer = sign, ( decimal | "0x", hex | "0o", oct | "0b", bin ) ;
 exponent = ( "e" | "E" ), [ "+" | "-" ], decimal ;
 float = sign, ( decimal, ".", decimal, [ exponent ] | decimal, exponent ) ;
+number = ( integer | float ), [ suffix ]
+       | sign, "0", prefix_letter, alnum, { alnum } ;
+suffix = letter, { name_continue } ;
+prefix_letter = ? ASCII a-z except x, o and b ? ;
+alnum = letter | digit ;
 
 double_quote = ? U+0022 ? ;
 single_quote = ? U+0027 ? ;
 backslash = ? U+005C ? ;
+text = [ prefix ], ( string | raw_string ), [ identifier ] ;
+prefix = ( lower | "_" ), { lower | digit | "_" } ;
+lower = ? ASCII a-z ? ;
 string = double_quote, { text_scalar | escape }, double_quote ;
-bytes = "b", string ;
 raw_string = single_quote, { raw_scalar }, single_quote ;
 text_scalar = ? Unicode scalar except double-quote, backslash and
                 U+FEFF, U+200B, C0/C1 controls other than TAB ? ;
