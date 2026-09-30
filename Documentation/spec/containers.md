@@ -47,7 +47,11 @@ limits, `type Sorted<T: Ord> …`; a test goes on the place, `v: T & U8`. A
 lowercase parameter stands for a number known at compile time, `type
 Ring<T, n> { slots: [T; n] }`, the same rule that gives `Bits<n>` its
 argument. There is no higher kind: a parameter never stands for a
-container without its argument.
+container without its argument. A parameter may take a default, trailing
+as a spot's: `type Add<R = Self, O = Self> where self.add: R -> O`. An
+argument left out is its default, and `Self` there is the meaning that
+meets the limit ([limits](limits.md) §Self), so `Add a` is `Add<a, a> a`
+and the printer leaves out an argument equal to its default.
 
 A number argument may be a sum of numbers and number parameters, and no
 other arithmetic. Two are equal when their sums are, in any order. An

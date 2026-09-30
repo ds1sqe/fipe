@@ -1,8 +1,5 @@
-//! Dots (types.md §Fields; host.md §Name lookup): a field of the head's
-//! type, else a function in scope with a `self` spot, filled with the
-//! head. A dot on a head still unknown is a member obligation, solved
-//! the same way once the head is known; a `.name` selector is the same
-//! dot on its parameter.
+//! A dot reads a field, then a member of the head's meaning. Unknown
+//! heads carry the same lookup as a member obligation; selectors do too.
 
 use super::{
     arms::heads_in, lower::Scope, lower::SelfKind, lower::Vars, Callee,
@@ -16,7 +13,6 @@ use crate::{
     types::{Obligation, Scheme, Subst, Type},
 };
 use alloc::{string::String, vec::Vec};
-use core::ops::ControlFlow;
 
 impl<'a> Infer<'a> {
     /// `head.a.b`: each member of the value before it.
@@ -28,8 +24,8 @@ impl<'a> Infer<'a> {
     ) -> Callee {
         let mut current = head;
         for (index, member) in members.iter().enumerate() {
-            let applied = self.apply(&current);
-            if matches!(applied, Type::Var(_)) {
+            let applied = super::meaning(&self.apply(&current)).clone();
+            if matches!(applied, Type::Var(_) | Type::Rigid(_)) {
                 current = self.fresh();
                 let obligation = Obligation::Member {
                     head: applied,
@@ -71,6 +67,10 @@ impl<'a> Infer<'a> {
 
     /// Resolve the member obligations whose head is known.
     pub(super) fn dots(&mut self) {
+        if self.state.solving_dots {
+            return;
+        }
+        self.state.solving_dots = true;
         loop {
             let ready: Vec<usize> = (0..self.state.obligations.len())
                 .filter(|index| {
@@ -84,6 +84,7 @@ impl<'a> Infer<'a> {
                 })
                 .collect();
             if ready.is_empty() {
+                self.state.solving_dots = false;
                 return;
             }
             for index in ready {
@@ -106,11 +107,58 @@ impl<'a> Infer<'a> {
             name,
             ty,
             dot,
-        } = &owed.obligation
-        else {
+        } = &owed.obligation;
+        let original = self.apply(head);
+        let (head, dot) = (
+            super::meaning(&original).clone(),
+            if *dot == Span::default() {
+                owed.span
+            } else {
+                *dot
+            },
+        );
+        if matches!(head, Type::Rigid(_)) {
+            let supplied = self.state.obligations.iter().find_map(|o| {
+                let Obligation::Member {
+                    head: h,
+                    name: n,
+                    ty: t,
+                    ..
+                } = &o.obligation;
+                (o.assumed && h == &head && n == name).then(|| t.clone())
+            });
+            if let Some(supplied) = supplied {
+                self.unify(ty, &supplied, dot, owed.span);
+                return;
+            }
+            self.error(
+                dot,
+                Reason::NoField {
+                    ty: head,
+                    other: owed.span,
+                },
+            );
             return;
-        };
-        let (head, dot) = (self.apply(head), *dot);
+        }
+        if let Some(literal) = owed.literal.clone() {
+            if let Type::Named { name: owner, .. } = &head {
+                if owner.origin == Origin::Prelude {
+                    self.check_literal(literal, &original, dot);
+                    return;
+                }
+            }
+        }
+        if name == "literal" || name == "read" {
+            if let Type::Named { name: owner, .. } = &head {
+                let target = Target::Type {
+                    origin: owner.origin.clone(),
+                    name: owner.name.clone(),
+                };
+                let callee = self.type_member(&target, name, dot);
+                self.unify(ty, &callee.whole(), dot, owed.span);
+                return;
+            }
+        }
         let value = if let Some(field) = self.field(&head, name) {
             field
         } else if let Some(mut callee) = self.self_function(name, &head, dot) {
@@ -135,10 +183,24 @@ impl<'a> Infer<'a> {
 
     /// A readable field of a record type.
     fn field(&mut self, ty: &Type, name: &str) -> Option<Type> {
-        self.fields(ty)?
+        if let Some(fields) = self.fields(ty) {
+            if let Some(field) =
+                fields.into_iter().find(|f| f.name == name && f.public)
+            {
+                return Some(field.ty);
+            }
+        }
+        self.member_limits(ty, ty, Span::default(), &mut Vec::new())
             .into_iter()
-            .find(|field| field.name == name && field.public)
-            .map(|field| field.ty)
+            .find_map(|o| {
+                let Obligation::Member {
+                    name: n,
+                    ty: member,
+                    ..
+                } = o;
+                (n == name && (name == "eq" || !contains_type(&member, ty)))
+                    .then_some(member)
+            })
     }
 
     /// A function `name` in scope with a `self` spot: this module's
@@ -150,7 +212,7 @@ impl<'a> Infer<'a> {
         ty: &Type,
         span: Span,
     ) -> Option<Callee> {
-        let mut keys = alloc::vec![Key::Binding(String::from(name))];
+        let mut keys = Vec::new();
         if let Type::Named { name: owner, .. } = ty {
             if matches!(owner.origin, Origin::This | Origin::Line(_)) {
                 keys.push(Key::Member(owner.name.clone(), String::from(name)));
@@ -170,15 +232,11 @@ impl<'a> Infer<'a> {
             }
         }
         // An accepted line's function, then its member of the type.
-        let value = match self.frame.and_then(|frame| frame.values.get(name)) {
-            Some(Target::Local { site }) => Some(*site),
-            _ => None,
-        };
         let member = match ty {
             Type::Named { name: owner, .. } => self.frame_member(owner, name),
             _ => None,
         };
-        for site in [value, member].into_iter().flatten() {
+        if let Some(site) = member {
             let has_self = self
                 .frame
                 .and_then(|frame| frame.locals.get(&(site.start, site.end)))
@@ -199,20 +257,14 @@ impl<'a> Infer<'a> {
                 }
             }
         }
-        for origin in [Origin::Prelude, Origin::Commands] {
-            if self
-                .namespace(&origin)
-                .and_then(|n| n.value(name))
-                .is_none()
+        if let Type::Named { name: owner, .. } = ty {
+            if let Some(callee) = self
+                .supplied_member(&owner.origin, &owner.name, ty, name, span)
+                .filter(|c| c.self_slot.is_some())
             {
-                continue;
-            }
-            let obligations = self.state.obligations.len();
-            let callee = self.declared_value(&origin, name, span);
-            if callee.self_slot.is_some() {
                 return Some(callee);
             }
-            self.state.obligations.truncate(obligations);
+            return self.derived_member(ty, name, span);
         }
         None
     }
@@ -239,8 +291,7 @@ impl<'a> Infer<'a> {
         ty
     }
 
-    /// `T.member`: an impl member of `T`, or the trait method an impl of
-    /// `T` implements, with `Self` as `T`.
+    /// `T.member`: an owned, supplied or derived member, with `Self` as `T`.
     pub(super) fn type_member(
         &mut self,
         ty: &Target,
@@ -263,6 +314,9 @@ impl<'a> Infer<'a> {
             self.error(span, Reason::NotAFunction);
             return Callee::plain(self.fresh());
         };
+        if matches!(member, "from" | "try_from") {
+            return self.conversion_callee(named, member);
+        }
         let Type::Named { name: owner, .. } = &named else {
             unreachable!()
         };
@@ -283,35 +337,242 @@ impl<'a> Infer<'a> {
                 return callee;
             }
         }
-        self.trait_member(&owner.origin, &owner.name, &named, member, span)
+        self.supplied_member(&owner.origin, &owner.name, &named, member, span)
+            .or_else(|| self.derived_member(&named, member, span))
             .unwrap_or_else(|| {
-                self.error(span, Reason::NotAFunction);
+                self.error(
+                    span,
+                    Reason::MissingMember {
+                        ty: named.clone(),
+                        name: String::from(member),
+                    },
+                );
                 Callee::plain(self.fresh())
             })
     }
 
-    fn trait_member(
+    fn derived_member(
+        &mut self,
+        ty: &Type,
+        member: &str,
+        span: Span,
+    ) -> Option<Callee> {
+        if !matches!(member, "eq" | "cmp" | "show") {
+            return None;
+        }
+        let Type::Named { name, arguments } = ty else {
+            return None;
+        };
+        let module = self.owner(&name.origin)?;
+        let scope = self.scope(&name.origin)?;
+        let (parameters, members) =
+            super::lower::type_item(module, &name.name)?;
+        let mut vars = Vars::new(SelfKind::Type(ty.clone()));
+        for (parameter, argument) in parameters.iter().zip(arguments) {
+            vars.names
+                .push((super::last(&parameter.name), argument.clone()));
+        }
+        let fields: Vec<_> = if let Some(members) = members {
+            members
+                .iter()
+                .flat_map(|m| match m {
+                    crate::ast::Member::Field(field) => {
+                        core::slice::from_ref(field)
+                    }
+                    crate::ast::Member::Constructor { fields, .. } => {
+                        fields.as_slice()
+                    }
+                })
+                .map(|f| self.lower(&scope, f.ty, &mut vars))
+                .collect()
+        } else if matches!(name.origin, Origin::Prelude)
+            && matches!(name.name.as_str(), "Vec" | "Deque")
+        {
+            arguments.clone()
+        } else {
+            return None;
+        };
+        let result = super::prelude(match member {
+            "eq" => "Bool",
+            "cmp" => "Ordering",
+            _ => "String",
+        });
+        for field in fields {
+            let member_ty = if member == "show" {
+                result.clone()
+            } else {
+                Type::function(field.clone(), result.clone())
+            };
+            let present = self.state.obligations.iter().any(|o| {
+                let Obligation::Member { head, name, ty, .. } = &o.obligation;
+                name == member
+                    && self.apply(head) == field
+                    && self.apply(ty) == member_ty
+            });
+            if !present {
+                self.require_member(field, member, member_ty, span);
+            }
+        }
+        let mut spots = Vec::new();
+        if member != "show" {
+            spots.push(super::Slot {
+                name: None,
+                ty: ty.clone(),
+                default: false,
+                value: None,
+                site: span,
+            });
+        }
+        let slot = spots.len();
+        spots.push(super::Slot {
+            name: Some(String::from("self")),
+            ty: ty.clone(),
+            default: false,
+            value: None,
+            site: span,
+        });
+        let mut callee = Callee::plain(result);
+        callee.spots = Some(spots);
+        callee.self_slot = Some(slot);
+        Some(callee)
+    }
+
+    pub(super) fn conversion_members(
         &mut self,
         origin: &Origin,
-        ty: &str,
+        owner: &str,
+        ty: &Type,
+        member: &str,
+        span: Span,
+    ) -> Vec<Callee> {
+        let mut callees = Vec::new();
+        if let Origin::File(stem) = origin {
+            let Some((module, typed)) = self.file_typed(stem, span) else {
+                return callees;
+            };
+            for members in super::lower::impls(module, owner) {
+                for entry in members {
+                    let ImplMember::Named {
+                        public: true, name, ..
+                    } = entry
+                    else {
+                        continue;
+                    };
+                    if super::last(name) != member {
+                        continue;
+                    }
+                    if let Some((_, local)) =
+                        typed.frozen.iter().find(|(site, _)| {
+                            *site == (name.span.start, name.span.end)
+                        })
+                    {
+                        let ty = self.imported(&local.scheme, stem, span);
+                        callees
+                            .push(self.with_heads(ty, local.heads.as_deref()));
+                    }
+                }
+            }
+        } else if matches!(origin, Origin::Line(_)) {
+            for (module, _) in self.impl_scopes(origin, owner) {
+                for members in super::lower::impls(module, owner) {
+                    for entry in members {
+                        let ImplMember::Named { name, .. } = entry else {
+                            continue;
+                        };
+                        if super::last(name) == member
+                            && self.frame.is_some_and(|f| {
+                                f.locals.contains_key(&(
+                                    name.span.start,
+                                    name.span.end,
+                                ))
+                            })
+                        {
+                            callees.push(self.local(name.span, span));
+                        }
+                    }
+                }
+            }
+        } else {
+            callees = self.supplied_members(origin, owner, ty, member, span);
+        }
+        callees
+    }
+
+    fn supplied_member(
+        &mut self,
+        origin: &Origin,
+        owner: &str,
         named: &Type,
         member: &str,
         span: Span,
     ) -> Option<Callee> {
-        for (module, owner_scope) in self.impl_scopes(origin, ty) {
-            match self.trait_member_in(
-                module,
-                &owner_scope,
-                ty,
-                named,
-                member,
-                span,
-            ) {
-                ControlFlow::Break(callee) => return callee,
-                ControlFlow::Continue(()) => {}
+        self.supplied_members(origin, owner, named, member, span)
+            .into_iter()
+            .next()
+    }
+
+    fn supplied_members(
+        &mut self,
+        origin: &Origin,
+        owner: &str,
+        named: &Type,
+        member: &str,
+        span: Span,
+    ) -> Vec<Callee> {
+        let mut callees = Vec::new();
+        for (module, scope) in self.impl_scopes(origin, owner) {
+            for members in super::lower::impls(module, owner) {
+                for entry in members {
+                    let ImplMember::Named {
+                        name,
+                        annotation: Some(ty),
+                        value: None,
+                        ..
+                    } = entry
+                    else {
+                        continue;
+                    };
+                    if super::last(name) != member {
+                        continue;
+                    }
+                    let mut vars = Vars::new(SelfKind::Type(named.clone()));
+                    if let Type::Named { arguments, .. } = named {
+                        if let Some((parameters, _)) =
+                            super::lower::type_item(module, owner)
+                        {
+                            for (parameter, argument) in
+                                parameters.iter().zip(arguments)
+                            {
+                                vars.names.push((
+                                    super::last(&parameter.name),
+                                    argument.clone(),
+                                ));
+                            }
+                        }
+                    }
+                    let (slots, result, self_slot) =
+                        self.signature(&scope, *ty, &mut vars);
+                    let self_slot = self_slot.or_else(|| {
+                        (!matches!(
+                            member,
+                            "read"
+                                | "literal"
+                                | "from"
+                                | "try_from"
+                                | "pure"
+                                | "empty"
+                        ))
+                        .then(|| slots.len().checked_sub(1))
+                        .flatten()
+                    });
+                    let mut callee = self
+                        .finish_callee(slots, result, self_slot, vars, span);
+                    callee.home = Some(origin.clone());
+                    callees.push(callee);
+                }
             }
         }
-        None
+        callees
     }
 
     /// The modules that may hold impls of type `ty`: its own, or for an
@@ -343,70 +604,6 @@ impl<'a> Infer<'a> {
         scopes
     }
 
-    /// [`Self::trait_member`] among the impls of one module: continue to
-    /// look further, break with `None` when `member` is an associated
-    /// type.
-    fn trait_member_in(
-        &mut self,
-        module: &'a Module,
-        owner_scope: &Scope<'a>,
-        ty: &str,
-        named: &Type,
-        member: &str,
-        span: Span,
-    ) -> ControlFlow<Option<Callee>> {
-        for (implements, members) in super::lower::impls(module, ty) {
-            let associated = members.iter().any(|m| {
-                matches!(m, ImplMember::Type { name, .. } if super::last(name) == member)
-            });
-            if associated {
-                return ControlFlow::Break(None);
-            }
-            let Some(implements) = implements else {
-                continue;
-            };
-            let Some(class) = super::lower::named(module, implements) else {
-                continue;
-            };
-            let Some(trait_scope) = self.trait_scope(&class, owner_scope)
-            else {
-                continue;
-            };
-            let declares = {
-                let trait_module = trait_scope.module(self.module);
-                super::lower::trait_item(trait_module, &class).is_some_and(
-                    |(_, members)| {
-                        members.iter().any(|m| super::last(&m.name) == member)
-                    },
-                )
-            };
-            if !declares {
-                continue;
-            }
-            let arguments = match module.ty(implements).map(|n| &n.kind) {
-                Some(crate::ast::TypeKind::Named { arguments, .. }) => {
-                    arguments.clone()
-                }
-                _ => Vec::new(),
-            };
-            let mut vars = Vars::new(SelfKind::Type(named.clone()));
-            let arguments: Vec<Type> = arguments
-                .iter()
-                .map(|a| self.lower(owner_scope, *a, &mut vars))
-                .collect();
-            let self_kind = SelfKind::Type(named.clone());
-            return ControlFlow::Break(Some(self.method(
-                &trait_scope,
-                &class,
-                member,
-                &self_kind,
-                Some(&arguments),
-                span,
-            )));
-        }
-        ControlFlow::Continue(())
-    }
-
     /// The site of an accepted line's inherent member of its type.
     fn frame_member(
         &self,
@@ -419,30 +616,6 @@ impl<'a> Infer<'a> {
         let key = ((line, owner.name.clone()), String::from(member));
         let (start, end) = *self.frame?.members.get(&key)?;
         Some(Span { start, end })
-    }
-
-    /// Where trait `class` is declared: the type's module, this module,
-    /// the prelude or the commands.
-    fn trait_scope(&self, class: &str, near: &Scope<'a>) -> Option<Scope<'a>> {
-        let near_module = near.module(self.module);
-        if super::lower::trait_item(near_module, class).is_some() {
-            return Some(near.clone());
-        }
-        if super::lower::trait_item(self.module, class).is_some() {
-            return Some(Scope::This);
-        }
-        if let Some(Target::Trait { origin, .. }) =
-            self.frame.and_then(|frame| frame.types.get(class))
-        {
-            return self.scope(origin);
-        }
-        [Origin::Prelude, Origin::Commands]
-            .into_iter()
-            .find_map(|origin| {
-                let module = self.owner(&origin)?;
-                super::lower::trait_item(module, class)?;
-                Some(Scope::Declared { module, origin })
-            })
     }
 
     /// A binding of a file module: that module typed on its own, its
@@ -505,16 +678,13 @@ impl<'a> Infer<'a> {
         let Some(module) = self.owner(&origin) else {
             return false;
         };
-        super::lower::impls(module, ty)
-            .filter(|(implements, _)| implements.is_none())
-            .flat_map(|(_, members)| members)
-            .any(|m| {
-                matches!(
-                    m,
-                    ImplMember::Named { public: false, name, .. }
-                        if super::last(name) == member
-                )
-            })
+        super::lower::impls(module, ty).flatten().any(|m| {
+            matches!(
+                m,
+                ImplMember::Named { public: false, name, .. }
+                    if super::last(name) == member
+            )
+        })
     }
 
     /// The `pub` inherent member `member` of type `ty` declared in file
@@ -528,17 +698,17 @@ impl<'a> Infer<'a> {
     ) -> Option<Callee> {
         let origin = Origin::File(String::from(stem));
         let module = self.owner(&origin)?;
-        let site = super::lower::impls(module, ty)
-            .filter(|(implements, _)| implements.is_none())
-            .flat_map(|(_, members)| members)
-            .find_map(|m| match m {
-                ImplMember::Named { public, name, .. }
-                    if *public && super::last(name) == member =>
-                {
-                    Some(name.span)
-                }
-                _ => None,
-            })?;
+        let site =
+            super::lower::impls(module, ty).flatten().find_map(
+                |m| match m {
+                    ImplMember::Named { public, name, .. }
+                        if *public && super::last(name) == member =>
+                    {
+                        Some(name.span)
+                    }
+                    _ => None,
+                },
+            )?;
         let Some((_, typed)) = self.file_typed(stem, span) else {
             return Some(Callee::plain(self.fresh()));
         };
@@ -595,13 +765,31 @@ impl<'a> Infer<'a> {
     /// variables are another substitution's, so all are quantified, and
     /// the module's own declarations are named by the module.
     fn imported(&mut self, scheme: &Scheme, stem: &str, span: Span) -> Type {
-        let scheme = Scheme::generalize(
-            &scheme.ty,
-            &scheme.obligations,
+        let mut imported = scheme.rehome(&Origin::File(String::from(stem)));
+        imported.variables = Scheme::generalize(
+            &imported.ty,
+            &imported.obligations,
             &[],
             &Subst::default(),
         )
-        .rehome(&Origin::File(String::from(stem)));
-        self.instantiate(&scheme, span)
+        .variables;
+        self.instantiate(&imported, span)
+    }
+}
+
+fn contains_type(ty: &Type, needle: &Type) -> bool {
+    if ty == needle {
+        return true;
+    }
+    match ty {
+        Type::Function { parameter, result } => {
+            contains_type(parameter, needle) || contains_type(result, needle)
+        }
+        Type::Named { arguments, .. } | Type::Either(arguments) => {
+            arguments.iter().any(|t| contains_type(t, needle))
+        }
+        Type::Limited { meaning, .. } => contains_type(meaning, needle),
+        Type::Array { element, .. } => contains_type(element, needle),
+        _ => false,
     }
 }

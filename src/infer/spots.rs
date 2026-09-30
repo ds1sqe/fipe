@@ -9,9 +9,8 @@
 //! [evaluation.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/evaluation.md
 
 use super::{
-    is_prelude,
-    lower::{fill_family, has_placeholder, is_placeholder},
-    prelude, Callee, Expected, Head, Infer, Key, Local, Reason, Slot, State,
+    is_prelude, prelude, Callee, Expected, Head, Infer, Key, Local, Reason,
+    Slot, State,
 };
 use crate::{
     ast::{Argument, ArgumentKind, ExprId, ExprKind},
@@ -20,7 +19,7 @@ use crate::{
     types::{Scheme, Type},
 };
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 /// What fills a spot.
 #[derive(Clone)]
@@ -102,10 +101,7 @@ impl Infer<'_> {
                 self.type_member(ty, member, span)
             }
             Target::Word => Callee::plain(prelude("String")),
-            Target::Type { .. }
-            | Target::Trait { .. }
-            | Target::Module(_)
-            | Target::Variable(_) => {
+            Target::Type { .. } | Target::Module(_) | Target::Variable(_) => {
                 self.error(span, Reason::NotAFunction);
                 Callee::plain(self.fresh())
             }
@@ -196,8 +192,9 @@ impl Infer<'_> {
         stage: Span,
         expected: Option<&Type>,
     ) -> Type {
-        let mut slots = callee.spots.unwrap_or_default();
-        let mut result = callee.ty;
+        let mark = self.state.obligations.len();
+        let slots = callee.spots.unwrap_or_default();
+        let result = callee.ty;
         let mut filled: Vec<Option<Supply>> = vec![None; slots.len()];
         if let Some((index, ty, span)) = callee.supplied {
             filled[index] = Some(Supply::Typed(ty, span));
@@ -210,12 +207,20 @@ impl Infer<'_> {
                 None => self.error(stage, Reason::FilledSpot),
             }
         }
-        if slots.iter().any(|slot| has_placeholder(&slot.ty))
-            || has_placeholder(&result)
-        {
-            self.family(&mut slots, &mut result, &mut filled, stage, expected);
+        if callee.conversion.is_some() {
+            if let Some(expected) = expected {
+                self.hint(expected, &result);
+            }
         }
         self.supply(&slots, &filled, stage);
+        if let Some((target, kind)) = &callee.conversion {
+            if filled.first().is_some_and(Option::is_some) {
+                self.default_literals(mark, &[], &[]);
+                let source = self.apply(&slots[0].ty);
+                let converted = self.convert(target, kind, &source, stage);
+                self.unify(&result, &converted, stage, stage);
+            }
+        }
         if let Some(home) = &callee.home {
             for (index, supply) in filled.iter().enumerate() {
                 if supply.is_none() && slots[index].value.is_some() {
@@ -340,6 +345,16 @@ impl Infer<'_> {
         }
     }
 
+    fn enter(&mut self, target: &Type, actual: &Type, span: Span, other: Span) {
+        let target = self.apply(target);
+        if self.packed(&target) {
+            self.default_literals(0, &[], &[]);
+            self.pack(&target, &self.apply(actual), span, other);
+        } else {
+            self.unify(&target, actual, span, other);
+        }
+    }
+
     /// Type every supply against its spot: typed values first, then
     /// operands, arm lists and selectors last so that their parameters
     /// meet known types.
@@ -352,7 +367,7 @@ impl Infer<'_> {
         for (slot, supply) in slots.iter().zip(filled) {
             match supply {
                 Some(Supply::Typed(ty, span)) => {
-                    self.unify(&slot.ty, ty, *span, stage);
+                    self.enter(&slot.ty, ty, *span, stage);
                 }
                 Some(Supply::True) => {
                     self.unify(&slot.ty, &prelude("Bool"), stage, stage);
@@ -381,47 +396,6 @@ impl Infer<'_> {
                 }
             }
         }
-    }
-
-    /// `Functor.map` and the other higher-kinded methods: the family is
-    /// the outer name of the first receiver whose type is known, its
-    /// last argument the element; else the expected result's.
-    fn family(
-        &mut self,
-        slots: &mut [Slot],
-        result: &mut Type,
-        filled: &mut [Option<Supply>],
-        stage: Span,
-        expected: Option<&Type>,
-    ) {
-        let mut family = None;
-        for (slot, supply) in slots.iter().zip(filled.iter_mut()) {
-            if !is_placeholder(&slot.ty) || family.is_some() {
-                continue;
-            }
-            let ty = match supply {
-                Some(Supply::Typed(ty, _)) => ty.clone(),
-                Some(Supply::Expr(id)) => {
-                    let id = *id;
-                    let ty = self.expr(id, None);
-                    *supply = Some(Supply::Typed(ty.clone(), self.span(id)));
-                    ty
-                }
-                _ => continue,
-            };
-            family = outer(&self.apply(&ty));
-        }
-        if family.is_none() && is_placeholder(result) {
-            family = expected.and_then(|ty| outer(&self.apply(ty)));
-        }
-        let family = family.unwrap_or_else(|| {
-            self.error(stage, Reason::UnknownFamily);
-            (String::from("?"), Origin::Prelude, Vec::new())
-        });
-        for slot in slots.iter_mut() {
-            slot.ty = fill_family(&slot.ty, &family);
-        }
-        *result = fill_family(result, &family);
     }
 
     /// Positional, curried application of a callee with no spot list.
@@ -454,7 +428,7 @@ impl Infer<'_> {
             return self.fresh();
         };
         if let Some((ty, span)) = pipe {
-            self.unify(&parameters[count - 1], &ty, span, stage);
+            self.enter(&parameters[count - 1], &ty, span, stage);
         }
         for (operand, parameter) in operands.into_iter().zip(parameters) {
             let expected = Expected {
@@ -558,22 +532,11 @@ impl Infer<'_> {
             spot: true,
         };
         inner.expr(value, Some(&expected));
+        inner.dots();
         self.state.subst = inner.state.subst;
         for mut owed in inner.state.obligations {
             owed.span = stage;
             self.state.obligations.push(owed);
         }
-    }
-}
-
-/// A type's family and the arguments before its element.
-fn outer(ty: &Type) -> Option<(String, Origin, Vec<Type>)> {
-    match ty {
-        Type::Named { name, arguments } if !arguments.is_empty() => Some((
-            name.name.clone(),
-            name.origin.clone(),
-            arguments[..arguments.len() - 1].to_vec(),
-        )),
-        _ => None,
     }
 }

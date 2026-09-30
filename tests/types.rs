@@ -111,13 +111,15 @@ fn schemes_generalize_over_the_environment_and_instantiate_fresh() {
     let a = subst.fresh();
     let b = subst.fresh();
     let ty = Type::function(Type::Var(a), Type::Var(b));
-    let obligations = [Obligation::Class {
-        class: "Num".into(),
-        ty: Type::Var(a),
+    let obligations = [Obligation::Member {
+        name: "add".into(),
+        head: Type::Var(a),
+        ty: Type::function(Type::Var(a), Type::Var(a)),
+        dot: fipe::token::Span::default(),
     }];
     let scheme = Scheme::generalize(&ty, &obligations, &[b], &subst);
     assert_eq!(scheme.variables, [a]);
-    assert_eq!(scheme.to_string(), "Num a => a -> b");
+    assert_eq!(scheme.to_string(), "a.add: a -> a => a -> b");
 
     let identity = Scheme::generalize(
         &Type::function(Type::Var(a), Type::Var(a)),
@@ -146,7 +148,7 @@ fn schemes_generalize_over_the_environment_and_instantiate_fresh() {
         &[],
         &subst,
     );
-    assert_eq!(add.to_string(), "Num a => a -> a -> a");
+    assert_eq!(add.to_string(), "a.add: a -> a => a -> a -> a");
     assert_eq!(
         Type::function(Type::function(i64(), i64()), vec(Type::Unit))
             .to_string(),

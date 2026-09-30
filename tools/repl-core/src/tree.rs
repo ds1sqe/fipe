@@ -255,7 +255,14 @@ fn item_node(kind: &ItemKind) -> Node {
             let mut children: Vec<_> = parameters
                 .iter()
                 .map(|p| {
-                    let bound = p.bound.iter().map(|t| Node::T(*t)).collect();
+                    let mut bound: Vec<_> =
+                        p.bound.iter().map(|t| Node::T(*t)).collect();
+                    if let Some(default) = p.default {
+                        bound.push(Node::L(
+                            "Default".into(),
+                            vec![Node::T(default)],
+                        ));
+                    }
                     Node::L(label("Parameter", &p.name), bound)
                 })
                 .collect();
@@ -270,9 +277,6 @@ fn item_node(kind: &ItemKind) -> Node {
                 }
             }));
             Node::L(label("Type", name), children)
-        }
-        ItemKind::Trait { name, .. } => {
-            Node::L(label("Trait", name), Vec::new())
         }
         ItemKind::Declare { name, ty } => {
             Node::L(label("Declare", name), vec![Node::T(*ty)])
@@ -292,9 +296,6 @@ fn item_node(kind: &ItemKind) -> Node {
                         annotation.iter().map(|t| Node::T(*t)).collect();
                     children.extend(value.map(Node::E));
                     Node::L(label("Member", name), children)
-                }
-                ImplMember::Type { name, ty, .. } => {
-                    Node::L(label("Associated", name), vec![Node::T(*ty)])
                 }
                 ImplMember::Constructor(member) => arm(member),
             }));

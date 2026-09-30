@@ -20,7 +20,7 @@ limits = "where", newlines, limit, { ",", newlines, limit } ;
 limit = NAME, ":", type | pipeline ;
 type_parameters = "<", newlines, type_parameter,
                   { ",", newlines, type_parameter }, newlines, ">" ;
-type_parameter = NAME, [ ":", type_both ] ;
+type_parameter = NAME, [ ":", type_both ], [ "=", type ] ;
 members = member, { ",", newlines, member }, [ "," ] ;
 member = field | NAME, [ "(", newlines, [ fields ], newlines, ")" ] ;
 fields = field, { ",", newlines, field }, [ "," ] ;

@@ -30,5 +30,5 @@ with cwd /tmp {
 with lang "C" { cat ./names | lines | sort }
 
 # Faults end the run; `Err` values do not.
-# check: Num a, Ord a => a -> Result<a, b>
+# check: Ord a, Literal a => a -> Result<a, b>
 check = n => if n < 0 { fault "negative" } else { Ok n }

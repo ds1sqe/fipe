@@ -2,7 +2,7 @@ use super::{Context, Error, Expected, Parser};
 use crate::{
     ast::{
         ExprId, ExprKind, Field, ImplMember, Item, ItemKind, Limit, Member,
-        TraitMember, TypeParameter,
+        TypeParameter,
     },
     token::{Keyword, Kind, Symbol, Token},
 };
@@ -13,19 +13,7 @@ impl Parser {
         matches!(
             self.peek(),
             Kind::Kw(Keyword::Use | Keyword::Type | Keyword::Impl)
-        ) || self.trait_start()
-    }
-
-    /// `trait Name`, the 05 form kept until members replace it: `trait`
-    /// is a name, and an item only before an uppercase name at the start
-    /// of an entry.
-    fn trait_start(&mut self) -> bool {
-        self.peek();
-        word(self.tokens.get(self.position), "trait")
-            && self.tokens.get(self.position + 1).is_some_and(|token| {
-                matches!(&token.kind, Kind::Name(parts)
-                    if parts.len() == 1 && parts[0].starts_with(char::is_uppercase))
-            })
+        )
     }
 
     pub(super) fn item(&mut self, public: bool) -> Result<Item, Error> {
@@ -34,7 +22,6 @@ impl Parser {
             Kind::Kw(Keyword::Use) if !public => self.import()?,
             Kind::Kw(Keyword::Type) => self.type_item()?,
             Kind::Kw(Keyword::Impl) if !public => self.impl_item()?,
-            Kind::Name(_) => self.trait_item()?,
             _ => return Err(self.expected(Expected::Name)),
         };
         Ok(Item {
@@ -136,11 +123,12 @@ impl Parser {
         Ok(Limit::Member { name, ty, span })
     }
 
-    /// `<T, U: Bound>` after a `type` or `trait` name, when present.
+    /// `<T, U: Bound>` after a `type` name, when present.
     fn type_parameters(&mut self) -> Result<Vec<TypeParameter>, Error> {
         if !self.eat(Symbol::Less) {
             return Ok(Vec::new());
         }
+        let mut defaulted = false;
         self.list(Symbol::Greater, |parser| {
             let name = parser.name(true)?;
             let bound = if parser.eat(Symbol::Colon) {
@@ -148,8 +136,22 @@ impl Parser {
             } else {
                 None
             };
+            let default = if parser.eat(Symbol::Assign) {
+                Some(parser.type_syntax()?)
+            } else {
+                None
+            };
+            if defaulted && default.is_none() {
+                return Err(parser.expected(Expected::Symbol(Symbol::Assign)));
+            }
+            defaulted |= default.is_some();
             let span = parser.since(name.span.start);
-            Ok(TypeParameter { name, bound, span })
+            Ok(TypeParameter {
+                name,
+                bound,
+                default,
+                span,
+            })
         })
     }
 
@@ -189,52 +191,11 @@ impl Parser {
         })
     }
 
-    /// `trait Name<params>: Parent { name: type [= value], … }`.
-    fn trait_item(&mut self) -> Result<ItemKind, Error> {
-        self.bump();
-        let name = self.name(true)?;
-        let parameters = self.type_parameters()?;
-        let parent = if self.eat(Symbol::Colon) {
-            Some(self.name(false)?)
-        } else {
-            None
-        };
-        self.expect(Symbol::LBrace)?;
-        let members = self.list(Symbol::RBrace, |parser| {
-            let name = parser.name(true)?;
-            parser.expect(Symbol::Colon)?;
-            let ty = parser.annotation()?;
-            let default = if parser.eat(Symbol::Assign) {
-                Some(parser.member_value()?)
-            } else {
-                None
-            };
-            let span = parser.since(name.span.start);
-            Ok(TraitMember {
-                name,
-                ty,
-                default,
-                span,
-            })
-        })?;
-        Ok(ItemKind::Trait {
-            name,
-            parameters,
-            parent,
-            members,
-        })
-    }
-
-    /// `impl Target [: Trait] { members }`: named members, with or
+    /// `impl Target { members }`: named members, with or
     /// without a value, and bare arms that are the written constructor.
     fn impl_item(&mut self) -> Result<ItemKind, Error> {
         self.bump();
         let target = self.type_syntax()?;
-        let implements = if self.eat(Symbol::Colon) {
-            Some(self.type_syntax()?)
-        } else {
-            None
-        };
         self.expect(Symbol::LBrace)?;
         let members = self.list(Symbol::RBrace, |parser| {
             if parser.arm_arrow(Context::Line).is_some() {
@@ -243,13 +204,6 @@ impl Parser {
             let start = parser.here().start;
             let public = parser.keyword(Keyword::Pub);
             let name = parser.name(true)?;
-            if name.is_uppercase() {
-                // An associated type takes a type, not a value.
-                parser.expect(Symbol::Assign)?;
-                let ty = parser.type_syntax()?;
-                let span = parser.since(start);
-                return Ok(ImplMember::Type { name, ty, span });
-            }
             let annotation = if parser.eat(Symbol::Colon) {
                 Some(parser.annotation()?)
             } else {
@@ -269,11 +223,7 @@ impl Parser {
                 span: parser.since(start),
             })
         })?;
-        Ok(ItemKind::Impl {
-            target,
-            implements,
-            members,
-        })
+        Ok(ItemKind::Impl { target, members })
     }
 
     /// A member's value inside a comma list: one arm, or a non-arm line.

@@ -1,99 +1,129 @@
-# The Fipe prelude, parsed by the crate's own parser at start. It is
-# written with the declaration forms: a name or impl member with no
-# value is implemented by the crate.
-
-# Primitive types, opaque: their values come from literals and words.
-pub type I8
-pub type I16
-pub type I32
-pub type I64
-pub type U8
-pub type U16
-pub type U32
-pub type U64
+# Parsed by the crate; signature-only members are supplied by it.
+pub type Integer
+pub type Natural: Integer where 0 <= self
+pub type I8: Integer & Bits<8> where -128 <= self, self <= 127
+pub type I16: Integer & Bits<16> where -32768 <= self, self <= 32767
+pub type I32: Integer & Bits<32> where -2147483648 <= self, self <= 2147483647
+pub type I64: Integer & Bits<64> where -9223372036854775808 <= self, self <= 9223372036854775807
+pub type U8: Natural & Bits<8> where self <= 255
+pub type U16: Natural & Bits<16> where self <= 65535
+pub type U32: Natural & Bits<32> where self <= 4294967295
+pub type U64: Natural & Bits<64> where self <= 18446744073709551615
 pub type F32
 pub type F64
+pub type Bits<n>
+pub type Size<n>
 pub type Vec<T>
 pub type Deque<T>
-
-# Prelude types.
+pub type LimitError
 pub type Bool { True, False }
 pub type String { bytes: Vec<U8> }
 pub type Ordering { Less, Equal, Greater }
 pub type Maybe<T> { Just(v: T), Nothing }
-pub type Result<T, E: Err> { Ok(v: T), Err(e: E) }
+pub type Result<T, E> { Ok(v: T), Err(e: E) }
 pub type Either<L, R> { Left(l: L), Right(r: R) }
 pub type ParseError { pub message: String }
-pub type Utf8Error { pub at: U64 }
-pub type Count<T> { pub item: T, pub n: U64 }
-
-# Derived classes: the checker supplies every instance; no user impl.
-pub trait Eq { eq: Self -> Self -> Bool }
-pub trait Ord: Eq { cmp: Self -> Self -> Ordering }
-pub trait Show { repr: Self -> String }
-pub trait Num {
-    add: Self -> Self -> Self,
-    sub: Self -> Self -> Self,
-    mul: Self -> Self -> Self,
-    div: Self -> Self -> Self,
-    rem: Self -> Self -> Self,
+pub type Utf8Error { pub at: Natural }
+pub type Count<T> { pub item: T, pub n: Natural }
+pub type Form {
+    Whole(value: Integer, radix: U8, digits: Natural, prefix: String, suffix: String),
+    Fraction(digits: Integer, exponent: Integer, prefix: String, suffix: String),
+    Text(value: String, prefix: String, suffix: String),
+    Bytes(value: Vec<U8>, prefix: String, suffix: String),
 }
-pub trait Float: Num {}
-
-# Declared classes.
-pub trait Display { display: Self -> String }
-pub trait Err: Display {}
-pub trait Read { read: String -> Result<Self, ParseError> }
-pub trait Len { len: Self -> U64 }
-pub trait From<A> { from: A -> Self }
-pub trait Into<B> { into: Self -> B }
-pub trait TryFrom<A> { Error: Err, try_from: A -> Result<Self, Self.Error> }
-pub trait TryInto<B> { Error: Err, try_into: Self -> Result<B, Self.Error> }
-pub trait Functor { map: (a -> b) -> Self<a> -> Self<b> }
-pub trait Monad: Functor {
-    pure: a -> Self<a>,
-    then: (a -> Self<b>) -> Self<a> -> Self<b>,
+pub type Add<R = Self, O = Self> where self.add: R -> O
+pub type Sub<R = Self, O = Self> where self.sub: R -> O
+pub type Mul<R = Self, O = Self> where self.mul: R -> O
+pub type Div<R = Self, O = Self> where self.div: R -> O
+pub type Rem<R = Self, O = Self> where self.rem: R -> O
+pub type Concat where self.concat: Self -> Self
+pub type Eq where self.eq: Self -> Bool
+pub type Ord: Eq where self.cmp: Self -> Ordering
+pub type Show where self.show: String
+pub type Read where Self.read: String -> Result<Self, ParseError>
+pub type Len where self.len: Natural
+pub type Not where self.not: Self
+pub type Literal where Self.literal: Form -> Self
+pub type From<A> where Self.from: A -> Self
+pub type TryFrom<A, E> where Self.try_from: A -> Result<Self, E>
+pub type Number: Add & Sub & Mul & Div & Rem & Ord & Literal
+pub type Float: Number where self.round: Self
+impl Integer {
+    add: Self -> (self: Self) -> Self,
+    sub: Self -> (self: Self) -> Self,
+    mul: Self -> (self: Self) -> Self,
+    div: Self -> (self: Self) -> Self,
+    rem: Self -> (self: Self) -> Self,
+    eq: Self -> (self: Self) -> Bool,
+    cmp: Self -> (self: Self) -> Ordering,
+    show: (self: Self) -> String,
+    read: String -> Result<Self, ParseError>,
+    literal: Form -> Self,
 }
-pub trait Alternative {
-    empty: Self<a>,
-    or: Self<a> -> Self<a> -> Self<a>,
+impl F32 {
+    add: Self -> (self: Self) -> Self,
+    sub: Self -> (self: Self) -> Self,
+    mul: Self -> (self: Self) -> Self,
+    div: Self -> (self: Self) -> Self,
+    rem: Self -> (self: Self) -> Self,
+    eq: Self -> (self: Self) -> Bool,
+    cmp: Self -> (self: Self) -> Ordering,
+    show: (self: Self) -> String,
+    read: String -> Result<Self, ParseError>,
+    literal: Form -> Self,
+    round: (self: Self) -> Self,
+    trunc: (self: Self) -> Self,
+    floor: (self: Self) -> Self,
+    ceil: (self: Self) -> Self,
 }
-
-# Instances: written here, or supplied by the crate when the body is empty.
-impl ParseError: Display { display = self => self.message }
-impl ParseError: Err {}
-impl Utf8Error: Display {
-    display = self => join "" ["invalid UTF-8 at ", show self.at],
+impl F64 {
+    add: Self -> (self: Self) -> Self,
+    sub: Self -> (self: Self) -> Self,
+    mul: Self -> (self: Self) -> Self,
+    div: Self -> (self: Self) -> Self,
+    rem: Self -> (self: Self) -> Self,
+    eq: Self -> (self: Self) -> Bool,
+    cmp: Self -> (self: Self) -> Ordering,
+    show: (self: Self) -> String,
+    read: String -> Result<Self, ParseError>,
+    literal: Form -> Self,
+    round: (self: Self) -> Self,
+    trunc: (self: Self) -> Self,
+    floor: (self: Self) -> Self,
+    ceil: (self: Self) -> Self,
 }
-impl Utf8Error: Err {}
-impl String: Display { display = self => self }
-impl String: Len {}
-impl Vec: Len {}
-impl Vec: Functor {}
-impl Maybe: Functor {
-    map = f m => m | { Just v => Just (f v), Nothing => Nothing },
+impl Bool { not: (self: Self) -> Self }
+impl String {
+    concat: Self -> (self: Self) -> Self,
+    show: (self: Self) -> String,
+    len: (self: Self) -> Natural,
+    literal: Form -> Self,
 }
-impl Maybe: Monad {
-    pure = v => Just v,
-    then = f m => m | { Just v => f v, Nothing => Nothing },
+impl Vec {
+    concat: Vec<a> -> (self: Vec<a>) -> Vec<a>,
+    len: (self: Vec<a>) -> Natural,
+    literal: Form -> Vec<U8>,
+    map: (a -> b) -> (self: Vec<a>) -> Vec<b>,
 }
-impl Maybe: Alternative {
-    empty = Nothing,
-    or = a b => a | { Just _ => a, Nothing => b },
+impl Maybe {
+    map: (a -> b) -> (self: Maybe<a>) -> Maybe<b>,
+    pure: a -> Maybe<a>,
+    then: (a -> Maybe<b>) -> (self: Maybe<a>) -> Maybe<b>,
+    empty: Maybe<a>,
+    or: Maybe<a> -> (self: Maybe<a>) -> Maybe<a>,
 }
-impl Result: Functor {
-    map = f r => r | { Ok v => Ok (f v), Err e => Err e },
+impl Result {
+    map: (a -> b) -> (self: Result<a, e>) -> Result<b, e>,
+    pure: a -> Result<a, e>,
+    then: (a -> Result<b, e>) -> (self: Result<a, e>) -> Result<b, e>,
 }
-impl Result: Monad {
-    pure = v => Ok v,
-    then = f r => r | { Ok v => f v, Err e => Err e },
-}
-
-# Conversion words. `to` and `try` resolve either side of a direction;
-# their obligation is the checker's, so they carry no constraint here.
 pub show: Show a => a -> String
+pub len: Len a => a -> Natural
+pub read: Read a => String -> Result<a, ParseError>
 pub to: a -> b
 pub try: a -> Result<b, e>
+pub map: (a -> b) -> Vec<a> -> Vec<b>
+pub concat: a.concat: b -> c => b -> a -> c
 
 # Text and bytes; the value comes last, so the pipe fills it.
 pub bytes: String -> Vec<U8>
@@ -121,10 +151,10 @@ pub filter: (a -> Bool) -> Vec<a> -> Vec<a>
 pub fold: b -> (b -> a -> b) -> Vec<a> -> b
 pub first: Vec<a> -> Maybe<a>
 pub head: Vec<a> -> a
-pub take: (n: U64) -> Vec<a> -> Vec<a>
+pub take: (n: Natural) -> Vec<a> -> Vec<a>
 pub flatten: Vec<Vec<a>> -> Vec<a>
 pub collect: Vec<Result<a, e>> -> Result<Vec<a>, e>
-pub sum: Num a => Vec<a> -> a
+pub sum: Number a => Vec<a> -> a
 pub count: Eq a => Vec<a> -> Vec<Count<a>>
 pub sort: Ord k => (by: a -> k = (x => x)) -> (desc: Bool = False) ->
     Vec<a> -> Vec<a>

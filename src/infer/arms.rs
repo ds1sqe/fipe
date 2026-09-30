@@ -142,6 +142,35 @@ impl Infer<'_> {
     fn constructor_pattern(&mut self, id: PatternId, ty: &Type, input: Span) {
         let module = self.module;
         let span = module.patterns[id.0].span;
+        let gate = match self.resolved.pattern(id) {
+            Some(Target::Type { origin, name }) => Some((origin, name)),
+            Some(Target::Constructor {
+                origin,
+                ty: owner,
+                name,
+            }) if owner == name
+                && matches!(self.apply(ty), Type::Either(_)) =>
+            {
+                Some((origin, name))
+            }
+            _ => None,
+        };
+        if let Some((origin, name)) = gate {
+            let meaning = Type::named(origin.clone(), name, Vec::new());
+            if let Type::Either(parts) = self.apply(ty) {
+                if !parts.contains(&meaning) {
+                    self.unify(ty, &meaning, span, input);
+                }
+            } else {
+                self.unify(ty, &meaning, span, input);
+            }
+            if let PatternKind::Constructor { payload, .. } =
+                module.patterns[id.0].kind
+            {
+                self.pattern(payload, &meaning, input);
+            }
+            return;
+        }
         let Some(Target::Constructor {
             origin,
             ty: owner,

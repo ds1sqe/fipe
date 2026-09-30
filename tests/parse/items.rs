@@ -10,14 +10,14 @@ use fipe::{
 
 #[test]
 fn declaration_forms_carry_parameters_constraints_and_types() {
-    let input = "pub trait From<A> { from: A -> Self }\npub show: Show a => a -> String\nf: Show a, Num b => a -> b = x => x\nimpl P: TryFrom<S> { Error = Vec<U8>, try_from = s => Ok s }\ntrait T { m: Read a => String -> a, n: A }";
+    let input = "pub type From<A> where Self.from: A -> Self\npub show: Show a => a -> String\nf: Show a, Add b => a -> b = x => x\nimpl P { try_from: S -> Result<Self, Vec<U8>> = s => Ok s }\nimpl T { m: Read a => String -> a, n: A }";
     let parsed = module(input);
     let [Entry::Item(from), Entry::Item(show), Entry::Line(f), Entry::Item(try_from), Entry::Item(t)] =
         parsed.entries.as_slice()
     else {
         panic!()
     };
-    let ItemKind::Trait { parameters, .. } = &from.kind else {
+    let ItemKind::Type { parameters, .. } = &from.kind else {
         panic!()
     };
     assert!(from.public);
@@ -66,28 +66,22 @@ fn declaration_forms_carry_parameters_constraints_and_types() {
     let ItemKind::Impl { members, .. } = &try_from.kind else {
         panic!()
     };
-    let [ImplMember::Type {
-        name: error, ty, ..
-    }, ImplMember::Named { .. }] = members.as_slice()
+    let [ImplMember::Named {
+        annotation: Some(ty),
+        ..
+    }] = members.as_slice()
     else {
         panic!()
     };
-    assert_eq!(error.segments, ["Error"]);
     assert_eq!(
         Source::new(input).slice(parsed.ty(*ty).unwrap().span),
-        Some("Vec<U8>")
+        Some("S -> Result<Self, Vec<U8>>")
     );
-    let ItemKind::Trait { members, .. } = &t.kind else {
+    let ItemKind::Impl { members, .. } = &t.kind else {
         panic!()
     };
-    assert!(matches!(
-        parsed.ty(members[0].ty).unwrap().kind,
-        TypeKind::Qualified { .. }
-    ));
-    assert!(matches!(
-        parsed.ty(members[1].ty).unwrap().kind,
-        TypeKind::Named { .. }
-    ));
+    assert!(matches!(members[0], ImplMember::Named { value: None, .. }));
+    assert!(matches!(members[1], ImplMember::Named { value: None, .. }));
     for (input, offending) in [
         ("{ x: I64 }", ":"),
         ("f: Vec<Show a => a> = x", "a"),
@@ -228,7 +222,7 @@ fn bindings_carry_patterns_annotations_and_arm_heads() {
     reason = "One item corpus, checked member by member"
 )]
 fn types_traits_and_impls_have_member_lists() {
-    let input = "pub type Point { pub x: I64, pub y: I64 = 0, len: U64 }\ntype Shape { Circle(r: F64), Dot }\ntype Maybe<T: Show> { Just(v: T), Nothing }\ntrait Ord: Eq { cmp: Self -> Self -> Ordering, max: Self -> Self -> Self = a b => a }\nimpl Point { x (y = 0) => Self { x, y, len: 0 }, pub line: I64 -> Self = p => Self p p }\nimpl Point: From<Polar> { from = pl => Self { x: 1, y: 2, len: 3 } }";
+    let input = "pub type Point { pub x: I64, pub y: I64 = 0, len: U64 }\ntype Shape { Circle(r: F64), Dot }\ntype Maybe<T: Show> { Just(v: T), Nothing }\ntype Ord: Eq where self.cmp: Self -> Ordering\nimpl Point { x (y = 0) => Self { x, y, len: 0 }, pub line: I64 -> Self = p => Self p p }\nimpl Point { from = pl => Self { x: 1, y: 2, len: 3 } }";
     let parsed = module(input);
     let [Entry::Item(point), Entry::Item(shape), Entry::Item(maybe), Entry::Item(ord), Entry::Item(inherent), Entry::Item(from)] =
         parsed.entries.as_slice()
@@ -290,31 +284,23 @@ fn types_traits_and_impls_have_member_lists() {
         Some("Show")
     );
 
-    let ItemKind::Trait {
-        name: trait_name,
-        parameters: none,
-        parent: Some(parent),
-        members,
+    let ItemKind::Type {
+        name,
+        base: Some(base),
+        limits,
+        ..
     } = &ord.kind
     else {
         panic!()
     };
-    assert_eq!(none.len(), 0);
-    assert_eq!(trait_name.segments, ["Ord"]);
-    assert_eq!(parent.segments, ["Eq"]);
-    assert_eq!(members[0].name.segments, ["cmp"]);
-    assert_eq!(members[0].default, None);
-    assert!(matches!(
-        node(&parsed, members[1].default.unwrap()),
-        ExprKind::Arms(_)
-    ));
+    assert_eq!(name.segments, ["Ord"]);
+    assert_eq!(
+        Source::new(input).slice(parsed.ty(*base).unwrap().span),
+        Some("Eq")
+    );
+    assert_eq!(limits.len(), 1);
 
-    let ItemKind::Impl {
-        target,
-        implements: None,
-        members,
-    } = &inherent.kind
-    else {
+    let ItemKind::Impl { target, members } = &inherent.kind else {
         panic!()
     };
     assert_eq!(
@@ -336,23 +322,14 @@ fn types_traits_and_impls_have_member_lists() {
     assert_eq!(line.segments, ["line"]);
     assert!(matches!(node(&parsed, *value), ExprKind::Arms(_)));
 
-    let ItemKind::Impl {
-        implements: Some(implements),
-        members,
-        ..
-    } = &from.kind
-    else {
+    let ItemKind::Impl { members, .. } = &from.kind else {
         panic!()
     };
-    assert_eq!(
-        Source::new(input).slice(parsed.ty(*implements).unwrap().span),
-        Some("From<Polar>")
-    );
     assert!(matches!(
         members[0],
         ImplMember::Named { public: false, .. }
     ));
-    module("type Marker {}\nimpl Poly {\n    [] => fault \"empty\",\n    ps => Self { pts: ps },\n}\nimpl P: T { Error = E, f = (a => 1, b => 2) }");
+    module("type Marker {}\nimpl Poly {\n    [] => fault \"empty\",\n    ps => Self { pts: ps },\n}\nimpl P { f = (a => 1, b => 2) }");
     // A member value is one arm; the next element is a constructor arm.
     let parsed = module("impl P { f = a => 1, b => 2 }");
     let [Entry::Item(item)] = parsed.entries.as_slice() else {

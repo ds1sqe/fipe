@@ -11,8 +11,10 @@
 
 mod arms;
 mod bind;
+mod conversions;
 mod dot;
 mod expr;
+mod folds;
 mod groups;
 mod lower;
 mod outcome;
@@ -25,7 +27,7 @@ use crate::{
     resolve::{Origin, Resolved, Target},
     token::Span,
     typed::Typed,
-    types::{replace, Mismatch, Obligation, Scheme, Subst, Type, Var},
+    types::{replace, Lit, Mismatch, Obligation, Scheme, Subst, Type, Var},
 };
 use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
 
@@ -48,13 +50,26 @@ pub enum Reason {
     Occurs,
     /// An outcome bracket or marked operator with no known family.
     UnknownFamily,
-    /// No field or `self`-spot function `name` on `ty`; `other` is the
+    /// No field or member on `ty`; `other` is the
     /// use that made a scheme's head `ty`, or the dot itself.
     NoField {
         ty: Type,
         other: Span,
     },
+    MissingMember {
+        ty: Type,
+        name: String,
+    },
+    /// No default meaning accepts all the literal forms together.
+    NoCommonMeaning {
+        forms: Vec<String>,
+    },
     NotAFunction,
+    Conversion {
+        target: Type,
+        candidates: Vec<Type>,
+    },
+    ConflictingConversion,
     ExtraArgument,
     /// A flag naming no spot, or a valued flag with no operand.
     UnknownSpot {
@@ -67,11 +82,10 @@ pub enum Reason {
     OpenSpot,
     /// `||` or `&&` on `Either` or another non-`Bool` type.
     NeedsMaybeOrResult,
-    /// The `Num` stub: arithmetic on a type that is not numeric.
-    NotNumeric,
-    /// A dot whose head's type is never known: its variable left the
-    /// type with the member obligation unsolved.
-    DotNeedsType,
+    /// A type-dependent form reserved for a later minor.
+    NotYetChecked {
+        form: crate::resolve::Unchecked,
+    },
     /// A non-last line of a body whose value is not `()`.
     Discarded,
     /// A record construction without a field that has no default.
@@ -215,6 +229,8 @@ struct State {
     /// Lexical bindings by the span of the name that bound them.
     locals: BTreeMap<(usize, usize), Local>,
     obligations: Vec<Owed>,
+    solving_dots: bool,
+    lowering: Vec<crate::types::TypeName>,
     errors: Vec<Error>,
     /// Monomorphic types in scope: parameters and destructured values.
     env: Vec<Type>,
@@ -237,6 +253,8 @@ impl State {
             bindings: vec![None; size],
             locals: BTreeMap::new(),
             obligations: Vec::new(),
+            solving_dots: false,
+            lowering: Vec::new(),
             errors: Vec::new(),
             env: Vec::new(),
             status: Vec::new(),
@@ -255,6 +273,7 @@ struct Owed {
     /// A member obligation already solved, left in place so that marks
     /// into the list stay valid.
     solved: bool,
+    assumed: bool,
 }
 
 impl Owed {
@@ -264,19 +283,9 @@ impl Owed {
             span,
             literal: None,
             solved: false,
+            assumed: false,
         }
     }
-}
-
-/// A numeric literal whose type is left to a variable or a rigid name.
-#[derive(Clone, Copy)]
-enum Lit {
-    /// `magnitude` is `None` past `u64`, outside every width.
-    Int {
-        negative: bool,
-        magnitude: Option<u64>,
-    },
-    Float,
 }
 
 #[derive(Clone)]
@@ -394,6 +403,7 @@ struct Callee {
     parameters: Vec<Type>,
     /// The declaring module of a callee declared elsewhere.
     home: Option<Origin>,
+    conversion: Option<(Type, String)>,
 }
 
 impl Callee {
@@ -405,6 +415,7 @@ impl Callee {
             supplied: None,
             parameters: Vec::new(),
             home: None,
+            conversion: None,
         }
     }
 
@@ -501,10 +512,12 @@ impl Infer<'_> {
         let _ = self.state.subst.unify(expected, actual);
     }
 
-    fn obligation(&mut self, class: &str, ty: Type, span: Span) {
-        let obligation = Obligation::Class {
-            class: String::from(class),
+    fn require_member(&mut self, head: Type, name: &str, ty: Type, span: Span) {
+        let obligation = Obligation::Member {
+            head,
+            name: String::from(name),
             ty,
+            dot: span,
         };
         self.state.obligations.push(Owed::new(obligation, span));
     }
@@ -520,7 +533,16 @@ impl Infer<'_> {
                 self.frame.and_then(|frame| frame.locals.get(&key))
             });
         match local.cloned() {
-            Some(local) => {
+            Some(mut local) => {
+                if !self.state.locals.contains_key(&key) {
+                    for obligation in &mut local.scheme.obligations {
+                        let Obligation::Member { dot, .. } = obligation;
+                        *dot = span;
+                    }
+                    for (_, _, dot) in &mut local.scheme.literals {
+                        *dot = span;
+                    }
+                }
                 let ty = self.instantiate(&local.scheme, span);
                 self.with_heads(ty, local.heads.as_deref())
             }
@@ -556,13 +578,8 @@ impl Infer<'_> {
         let module = self.module;
         for entry in &module.entries {
             if let Entry::Item(item) = entry {
-                if let ItemKind::Impl {
-                    target,
-                    implements,
-                    members,
-                } = &item.kind
-                {
-                    self.declare_impl(*target, *implements, members);
+                if let ItemKind::Impl { target, members } = &item.kind {
+                    self.declare_impl(*target, members);
                     let names = self.outside_names(item.span);
                     if let Some(group) = self.groups.last_mut() {
                         group.names = names;
@@ -593,7 +610,6 @@ impl Infer<'_> {
     fn declare_impl(
         &mut self,
         target: crate::ast::TypeId,
-        implements: Option<crate::ast::TypeId>,
         members: &[ImplMember],
     ) {
         let module = self.module;
@@ -605,10 +621,8 @@ impl Infer<'_> {
         let mut constructor = Vec::new();
         for member in members {
             match member {
-                // A member with no value, which resolve reports, and an
-                // associated type.
-                ImplMember::Named { value: None, .. }
-                | ImplMember::Type { .. } => {}
+                // A program member with no value, which resolve reports.
+                ImplMember::Named { value: None, .. } => {}
                 ImplMember::Named {
                     public,
                     name,
@@ -620,32 +634,19 @@ impl Infer<'_> {
                         ExprKind::Arms(arms) => Some(arms.as_slice()),
                         _ => None,
                     };
-                    let member_ty = match (implements, annotation, arms) {
-                        (Some(implements), ..) => {
-                            self.impl_method(implements, &last(name))
-                        }
-                        (None, Some(annotation), _) => {
-                            self.lower_here(*annotation)
-                        }
-                        (None, None, Some(arms)) => self.skeleton(arms),
-                        (None, None, None) => self.fresh(),
+                    let member_ty = match (annotation, arms) {
+                        (Some(annotation), _) => self.lower_here(*annotation),
+                        (None, Some(arms)) => self.skeleton(arms),
+                        (None, None) => self.fresh(),
                     };
                     let heads = arms.map(|arms| self.heads(arms));
                     if let Some(heads) = &heads {
                         self.self_parameter(&member_ty, heads, name.span);
                     }
-                    if implements.is_none() {
-                        let key = Key::Binding(last(name));
-                        let (ty, heads) = (member_ty.clone(), heads.clone());
-                        let mut item = Item::new(key, ty, heads, name.span);
-                        item.annotated = annotation.is_some();
-                        self.push_item(item, group);
-                    }
                     let key = Key::Member(ty.clone(), last(name));
                     let mut item = Item::new(key, member_ty, heads, name.span);
                     item.public = *public;
-                    item.annotated =
-                        implements.is_none() && annotation.is_some();
+                    item.annotated = annotation.is_some();
                     item.body = Some(Body::Value(*value));
                     self.push_item(item, group);
                 }
@@ -705,6 +706,7 @@ impl Infer<'_> {
     /// Obligations settle, members resolve or fail, and
     /// every type is applied through the final substitution.
     fn finish(mut self) -> (Typed, Vec<Error>) {
+        self.check_conversions();
         self.dots();
         self.default_literals(0, &[], &[]);
         self.left_members();
@@ -789,6 +791,26 @@ impl Infer<'_> {
                     .iter()
                     .map(|o| o.map(|ty| replace(ty, &names)))
                     .collect(),
+                folds: scheme
+                    .folds
+                    .iter()
+                    .map(|(name, members)| {
+                        (
+                            replace(name, &names),
+                            members
+                                .iter()
+                                .map(|o| o.map(|ty| replace(ty, &names)))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+                literals: scheme
+                    .literals
+                    .iter()
+                    .map(|(ty, form, span)| {
+                        (replace(ty, &names), form.clone(), *span)
+                    })
+                    .collect(),
                 ty: replace(&general.ty, &names),
             }
         };
@@ -828,23 +850,12 @@ fn count(index: usize) -> u32 {
     u32::try_from(index).unwrap_or(u32::MAX)
 }
 
-/// The `Num` stub: whether a type is numeric, `None` while unknown.
-/// Trait resolution (06) replaces it.
-fn num(ty: &Type) -> Option<bool> {
+fn meaning(ty: &Type) -> &Type {
     match ty {
-        Type::Var(_) => None,
-        Type::Named { name, arguments } => Some(
-            name.origin == Origin::Prelude
-                && arguments.is_empty()
-                && NUMERIC.contains(&name.name.as_str()),
-        ),
-        _ => Some(false),
+        Type::Limited { meaning, .. } => meaning,
+        _ => ty,
     }
 }
-
-const NUMERIC: [&str; 10] = [
-    "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64", "F32", "F64",
-];
 
 fn prelude(name: &str) -> Type {
     Type::named(Origin::Prelude, name, Vec::new())

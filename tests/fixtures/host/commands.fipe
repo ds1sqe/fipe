@@ -5,11 +5,11 @@ use fs
 pub type Rd<Api>
 pub Rd: U64 -> Rd<api>
 pub type Src
-impl Src: Read {}
+impl Src { read: String -> Result<Self, ParseError> }
 pub type Sink
-impl Sink: Read {}
+impl Sink { read: String -> Result<Self, ParseError> }
 pub type Entry { pub name: String, pub path: String, pub size: U64, pub age: U64 }
-impl Entry: Read {}
+impl Entry { read: String -> Result<Self, ParseError> }
 
 pub root: Rd<sys>
 pub out: Sink

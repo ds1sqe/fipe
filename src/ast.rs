@@ -353,18 +353,9 @@ pub enum ItemKind {
         members: Option<Vec<Member>>,
         limits: Vec<Limit>,
     },
-    /// `trait Name<params>: Parent { members }`, a form kept until the
-    /// prelude is written with members; `trait` is a name elsewhere.
-    Trait {
-        name: Name,
-        parameters: Vec<TypeParameter>,
-        parent: Option<Name>,
-        members: Vec<TraitMember>,
-    },
-    /// `impl Target { members }` or `impl Target: Trait { members }`.
+    /// `impl Target { members }`.
     Impl {
         target: TypeId,
-        implements: Option<TypeId>,
         members: Vec<ImplMember>,
     },
     /// `name: type` with no value: a signature-only declaration, the form
@@ -392,15 +383,6 @@ pub struct Field {
     pub span: Span,
 }
 
-/// `name: type`, optionally with a default body.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TraitMember {
-    pub name: Name,
-    pub ty: TypeId,
-    pub default: Option<ExprId>,
-    pub span: Span,
-}
-
 /// One limit after `where`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Limit {
@@ -411,7 +393,7 @@ pub enum Limit {
 }
 
 /// A named member `name = value`, or `name: type` with no value, an
-/// associated type `Name = type`, or a bare arm of the written
+/// bare arm of the written
 /// constructor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImplMember {
@@ -423,11 +405,6 @@ pub enum ImplMember {
         value: Option<ExprId>,
         span: Span,
     },
-    Type {
-        name: Name,
-        ty: TypeId,
-        span: Span,
-    },
     Constructor(Arm),
 }
 
@@ -436,5 +413,7 @@ pub struct TypeParameter {
     pub name: Name,
     /// `T: Ord`: a type the parameter must meet.
     pub bound: Option<TypeId>,
+    /// Used when the corresponding type argument is omitted.
+    pub default: Option<TypeId>,
     pub span: Span,
 }

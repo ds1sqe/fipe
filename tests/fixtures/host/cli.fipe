@@ -1,4 +1,3 @@
 # The conformance host's `cli` module, API version 2.
 pub type Error { pub message: String }
-impl Error: Display { display = self => self.message }
-impl Error: Err {}
+impl Error { show = self => self.message }

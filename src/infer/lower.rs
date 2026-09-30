@@ -6,15 +6,12 @@
 //!
 //! A declaration's lowercase names are its quantified variables, fresh
 //! at each lowering, so lowering a reference is instantiation (VAR).
-//! `Self<a>` in a trait method is the one higher-kinded form: it lowers
-//! to a placeholder the application replaces with the receiver's family
-//! (`spots.rs`). This stands in for 06's kinds.
 
 use super::{Callee, Infer, Slot};
 use crate::{
     ast::{
         Constraint, ConstraintKind, Entry, ImplMember, ItemKind, Member,
-        Module, Name, TraitMember, TypeId, TypeKind, TypeParameter,
+        Module, Name, TypeId, TypeKind, TypeParameter,
     },
     decl::{Kind, Namespace},
     resolve::{Origin, Resolved, Target},
@@ -54,8 +51,6 @@ pub(super) enum SelfKind {
     None,
     /// Inside an impl or type body: that type.
     Type(Type),
-    /// Inside a trait: this variable, or the placeholder when applied.
-    Trait(Type),
 }
 
 /// The names bound while lowering one declaration.
@@ -64,6 +59,7 @@ pub(super) struct Vars {
     pub names: Vec<(String, Type)>,
     pub self_kind: SelfKind,
     pub obligations: Vec<Obligation>,
+    rigid: bool,
 }
 
 impl Vars {
@@ -72,6 +68,7 @@ impl Vars {
             names: Vec::new(),
             self_kind,
             obligations: Vec::new(),
+            rigid: false,
         }
     }
 }
@@ -82,15 +79,6 @@ pub(super) struct Field {
     pub ty: Type,
     pub public: bool,
     pub default: bool,
-}
-
-/// The placeholder for `Self<…>` in a higher-kinded trait method.
-pub(super) fn family_placeholder(arguments: Vec<Type>) -> Type {
-    Type::named(Origin::Prelude, "Self", arguments)
-}
-
-pub(super) fn is_placeholder(ty: &Type) -> bool {
-    super::is_prelude(ty, "Self")
 }
 
 impl<'a> Infer<'a> {
@@ -143,7 +131,17 @@ impl<'a> Infer<'a> {
             .self_type
             .clone()
             .map_or(SelfKind::None, SelfKind::Type);
-        self.lower(&Scope::This, id, &mut Vars::new(self_kind))
+        let mut vars = Vars::new(self_kind);
+        vars.rigid = true;
+        let ty = self.lower(&Scope::This, id, &mut vars);
+        for obligation in vars.obligations {
+            let mut owed =
+                super::Owed::new(obligation, self.module.types[id.0].span);
+            owed.solved = true;
+            owed.assumed = true;
+            self.state.obligations.push(owed);
+        }
+        ty
     }
 
     pub(super) fn lower(
@@ -163,7 +161,7 @@ impl<'a> Infer<'a> {
                     .iter()
                     .map(|argument| self.lower(scope, *argument, vars))
                     .collect();
-                match scope {
+                let ty = match scope {
                     Scope::This => {
                         let resolved = self.resolved;
                         self.name_resolved(resolved, None, id, arguments, vars)
@@ -179,7 +177,8 @@ impl<'a> Infer<'a> {
                     ),
                     Scope::Declared { module, origin } => self
                         .name_declared(module, origin, name, arguments, vars),
-                }
+                };
+                self.limited(ty)
             }
             TypeKind::Array { element, length } => {
                 let element = self.lower(scope, *element, vars);
@@ -206,52 +205,230 @@ impl<'a> Infer<'a> {
             TypeKind::Number(_)
             | TypeKind::Tuple(_)
             | TypeKind::Both(_)
-            | TypeKind::Either(_)
             | TypeKind::Not(_) => self.fresh(),
+            TypeKind::Either(parts) => {
+                let parts: Vec<_> =
+                    parts.iter().map(|p| self.lower(scope, *p, vars)).collect();
+                let mut meanings = Vec::new();
+                for part in &parts {
+                    let meaning = super::meaning(part);
+                    if !matches!(meaning, Type::Named { .. })
+                        || meanings.contains(&meaning)
+                    {
+                        self.error(
+                            module.types[id.0].span,
+                            super::Reason::NotYetChecked {
+                                form: crate::resolve::Unchecked::Either,
+                            },
+                        );
+                        break;
+                    }
+                    meanings.push(meaning);
+                }
+                Type::Either(parts)
+            }
             TypeKind::Function { parameter, result } => {
                 let parameter = self.lower(scope, *parameter, vars);
                 Type::function(parameter, self.lower(scope, *result, vars))
             }
             TypeKind::Qualified { constraints, ty } => {
-                self.constraints(module, constraints, vars);
+                self.constraints(scope, constraints, vars);
                 self.lower(scope, *ty, vars)
             }
             TypeKind::Labeled { ty, .. } => self.lower(scope, *ty, vars),
         }
     }
 
-    /// Named constraints as obligations; a member constraint is not yet
-    /// checked, and reported where it is written.
+    pub(super) fn limited(&mut self, ty: Type) -> Type {
+        let Type::Named { name, arguments } = &ty else {
+            return ty;
+        };
+        if self.state.lowering.contains(name) {
+            return ty;
+        }
+        let (Some(module), Some(scope)) =
+            (self.owner(&name.origin), self.scope(&name.origin))
+        else {
+            return ty;
+        };
+        let declaration = module.entries.iter().find_map(|e| match e {
+            Entry::Item(item) => match &item.kind {
+                ItemKind::Type {
+                    name: n,
+                    parameters,
+                    base: Some(base),
+                    members: None,
+                    ..
+                } if super::last(n) == name.name => Some((parameters, *base)),
+                _ => None,
+            },
+            Entry::Line(_) => None,
+        });
+        let Some((parameters, base)) = declaration else {
+            return ty;
+        };
+        self.state.lowering.push(name.clone());
+        let mut vars = Vars::new(SelfKind::None);
+        for (parameter, argument) in parameters.iter().zip(arguments) {
+            vars.names
+                .push((super::last(&parameter.name), argument.clone()));
+        }
+        let parts = match &module.types[base.0].kind {
+            TypeKind::Both(parts) => parts.clone(),
+            _ => alloc::vec![base],
+        };
+        for part in parts {
+            if let Some(n) = named(module, part) {
+                if matches!(n.as_str(), "Bits" | "Size") {
+                    continue;
+                }
+            }
+            let base = self.lower(&scope, part, &mut vars);
+            let limits = self.member_limits(
+                &base,
+                &base,
+                Span::default(),
+                &mut Vec::new(),
+            );
+            if !limits.is_empty() {
+                continue;
+            }
+            let meaning = match base {
+                Type::Limited { meaning, .. } => *meaning,
+                other => other,
+            };
+            self.state.lowering.pop();
+            return Type::Limited {
+                name: alloc::boxed::Box::new(ty),
+                meaning: alloc::boxed::Box::new(meaning),
+            };
+        }
+        self.state.lowering.pop();
+        ty
+    }
+
     fn constraints(
         &mut self,
-        module: &Module,
+        scope: &Scope<'a>,
         constraints: &[Constraint],
         vars: &mut Vars,
     ) {
         for constraint in constraints {
-            if let ConstraintKind::Named { class, variable } = &constraint.kind
-            {
-                let class = named(module, *class).unwrap_or_default();
-                let ty = self.variable(&super::last(variable), vars);
-                vars.obligations.push(Obligation::Class { class, ty });
+            match &constraint.kind {
+                ConstraintKind::Named { class, variable } => {
+                    let head = self.variable(&super::last(variable), vars);
+                    let class = self.lower(scope, *class, vars);
+                    vars.obligations.extend(self.member_limits(
+                        &class,
+                        &head,
+                        constraint.span,
+                        &mut Vec::new(),
+                    ));
+                }
+                ConstraintKind::Member { member, ty } => {
+                    let head = self.variable(&member.segments[0], vars);
+                    let ty = self.lower(scope, *ty, vars);
+                    vars.obligations.push(Obligation::Member {
+                        head,
+                        name: super::last(member),
+                        ty,
+                        dot: constraint.span,
+                    });
+                }
             }
         }
+    }
+
+    pub(super) fn member_limits(
+        &mut self,
+        class: &Type,
+        head: &Type,
+        dot: Span,
+        visiting: &mut Vec<crate::types::TypeName>,
+    ) -> Vec<Obligation> {
+        let Type::Named { name, arguments } = class else {
+            return Vec::new();
+        };
+        if visiting.contains(name) {
+            return Vec::new();
+        }
+        let (Some(module), Some(scope)) =
+            (self.owner(&name.origin), self.scope(&name.origin))
+        else {
+            return Vec::new();
+        };
+        let declaration = module.entries.iter().find_map(|entry| match entry {
+            Entry::Item(item) => match &item.kind {
+                ItemKind::Type {
+                    name: n,
+                    parameters,
+                    base,
+                    limits,
+                    ..
+                } if super::last(n) == name.name => {
+                    Some((parameters, base, limits))
+                }
+                _ => None,
+            },
+            Entry::Line(_) => None,
+        });
+        let Some((parameters, base, limits)) = declaration else {
+            return Vec::new();
+        };
+        visiting.push(name.clone());
+        let mut vars = Vars::new(SelfKind::Type(head.clone()));
+        for (index, parameter) in parameters.iter().enumerate() {
+            let argument =
+                arguments.get(index).cloned().unwrap_or_else(
+                    || match parameter.default {
+                        Some(default) => self.lower(&scope, default, &mut vars),
+                        None => self.fresh(),
+                    },
+                );
+            vars.names.push((super::last(&parameter.name), argument));
+        }
+        let mut result = Vec::new();
+        if let Some(base) = base {
+            let bases = match &module.types[base.0].kind {
+                TypeKind::Both(parts) => parts.clone(),
+                _ => alloc::vec![*base],
+            };
+            for base in bases {
+                let base = self.lower(&scope, base, &mut vars);
+                result.extend(self.member_limits(&base, head, dot, visiting));
+            }
+        }
+        for limit in limits {
+            if let crate::ast::Limit::Member { name, ty, .. } = limit {
+                let ty = self.lower(&scope, *ty, &mut vars);
+                result.push(Obligation::Member {
+                    head: head.clone(),
+                    name: super::last(name),
+                    ty,
+                    dot,
+                });
+            }
+        }
+        visiting.pop();
+        result
     }
 
     fn variable(&mut self, name: &str, vars: &mut Vars) -> Type {
         if let Some((_, ty)) = vars.names.iter().find(|(n, _)| n == name) {
             return ty.clone();
         }
-        let ty = self.fresh();
+        let ty = if vars.rigid {
+            Type::Rigid(String::from(name))
+        } else {
+            self.fresh()
+        };
         vars.names.push((String::from(name), ty.clone()));
         ty
     }
 
-    fn self_type_of(&mut self, arguments: Vec<Type>, vars: &Vars) -> Type {
+    fn self_type_of(&mut self, _arguments: Vec<Type>, vars: &Vars) -> Type {
         match &vars.self_kind {
             SelfKind::Type(ty) => ty.clone(),
-            SelfKind::Trait(ty) if arguments.is_empty() => ty.clone(),
-            SelfKind::Trait(_) => family_placeholder(arguments),
             SelfKind::None => self.fresh(),
         }
     }
@@ -267,9 +444,7 @@ impl<'a> Infer<'a> {
         vars: &Vars,
     ) -> Type {
         match resolved.ty(id) {
-            Some(
-                Target::Type { origin, name } | Target::Trait { origin, name },
-            ) => {
+            Some(Target::Type { origin, name }) => {
                 let origin = match (origin, index) {
                     (Origin::This, Some(index)) => Origin::Line(index),
                     _ => origin.clone(),
@@ -345,7 +520,7 @@ impl<'a> Infer<'a> {
         if let Some(TypeKind::Qualified { constraints, ty }) =
             module.ty(current).map(|node| &node.kind)
         {
-            self.constraints(module, constraints, vars);
+            self.constraints(scope, constraints, vars);
             current = *ty;
         }
         let mut slots = Vec::new();
@@ -360,11 +535,7 @@ impl<'a> Infer<'a> {
                     }
                     _ => (None, None, Span::default()),
                 };
-            let bare_self =
-                named(module, *parameter).as_deref() == Some("Self");
-            if self_slot.is_none()
-                && (name.as_deref() == Some("self") || bare_self)
-            {
+            if name.as_deref() == Some("self") {
                 self_slot = Some(slots.len());
             }
             let ty = self.lower(scope, *parameter, vars);
@@ -406,29 +577,19 @@ impl<'a> Infer<'a> {
                     self.signature(&scope, ty, &mut vars);
                 // `to<T>` and `try<T>` name their target first.
                 if *origin == Origin::Prelude && matches!(name, "to" | "try") {
-                    vars.names.reverse();
+                    if let Some(index) =
+                        vars.names.iter().position(|(n, _)| n == "b")
+                    {
+                        let target = vars.names.remove(index);
+                        vars.names.insert(0, target);
+                    }
                 }
                 let mut callee =
                     self.finish_callee(slots, result, self_slot, vars, span);
                 callee.home = Some(origin.clone());
-                callee
-            }
-            Kind::Method { class, .. } => {
-                let var = self.fresh();
-                let mut callee = self.method(
-                    &scope,
-                    class,
-                    name,
-                    &SelfKind::Trait(var),
-                    None,
-                    span,
-                );
-                if callee.spots.is_none()
-                    && super::lower::has_placeholder(&callee.ty)
-                {
-                    // `empty: Self<a>`: a value whose family the expected
-                    // type must give.
-                    callee.spots = Some(Vec::new());
+                if *origin == Origin::Prelude && matches!(name, "to" | "try") {
+                    let target = callee.parameters[0].clone();
+                    callee.conversion = Some((target, String::from(name)));
                 }
                 callee
             }
@@ -442,7 +603,7 @@ impl<'a> Infer<'a> {
         }
     }
 
-    fn finish_callee(
+    pub(super) fn finish_callee(
         &mut self,
         slots: Vec<Slot>,
         result: Type,
@@ -450,7 +611,9 @@ impl<'a> Infer<'a> {
         vars: Vars,
         span: Span,
     ) -> Callee {
-        for obligation in vars.obligations {
+        for mut obligation in vars.obligations {
+            let Obligation::Member { dot, .. } = &mut obligation;
+            *dot = span;
             self.state
                 .obligations
                 .push(super::Owed::new(obligation, span));
@@ -463,88 +626,6 @@ impl<'a> Infer<'a> {
             callee.self_slot = self_slot;
         }
         callee
-    }
-
-    /// Trait `class`'s method `member`, declared in `scope`, with `Self`
-    /// as given and the trait's parameters bound to `arguments` or fresh.
-    /// A bare `Self` adds the obligation `class Self`.
-    pub(super) fn method(
-        &mut self,
-        scope: &Scope<'a>,
-        class: &str,
-        member: &str,
-        self_kind: &SelfKind,
-        arguments: Option<&[Type]>,
-        span: Span,
-    ) -> Callee {
-        let module = scope.module(self.module);
-        let Some((parameters, members)) = trait_item(module, class) else {
-            return Callee::plain(self.fresh());
-        };
-        let Some(ty) = members
-            .iter()
-            .find(|m| super::last(&m.name) == member)
-            .map(|m| m.ty)
-        else {
-            return Callee::plain(self.fresh());
-        };
-        let mut vars = Vars::new(self_kind.clone());
-        for (index, parameter) in parameters.iter().enumerate() {
-            let ty = arguments
-                .and_then(|a| a.get(index))
-                .map_or_else(|| self.fresh(), Clone::clone);
-            vars.names.push((super::last(&parameter.name), ty));
-        }
-        let (slots, result, self_slot) = self.signature(scope, ty, &mut vars);
-        let SelfKind::Trait(var) = self_kind.clone() else {
-            return self.finish_callee(slots, result, self_slot, vars, span);
-        };
-        let whole = slots.iter().fold(result.clone(), |ty, slot| {
-            Type::function(slot.ty.clone(), ty)
-        });
-        if !has_placeholder(&whole) {
-            vars.obligations.push(Obligation::Class {
-                class: String::from(class),
-                ty: var.clone(),
-            });
-        }
-        // `read<I64>`: the receiver is the first type parameter.
-        let mut callee =
-            self.finish_callee(slots, result, self_slot, vars, span);
-        callee.parameters.insert(0, var);
-        callee
-    }
-
-    /// The trait method an impl member of `self_type` implements, from
-    /// the impl's `implements` type in the module being inferred.
-    pub(super) fn impl_method(
-        &mut self,
-        implements: TypeId,
-        member: &str,
-    ) -> Type {
-        let Some(class) = named(self.module, implements) else {
-            return self.fresh();
-        };
-        let arguments = match self.module.ty(implements).map(|n| &n.kind) {
-            Some(TypeKind::Named { arguments, .. }) => arguments.clone(),
-            _ => Vec::new(),
-        };
-        let arguments: Vec<Type> =
-            arguments.iter().map(|a| self.lower_here(*a)).collect();
-        let origin = match self.resolved.ty(implements) {
-            Some(Target::Trait { origin, .. }) => origin.clone(),
-            _ => Origin::Prelude,
-        };
-        let self_kind = self
-            .self_type
-            .clone()
-            .map_or(SelfKind::None, SelfKind::Type);
-        let Some(scope) = self.scope(&origin) else {
-            return self.fresh();
-        };
-        let span = self.module.types[implements.0].span;
-        self.method(&scope, &class, member, &self_kind, Some(&arguments), span)
-            .whole()
     }
 
     /// The constructor `name` of type `ty`: a sum constructor's fields,
@@ -638,10 +719,10 @@ impl<'a> Infer<'a> {
             return Some(self.local(Span { start, end }, Span::default()));
         }
         let arms: Vec<_> = impls(module, ty)
-            .flat_map(|(_, members)| members)
+            .flatten()
             .filter_map(|member| match member {
                 ImplMember::Constructor(arm) => Some(arm.clone()),
-                _ => None,
+                ImplMember::Named { .. } => None,
             })
             .collect();
         if arms.is_empty() {
@@ -732,10 +813,9 @@ impl<'a> Infer<'a> {
             return false;
         }
         self.owner(&name.origin).is_some_and(|module| {
-            impls(module, &name.name).any(|(implements, _)| {
-                implements.and_then(|id| named(module, id)).as_deref()
-                    == Some("Read")
-            })
+            impls(module, &name.name).any(|members| members.iter().any(|m| {
+                matches!(m, ImplMember::Named { name, .. } if super::last(name) == "read")
+            }))
         })
     }
 
@@ -782,51 +862,6 @@ fn module_marker(origin: &Origin) -> Type {
     Type::named(origin.clone(), name, Vec::new())
 }
 
-pub(super) fn has_placeholder(ty: &Type) -> bool {
-    match ty {
-        Type::Named { arguments, .. } => {
-            is_placeholder(ty) || arguments.iter().any(has_placeholder)
-        }
-        Type::Array { element, .. } => has_placeholder(element),
-        Type::Function { parameter, result } => {
-            has_placeholder(parameter) || has_placeholder(result)
-        }
-        _ => false,
-    }
-}
-
-/// Replace every `Self<a…>` with `family<prefix…, a…>`.
-pub(super) fn fill_family(
-    ty: &Type,
-    family: &(String, Origin, Vec<Type>),
-) -> Type {
-    match ty {
-        Type::Named { name, arguments } => {
-            let arguments: Vec<Type> =
-                arguments.iter().map(|a| fill_family(a, family)).collect();
-            if is_placeholder(ty) {
-                let mut all = family.2.clone();
-                all.extend(arguments);
-                Type::named(family.1.clone(), &family.0, all)
-            } else {
-                Type::Named {
-                    name: name.clone(),
-                    arguments,
-                }
-            }
-        }
-        Type::Array { element, length } => Type::Array {
-            element: alloc::boxed::Box::new(fill_family(element, family)),
-            length: *length,
-        },
-        Type::Function { parameter, result } => Type::function(
-            fill_family(parameter, family),
-            fill_family(result, family),
-        ),
-        _ => ty.clone(),
-    }
-}
-
 /// The last segment of a named type syntax.
 pub(super) fn named(module: &Module, id: TypeId) -> Option<String> {
     match &module.ty(id)?.kind {
@@ -855,26 +890,6 @@ pub(super) fn type_item<'m>(
     })
 }
 
-pub(super) fn trait_item<'m>(
-    module: &'m Module,
-    name: &str,
-) -> Option<(&'m [TypeParameter], &'m [TraitMember])> {
-    module.entries.iter().find_map(|entry| match entry {
-        Entry::Item(item) => match &item.kind {
-            ItemKind::Trait {
-                name: n,
-                parameters,
-                members,
-                ..
-            } if super::last(n) == name => {
-                Some((parameters.as_slice(), members.as_slice()))
-            }
-            _ => None,
-        },
-        Entry::Line(_) => None,
-    })
-}
-
 fn declare_item(module: &Module, name: &str) -> Option<TypeId> {
     module.entries.iter().find_map(|entry| match entry {
         Entry::Item(item) => match &item.kind {
@@ -887,19 +902,17 @@ fn declare_item(module: &Module, name: &str) -> Option<TypeId> {
     })
 }
 
-/// Every impl of type `ty` in `module`: its trait and members.
+/// The members of every impl of type `ty` in `module`.
 pub(super) fn impls<'m>(
     module: &'m Module,
     ty: &'m str,
-) -> impl Iterator<Item = (Option<TypeId>, &'m [ImplMember])> + 'm {
+) -> impl Iterator<Item = &'m [ImplMember]> + 'm {
     module.entries.iter().filter_map(move |entry| match entry {
         Entry::Item(item) => match &item.kind {
-            ItemKind::Impl {
-                target,
-                implements,
-                members,
-            } if named(module, *target).as_deref() == Some(ty) => {
-                Some((*implements, members.as_slice()))
+            ItemKind::Impl { target, members }
+                if named(module, *target).as_deref() == Some(ty) =>
+            {
+                Some(members.as_slice())
             }
             _ => None,
         },

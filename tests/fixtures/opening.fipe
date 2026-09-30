@@ -12,8 +12,8 @@ fs.list dir /etc | map .name | put ./names    # `put` is a host command: the val
 cat (Rd 4)                                    # a handle by number
 
 # `=` binds and never reassigns. The arm is the one function form; it curries.
-add = a b => a + b                            # T -> T -> T where T: Num
-add2 = add 2                                  # I64 -> I64
+add = a b => a + b                            # Add<b> a => a -> b -> a
+add2 = add 2                                  # Integer -> Integer
 add2 4                                        # 6
 
 # `pub` exports; the signature sits on the binding. Outcomes are values:
@@ -40,7 +40,7 @@ impl Point {
     x (y = 0) => Self { x, y, len: hypot x y }, # the written constructor; braces are raw
     dist = self q => hypot (self.x - q.x) (self.y - q.y),
 }
-impl Point: Display { display = self => join "," [show self.x, show self.y] }
+impl Point { show = self => join "," [show self.x, show self.y] }
 Point 3 4 | show                              # "3,4"; `p.dist q` fills `self`
 
 with cwd /tmp { ls }                          # a child environment, for the block only

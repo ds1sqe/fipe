@@ -3,11 +3,11 @@
 Functional Pipeline Language: embedded, extensible, functional, typed,
 compiled. Fipe is its own Rust crate with no dependencies or editor coupling.
 
-This development version implements the lexer and parser with `core` and
-`alloc`, no unsafe code: owned tokens, byte spans, scalar positions, an
-owned syntax tree and recoverable diagnostics. Checking and execution
-follow. The [specification](Documentation/spec/README.md) defines the
-language; the prior implementation is version 0.1.0, Git `7606ff7`.
+This development version implements lexing, parsing, name resolution and
+type inference with members, with `core` and `alloc` and no unsafe code.
+Limits, casts and execution follow. The
+[specification](Documentation/spec/README.md) defines the language; the
+prior implementation is version 0.1.0, Git `7606ff7`.
 
 ## Library
 

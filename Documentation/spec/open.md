@@ -44,6 +44,8 @@ parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays
   one.
 - Arithmetic on number parameters beyond a sum.
 - What is known of a float: a small set of values, as 2.0 or 2.5.
+- The shape of `LimitError`, the `Err` of `try<T>` when a limit fails
+  ([limits](limits.md) §Gates); the prelude declares it opaque.
 - A local strict scope for a program's own code, if one is wanted.
 - May a limit read a value known at init when it says `Init`?
 - Whether the strict session reaches the prelude.

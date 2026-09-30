@@ -252,14 +252,8 @@ fn where_is_a_name_outside_a_type_item() {
     assert!(matches!(node(&parsed, id), ExprKind::Bind { .. }));
     let (parsed, id) = only("trait x");
     assert!(matches!(node(&parsed, id), ExprKind::Call { .. }));
-    let parsed = module("trait Show { show: Self -> String }");
-    assert!(matches!(
-        parsed.entries.as_slice(),
-        [Entry::Item(Item {
-            kind: ItemKind::Trait { .. },
-            ..
-        })]
-    ));
+    let (parsed, id) = only("trait T {}");
+    assert!(matches!(node(&parsed, id), ExprKind::Call { .. }));
 }
 
 /// A tuple is `( )` not touching a callee with a top-level comma before
@@ -464,4 +458,18 @@ fn a_prefix_or_suffix_is_a_literal_in_values_and_patterns() {
         parsed.pattern(arms[0].patterns[0]).unwrap().kind,
         PatternKind::Literal(Literal::Affixed(_))
     ));
+}
+
+#[test]
+fn type_parameter_defaults_follow_bounds_and_are_trailing() {
+    let parsed = module("type Add<T: Eq = Self> where self.add: T -> Self");
+    let Entry::Item(item) = &parsed.entries[0] else {
+        panic!()
+    };
+    let ItemKind::Type { parameters, .. } = &item.kind else {
+        panic!()
+    };
+    assert!(parameters[0].bound.is_some());
+    assert!(parameters[0].default.is_some());
+    assert!(fipe::parse::parse(fipe::lex::lex("type P<A = Self, B>")).is_err());
 }

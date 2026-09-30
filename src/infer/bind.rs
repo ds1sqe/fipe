@@ -2,14 +2,14 @@
 //! Generalization): a binding generalizes over the variables not free
 //! in the environment and carries their obligations; a variable held
 //! only by literals defaults first; an obligation whose variable left
-//! the type is ambiguous, or `DotNeedsType` for a member; an annotation
+//! the type is ambiguous at its member; an annotation
 //! quantifies its written names; a `pub` binding ends closed. A member
 //! obligation's type stays with its head.
 //!
 //! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
 
 use super::{
-    is_prelude, num, prelude, Error, Expected, Infer, Lit, Local, Owed, Reason,
+    is_prelude, prelude, Error, Expected, Infer, Lit, Local, Owed, Reason,
     Status,
 };
 use crate::{
@@ -139,21 +139,42 @@ impl Infer<'_> {
         }
     }
 
-    /// Whether `ty` is a variable owing `Num` or `Float`: a number whose
-    /// type is still open, never an outcome or a function.
+    /// An open literal meaning cannot be an outcome or function.
     pub(super) fn numeric_var(&self, ty: &Type) -> bool {
         let ty = self.apply(ty);
         matches!(ty, Type::Var(_))
             && self.state.obligations.iter().any(|owed| {
-                matches!(&owed.obligation, Obligation::Class { class, ty: t }
-                    if matches!(class.as_str(), "Num" | "Float")
-                        && self.apply(t) == ty)
+                matches!(&owed.obligation, Obligation::Member { name, head, .. }
+                    if name == "literal" && self.apply(head) == ty)
             })
     }
 
     /// VAR: fresh variables, and the scheme's obligations owed at `span`.
     pub(super) fn instantiate(&mut self, scheme: &Scheme, span: Span) -> Type {
-        let (ty, obligations) = scheme.instantiate(&mut self.state.subst);
+        let fresh: Vec<_> = scheme
+            .variables
+            .iter()
+            .map(|v| (*v, self.fresh()))
+            .collect();
+        let ty = crate::types::replace(&scheme.ty, &fresh);
+        let obligations = scheme
+            .obligations
+            .iter()
+            .map(|o| o.map(|t| crate::types::replace(t, &fresh)));
+        for (head, form, dot) in &scheme.literals {
+            let head = crate::types::replace(head, &fresh);
+            let mut owed = Owed::new(
+                Obligation::Member {
+                    head: head.clone(),
+                    name: String::from("literal"),
+                    ty: Type::function(prelude("Form"), head),
+                    dot: *dot,
+                },
+                span,
+            );
+            owed.literal = Some(form.clone());
+            self.state.obligations.push(owed);
+        }
         for obligation in obligations {
             self.state.obligations.push(Owed::new(obligation, span));
         }
@@ -194,10 +215,7 @@ impl Infer<'_> {
         loop {
             let before = vars.len();
             for owed in self.state.obligations.iter().filter(|o| !o.solved) {
-                let Obligation::Member { head, ty, .. } = &owed.obligation
-                else {
-                    continue;
-                };
+                let Obligation::Member { head, ty, .. } = &owed.obligation;
                 if let Type::Var(var) = self.apply(head) {
                     if vars.contains(&var) {
                         self.apply(ty).variables(vars);
@@ -219,9 +237,8 @@ impl Infer<'_> {
         group: &[usize],
     ) -> Vec<Scheme> {
         self.dots();
-        self.derive(mark.obligations);
         let env = self.environment(group);
-        let quiet = self.state.errors.len() > mark.errors;
+        let errors = mark.errors;
         let mark = mark.obligations;
         let reach: Vec<Vec<Var>> = parts
             .iter()
@@ -233,13 +250,39 @@ impl Infer<'_> {
             })
             .collect();
         self.default_literals(mark, &env, &reach.concat());
+        let quiet = self.state.errors.len() > errors;
+        self.check_complete(parts, quiet);
         let types: Vec<Type> =
             parts.iter().map(|p| self.apply(&p.ty)).collect();
         let mut carried = alloc::vec![Vec::new(); parts.len()];
+        let mut literals = alloc::vec![Vec::new(); parts.len()];
         let mut kept = Vec::new();
         let mut left: Vec<Obligation> = Vec::new();
         for owed in self.state.obligations.split_off(mark) {
             if owed.solved {
+                if let Some(form) = &owed.literal {
+                    let head = self.apply(owed.obligation.subject());
+                    if let Type::Rigid(name) = &head {
+                        for (index, part) in parts.iter().enumerate() {
+                            let mut names = Vec::new();
+                            rigids(&part.ty, &mut names);
+                            if part.annotated && names.contains(name) {
+                                literals[index].push((
+                                    head.clone(),
+                                    form.clone(),
+                                    owed.span,
+                                ));
+                            }
+                        }
+                    }
+                }
+                if owed.assumed {
+                    for (index, part) in parts.iter().enumerate() {
+                        if part.annotated {
+                            carried[index].push(owed.obligation.clone());
+                        }
+                    }
+                }
                 continue;
             }
             let obligation = owed.obligation.map(|ty| self.apply(ty));
@@ -256,6 +299,13 @@ impl Infer<'_> {
             for (index, part) in parts.iter().enumerate() {
                 if reach[index].contains(&var) {
                     placed = true;
+                    if let Some(form) = &owed.literal {
+                        literals[index].push((
+                            obligation.subject().clone(),
+                            form.clone(),
+                            owed.span,
+                        ));
+                    }
                     let list: &mut Vec<Obligation> = &mut carried[index];
                     // Not written: an annotated type leaves it.
                     if part.annotated {
@@ -278,57 +328,24 @@ impl Infer<'_> {
             .iter()
             .zip(types)
             .zip(carried)
-            .map(|((part, ty), obligations)| {
-                self.scheme(part, ty, obligations, &env)
+            .zip(literals)
+            .map(|(((part, ty), obligations), literals)| {
+                let mut scheme =
+                    self.scheme(part, ty, obligations, literals, &env);
+                scheme.folds = self.fold_names(&scheme);
+                scheme
             })
             .collect()
     }
 
-    /// Derived `Eq` and `Ord` on a type with arguments owe the same on
-    /// each argument (types.md §Traits), down to the variables.
-    fn derive(&mut self, mark: usize) {
-        let mut pending = self.state.obligations.split_off(mark);
-        pending.reverse();
-        while let Some(owed) = pending.pop() {
-            let Obligation::Class { class, ty } = &owed.obligation else {
-                self.state.obligations.push(owed);
-                continue;
-            };
-            let arguments = match self.apply(ty) {
-                Type::Named { arguments, .. } if !arguments.is_empty() => {
-                    arguments
-                }
-                Type::Array { element, .. } => alloc::vec![*element],
-                _ => Vec::new(),
-            };
-            if arguments.is_empty() || !matches!(class.as_str(), "Eq" | "Ord") {
-                self.state.obligations.push(owed);
-                continue;
-            }
-            for argument in arguments.into_iter().rev() {
-                let obligation = Obligation::Class {
-                    class: class.clone(),
-                    ty: argument,
-                };
-                pending.push(Owed::new(obligation, owed.span));
-            }
-        }
-    }
-
-    /// Obligations whose variable left the type: `DotNeedsType` at a
-    /// member's dot, else ambiguous at `site`, once per class.
+    /// An escaping obligation is ambiguous once per member name.
     fn left(&mut self, left: Vec<Obligation>, site: Span) {
         let mut errors: Vec<Error> = Vec::new();
         for obligation in left {
-            let error = match obligation {
-                Obligation::Member { dot, .. } => Error {
-                    span: dot,
-                    reason: Reason::DotNeedsType,
-                },
-                Obligation::Class { class, .. } => Error {
-                    span: site,
-                    reason: Reason::Ambiguous { class },
-                },
+            let Obligation::Member { name, dot, .. } = obligation;
+            let error = Error {
+                span: if dot == Span::default() { site } else { dot },
+                reason: Reason::Ambiguous { class: name },
             };
             if !errors.contains(&error) {
                 errors.push(error);
@@ -337,18 +354,29 @@ impl Infer<'_> {
         self.state.errors.extend(errors);
     }
 
+    fn check_complete(&mut self, parts: &[Part], quiet: bool) {
+        if quiet {
+            return;
+        }
+        for part in parts.iter().filter(|p| p.public) {
+            let mut variables = Vec::new();
+            self.apply(&part.ty).variables(&mut variables);
+            if !variables.is_empty() {
+                self.error(part.site, Reason::NotComplete);
+            }
+        }
+    }
+
     fn scheme(
         &mut self,
         part: &Part,
         ty: Type,
         obligations: Vec<Obligation>,
+        literals: Vec<(Type, Lit, Span)>,
         env: &[Var],
     ) -> Scheme {
         let mut variables = Vec::new();
         ty.variables(&mut variables);
-        if part.public && !variables.is_empty() {
-            self.error(part.site, Reason::NotComplete);
-        }
         if !part.annotated {
             for obligation in &obligations {
                 obligation.variables(&mut variables);
@@ -356,6 +384,8 @@ impl Infer<'_> {
             variables.retain(|var| !env.contains(var));
             return Scheme {
                 variables,
+                literals,
+                folds: Vec::new(),
                 obligations,
                 ty,
             };
@@ -369,37 +399,35 @@ impl Infer<'_> {
             .collect();
         Scheme {
             variables: fresh.iter().map(|(_, var)| *var).collect(),
-            obligations: Vec::new(),
+            literals: literals
+                .iter()
+                .map(|(ty, form, span)| {
+                    (unrigid(ty, &fresh), form.clone(), *span)
+                })
+                .collect(),
+            folds: Vec::new(),
+            obligations: obligations
+                .iter()
+                .map(|o| o.map(|t| unrigid(t, &fresh)))
+                .collect(),
             ty: unrigid(&ty, &fresh),
         }
     }
 
-    /// A line of the implicit main generalizes nothing: its variables
-    /// leave there and default if they can. A trait obligation still on
-    /// a variable is then ambiguous, in the line's type or not (types.md
-    /// §Core judgments: "a line whose target is still unknown is an
-    /// ambiguity error"); a member obligation is `DotNeedsType` once its
-    /// head has left the line's type.
-    pub(super) fn line_boundary(&mut self, ty: &Type, span: Span, mark: Mark) {
+    /// A main line defaults literal meanings, then reports any member
+    /// whose head remains unknown.
+    pub(super) fn line_boundary(&mut self, span: Span, mark: Mark) {
         self.dots();
-        self.derive(mark.obligations);
         let env = self.environment(&[]);
         self.default_literals(mark.obligations, &env, &[]);
-        let mut stay = Vec::new();
-        self.apply(ty).variables(&mut stay);
-        self.close(&mut stay);
         let quiet = self.state.errors.len() > mark.errors;
         let mut left = Vec::new();
         for owed in self.state.obligations.split_off(mark.obligations) {
             if owed.solved {
                 continue;
             }
-            let class = matches!(owed.obligation, Obligation::Class { .. });
             match self.apply(owed.obligation.subject()) {
-                Type::Var(var)
-                    if !env.contains(&var)
-                        && (class || !stay.contains(&var)) =>
-                {
+                Type::Var(var) if !env.contains(&var) => {
                     if !quiet {
                         left.push(owed.obligation);
                     }
@@ -411,7 +439,7 @@ impl Infer<'_> {
     }
 
     /// At the end, a member obligation whose head is in no line's type
-    /// has left it: `DotNeedsType`.
+    /// has left it: ambiguous at its dot.
     pub(super) fn left_members(&mut self) {
         let mut stay = Vec::new();
         for entry in &self.module.entries {
@@ -425,9 +453,7 @@ impl Infer<'_> {
         self.close(&mut stay);
         let mut left = Vec::new();
         for owed in &mut self.state.obligations {
-            let Obligation::Member { head, .. } = &owed.obligation else {
-                continue;
-            };
+            let Obligation::Member { head, .. } = &owed.obligation;
             let head = self.state.subst.apply(head);
             if !owed.solved
                 && matches!(head, Type::Var(v) if !stay.contains(&v))
@@ -439,89 +465,109 @@ impl Infer<'_> {
         self.left(left, Span::default());
     }
 
-    /// Among the obligations since `mark`, a variable outside `env`
-    /// that only literals hold becomes `I64`, or `F64` for a float
-    /// literal. One not in `stay` becomes the same where it leaves when
-    /// it owes `Num`, `Float` or a literal and otherwise at most `Eq`
-    /// and `Ord`.
+    /// Literal forms choose one meaning together. A binding retains a
+    /// literal with other member requirements; an escaping one defaults.
     pub(super) fn default_literals(
         &mut self,
         mark: usize,
         env: &[Var],
         stay: &[Var],
     ) {
-        struct Held {
-            var: Var,
-            only_literals: bool,
-            /// `F64` for a `Float`, else `I64` for a `Num`.
-            numeric: Option<&'static str>,
-            other: bool,
-        }
-        let mut seen: Vec<Held> = Vec::new();
+        let mut vars = Vec::new();
         for owed in &self.state.obligations[mark..] {
-            let Type::Var(var) = self.apply(owed.obligation.subject()) else {
-                continue;
-            };
-            if owed.solved || env.contains(&var) {
+            if let Type::Var(var) = self.apply(owed.obligation.subject()) {
+                if !owed.solved && !env.contains(&var) && !vars.contains(&var) {
+                    vars.push(var);
+                }
+            }
+        }
+        for var in vars {
+            let held: Vec<_> = self.state.obligations[mark..]
+                .iter()
+                .filter(|o| {
+                    !o.solved
+                        && self.apply(o.obligation.subject()) == Type::Var(var)
+                })
+                .collect();
+            let literal = held.iter().any(|o| matches!(&o.obligation, Obligation::Member { name, .. } if name == "literal"));
+            let only = held.iter().all(|o| matches!(&o.obligation, Obligation::Member { name, .. } if name == "literal"));
+            if !literal || (stay.contains(&var) && !only) {
                 continue;
             }
-            let index =
-                seen.iter().position(|s| s.var == var).unwrap_or_else(|| {
-                    seen.push(Held {
-                        var,
-                        only_literals: true,
-                        numeric: None,
-                        other: false,
+            let forms: Vec<_> =
+                held.iter().filter_map(|o| o.literal.as_ref()).collect();
+            let mut kinds = Vec::new();
+            for form in &forms {
+                let kind = match form {
+                    Lit::Int { .. } => "Whole",
+                    Lit::Float => "Fraction",
+                    Lit::Text => "Text",
+                    Lit::Bytes => "Bytes",
+                };
+                if !kinds.contains(&kind) {
+                    kinds.push(kind);
+                }
+            }
+            if kinds.len() > 1
+                && !kinds.iter().all(|k| matches!(*k, "Whole" | "Fraction"))
+            {
+                let start = held.iter().map(|o| o.span.start).min().unwrap();
+                let end = held.iter().map(|o| o.span.end).max().unwrap();
+                let span = self
+                    .module
+                    .expressions
+                    .iter()
+                    .map(|e| e.span)
+                    .filter(|s| s.start <= start && s.end >= end)
+                    .min_by_key(|s| s.end - s.start)
+                    .unwrap_or_else(|| {
+                        held.iter().max_by_key(|o| o.span.end).unwrap().span
                     });
-                    seen.len() - 1
-                });
-            let held = &mut seen[index];
-            held.only_literals &= owed.literal.is_some();
-            let Obligation::Class { class, .. } = &owed.obligation else {
-                held.other = true;
+                let forms = kinds.into_iter().map(String::from).collect();
+                for index in mark..self.state.obligations.len() {
+                    if self.apply(
+                        self.state.obligations[index].obligation.subject(),
+                    ) == Type::Var(var)
+                    {
+                        self.state.obligations[index].solved = true;
+                    }
+                }
+                self.error(span, Reason::NoCommonMeaning { forms });
                 continue;
-            };
-            let class = class.as_str();
-            match class {
-                "Float" => held.numeric = Some("F64"),
-                "Num" => held.numeric = held.numeric.or(Some("I64")),
-                "Eq" | "Ord" => {}
-                _ => held.other = true,
             }
-        }
-        for held in seen {
-            let defaults = if stay.contains(&held.var) {
-                held.only_literals
+            let name = if forms.iter().any(|l| matches!(l, Lit::Float)) {
+                "F64"
+            } else if forms.iter().any(|l| matches!(l, Lit::Int { .. })) {
+                "Integer"
+            } else if forms.iter().any(|l| matches!(l, Lit::Text)) {
+                "String"
+            } else if forms.iter().any(|l| matches!(l, Lit::Bytes)) {
+                "Vec"
             } else {
-                !held.other
+                "Integer"
             };
-            if let Some(name) = held.numeric.filter(|_| defaults) {
-                self.hint(&Type::Var(held.var), &prelude(name));
-            }
+            let ty = if name == "Vec" {
+                super::prelude_of(
+                    "Vec",
+                    alloc::vec![self.limited(prelude("U8"))],
+                )
+            } else {
+                prelude(name)
+            };
+            self.hint(&Type::Var(var), &ty);
         }
+        self.dots();
     }
 
-    /// Check what the module still owes and return what is left on
-    /// variables. `Num` is the one class checked here (the stub).
     pub(super) fn settle(&mut self) -> Vec<Obligation> {
+        self.dots();
         let mut unsolved = Vec::new();
         for owed in core::mem::take(&mut self.state.obligations) {
             if owed.solved {
                 continue;
             }
             let obligation = owed.obligation.map(|ty| self.apply(ty));
-            if let Obligation::Class { class, ty } = &obligation {
-                match owed.literal {
-                    Some(literal) => self.check_literal(literal, ty, owed.span),
-                    None if class == "Num" && num(ty) == Some(false) => {
-                        self.error(owed.span, Reason::NotNumeric);
-                    }
-                    None => {}
-                }
-            }
-            if matches!(obligation.subject(), Type::Var(_))
-                && !unsolved.contains(&obligation)
-            {
+            if !unsolved.contains(&obligation) {
                 unsolved.push(obligation);
             }
         }
@@ -535,21 +581,60 @@ impl Infer<'_> {
         ty: &Type,
         span: Span,
     ) {
+        if let Type::Limited { name, meaning } = ty {
+            if let Lit::Int {
+                negative,
+                magnitude,
+            } = &literal
+            {
+                if let Some(valid) =
+                    in_range(name, *negative, magnitude.to_u64())
+                {
+                    if !valid {
+                        self.error(span, Reason::OutOfRange);
+                    }
+                    return;
+                }
+            }
+            return self.check_literal(literal, meaning, span);
+        }
         let float = is_prelude(ty, "F32") || is_prelude(ty, "F64");
         let actual = match literal {
-            _ if matches!(ty, Type::Var(_)) || float => return,
+            _ if matches!(ty, Type::Var(_)) => return,
+            Lit::Int { ref magnitude, .. } if float => {
+                let (precision, exponent) = if is_prelude(ty, "F32") {
+                    (24, 128)
+                } else {
+                    (53, 1024)
+                };
+                if !magnitude.fits_binary_float(precision, exponent) {
+                    self.error(span, Reason::OutOfRange);
+                }
+                return;
+            }
+            Lit::Float if float => return,
             Lit::Int {
                 negative,
                 magnitude,
-            } => match in_range(ty, negative, magnitude) {
+            } => match in_range(ty, negative, magnitude.to_u64()) {
                 Some(true) => return,
                 Some(false) => {
                     self.error(span, Reason::OutOfRange);
                     return;
                 }
-                None => prelude("I64"),
+                None if is_prelude(ty, "Integer") => return,
+                None => prelude("Integer"),
             },
             Lit::Float => prelude("F64"),
+            Lit::Text if is_prelude(ty, "String") => return,
+            Lit::Text => prelude("String"),
+            Lit::Bytes if matches!(ty, Type::Named { name, arguments } if name.origin == Origin::Prelude && name.name == "Vec" && arguments.len() == 1 && is_prelude(super::meaning(&arguments[0]), "Integer")) => {
+                return
+            }
+            Lit::Bytes => super::prelude_of(
+                "Vec",
+                alloc::vec![self.limited(prelude("U8"))],
+            ),
         };
         let expected = ty.clone();
         self.error(
@@ -594,6 +679,24 @@ pub(super) fn applied(scheme: &Scheme, subst: &Subst) -> Scheme {
             .iter()
             .map(|obligation| obligation.map(|ty| subst.apply(ty)))
             .collect(),
+        folds: scheme
+            .folds
+            .iter()
+            .map(|(name, members)| {
+                (
+                    subst.apply(name),
+                    members
+                        .iter()
+                        .map(|o| o.map(|ty| subst.apply(ty)))
+                        .collect(),
+                )
+            })
+            .collect(),
+        literals: scheme
+            .literals
+            .iter()
+            .map(|(ty, form, span)| (subst.apply(ty), form.clone(), *span))
+            .collect(),
         ty: subst.apply(&scheme.ty),
     }
 }
@@ -606,6 +709,12 @@ fn rigids(ty: &Type, out: &mut Vec<String>) {
                 rigids(argument, out);
             }
         }
+        Type::Either(parts) => {
+            for p in parts {
+                rigids(p, out);
+            }
+        }
+        Type::Limited { name, .. } => rigids(name, out),
         Type::Array { element, .. } => rigids(element, out),
         Type::Function { parameter, result } => {
             rigids(parameter, out);
@@ -624,6 +733,13 @@ fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
         Type::Named { name, arguments } => Type::Named {
             name: name.clone(),
             arguments: arguments.iter().map(|a| unrigid(a, fresh)).collect(),
+        },
+        Type::Either(parts) => {
+            Type::Either(parts.iter().map(|p| unrigid(p, fresh)).collect())
+        }
+        Type::Limited { name, meaning } => Type::Limited {
+            name: Box::new(unrigid(name, fresh)),
+            meaning: Box::new(unrigid(meaning, fresh)),
         },
         Type::Array { element, length } => Type::Array {
             element: Box::new(unrigid(element, fresh)),

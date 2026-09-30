@@ -212,8 +212,10 @@ fn a_line_carries_its_types() {
     };
     let typed = report.typed.as_ref().unwrap();
     let scheme = typed.binding(*id).unwrap();
-    assert_eq!(scheme.to_string(), "Num a => a -> a -> a");
-    for (line, ty) in [("add 2", "I64 -> I64"), ("add 2.0", "F64 -> F64")] {
+    assert_eq!(scheme.to_string(), "Add<b> a => a -> b -> a");
+    for (line, ty) in
+        [("add 2", "Integer -> Integer"), ("add 2.0", "F64 -> F64")]
+    {
         let report = ok(&mut session, line);
         let [fipe::ast::Entry::Line(id)] = report.entries() else {
             panic!()
@@ -245,24 +247,29 @@ fn a_query_reports_a_scheme() {
     let mut session = Session::new(host());
     ok(&mut session, "add = a b => a + b");
     ok(&mut session, "rr = Ok 1");
-    assert_eq!(query(&mut session, "add"), "Num a => a -> a -> a");
+    assert_eq!(query(&mut session, "add"), "Add<b> a => a -> b -> a");
     assert_eq!(query(&mut session, ".name"), "a.name: b => a -> b");
     assert_eq!(query(&mut session, "(x => x)"), "a -> a");
     assert_eq!(query(&mut session, "[]"), "Vec<a>");
-    assert_eq!(query(&mut session, "rr"), "Result<I64, a>");
-    assert_eq!(query(&mut session, "add 2"), "Num a => a -> a");
-    assert_eq!(query(&mut session, "1 + 1"), "I64");
+    assert_eq!(query(&mut session, "rr"), "Result<Integer, a>");
+    assert_eq!(
+        query(&mut session, "add 2"),
+        "Add<a> b, Literal b => a -> b"
+    );
+    assert_eq!(query(&mut session, "1 + 1"), "Integer");
     assert_eq!(
         query(&mut session, "read \"8080\""),
         "Read a => Result<a, ParseError>"
     );
-    // A line of main still defaults where its variable leaves.
-    let report = ok(&mut session, "add");
-    let [fipe::ast::Entry::Line(id)] = report.entries() else {
-        panic!()
-    };
-    let ty = report.typed.as_ref().unwrap().expr(*id).unwrap();
-    assert_eq!(ty.to_string(), "I64 -> I64 -> I64");
+    // A main line cannot choose a meaning from a member alone.
+    let report = done(session.line("add"));
+    assert!(matches!(
+        report.diagnostics.as_slice(),
+        [Diagnostic::Type(fipe::infer::Error {
+            reason: fipe::infer::Reason::Ambiguous { .. },
+            ..
+        })]
+    ));
 }
 
 #[test]
@@ -275,10 +282,10 @@ fn a_line_whose_read_target_is_unknown_is_ambiguous() {
     assert_eq!(
         error.reason,
         fipe::infer::Reason::Ambiguous {
-            class: "Read".into()
+            class: "read".into()
         }
     );
-    assert_eq!(error.span, span(0, 11));
+    assert_eq!(error.span, span(0, 4));
     ok(&mut session, "port = read \"8080\"");
     ok(&mut session, "read<I64> \"8080\"");
 }
@@ -317,7 +324,7 @@ fn a_loaded_file_is_checked_once_and_its_values_are_typed() {
     let bad = |text: &'static str| ("bad".to_string(), text);
     assert_eq!(
         file_errors(&report, BAD),
-        [bad("nosuch"), bad("\"x\""), bad("\"a\"")]
+        [bad("nosuch"), bad("\"x\""), bad("1 + \"a\"")]
     );
     assert!(matches!(
         report.diagnostics[1],
@@ -370,7 +377,7 @@ fn a_long_flat_chain_does_not_overflow() {
     let mut session = Session::new(host());
     for term in [" + 1", " | (x => x)"] {
         let text = format!("1{}", term.repeat(20_000));
-        assert_eq!(query(&mut session, &text), "I64");
+        assert_eq!(query(&mut session, &text), "Integer");
     }
 }
 
@@ -402,15 +409,15 @@ fn an_accepted_line_is_frozen_and_a_redefinition_shadows_after_it() {
     ok(&mut session, "f = n => n + 1");
     ok(&mut session, "g = n => f n");
     ok(&mut session, "f = s => s | len");
-    assert_eq!(line_type(&mut session, "g 3"), "I64");
-    assert_eq!(line_type(&mut session, "f \"abc\""), "U64");
-    assert_eq!(query(&mut session, "g"), "Num a => a -> a");
-    assert_eq!(query(&mut session, "f"), "Len a => a -> U64");
+    assert_eq!(line_type(&mut session, "g 3"), "Integer");
+    assert_eq!(line_type(&mut session, "f \"abc\""), "Natural");
+    assert_eq!(query(&mut session, "g"), "Add a, Literal a => a -> a");
+    assert_eq!(query(&mut session, "f"), "Len a => a -> Natural");
     // A value, a type and an import are redefined the same way.
     ok(&mut session, "x = 1");
     ok(&mut session, "y = x + 1");
     ok(&mut session, "x = \"one\"");
-    assert_eq!(query(&mut session, "y"), "I64");
+    assert_eq!(query(&mut session, "y"), "Integer");
     assert_eq!(query(&mut session, "x"), "String");
     ok(&mut session, "type P { x: I64 }");
     ok(&mut session, "p = P 1");
@@ -457,8 +464,8 @@ fn a_line_sees_no_later_line() {
     ok(
         &mut session,
         "impl N {\n\
-         even = n => if n == 0 { True } else { odd (n - 1) },\n\
-         odd = n => if n == 0 { False } else { even (n - 1) },\n}",
+         even = n => if n == 0 { True } else { Self.odd (n - 1) },\n\
+         odd = n => if n == 0 { False } else { Self.even (n - 1) },\n}",
     );
     assert_eq!(line_type(&mut session, "N.even 4"), "Bool");
 }
@@ -468,17 +475,17 @@ fn a_type_and_its_impls_may_be_accepted_on_separate_lines() {
     let mut session = Session::new(host());
     ok(&mut session, "type P2 { x: I64 }");
     ok(&mut session, "impl P2 { dist = self q => self.x - q.x }");
-    ok(
-        &mut session,
-        "impl P2: Display { display = self => show self.x }",
-    );
+    ok(&mut session, "impl P2 { show = self => show self.x }");
     // The session is one module: a private field is readable.
     assert_eq!(line_type(&mut session, "(P2 1).x"), "I64");
-    assert_eq!(line_type(&mut session, "(P2 1).dist (P2 2)"), "I64");
+    assert_eq!(line_type(&mut session, "(P2 1).dist (P2 2)"), "Integer");
     // An impl's members generalize at its boundary: the dot on `q`
     // stays an obligation of the scheme.
-    assert_eq!(query(&mut session, "P2.dist"), "a.x: I64 => P2 -> a -> I64");
-    assert_eq!(query(&mut session, "P2.display"), "P2 -> String");
+    assert_eq!(
+        query(&mut session, "P2.dist"),
+        "a.x: Integer => P2 -> a -> Integer"
+    );
+    assert_eq!(query(&mut session, "P2.show"), "P2 -> String");
     let report = ok(&mut session, "P2 { x: 3 }");
     assert_eq!(
         report.offset,
@@ -514,7 +521,7 @@ fn retract_removes_the_last_accepted_line() {
     // A redefinition retracted uncovers the earlier one.
     ok(&mut session, "e = \"text\"");
     session.retract();
-    assert_eq!(query(&mut session, "e"), "I64");
+    assert_eq!(query(&mut session, "e"), "Integer");
     assert_eq!(session.retract().as_deref(), Some("e"));
     assert_eq!(session.retract().as_deref(), Some("e = 0"));
     assert_eq!(session.retract(), None);
@@ -527,7 +534,7 @@ fn a_line_costs_the_same_after_many_accepted_lines() {
     for n in 0..2_000 {
         ok(&mut session, &format!("v{n} = {n} + 1"));
     }
-    assert_eq!(query(&mut session, "v1999 + v0"), "I64");
+    assert_eq!(query(&mut session, "v1999 + v0"), "Integer");
 }
 
 /// Each file diagnostic's stem and reason, resolve errors only.
@@ -590,7 +597,7 @@ fn a_used_module_has_no_main() {
     };
     assert_eq!(error.span, span(10, 12));
     // The line itself checks; the module's bindings are usable.
-    assert_eq!(query(&mut session, "script.x"), "I64");
+    assert_eq!(query(&mut session, "script.x"), "Integer");
 }
 
 #[test]
@@ -651,7 +658,7 @@ fn a_pattern_bound_binding_stays_monomorphic_across_lines() {
         type_reasons(&report).as_slice(),
         [fipe::infer::Reason::Mismatch { .. }]
     ));
-    assert_eq!(query(&mut session, "f"), "I64 -> I64");
+    assert_eq!(query(&mut session, "f"), "Integer -> Integer");
     // Retracting the line that fixed it frees it again.
     assert_eq!(session.retract().as_deref(), Some("a = f 1"));
     ok(&mut session, "b = f \"s\"");
@@ -729,5 +736,37 @@ fn a_module_s_type_members_answer_queries() {
     let [Diagnostic::Type(error)] = report.diagnostics.as_slice() else {
         panic!("{:?}", report.diagnostics)
     };
-    assert_eq!(error.span, span(6, 9));
+    assert_eq!(error.span, span(6, 13));
+}
+
+#[test]
+fn conversion_overloads_and_conflicts_span_session_lines() {
+    let mut session = Session::new(host());
+    ok(&mut session, "type P { n: Integer }");
+    ok(
+        &mut session,
+        "impl P { from: Integer -> Self = n => Self n }",
+    );
+    ok(
+        &mut session,
+        "impl P { from: String -> Self = s => Self 0 }",
+    );
+    assert_eq!(line_type(&mut session, "1 | to<P>"), "P");
+    assert_eq!(line_type(&mut session, "\"s\" | to<P>"), "P");
+    let report = done(session.line("impl P { try_from: Integer -> Result<Self, String> = n => Ok (Self n) }"));
+    assert!(report.diagnostics.iter().any(|d| matches!(
+        d,
+        Diagnostic::Type(fipe::infer::Error {
+            reason: fipe::infer::Reason::ConflictingConversion,
+            ..
+        })
+    )));
+}
+
+#[test]
+fn named_member_folds_span_session_lines() {
+    let mut session = Session::new(host());
+    ok(&mut session, "type Named where self.name: String");
+    ok(&mut session, "f: Named a => a -> String = x => x.name");
+    assert_eq!(query(&mut session, "f"), "Named a => a -> String");
 }

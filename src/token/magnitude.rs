@@ -27,6 +27,21 @@ impl Magnitude {
         }
     }
 
+    /// Whether a binary float with this precision and exponent range
+    /// represents this integer exactly.
+    #[must_use]
+    pub fn fits_binary_float(&self, precision: usize, exponent: usize) -> bool {
+        let Some(high) = self.limbs.last() else {
+            return true;
+        };
+        let bits = (self.limbs.len() - 1) * 64
+            + usize::try_from(64 - high.leading_zeros()).unwrap_or(64);
+        let zeros = self.limbs.iter().take_while(|limb| **limb == 0).count();
+        let trailing = zeros * 64
+            + usize::try_from(self.limbs[zeros].trailing_zeros()).unwrap_or(0);
+        bits <= exponent && bits - trailing <= precision
+    }
+
     /// Digits of `radix` 2, 8, 10 or 16, underscores skipped. `None` for
     /// another radix or a character that is not such a digit. Linear in
     /// the digits for a power of two, quadratic for decimal.

@@ -4,8 +4,8 @@
 
 use crate::{
     ast::{
-        Arm, BinaryOp, Entry, ExprId, ExprKind, ImplMember, ItemKind, Literal,
-        Member, Module, Name, PatternId, PatternKind, TypeId, TypeKind,
+        Arm, Entry, ExprId, ExprKind, ImplMember, ItemKind, Literal, Member,
+        Module, Name, PatternId, PatternKind, TypeId, TypeKind,
     },
     decl::{Declarations, Kind, Namespace},
     frame::Frame,
@@ -46,7 +46,7 @@ pub enum Target {
     Local {
         site: Span,
     },
-    /// A declared value, a trait method or an inherent member.
+    /// A declared value.
     Value {
         origin: Origin,
         name: String,
@@ -60,15 +60,11 @@ pub enum Target {
         origin: Origin,
         name: String,
     },
-    Trait {
-        origin: Origin,
-        name: String,
-    },
     Module(Origin),
     /// A lowercase name in a type, or a `type` item's own parameter: a
     /// type variable.
     Variable(String),
-    /// `Self` inside a `type`, `trait` or `impl` body.
+    /// `Self` inside a `type` or `impl` body.
     SelfType,
     /// `x.a.b`: members of a value, each a field or a `self` call for
     /// the checker to tell apart.
@@ -133,7 +129,7 @@ impl Resolved {
     }
 }
 
-/// A `pub` type, trait or binding of the module.
+/// A `pub` type or binding of the module.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Export {
     pub name: String,
@@ -151,7 +147,7 @@ pub struct Error {
 pub enum Reason {
     UnknownName,
     UnknownType,
-    /// A declared type, constructor or associated type is uppercase; a
+    /// A declared type or constructor is uppercase; a
     /// binding, field, parameter or member is not.
     CaseRule {
         uppercase: bool,
@@ -171,6 +167,7 @@ pub enum Reason {
     UnknownMember,
     /// `impl T` where `T` is not a type of this module: `Self` is local.
     ImplOutsideModule,
+    LimitedImpl,
     /// A record form names a field the type does not declare.
     UnknownField,
     /// A private field supplied, read or matched outside its module.
@@ -472,7 +469,11 @@ impl<'a> Resolver<'a> {
                         }
                         let limited = base.is_some() || !limits.is_empty();
                         if limited {
-                            self.unchecked(name.span, Unchecked::LimitedType);
+                            if limits.iter().any(|l| {
+                                matches!(l, crate::ast::Limit::Test(_))
+                            }) {
+                                self.unchecked(name.span, Unchecked::Test);
+                            }
                         } else if members.is_none() {
                             self.error(name.span, Reason::DeclarationForm);
                             continue;
@@ -490,39 +491,6 @@ impl<'a> Resolver<'a> {
                             self.constructors(name, members, item.public);
                         }
                     }
-                    ItemKind::Trait {
-                        name,
-                        parameters,
-                        members,
-                        ..
-                    } => {
-                        self.case(name, true);
-                        if !parameters.is_empty() {
-                            self.error(name.span, Reason::DeclarationForm);
-                        }
-                        self.define(
-                            name,
-                            Space::Type,
-                            Target::Trait {
-                                origin: Origin::This,
-                                name: last(name),
-                            },
-                            item.public,
-                        );
-                        for member in members {
-                            if !member.name.is_uppercase() {
-                                self.define(
-                                    &member.name,
-                                    Space::Value,
-                                    Target::Value {
-                                        origin: Origin::This,
-                                        name: last(&member.name),
-                                    },
-                                    false,
-                                );
-                            }
-                        }
-                    }
                     ItemKind::Declare { name, .. } => {
                         self.error(name.span, Reason::DeclarationForm);
                     }
@@ -532,13 +500,8 @@ impl<'a> Resolver<'a> {
         }
         for entry in &self.module.entries {
             if let Entry::Item(item) = entry {
-                if let ItemKind::Impl {
-                    target,
-                    implements,
-                    members,
-                } = &item.kind
-                {
-                    self.impl_item(*target, *implements, members);
+                if let ItemKind::Impl { target, members } = &item.kind {
+                    self.impl_item(*target, members);
                 }
             }
         }
@@ -703,34 +666,8 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// The methods of a trait, when the trait is known.
-    fn trait_methods(&self, name: &str) -> Option<Vec<String>> {
-        if let Some(methods) = trait_methods_in(self.module, name) {
-            return Some(methods);
-        }
-        if let Some(Target::Trait { origin, .. }) =
-            self.frame_in.and_then(|f| f.types.get(name))
-        {
-            if let Some(module) = self.frame_in.and_then(|f| f.module(origin)) {
-                return trait_methods_in(module, name);
-            }
-        }
-        let declarations = self.declarations;
-        let namespaces = core::iter::once(&declarations.prelude)
-            .chain(declarations.commands.iter());
-        for namespace in namespaces {
-            if let Some(Kind::Trait { methods, .. }) =
-                namespace.ty(name).map(|declared| &declared.kind)
-            {
-                return Some(methods.clone());
-            }
-        }
-        None
-    }
-
     /// Whether `ty`'s namespace has `member`: an impl member of the
-    /// type in the module that owns it, or a method of a trait it
-    /// implements. `None` when the owner is not a module we can read.
+    /// type in its owning module. `None` when we cannot read that module.
     fn has_member(&self, ty: &Target, member: &str) -> Option<Membership> {
         if let Target::Type {
             origin: Origin::Line(line),
@@ -744,7 +681,7 @@ impl<'a> Resolver<'a> {
                 .chain(lines.into_iter().flatten().filter_map(|index| {
                     frame.lines.get(*index).map(|line| &line.module)
                 }))
-                .map(|module| self.impl_has(module, name, member, false))
+                .map(|module| Self::impl_has(module, name, member, false))
                 .find(|membership| *membership != Membership::Absent)
                 .unwrap_or(Membership::Absent);
             return Some(found);
@@ -771,7 +708,7 @@ impl<'a> Resolver<'a> {
                 name,
             } => {
                 // Another file module's inherent member must be `pub`.
-                return Some(self.impl_has(
+                return Some(Self::impl_has(
                     self.file(stem)?,
                     name,
                     member,
@@ -780,60 +717,49 @@ impl<'a> Resolver<'a> {
             }
             _ => return None,
         };
-        Some(self.impl_has(module, name, member, false))
+        Some(Self::impl_has(module, name, member, false))
     }
 
     /// Whether an impl of the type `name` in `module` has `member`; with
     /// `public`, an inherent member that is not `pub` is [`Membership::
     /// Private`] rather than visible.
     fn impl_has(
-        &self,
         module: &Module,
         name: &str,
         member: &str,
         public: bool,
     ) -> Membership {
+        let mut hidden = false;
         for entry in &module.entries {
             let Entry::Item(item) = entry else { continue };
-            let ItemKind::Impl {
-                target,
-                implements,
-                members,
-            } = &item.kind
-            else {
+            let ItemKind::Impl { target, members } = &item.kind else {
                 continue;
             };
             if named(module, *target).as_deref() != Some(name) {
                 continue;
             }
-            let matched = members.iter().find_map(|m| match m {
-                ImplMember::Named {
-                    name, public: is, ..
-                } if last(name) == member => {
-                    Some(*is || !public || implements.is_some())
-                }
-                ImplMember::Type { name, .. } if last(name) == member => {
-                    Some(true)
-                }
-                _ => None,
-            });
-            if let Some(visible) = matched {
-                return if visible {
-                    Membership::Visible
-                } else {
-                    Membership::Private
-                };
-            }
-            if let Some(trait_name) =
-                implements.and_then(|id| named(module, id))
-            {
-                if self
-                    .trait_methods(&trait_name)
-                    .is_some_and(|methods| methods.iter().any(|m| m == member))
+            for entry in members {
+                if let ImplMember::Named {
+                    name,
+                    public: visible,
+                    ..
+                } = entry
                 {
-                    return Membership::Visible;
+                    if last(name) == member {
+                        if *visible || !public {
+                            return Membership::Visible;
+                        }
+                        hidden = true;
+                    }
                 }
             }
+        }
+        if hidden {
+            return Membership::Private;
+        }
+        if matches!(member, "eq" | "cmp" | "show") && module.entries.iter().any(|entry| matches!(entry,
+            Entry::Item(crate::ast::Item { kind: ItemKind::Type { name: n, members: Some(_), .. }, .. }) if last(n) == name)) {
+            return Membership::Visible;
         }
         Membership::Absent
     }
@@ -894,16 +820,20 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// `impl T` is written only in `T`'s module; an inherent impl's
-    /// members are functions in scope there, and a trait impl's members
-    /// are the trait's methods.
-    fn impl_item(
-        &mut self,
-        target: TypeId,
-        implements: Option<TypeId>,
-        members: &[ImplMember],
-    ) {
+    /// `impl T` belongs to the module declaring T and supplies its members.
+    fn impl_item(&mut self, target: TypeId, members: &[ImplMember]) {
         let span = self.module.types[target.0].span;
+        if let Some(name) = named(self.module, target) {
+            if let Some(Target::Type { origin, name }) = self.lookup_type(&name)
+            {
+                if self.owner(&origin).is_some_and(|(module, _)| module.entries.iter().any(|entry| matches!(entry,
+                    Entry::Item(crate::ast::Item { kind: ItemKind::Type { name: n, base, members: None, limits, .. }, .. })
+                        if last(n) == name && (base.is_some() || !limits.is_empty())))) {
+                    self.error(span, Reason::LimitedImpl);
+                    return;
+                }
+            }
+        }
         // An accepted line's type is the session's own.
         let local = named(self.module, target).is_some_and(|name| {
             self.defined(&name, Space::Type).map_or_else(
@@ -926,40 +856,26 @@ impl<'a> Resolver<'a> {
         if !local {
             self.error(span, Reason::ImplOutsideModule);
         }
-        let methods = implements
-            .and_then(|id| named(self.module, id))
-            .and_then(|name| self.trait_methods(&name));
         let ty = named(self.module, target).unwrap_or_default();
         for member in members {
-            let ImplMember::Named { name, public, .. } = member else {
+            let ImplMember::Named { name, .. } = member else {
                 continue;
             };
             self.case(name, false);
-            // One definition per (type, name), inherent or trait-supplied.
+            // One definition per (type, name), owned by the meaning.
             let text = last(name);
             if let Some((_, _, first)) =
-                self.members.iter().find(|(t, n, _)| *t == ty && *n == text)
+                self.members.iter().find(|(t, n, _)| {
+                    *t == ty
+                        && *n == text
+                        && !matches!(text.as_str(), "from" | "try_from")
+                })
             {
                 let first = *first;
                 self.error(name.span, Reason::Duplicate { first });
                 continue;
             }
             self.members.push((ty.clone(), text, name.span));
-            if implements.is_none() {
-                self.define(
-                    name,
-                    Space::Value,
-                    Target::Value {
-                        origin: Origin::This,
-                        name: last(name),
-                    },
-                    *public,
-                );
-            } else if methods.as_ref().is_some_and(|methods| {
-                !methods.iter().any(|m| *m == last(name))
-            }) {
-                self.error(name.span, Reason::UnknownMember);
-            }
         }
     }
 
@@ -1079,11 +995,28 @@ impl<'a> Resolver<'a> {
                         name,
                         parameters,
                         members,
-                        ..
+                        base,
+                        limits,
                     } => {
                         self.self_type = Some(last(name));
                         self.parameters =
                             parameters.iter().map(|p| last(&p.name)).collect();
+                        if let Some(base) = base {
+                            match &self.module.types[base.0].kind {
+                                TypeKind::Both(parts) => {
+                                    for part in parts {
+                                        self.ty(*part);
+                                    }
+                                }
+                                _ => self.ty(*base),
+                            }
+                        }
+                        for limit in limits {
+                            if let crate::ast::Limit::Member { ty, .. } = limit
+                            {
+                                self.ty(*ty);
+                            }
+                        }
                         let mut fields = Vec::new();
                         for member in members.iter().flatten() {
                             match member {
@@ -1111,25 +1044,8 @@ impl<'a> Resolver<'a> {
                         self.self_type = None;
                         self.parameters.clear();
                     }
-                    ItemKind::Trait { name, members, .. } => {
-                        self.self_type = Some(last(name));
-                        for member in members {
-                            self.ty(member.ty);
-                            if let Some(default) = member.default {
-                                self.expr(default, Position::Other);
-                            }
-                        }
-                        self.self_type = None;
-                    }
-                    ItemKind::Impl {
-                        target,
-                        implements,
-                        members,
-                    } => {
+                    ItemKind::Impl { target, members } => {
                         self.ty(*target);
-                        if let Some(implements) = implements {
-                            self.ty(*implements);
-                        }
                         self.self_type = named(self.module, *target);
                         for member in members {
                             match member {
@@ -1152,7 +1068,6 @@ impl<'a> Resolver<'a> {
                                         ),
                                     }
                                 }
-                                ImplMember::Type { ty, .. } => self.ty(*ty),
                                 ImplMember::Constructor(arm) => self.arm(arm),
                             }
                         }
@@ -1311,14 +1226,6 @@ impl<'a> Resolver<'a> {
         | ExprKind::Pipe { left, right, .. } =
             &self.module.expressions[node.0].kind
         {
-            if let ExprKind::Binary {
-                op: BinaryOp::Concat,
-                operator,
-                ..
-            } = &self.module.expressions[node.0].kind
-            {
-                self.unchecked(*operator, Unchecked::Concat);
-            }
             rights.push(*right);
             node = *left;
         }
@@ -1541,7 +1448,14 @@ impl<'a> Resolver<'a> {
             }
             PatternKind::Constructor { name, payload } => {
                 if self.gate(name) {
-                    self.unchecked(pattern.span, Unchecked::GatePattern);
+                    let target = self.lookup_type(&name.segments[0]);
+                    if let Some(Target::Type { origin, name }) = &target {
+                        if self.owner(origin).is_some_and(|(module, _)| module.entries.iter().any(|entry| matches!(entry,
+                            Entry::Item(crate::ast::Item { kind: ItemKind::Type { name: n, base: Some(_), members: None, .. }, .. }) if last(n) == *name))) {
+                            self.unchecked(pattern.span, Unchecked::GatePattern);
+                        }
+                    }
+                    self.resolved.patterns[id.0] = target;
                 } else {
                     let target = self.value_name(name, Position::Other);
                     self.resolved.patterns[id.0] = target;
@@ -1803,7 +1717,9 @@ impl<'a> Resolver<'a> {
                     TypeKind::Both(_) => Unchecked::Both,
                     _ => Unchecked::Either,
                 };
-                self.unchecked(ty.span, form);
+                if !matches!(ty.kind, TypeKind::Either(_)) {
+                    self.unchecked(ty.span, form);
+                }
                 for part in parts {
                     self.ty(*part);
                 }
@@ -1812,7 +1728,20 @@ impl<'a> Resolver<'a> {
                 self.unchecked(ty.span, Unchecked::Not);
                 self.ty(*inner);
             }
-            TypeKind::Qualified { .. } | TypeKind::Labeled { .. } => {
+            TypeKind::Qualified { constraints, ty } => {
+                for constraint in constraints {
+                    match &constraint.kind {
+                        crate::ast::ConstraintKind::Named { class, .. } => {
+                            self.ty(*class);
+                        }
+                        crate::ast::ConstraintKind::Member { ty, .. } => {
+                            self.ty(*ty);
+                        }
+                    }
+                }
+                self.ty(*ty);
+            }
+            TypeKind::Labeled { .. } => {
                 self.error(ty.span, Reason::DeclarationForm);
             }
         }
@@ -1880,22 +1809,6 @@ fn file_export(
                         });
                     }
                 }
-                (ItemKind::Trait { name: t, .. }, Space::Type)
-                    if last(t) == name =>
-                {
-                    return Some(Target::Trait {
-                        origin,
-                        name: name.to_string(),
-                    });
-                }
-                (ItemKind::Trait { members, .. }, Space::Value)
-                    if members.iter().any(|m| last(&m.name) == name) =>
-                {
-                    return Some(Target::Value {
-                        origin,
-                        name: name.to_string(),
-                    });
-                }
                 _ => {}
             },
             _ => {}
@@ -1950,27 +1863,6 @@ fn used(module: &Module) -> impl Iterator<Item = &str> {
         .filter_map(|name| name.segments.first().map(String::as_str))
 }
 
-/// The methods of trait `name` declared in `module`.
-fn trait_methods_in(module: &Module, name: &str) -> Option<Vec<String>> {
-    module.entries.iter().find_map(|entry| match entry {
-        Entry::Item(item) => match &item.kind {
-            ItemKind::Trait {
-                name: trait_name,
-                members,
-                ..
-            } if last(trait_name) == name => Some(
-                members
-                    .iter()
-                    .filter(|m| !m.name.is_uppercase())
-                    .map(|m| last(&m.name))
-                    .collect(),
-            ),
-            _ => None,
-        },
-        Entry::Line(_) => None,
-    })
-}
-
 fn last(name: &Name) -> String {
     name.segments.last().cloned().unwrap_or_default()
 }
@@ -1983,8 +1875,7 @@ fn named(module: &Module, id: TypeId) -> Option<String> {
     }
 }
 
-/// A value of a declaration namespace: a declared function, a trait
-/// method, a binding, or a constructor of one of its types.
+/// A declared function, binding, or constructor of a namespace.
 fn namespace_value(
     namespace: &Namespace,
     origin: Origin,
@@ -2018,14 +1909,8 @@ fn namespace_type(
     origin: Origin,
     name: &str,
 ) -> Option<Target> {
-    namespace.ty(name).map(|declared| match declared.kind {
-        Kind::Trait { .. } => Target::Trait {
-            origin,
-            name: name.to_string(),
-        },
-        _ => Target::Type {
-            origin,
-            name: name.to_string(),
-        },
+    namespace.ty(name).map(|_| Target::Type {
+        origin,
+        name: name.to_string(),
     })
 }

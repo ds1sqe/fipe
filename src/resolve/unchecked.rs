@@ -3,8 +3,8 @@
 
 use crate::{
     ast::{
-        BinaryOp, ConstraintKind, Entry, ExprKind, ImplMember, ItemKind,
-        Literal, Module, PatternKind, TypeKind,
+        Entry, ExprKind, ItemKind, Limit, Literal, Module, PatternKind,
+        TypeKind,
     },
     token::{Affixed, Span, Written},
 };
@@ -14,8 +14,8 @@ use core::fmt;
 /// A form that is parsed and not yet checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unchecked {
-    /// `type N: Base`, or limits after `where`.
-    LimitedType,
+    /// A test after `where`.
+    Test,
     /// A type parameter on a program's own type, `type Pair<A, B>`.
     TypeParameter,
     /// `(a, b)` or `A * B`.
@@ -27,24 +27,20 @@ pub enum Unchecked {
     Affix,
     /// `A & B`.
     Both,
-    /// `A | B`.
+    /// `A | B` with limits on one meaning.
     Either,
     /// `!A`.
     Not,
     /// A number argument, `Bits<8>`, or a number parameter, `[T; n]`.
     Number,
-    /// `a ++ b`.
+    /// `a ++ b` on arrays.
     Concat,
-    /// A member constraint, `b.age: a => …`, in a declaration.
-    MemberConstraint,
-    /// An impl member with no value, in a declaration.
-    Supplied,
 }
 
 impl fmt::Display for Unchecked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::LimitedType => "a limited type",
+            Self::Test => "a test limit",
             Self::TypeParameter => "a type parameter of a program's type",
             Self::Tuple => "a tuple",
             Self::GatePattern => "a gate pattern",
@@ -54,14 +50,12 @@ impl fmt::Display for Unchecked {
             Self::Not => "the type sign `!`",
             Self::Number => "a number in a type",
             Self::Concat => "`++`",
-            Self::MemberConstraint => "a member constraint",
-            Self::Supplied => "a member with no value",
         })
     }
 }
 
 /// The bytes of `b"…"`, which the checker reads as `Vec<U8>` until the
-/// prelude claims the prefix.
+/// prelude claims the prefix (open.md L1).
 pub fn bytes(affixed: &Affixed) -> Option<&[u8]> {
     match &affixed.form {
         Written::Text { value, raw: false }
@@ -80,33 +74,15 @@ pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
     let mut found = Vec::new();
     for entry in &module.entries {
         let Entry::Item(item) = entry else { continue };
-        match &item.kind {
-            ItemKind::Type {
-                name, base, limits, ..
-            } if base.is_some() || !limits.is_empty() => {
-                found.push((name.span, Unchecked::LimitedType));
+        if let ItemKind::Type { name, limits, .. } = &item.kind {
+            if limits.iter().any(|limit| matches!(limit, Limit::Test(_))) {
+                found.push((name.span, Unchecked::Test));
             }
-            ItemKind::Impl { members, .. } => {
-                for member in members {
-                    if let ImplMember::Named {
-                        name, value: None, ..
-                    } = member
-                    {
-                        found.push((name.span, Unchecked::Supplied));
-                    }
-                }
-            }
-            _ => {}
         }
     }
     for expr in &module.expressions {
         match &expr.kind {
             ExprKind::Tuple(_) => found.push((expr.span, Unchecked::Tuple)),
-            ExprKind::Binary {
-                op: BinaryOp::Concat,
-                operator,
-                ..
-            } => found.push((*operator, Unchecked::Concat)),
             ExprKind::Literal(Literal::Affixed(affixed))
                 if bytes(affixed).is_none() =>
             {
@@ -136,29 +112,30 @@ pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
             _ => None,
         })
         .collect();
+    let bases: Vec<_> = module
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Item(crate::ast::Item {
+                kind:
+                    ItemKind::Type {
+                        base: Some(base), ..
+                    },
+                ..
+            }) => Some(base.0),
+            _ => None,
+        })
+        .collect();
     for (index, ty) in module.types.iter().enumerate() {
         let form = match &ty.kind {
             TypeKind::Tuple(_) => Unchecked::Tuple,
-            TypeKind::Both(_) => Unchecked::Both,
-            TypeKind::Either(_) => Unchecked::Either,
+            TypeKind::Both(_) if !bases.contains(&index) => Unchecked::Both,
             TypeKind::Not(_) => Unchecked::Not,
             TypeKind::Number(_) if !lengths.contains(&index) => {
                 Unchecked::Number
             }
             TypeKind::Named { .. } if lengths.contains(&index) => {
                 Unchecked::Number
-            }
-            TypeKind::Qualified { constraints, .. } => {
-                for constraint in constraints {
-                    if matches!(constraint.kind, ConstraintKind::Member { .. })
-                    {
-                        found.push((
-                            constraint.span,
-                            Unchecked::MemberConstraint,
-                        ));
-                    }
-                }
-                continue;
             }
             _ => continue,
         };

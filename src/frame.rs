@@ -173,12 +173,7 @@ fn delta(
     }
     for entry in &module.entries {
         let Entry::Item(item) = entry else { continue };
-        let ItemKind::Impl {
-            target,
-            implements,
-            members,
-        } = &item.kind
-        else {
+        let ItemKind::Impl { target, members } = &item.kind else {
             continue;
         };
         let owner = match resolved.ty(*target) {
@@ -196,7 +191,7 @@ fn delta(
         let mut constructor = None;
         for member in members {
             match member {
-                ImplMember::Named { name, .. } if implements.is_none() => {
+                ImplMember::Named { name, .. } => {
                     if keep(name.span, &mut delta) {
                         let member = name.segments.last().cloned();
                         let key = (owner.clone(), member.unwrap_or_default());
@@ -208,7 +203,7 @@ fn delta(
                 ImplMember::Constructor(arm) if constructor.is_none() => {
                     constructor = Some(arm.span);
                 }
-                _ => {}
+                ImplMember::Constructor(_) => {}
             }
         }
         if let Some(site) = constructor {
@@ -244,13 +239,6 @@ fn rebase_target(target: &Target, index: usize) -> Target {
             origin: Origin::This,
             name,
         } => Target::Type {
-            origin: line(),
-            name: name.clone(),
-        },
-        Target::Trait {
-            origin: Origin::This,
-            name,
-        } => Target::Trait {
             origin: line(),
             name: name.clone(),
         },

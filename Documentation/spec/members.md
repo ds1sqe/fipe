@@ -25,7 +25,7 @@ type:
 
 | Written | Type | Its limit |
 | --- | --- | --- |
-| `+` `-` `*` `/` `%` | `Add` `Sub` `Mul` `Div` `Rem` | `self.add: Self -> Self`, and alike |
+| `+` `-` `*` `/` `%` | `Add<R = Self, O = Self>`, `Sub` … `Rem` | `self.add: R -> O`, and alike |
 | `==` `!=` | `Eq` | `self.eq: Self -> Bool` |
 | `<` `<=` `>` `>=` | `Ord`, which is an `Eq` | `self.cmp: Self -> Ordering` |
 | `!` | `Not` | `self.not: Self` |
@@ -34,8 +34,16 @@ type:
 
 `++` spells `concat` by name, not its type: an array is not a `Concat`,
 whose result is `Self`; its `concat` adds the lengths
-([containers](containers.md) §Parameters). Both operands of an operator
-have one meaning. A mixed operation, `v.scale k`, is a named member. A
+([containers](containers.md) §Parameters). The right operand and the
+result of an arithmetic operator are what the left's member takes and
+gives, `Self` by the parameters' defaults ([containers](containers.md)
+§Parameters): `v * k` is a `Vec2`'s `Mul<F64>`, `p - q` a `Sub<Point,
+Vector>`, and the left operand owns the operation. On a head whose
+meaning is unknown a parameter the operands do not fix takes its
+default: the right operand fixes `R`, nothing fixes `O`, so `diff = p q
+=> p - q` is `Sub<b> a => a -> b -> a` and a mixed result needs a known
+head. A literal operand is read by its other
+operand's meaning (§Literals). The other operators take one meaning. A
 prelude word is an ordinary function over such a type: `show = x =>
 x.show`, `len`, `map`, `concat`. `Functor`, `Monad` and `Alternative` are
 the members `map`, `then`, `pure`, `or` and `empty`, each meaning with its
@@ -173,7 +181,7 @@ ranges: NaN is unordered.
 ## Prelude
 
 ```text
-type Add    where self.add: Self -> Self                 # prelude
+type Add<R = Self, O = Self> where self.add: R -> O     # prelude; Sub … Rem alike
 type Concat where self.concat: Self -> Self
 type Eq     where self.eq: Self -> Bool
 type Ord: Eq where self.cmp: Self -> Ordering
@@ -202,10 +210,12 @@ impl Maybe   { map: (a -> b) -> (self: Maybe<a>) -> Maybe<b> }
 type Vec2 { x: F64, y: F64 }
 impl Vec2 {
     add = o self => Self (self.x + o.x) (self.y + o.y),  # Vec2 is an Add
-    scale = k self => Self (self.x * k) (self.y * k),
+    mul = k self => Self (self.x * k) (self.y * k),      # Vec2 is a Mul<F64>
     show = self => join "," [self.x.show, self.y.show],  # replaces derived
 }
 (Vec2 1.0 2.0) + (Vec2 3.0 4.0)
+scale = v k => v * k           # Mul<b> a => a -> b -> a
+(Vec2 1.0 2.0) * 2.0           # check error: Vec2 is no Literal
 
 type Mask { bits: U8 }
 impl Mask {

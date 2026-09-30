@@ -7,9 +7,9 @@ unit checks. The prelude is part of the language; host APIs are supplied
 declarations. Lexical structure and syntax are defined and implemented.
 The checker reports each form of the type model in [types](types.md),
 [containers](containers.md), [limits](limits.md), [checks](checks.md) and
-[members](members.md) that it does not check yet as one check error,
-and until the members stage the parser also keeps the earlier `trait`
-item and `impl T: Trait`, which the prelude still uses. Checking,
+[members](members.md) that it does not check yet as one check error;
+members ([members](members.md)) are checked, and there is no `trait`
+item. Checking,
 evaluation and embedding are the draft for the later stages, with their
 gaps in [open decisions](open.md). Published 0.1.0 is the earlier
 dynamic language and does not conform.

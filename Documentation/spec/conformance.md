@@ -71,50 +71,54 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `f(a,b)` / `f (x)` / `f()` | explicit arguments / grouped argument / empty call |
 | `(e).name` / `f .name` | postfix field / selector argument |
 | `type P { pub x: I64, y: I64 = 0 }` / `type S { C(r: F64), D }` | fields / constructors |
-| `impl P { x (y = 0) => Self { x, y }, f = p => … }` / `impl P: T { f = … }` | constructor arm and member / syntax error *06.2* |
+| `impl P { x (y = 0) => Self { x, y }, f = p => … }` / `impl P: T { f = … }` | constructor arm and member / syntax error |
 | `impl P { f = a => 1, b => 2 }` / `impl P { f = a => 1 b => 2 }` | member then constructor arm / error: bracket the arms |
 | `use x.inc x.Point` / `use text 2` / `use fs ver 2` | names / version / error |
 | `foo 1`, `foo` / `cat foo` | unknown name / text |
-| `f 1` before `f = a => …` / `lookup` before `use sys.lookup` / `f = n => f n` / `impl P { a = … b …, b = … a … }` | unknown name, twice / self-recursion / members see each other |
+| `f 1` before `f = a => …` / `lookup` before `use sys.lookup` / `f = n => f n` / `impl P { a = … Self.b …, b = … Self.a … }` | unknown name, twice / self-recursion / members see each other through `Self` |
 | `pub x = 1` then `pub x = 2` in a file / `use a` inside `a` / a used module with a bare line | exports the final `x` / check error: import cycle / check error: no main |
 | `type point {}`, `type S { circle(r: F64) }`, `Point = 1` | case rule at the declaration |
 | `type Rd<Api>` / `Rd<fs>` | a host type's uppercase parameter / an API reference at the use site |
-| `pub len: T`, `impl P { n: I64 }` in a program | declaration form *06.2* |
+| `pub len: T`, `impl P { n: I64 }` in a program | declaration form |
 | `sys.lookup`, `Polar.from`, `e.name`, `fs = e` then `fs.list` | module export / type member / members of a value, twice |
 | `use nowhere`, `use geometry.Nope`, `fs.nope`, `Point.nope` | unknown module / not exported / unknown member, twice |
-| `impl Vec { … }` in a program / `impl Natural { … }` | check error: not this module's meaning / a limited type has no `impl` *06.2* |
-| `add = a b => a + b` | `Add a => a -> a -> a` *06.2* |
+| `impl Vec { … }` in a program / `impl Natural { … }` | check error: not this module's meaning / a limited type has no `impl` |
+| `add = a b => a + b` / `add 2` queried | `Add<b> a => a -> b -> a` / `Add<a> b, Literal b => a -> b` |
 | `add2 = add 2` | one open spot |
 | wrong record field | check error before any host call |
 | `Maybe<Entry> | cat` versus `|: cat` | whole-value mismatch / payload bind |
 | `find x | put out` / `find x || "" | put out` | outcome at a byte spot: check error / text written |
-| `m = [:1]` / `m: Maybe<Integer> = [:1]` | family unknown: check error / `Just 1` *06.2* |
+| `m = [:1]` / `m: Maybe<Integer> = [:1]` | family unknown: check error / `Just 1` |
 | `Point 3 4`, `Point 3`, `1 | Point 1` / `Point 3 4 5` | constructor, default, pipe fills `y` / extra argument |
 | `Point { x: 3, y: 4, len: 5 }`, `Point 3 4 5`, `Point -len 5` outside its module | check error at the field or argument: `len` is private |
 | a member without `pub` reached from another module | check error: the member is private |
-| `pl | Point.from`, `pl | to<Point>`, `"3,4" | try<Point>` / `pl | Point` | conversions / `Point pl`: check error at an `I64` spot *06.2* |
-| `from` and `try_from` on one target for one source / `Point.from x`, `x` of unknown meaning | check error: never both / check error naming the candidates *06.2* |
+| `pl | Point.from`, `pl | to<Point>`, `"3,4" | try<Point>` / `pl | Point` | conversions / `Point pl`: check error at an `I64` spot |
+| `from` and `try_from` on one target for one source / `Point.from x`, `x` of unknown meaning | check error: never both / check error naming the candidates |
 | `"42" | read<I64>` / `n: I64 = "42"` / `n: I64 = "x"` | `Result` / `42` (T5) / check error |
 | `read p | { [!e] => … }` with `read p : Maybe<T>` | check error: `Nothing` has no payload |
-| `Either<(),Integer> || 0` | check error preserving outcome identity (T1) *06.2* |
-| `older = d e => e.age > d` / `filter (older 7)` | `b.age: a, Ord a => a -> b -> Bool` / solved at `Entry` *06.2* |
+| `Either<(),Integer> || 0` | check error preserving outcome identity (T1) |
+| `older = d e => e.age > d` / `filter (older 7)` | `b.age: a, Ord a => a -> b -> Bool` / solved at `Entry` |
 | `s = .name` / `(f => 1) .name` | `a.name: b => a -> b` / check error at the dot |
 | `find x |! log "gone"` / `find x |! find y` / `find x |! log` | `Maybe<Entry>`, the stage is a value / fallback / check error: open spot |
-| `x = 1`, `inc = x => x + 1`, `even 4`, `[] == []` | `Integer` / `Add a, Literal a => a -> a` / `Bool` (T5) / ambiguous *06.2* |
-| `z = if c { 2 } else { 2.5 }` / `w = if c { n } else { 2.5 }`, `n: Integer = 2` / `u = if c { 2 } else { "a" }` | `F64`, in either order / check error: `n` has a meaning / check error: no meaning reads both *06.2* |
+| `x = 1`, `inc = x => x + 1`, `even 4`, `[] == []` | `Integer` / `Add a, Literal a => a -> a` / `Bool` (T5) / ambiguous |
+| `z = if c { 2 } else { 2.5 }` / `w = if c { n } else { 2.5 }`, `n: Integer = 2` / `u = if c { 2 } else { "a" }` | `F64`, in either order / check error: `n` has a meaning / check error: no meaning reads both |
 | non-total arms | check error, never runtime match failure |
 | `x: i64 = 1` / `g: I46 -> I46 = x => x` | check error with the hint `I64` / unknown type |
 | `a++b` / `trait` / `grep where` | one word / a name / a command |
-| `a ++ b` | `a.concat b` *06.2* |
+| `a ++ b` | `a.concat b` |
 | `[!T; 3]` in a type / `A |! B` in a type | array / error with the hint `| !` |
 | `!A & B | C * D -> E` / `f (a, b)` / `f(a, b)` | `((!A & B) | C) * D -> E` / one tuple argument / two arguments |
 | `type U8: Natural & Bits<8> where self <= 255`, `type I8: Integer & Bits<8> where …`, `where` on the next line | limited type, chained; signed; the line continues |
-| `type Shape where self.area: F64` / `type Key: Eq & Show` | member limits, no gate / named combination *06.2* |
-| `double = n => n + n` / `same = p q => p == q` | `Add a => a -> a` / `Eq a => a -> a -> Bool` *06.2* |
-| `(Vec2 1.0 2.0) + (Vec2 3.0 4.0)` / written `show` / `impl Maybe { map: … }` in the prelude | `Vec2`'s `add` / replaces the derived one / a supplied member *06.2* |
-| `m: Mask = 0b0000_1111` / `k: Mask = 15` / `who: Name = "fipe"` | `Mask.literal` at compile time / check error: the literal Faults / `String`'s literal, then `Name`'s limits *06.2* |
-| `total: Vec<Shape> -> F64` / `Add -> Add` / `| area` for a member | packed elements / packs and cannot add / unknown name *06.2* |
-| `id: Integer | String = 3` then `id | { Integer n => n.show, String s => s }` | packed; the gate pattern tells which *06.2* |
+| `type Shape where self.area: F64` / `type Key: Eq & Show` | member limits, no gate / named combination |
+| `double = n => n + n` / `same = p q => p == q` | `Add a => a -> a` / `Eq a => a -> a -> Bool` |
+| `type Add<R = Self, O = Self> where …` / `scale = v k => v * k` / `v * 2.0`, `v: Vec2` | parameter defaults / `Mul<b> a => a -> b -> a` / check error: `Vec2` is no `Literal` |
+| `diff = p q => p - q`, `p => p - p` / `diff: Point -> Point -> Vector = p q => p - q` | `Sub<b> a => a -> b -> a`, `Sub a => a -> a` / `Point`'s `Sub<Point, Vector>` |
+| `(Vec2 1.0 2.0) + (Vec2 3.0 4.0)` / written `show` / `impl Maybe { map: … }` in the prelude | `Vec2`'s `add` / replaces the derived one / a supplied member |
+| `m: Mask = 0b0000_1111` | typed through `Mask.literal` |
+| `k: Mask = 15` | check error: the literal Faults *08* |
+| `who: Name = "fipe"` | `String`'s literal, then `Name`'s limits *06.3* |
+| `total: Vec<Shape> -> F64` / `Add -> Add` / `| area` for a member | packed elements / packs and cannot add / unknown name |
+| `id: Integer | String = 3` then `id | { Integer n => n.show, String s => s }` | packed; the gate pattern tells which |
 | a gate and a constructor of one name / a test entering its own type / `!Shape` | check error, each *06.3* |
 | `U8 2.0` / `U8 300` / `try<U8> 300` / `U8 x` with `x` open | check error: no conversion / refuted / `Err` / Fault when the test fails *06.3* |
 | `n: U8 & Prime = 13` / `p: Prime = 7` / `type Handy: U8 | Prime` | both / proved at compile time / either *06.3* |
@@ -127,7 +131,7 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `Range { lo: 2, hi: 1 }` / `Range 1 2` | refuted: braces test the limit / proved *06.3* |
 | `a + b` with `a: U8`, `b: U16` / `w: U16 = a` / `n: U8 = b` | `Integer`, known 1200 / proved / refuted *06.3* |
 | `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open *06.3* |
-| `f: F64 = 2` / `k: I64 = round 2.5` | `2.0` *06.2* / `2` *06.3* |
+| `f: F64 = 2` / `k: I64 = round 2.5` | `2.0` / `2` *06.3* |
 | `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / prepared at compile time *06.4* |
 | `Compile` alone, as a value or in a pattern | check error *06.4* |
 | `Bits<8> & Bits<16>` / `type Odd8: Integer & Bits<8>` | check error, each: the holdings disagree / does not fit its holding *06.4* |

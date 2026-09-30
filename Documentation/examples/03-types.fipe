@@ -19,7 +19,7 @@ impl Point {
     pub line: I64 -> Self = p => Self p p,
     # dist: Point -> Point -> F64
     dist = self q => hypot (self.x - q.x) (self.y - q.y),
-    # scale: Point -> I64 -> Point
+    # scale: Point -> Integer -> Point
     scale = self k => Self (self.x * k) (self.y * k),
 }
 
@@ -31,27 +31,25 @@ impl Shape {
     },
 }
 
-# Traits: `Display` prints, `Read` parses, and each is on the type it reads.
-impl Point: Display { display = self => join "," [show self.x, show self.y] }
-impl Point: Read {
+# Members: `show` prints, `Read` parses, and each is on the type it reads.
+impl Point { show = self => join "," [show self.x, show self.y] }
+impl Point {
     read = s => s | split "," | map read<I64> | collect |: {
         [x, y] => Ok (Self x y),
         _ => Err (ParseError "two numbers"),
     },
 }
 
-# Conversion: the word names the trait, the trait names the side that works.
+# Conversion: the target owns its from and try_from members.
 pub type Polar { pub r: F64, pub t: F64 }
 pub type RangeError { pub r: F64 }
-impl RangeError: Display { display = self => join " " ["out of range:", show self.r] }
-impl RangeError: Err {}
-impl Polar: From<Point> { from = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x } }
-impl Polar: TryInto<Point> {
-    Error = RangeError,
-    try_into = self => if self.r < 1e9 {
-        Ok (Point (round (self.r * (cos self.t))) (round (self.r * (sin self.t))))
+impl RangeError { show = self => join " " ["out of range:", show self.r] }
+impl Polar { from: Point -> Self = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x } }
+impl Point {
+    try_from: Polar -> Result<Self, RangeError> = p => if p.r < 1e9 {
+        Ok (Point (round (p.r * (cos p.t))) (round (p.r * (sin p.t))))
     } else {
-        Err (RangeError self.r)
+        Err (RangeError p.r)
     },
 }
 
@@ -61,12 +59,12 @@ q = Point -y 1 -x 2               # named spots
 o = Point.origin
 d = p.dist q                      # the dot fills `self`
 p.scale 2 | show                  # "6,8"
-Circle 1.5 | area
-[Circle 1.0, Rect 2.0 3.0, Dot] | map area | sum
+Circle 1.5 | .area
+[Circle 1.0, Rect 2.0 3.0, Dot] | map .area | sum
 
 pl = p | Polar.from               # Polar's From<Point>
 p | to<Polar>                     # the neutral word, same impl
-back = pl.try_into<Point>         # Result<Point, RangeError>
+back = pl | try<Point>            # Result<Point, RangeError>
 back |: show || "out of range"
 "3,4" | read<Point>               # Result<Point, ParseError>
 Width                             # the default, 80

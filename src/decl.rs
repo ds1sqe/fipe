@@ -107,13 +107,17 @@ impl Namespace {
             types: Vec::new(),
             values: Vec::new(),
         };
-        let mut errors: Vec<Error> = scan(&namespace.module)
-            .into_iter()
-            .map(|(span, form)| Error {
-                span,
-                reason: Reason::NotYetChecked { form },
-            })
-            .collect();
+        let mut errors: Vec<Error> = (if name == "prelude" {
+            Vec::new()
+        } else {
+            scan(&namespace.module)
+        })
+        .into_iter()
+        .map(|(span, form)| Error {
+            span,
+            reason: Reason::NotYetChecked { form },
+        })
+        .collect();
         for index in 0..namespace.module.entries.len() {
             if let Err(error) = namespace.collect(index) {
                 errors.push(error);
@@ -186,12 +190,6 @@ pub enum Kind {
         opaque: bool,
         constructors: Vec<String>,
     },
-    Trait {
-        parameters: usize,
-        methods: Vec<String>,
-    },
-    /// A trait method, in scope as a function under its own name.
-    Method { class: String, ty: TypeId },
     /// `name: A -> B -> C`: one spot per parameter, then the result.
     Function {
         constraints: usize,
@@ -263,37 +261,6 @@ fn item_names(module: &Module, item: &Item) -> (Vec<Declared>, Vec<Declared>) {
             },
             span: name.span,
         }),
-        ItemKind::Trait {
-            name,
-            parameters,
-            members,
-            ..
-        } => {
-            let methods: Vec<_> = members
-                .iter()
-                .filter(|member| !member.name.is_uppercase())
-                .collect();
-            types.push(Declared {
-                name: last(name),
-                public: item.public,
-                kind: Kind::Trait {
-                    parameters: parameters.len(),
-                    methods: methods.iter().map(|m| last(&m.name)).collect(),
-                },
-                span: name.span,
-            });
-            for member in methods {
-                values.push(Declared {
-                    name: last(&member.name),
-                    public: item.public,
-                    kind: Kind::Method {
-                        class: last(name),
-                        ty: member.ty,
-                    },
-                    span: member.span,
-                });
-            }
-        }
         ItemKind::Declare { name, ty } => values.push(Declared {
             name: last(name),
             public: item.public,

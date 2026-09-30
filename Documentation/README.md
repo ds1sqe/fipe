@@ -16,9 +16,10 @@ Fipe means Functional Pipeline Language. Five goals govern its design:
 These are goals, not implementation claims. The [specification](spec/README.md)
 defines lexical structure, syntax and the later language stages, and the
 programs under [examples](examples/) show the language as written. The frontend
-implements lexing and parsing; checking and execution follow. Their remaining
-questions are recorded in [open rules](spec/open.md). The library is independent
-of every host and uses only `core` and `alloc`.
+implements lexing, parsing, name resolution and type inference with
+members; limits, casts and execution follow. Their remaining questions are
+recorded in [open rules](spec/open.md). The library is independent of every
+host and uses only `core` and `alloc`.
 
 Public Rust APIs are experimental. The published 0.1.0 implementation remains
 available in Git at `7606ff7`; it has been replaced on the development branch.

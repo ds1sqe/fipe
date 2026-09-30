@@ -28,6 +28,11 @@ pub enum Type {
         name: TypeName,
         arguments: Vec<Self>,
     },
+    Either(Vec<Self>),
+    Limited {
+        name: Box<Self>,
+        meaning: Box<Self>,
+    },
     Array {
         element: Box<Self>,
         length: u64,
@@ -72,6 +77,12 @@ impl Type {
                     argument.variables(out);
                 }
             }
+            Self::Either(parts) => {
+                for p in parts {
+                    p.variables(out);
+                }
+            }
+            Self::Limited { name, .. } => name.variables(out),
             Self::Array { element, .. } => element.variables(out),
             Self::Function { parameter, result } => {
                 parameter.variables(out);
@@ -97,6 +108,13 @@ impl Type {
                 },
                 arguments: arguments.iter().map(|a| a.rehome(origin)).collect(),
             },
+            Self::Either(parts) => {
+                Self::Either(parts.iter().map(|p| p.rehome(origin)).collect())
+            }
+            Self::Limited { name, meaning } => Self::Limited {
+                name: Box::new(name.rehome(origin)),
+                meaning: Box::new(meaning.rehome(origin)),
+            },
             Self::Array { element, length } => Self::Array {
                 element: Box::new(element.rehome(origin)),
                 length: *length,
@@ -117,14 +135,10 @@ impl Type {
     }
 }
 
-/// What a scheme owes: a trait on a type, `Num a`, or a member of a
-/// type not yet known, `a.name: t`, found at the dot `dot`.
+/// A member required of a type not yet known, `a.name: t`, found at
+/// the dot `dot`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Obligation {
-    Class {
-        class: String,
-        ty: Type,
-    },
     Member {
         head: Type,
         name: String,
@@ -134,11 +148,11 @@ pub enum Obligation {
 }
 
 impl Obligation {
-    /// The type the obligation is on: the class's type, the member's head.
+    /// The head whose member is required.
     #[must_use]
     pub const fn subject(&self) -> &Type {
         match self {
-            Self::Class { ty, .. } | Self::Member { head: ty, .. } => ty,
+            Self::Member { head: ty, .. } => ty,
         }
     }
 
@@ -146,10 +160,6 @@ impl Obligation {
     #[must_use]
     pub fn map(&self, mut f: impl FnMut(&Type) -> Type) -> Self {
         match self {
-            Self::Class { class, ty } => Self::Class {
-                class: class.clone(),
-                ty: f(ty),
-            },
             Self::Member {
                 head,
                 name,
@@ -167,7 +177,6 @@ impl Obligation {
     /// The inference variables of its types, in order of appearance.
     pub fn variables(&self, out: &mut Vec<Var>) {
         match self {
-            Self::Class { ty, .. } => ty.variables(out),
             Self::Member { head, ty, .. } => {
                 head.variables(out);
                 ty.variables(out);
@@ -176,11 +185,26 @@ impl Obligation {
     }
 }
 
+/// A numeric literal whose type is left to a variable or a rigid name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Lit {
+    /// `magnitude` is `None` past `u64`, outside every width.
+    Int {
+        negative: bool,
+        magnitude: crate::token::Magnitude,
+    },
+    Float,
+    Text,
+    Bytes,
+}
+
 /// `∀ variables. obligations ⇒ ty`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scheme {
     pub variables: Vec<Var>,
     pub obligations: Vec<Obligation>,
+    pub(crate) literals: Vec<(Type, Lit, Span)>,
+    pub(crate) folds: Vec<(Type, Vec<Obligation>)>,
     pub ty: Type,
 }
 
@@ -191,6 +215,8 @@ impl Scheme {
         Self {
             variables: Vec::new(),
             obligations: Vec::new(),
+            literals: Vec::new(),
+            folds: Vec::new(),
             ty,
         }
     }
@@ -205,6 +231,26 @@ impl Scheme {
                 .obligations
                 .iter()
                 .map(|obligation| obligation.map(|ty| ty.rehome(origin)))
+                .collect(),
+            folds: self
+                .folds
+                .iter()
+                .map(|(name, members)| {
+                    (
+                        name.rehome(origin),
+                        members
+                            .iter()
+                            .map(|o| o.map(|ty| ty.rehome(origin)))
+                            .collect(),
+                    )
+                })
+                .collect(),
+            literals: self
+                .literals
+                .iter()
+                .map(|(ty, form, span)| {
+                    (ty.rehome(origin), form.clone(), *span)
+                })
                 .collect(),
             ty: self.ty.rehome(origin),
         }
@@ -233,6 +279,8 @@ impl Scheme {
         Self {
             variables,
             obligations,
+            literals: Vec::new(),
+            folds: Vec::new(),
             ty,
         }
     }
@@ -266,6 +314,13 @@ pub(crate) fn replace(ty: &Type, fresh: &[(Var, Type)]) -> Type {
         Type::Named { name, arguments } => Type::Named {
             name: name.clone(),
             arguments: arguments.iter().map(|a| replace(a, fresh)).collect(),
+        },
+        Type::Either(parts) => {
+            Type::Either(parts.iter().map(|p| replace(p, fresh)).collect())
+        }
+        Type::Limited { name, meaning } => Type::Limited {
+            name: Box::new(replace(name, fresh)),
+            meaning: Box::new(replace(meaning, fresh)),
         },
         Type::Array { element, length } => Type::Array {
             element: Box::new(replace(element, fresh)),
@@ -333,6 +388,13 @@ impl Subst {
                 name: name.clone(),
                 arguments: arguments.iter().map(|a| self.apply(a)).collect(),
             },
+            Type::Either(parts) => {
+                Type::Either(parts.iter().map(|p| self.apply(p)).collect())
+            }
+            Type::Limited { name, meaning } => Type::Limited {
+                name: Box::new(self.apply(name)),
+                meaning: Box::new(self.apply(meaning)),
+            },
             Type::Array { element, length } => Type::Array {
                 element: Box::new(self.apply(element)),
                 length: *length,
@@ -362,6 +424,13 @@ impl Subst {
         let actual = self.apply(actual);
         match (&expected, &actual) {
             (Type::Var(a), Type::Var(b)) if a == b => Ok(()),
+            (Type::Var(a), Type::Var(b)) => {
+                // Keep fresh operands attached to the existing variable,
+                // rather than growing a chain for every literal in a sum.
+                self.bindings[core::cmp::max(a, b).0 as usize] =
+                    Some(Type::Var(*core::cmp::min(a, b)));
+                Ok(())
+            }
             (Type::Var(var), other) | (other, Type::Var(var)) => {
                 if other.contains(*var) {
                     return Err(Box::new(Mismatch::Occurs {
@@ -370,6 +439,16 @@ impl Subst {
                     }));
                 }
                 self.bindings[var.0 as usize] = Some(other.clone());
+                Ok(())
+            }
+            (Type::Limited { meaning, .. }, other)
+            | (other, Type::Limited { meaning, .. }) => {
+                self.unify(meaning, other)
+            }
+            (Type::Either(a), Type::Either(b)) if a.len() == b.len() => {
+                for (a, b) in a.iter().zip(b) {
+                    self.unify(a, b)?;
+                }
                 Ok(())
             }
             (Type::Unit, Type::Unit) => Ok(()),
@@ -427,7 +506,7 @@ impl fmt::Display for Type {
     }
 }
 
-/// A scheme in the spec's syntax: `Num a => a -> a -> a`, or
+/// A scheme in the spec's syntax: `Add<b> a => a -> b -> a`, or
 /// `a.age: b => b -> a -> Bool` for a member obligation, its quantified
 /// variables named `a`, `b`, … in order, and any variable it does not
 /// quantify by the letters after them.
@@ -439,20 +518,60 @@ impl fmt::Display for Scheme {
         }
         self.ty.variables(&mut variables);
         let names = letters(&variables);
-        for (index, obligation) in self.obligations.iter().enumerate() {
-            if index > 0 {
+        let mut remaining = Vec::new();
+        for obligation in &self.obligations {
+            let Obligation::Member { head, name, ty, .. } = obligation;
+            if !remaining.iter().any(|o| matches!(o, Obligation::Member { head: h, name: n, ty: t, .. } if h == head && n == name && t == ty)) {
+                remaining.push(obligation.clone());
+            }
+        }
+        remaining.sort_by_key(|o| matches!(o, Obligation::Member { name, .. } if name == "literal"));
+        let mut printed = false;
+        while !remaining.is_empty() {
+            let head = remaining[0].subject().clone();
+            let mut folded = None;
+            for (label, members) in &self.folds {
+                let indices: Option<Vec<usize>> = members
+                    .iter()
+                    .map(|member| {
+                        let Obligation::Member {
+                            head: h,
+                            name: n,
+                            ty: t,
+                            ..
+                        } = member;
+                        remaining.iter().position(|o| {
+                            let Obligation::Member { head, name, ty, .. } = o;
+                            head == h && name == n && ty == t
+                        })
+                    })
+                    .collect();
+                if let Some(indices) = indices {
+                    if indices.contains(&0) {
+                        folded = Some((label, indices));
+                        break;
+                    }
+                }
+            }
+            if printed {
                 f.write_str(", ")?;
             }
-            match obligation {
-                Obligation::Class { class, ty } => {
-                    write!(f, "{class} ")?;
-                    write(ty, f, &names, &[])?;
-                }
-                Obligation::Member { head, name, ty, .. } => {
-                    write(head, f, &names, &[])?;
-                    write!(f, ".{name}: ")?;
-                    write(ty, f, &names, &[])?;
-                }
+            printed = true;
+            if let Some((label, indices)) = folded {
+                write(label, f, &names, &[])?;
+                f.write_str(" ")?;
+                write(&head, f, &names, &[])?;
+                remaining = remaining
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, o)| (!indices.contains(&i)).then_some(o))
+                    .collect();
+            } else {
+                let Obligation::Member { head, name, ty, .. } =
+                    remaining.remove(0);
+                write(&head, f, &names, &[])?;
+                write!(f, ".{name}: ")?;
+                write(&ty, f, &names, &[])?;
             }
         }
         if !self.obligations.is_empty() {
@@ -488,6 +607,12 @@ impl Type {
                     argument.declared(out);
                 }
             }
+            Self::Either(parts) => {
+                for p in parts {
+                    p.declared(out);
+                }
+            }
+            Self::Limited { name, .. } => name.declared(out),
             Self::Array { element, .. } => element.declared(out),
             Self::Function { parameter, result } => {
                 parameter.declared(out);
@@ -580,6 +705,16 @@ fn write(
             }
             f.write_str(">")
         }
+        Type::Either(parts) => {
+            for (i, p) in parts.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(" | ")?;
+                }
+                write(p, f, names, clashes)?;
+            }
+            Ok(())
+        }
+        Type::Limited { name, .. } => write(name, f, names, clashes),
         Type::Array { element, length } => {
             f.write_str("[")?;
             write(element, f, names, clashes)?;

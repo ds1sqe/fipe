@@ -281,11 +281,15 @@ fn bindings_are_sequential_and_an_arm_binding_sees_itself() {
     );
     // The members of one impl see each other in any order.
     let (parsed, resolved) = ok("type P {}\n\
-        impl P { even = n => odd n, odd = n => even n }");
-    let text = "type P {}\nimpl P { even = n => odd n, odd = n => even n }";
+        impl P { even = n => Self.odd n, odd = n => Self.even n }");
+    let text =
+        "type P {}\nimpl P { even = n => Self.odd n, odd = n => Self.even n }";
     assert_eq!(
-        target(text, &parsed, &resolved, "odd"),
-        &value(Origin::This, "odd")
+        target(text, &parsed, &resolved, "Self.odd"),
+        &Target::TypeMember {
+            ty: Box::new(Target::SelfType),
+            member: "odd".into()
+        }
     );
 }
 
@@ -386,12 +390,12 @@ fn the_case_rule_duplicates_and_declaration_forms_are_located() {
     for text in [
         "pub len: Vec<a> -> U64",
         "type Rd",
-        "f: Show a => a -> a = x => x",
         "x: (a: I64) -> I64 = y => y",
         "type P { x: I64 }\nimpl P { n: I64 }",
     ] {
         assert_eq!(errors(text)[0].0, Reason::DeclarationForm, "{text}");
     }
+    ok("f: Show a => a -> a = x => x");
     // A program's type takes parameters from 06.5; until then each is
     // not yet checked, and one with no body is still opaque.
     let parameter = Reason::NotYetChecked {
@@ -406,19 +410,18 @@ fn the_case_rule_duplicates_and_declaration_forms_are_located() {
         ]
     );
     assert_eq!(errors("Self 1"), [(Reason::SelfOutsideBody, Some("Self"))]);
-    let (parsed, resolved) = ok("pub type P { pub x: I64, y: I64 = x }\nimpl P { f = Self 1, g = self => self.x }\nP 1 | g");
+    let (parsed, resolved) = ok("pub type P { pub x: I64, y: I64 = x }\nimpl P { f = Self 1, g = self => self.x }\nP 1 | .g");
     assert_eq!(resolved.exports.len(), 2);
     assert_eq!(resolved.exports[0].name, "P");
     assert!(matches!(
         resolved.exports[1].target,
         Target::Constructor { .. }
     ));
-    let text = "pub type P { pub x: I64, y: I64 = x }\nimpl P { f = Self 1, g = self => self.x }\nP 1 | g";
+    let text = "pub type P { pub x: I64, y: I64 = x }\nimpl P { f = Self 1, g = self => self.x }\nP 1 | .g";
     assert_eq!(target(text, &parsed, &resolved, "Self"), &Target::SelfType);
-    assert_eq!(
-        target(text, &parsed, &resolved, "g"),
-        &value(Origin::This, "g")
-    );
+    assert!(errors("type P {}\nimpl P { g = self => self }\ng")
+        .iter()
+        .any(|(reason, _)| *reason == Reason::UnknownName));
 }
 
 #[test]
@@ -464,10 +467,10 @@ fn dots_classify_modules_types_and_values() {
     };
     assert!(matches!(**head, Target::Local { .. }));
 
-    let (parsed, resolved) = ok("type P { x: I64 }\nimpl P { f = self => self.x }\nimpl P: Display { display = self => show self.x }\nP.f\nP.display\nx: cli.Error = 1\nd = 4 | Rd<fs>");
-    let text = "type P { x: I64 }\nimpl P { f = self => self.x }\nimpl P: Display { display = self => show self.x }\nP.f\nP.display\nx: cli.Error = 1\nd = 4 | Rd<fs>";
+    let (parsed, resolved) = ok("type P { x: I64 }\nimpl P { f = self => self.x }\nimpl P { show = self => show self.x }\nP.f\nP.show\nx: cli.Error = 1\nd = 4 | Rd<fs>");
+    let text = "type P { x: I64 }\nimpl P { f = self => self.x }\nimpl P { show = self => show self.x }\nP.f\nP.show\nx: cli.Error = 1\nd = 4 | Rd<fs>";
     assert!(matches!(
-        target(text, &parsed, &resolved, "P.display"),
+        target(text, &parsed, &resolved, "P.show"),
         Target::TypeMember { .. }
     ));
     let source = Source::new(text);
@@ -522,7 +525,7 @@ fn dots_classify_modules_types_and_values() {
 
 #[test]
 fn use_forms_and_impl_placement_are_checked() {
-    let geometry = ("geometry".to_string(), module("pub type Point { pub x: I64 }\nimpl Point: Display { display = self => show self.x }\nhidden = 1\npub shown = 2"));
+    let geometry = ("geometry".to_string(), module("pub type Point { pub x: I64 }\nimpl Point { pub show = self => show self.x }\nhidden = 1\npub shown = 2"));
     let files = [geometry];
     let check =
         |text: &str| -> Result<Resolved, Vec<(Reason, Option<String>)>> {
@@ -540,7 +543,7 @@ fn use_forms_and_impl_placement_are_checked() {
             })
         };
     assert!(check(
-        "use geometry.Point geometry.shown\nPoint 1\nshown\nPoint.display"
+        "use geometry.Point geometry.shown\nPoint 1\nshown\nPoint.show"
     )
     .is_ok());
     assert!(
@@ -575,15 +578,11 @@ fn use_forms_and_impl_placement_are_checked() {
         [(Reason::UnknownType, Some("cli.Nope".into()))]
     );
     assert_eq!(
-        check("impl Vec: Len {}").unwrap_err(),
+        check("impl Vec { len = self => 0 }").unwrap_err(),
         [(Reason::ImplOutsideModule, Some("Vec".into()))]
     );
-    assert_eq!(
-        check("type P { x: I64 }\nimpl P: Display { nope = self => 1 }")
-            .unwrap_err(),
-        [(Reason::UnknownMember, Some("nope".into()))]
-    );
-    assert!(check("type P { x: I64 }\nimpl P: TryFrom<String> { Error = ParseError, try_from = s => Self.Error }").is_ok());
+    assert!(check("type P { x: I64 }\nimpl P { nope = self => 1 }").is_ok());
+    assert!(check("type P { x: I64 }\nimpl P { try_from: String -> Result<Self, ParseError> = s => Ok (Self 0) }").is_ok());
     assert!(check("use text 2\nuse text.trim\ntrim \"x\"").is_ok());
 }
 
@@ -643,10 +642,9 @@ fn private_fields_are_located_outside_their_module() {
     // Inside the module every field is visible.
     assert!(check("type P { pub x: I64, len: U64 = 0 }\nP { x: 1, len: 2 }\nP 1 2\nimpl P { f = self => Self { x: 1, len: 0 } }\nP { x, len } = P 1").is_ok());
     // Two definitions of one (type, name) collide, inherent or trait.
-    let dup = check("type P { x: I64 }\nimpl P { show_x = self => 1 }\nimpl P: Display { show_x = self => 2 }").unwrap_err();
+    let dup = check("type P { x: I64 }\nimpl P { show_x = self => 1 }\nimpl P { show_x = self => 2 }").unwrap_err();
     assert!(matches!(dup[0].0, Reason::Duplicate { .. }), "{dup:?}");
-    let dup = check("type P { x: I64 }\ntype Q { y: I64 }\nimpl P { f = self => 1 }\nimpl Q { f = self => 2 }").unwrap_err();
-    assert!(matches!(dup[0].0, Reason::Duplicate { .. }), "{dup:?}");
+    assert!(check("type P { x: I64 }\ntype Q { y: I64 }\nimpl P { f = self => 1 }\nimpl Q { f = self => 2 }").is_ok());
 }
 
 #[test]
@@ -779,12 +777,11 @@ fn a_module_s_type_names_its_members_through_the_module() {
 fn each_unchecked_form_is_reported_once() {
     use Unchecked as U;
     for (text, form, spelling) in [
-        ("type U8: Integer where self <= 255", U::LimitedType, "U8"),
-        ("type Odd\nwhere self % 2 == 1", U::LimitedType, "Odd"),
-        ("type Key: Eq & Show", U::LimitedType, "Key"),
+        ("type U8: Integer where self <= 255", U::Test, "U8"),
+        ("type Odd\nwhere self % 2 == 1", U::Test, "Odd"),
         (
             "type Range { lo: I64 } where 0 <= self.lo",
-            U::LimitedType,
+            U::Test,
             "Range",
         ),
         (
@@ -799,11 +796,9 @@ fn each_unchecked_form_is_reported_once() {
         ("r = re\"a+b\"i", U::Affix, "re\"a+b\"i"),
         ("f = n => n | { 0r7 => 1, _ => 0 }", U::Affix, "0r7"),
         ("f: I64 & U8 -> I64 = n => n", U::Both, "I64 & U8"),
-        ("f: I64 | String -> I64 = n => 1", U::Either, "I64 | String"),
         ("f: !I64 -> I64 = n => 1", U::Not, "!I64"),
         ("f: Vec<8> -> I64 = n => 1", U::Number, "8"),
         ("f: [I64; n] -> I64 = a => 1", U::Number, "n"),
-        ("s = \"a\" ++ \"b\"", U::Concat, "++"),
         (
             "f = n => n | { I64 m => m, _ => 0 }",
             U::GatePattern,

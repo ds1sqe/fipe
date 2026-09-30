@@ -31,25 +31,25 @@ fn spot_names(kind: &Kind) -> Vec<Option<&str>> {
 fn prelude_declares_the_language_names() {
     let prelude = Declarations::new().prelude;
     for name in [
-        "show", "read", "to", "try", "into", "from", "map", "filter", "len",
-        "join", "fault", "log", "sort", "count", "hypot", "utf8",
+        "show", "read", "to", "try", "map", "filter", "len", "join", "fault",
+        "log", "sort", "count", "hypot", "utf8",
     ] {
         assert!(prelude.value(name).is_some(), "{name}");
         assert!(prelude.value(name).unwrap().public, "{name}");
     }
     for name in [
-        "Maybe", "Result", "Either", "String", "Bool", "I64", "Vec", "Functor",
+        "Maybe", "Result", "Either", "String", "Bool", "I64", "Vec", "Literal",
         "TryFrom", "Count",
     ] {
         assert!(prelude.ty(name).is_some(), "{name}");
     }
     assert!(matches!(
         &prelude.value("map").unwrap().kind,
-        Kind::Method { class, .. } if class == "Functor"
+        Kind::Function { .. }
     ));
     assert!(matches!(
         &prelude.ty("I64").unwrap().kind,
-        Kind::Type { opaque: true, parameters: 0, constructors } if constructors.is_empty()
+        Kind::Type { opaque: false, parameters: 0, constructors } if constructors.is_empty()
     ));
     assert!(matches!(
         &prelude.ty("Maybe").unwrap().kind,
@@ -178,21 +178,15 @@ fn declaration_files_report_each_unchecked_form_once() {
     use Unchecked as U;
     for (input, form, spelling) in [
         ("pub f: A & B -> C", U::Both, "A & B"),
-        ("pub f: A | B -> C", U::Either, "A | B"),
         ("pub f: !A -> C", U::Not, "!A"),
         ("pub f: A * B -> C", U::Tuple, "A * B"),
         ("pub f: Bits<8> -> C", U::Number, "8"),
         ("pub f: [A; n] -> C", U::Number, "n"),
-        ("pub f: b.age: a => a -> b", U::MemberConstraint, "b.age: a"),
-        (
-            "pub type U8: Natural where self <= 255",
-            U::LimitedType,
-            "U8",
-        ),
-        ("type P { x: I64 }\nimpl P { n: I64 }", U::Supplied, "n"),
+        ("pub f: !A -> A", U::Not, "!A"),
+        ("pub type U8: Natural where self <= 255", U::Test, "U8"),
+        ("pub f: Bits<8>", U::Number, "8"),
         ("x = (1, 2)", U::Tuple, "(1, 2)"),
         ("x = 10ms", U::Affix, "10ms"),
-        ("x = a ++ b", U::Concat, "++"),
     ] {
         let errors = Namespace::parse("x", input).unwrap_err();
         let found: Vec<_> = errors
@@ -205,6 +199,11 @@ fn declaration_files_report_each_unchecked_form_once() {
             "{input}"
         );
     }
+    Namespace::parse(
+        "x",
+        "x = a ++ b\npub f: A | B -> C\npub type Key: Eq & Show",
+    )
+    .unwrap();
     // An array's integer length and `b"…"` are checked forms.
     Namespace::parse("x", "pub f: [A; 3] -> C\nx = b\"\\xFF\"").unwrap();
 }

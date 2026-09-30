@@ -188,7 +188,7 @@ impl Infer<'_> {
     /// The marked-pipe result: a return of the same family is used
     /// directly, and preferred when both readings unify; a plain one is
     /// wrapped in the selected side. `Maybe` discards a plain `|!`
-    /// result; `Result` needs it to implement `Err`.
+    /// result.
     pub(super) fn rebuild(
         &mut self,
         left: &Type,
@@ -211,9 +211,6 @@ impl Infer<'_> {
             let shape = with_side(family, arguments, good, fresh);
             self.unify(&shape, &result, span, other);
             return shape;
-        }
-        if family == Family::Result && !good {
-            self.obligation("Err", result.clone(), span);
         }
         with_side(family, arguments, good, result)
     }
@@ -243,6 +240,7 @@ impl Infer<'_> {
         let good = payload(family, arguments, true);
         let before = self.state.clone();
         self.expr(right, Some(&Expected::new(applied.clone(), left_span)));
+        self.dots();
         if self.state.errors.len() == before.errors.len() {
             return applied;
         }
