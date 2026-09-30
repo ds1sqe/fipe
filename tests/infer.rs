@@ -102,6 +102,7 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::NotComplete => "NotComplete",
         Reason::Ambiguous { .. } => "Ambiguous",
         Reason::ImportCycle => "ImportCycle",
+        Reason::PrivateMember { .. } => "PrivateMember",
     }
 }
 
@@ -505,7 +506,10 @@ fn long_marked_and_fallback_chains_type_without_deep_recursion() {
 }
 
 const PRIMES: &str = "pub type Prime { pub n: u64 }
-impl Prime { pub check: Prime -> Bool = self => self.n > 1 }
+impl Prime {
+    pub check: Prime -> Bool = self => self.n > 1,
+    hidden: Prime -> Bool = self => True,
+}
 pub next: Prime -> Prime = p => Prime { n: p.n + 1 }
 ";
 
@@ -567,6 +571,35 @@ fn an_imported_type_s_members_resolve_through_its_module() {
     assert_eq!(primes_ty("use primes\nprimes.Prime.check"), "Prime -> Bool");
     assert_eq!(primes_ty("use primes.Prime\n(Prime 7).check"), "Bool");
     assert_eq!(primes_ty("use primes.Prime\nPrime 7 | .check"), "Bool");
+}
+
+#[test]
+fn a_private_member_reached_as_a_value_method_is_named() {
+    // `T.a`/`m.T.a` are caught by resolve; `value.a` reaches infer.
+    let text = "use primes.Prime\n(Prime 7).hidden";
+    let [error] = with_primes(text).expect_err(text).try_into().unwrap();
+    assert_eq!(
+        Source::new(text).slice(error.span),
+        Some("(Prime 7).hidden")
+    );
+    assert_eq!(
+        error.reason,
+        Reason::PrivateMember {
+            member: "hidden".into()
+        }
+    );
+    let text = "use primes.Prime\nPrime 7 | .hidden";
+    let [error] = with_primes(text).expect_err(text).try_into().unwrap();
+    assert_eq!(
+        error.reason,
+        Reason::PrivateMember {
+            member: "hidden".into()
+        }
+    );
+    // A member that does not exist at all is still `NoField`.
+    let text = "use primes.Prime\n(Prime 7).nope";
+    let [error] = with_primes(text).expect_err(text).try_into().unwrap();
+    assert!(matches!(error.reason, Reason::NoField { .. }), "{error:?}");
 }
 
 #[test]

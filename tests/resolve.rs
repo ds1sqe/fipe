@@ -736,15 +736,26 @@ fn a_module_s_type_names_its_members_through_the_module() {
             member: "check".into(),
         }
     );
-    // Outside its module an inherent member is reachable when `pub`.
+    // Outside its module a non-`pub` inherent member is private, not
+    // unknown.
     for text in [
         "use primes\nprimes.Prime.hidden",
         "use primes.Prime\nPrime.hidden",
     ] {
         assert_eq!(
             unit_errors(text, &[("primes", PRIMES)]),
-            [(Reason::UnknownMember, text.lines().nth(1).map(Into::into))],
+            [(
+                Reason::PrivateMember {
+                    member: "hidden".into()
+                },
+                text.lines().nth(1).map(Into::into)
+            )],
             "{text}"
         );
     }
+    // A member that does not exist at all is still unknown.
+    assert_eq!(
+        unit_errors("use primes.Prime\nPrime.nope", &[("primes", PRIMES)]),
+        [(Reason::UnknownMember, Some("Prime.nope".into()))]
+    );
 }

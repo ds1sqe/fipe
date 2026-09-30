@@ -153,6 +153,20 @@ fn an_absent_file_is_an_unknown_module() {
     );
 }
 
+#[test]
+fn a_private_inherent_member_is_named() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b"use shapes.P\n");
+    assert_eq!(outs, [Out::File("shapes.fipe".into())]);
+    let text = written(repl.file(
+        "shapes.fipe",
+        Some("pub type P { pub x: i64 }\nimpl P { hidden = self => 1 }\n"),
+    ));
+    assert_eq!(text, "fipe> ");
+    let text = written(repl.feed(b"P.hidden\n"));
+    assert!(text.contains("member `hidden` is private"), "{text}");
+}
+
 /// Answer `:host`'s five requests with the fixtures.
 fn host(repl: &mut Repl, mut outs: Vec<Out>) -> String {
     for (index, (path, text)) in HOST.iter().enumerate() {

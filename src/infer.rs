@@ -89,6 +89,11 @@ pub enum Reason {
     /// A value of a file module reached again through its own `use`
     /// lines, which has no type; resolve reports the cycle at its `use`.
     ImportCycle,
+    /// `value.a`: a non-`pub` inherent member `a` of the value's type,
+    /// declared in another module.
+    PrivateMember {
+        member: String,
+    },
 }
 
 /// Type one resolved module. `files` are the file modules its `use`

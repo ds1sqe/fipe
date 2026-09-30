@@ -46,9 +46,15 @@ impl<'a> Infer<'a> {
             }
             let Some(mut callee) = self.self_function(member, &applied, span)
             else {
-                let reason = Reason::NoField {
-                    ty: applied,
-                    other: span,
+                let reason = if self.hidden_member(&applied, member) {
+                    Reason::PrivateMember {
+                        member: member.clone(),
+                    }
+                } else {
+                    Reason::NoField {
+                        ty: applied,
+                        other: span,
+                    }
                 };
                 self.error(span, reason);
                 return Callee::plain(self.fresh());
@@ -111,6 +117,14 @@ impl<'a> Infer<'a> {
             let slot = callee.self_slot.unwrap_or_default();
             callee.supplied = Some((slot, head, dot));
             self.apply_callee(callee, &[], None, dot, None)
+        } else if self.hidden_member(&head, name) {
+            self.error(
+                dot,
+                Reason::PrivateMember {
+                    member: name.clone(),
+                },
+            );
+            return;
         } else {
             let other = owed.span;
             self.error(dot, Reason::NoField { ty: head, other });
@@ -469,6 +483,38 @@ impl<'a> Infer<'a> {
             _ => None,
         };
         self.with_heads(ty, heads.as_deref())
+    }
+
+    /// Whether `ty` is a file module's type with a non-`pub` inherent
+    /// member `member`: [`Self::self_function`] found no function for
+    /// `member`, so a caller reports this instead of [`Reason::NoField`].
+    fn hidden_member(&self, ty: &Type, member: &str) -> bool {
+        let Type::Named { name: owner, .. } = ty else {
+            return false;
+        };
+        let Origin::File(stem) = &owner.origin else {
+            return false;
+        };
+        self.file_member_hidden(stem, &owner.name, member)
+    }
+
+    /// Whether file module `stem`'s inherent impl of `ty` names `member`
+    /// without `pub`.
+    fn file_member_hidden(&self, stem: &str, ty: &str, member: &str) -> bool {
+        let origin = Origin::File(String::from(stem));
+        let Some(module) = self.owner(&origin) else {
+            return false;
+        };
+        super::lower::impls(module, ty)
+            .filter(|(implements, _)| implements.is_none())
+            .flat_map(|(_, members)| members)
+            .any(|m| {
+                matches!(
+                    m,
+                    ImplMember::Named { public: false, name, .. }
+                        if super::last(name) == member
+                )
+            })
     }
 
     /// The `pub` inherent member `member` of type `ty` declared in file

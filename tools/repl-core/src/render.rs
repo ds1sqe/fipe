@@ -91,6 +91,7 @@ pub fn resolve(reason: &resolve::Reason, at: &Context) -> String {
         R::ImplOutsideModule => "impl of a type from another module".into(),
         R::UnknownField => "the type declares no such field".into(),
         R::PrivateField { field } => format!("field `{field}` is private"),
+        R::PrivateMember { member } => format!("member `{member}` is private"),
     }
 }
 
@@ -123,6 +124,7 @@ pub fn infer(reason: &infer::Reason) -> String {
             format!("ambiguous: `{class}` on an unknown type")
         }
         R::ImportCycle => "import cycle".into(),
+        R::PrivateMember { member } => format!("member `{member}` is private"),
     }
 }
 

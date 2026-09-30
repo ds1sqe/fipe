@@ -171,6 +171,11 @@ pub enum Reason {
     PrivateField {
         field: String,
     },
+    /// A non-`pub` impl member of a type, reached through `T.a` or
+    /// `m.T.a` from another module.
+    PrivateMember {
+        member: String,
+    },
     /// A `use` that reaches its own module again, at the `use` that
     /// closes the cycle; from [`resolve`], at the module's `use` that
     /// reaches the cycle.
@@ -322,6 +327,15 @@ pub(crate) fn resolve_default(
 enum Space {
     Value,
     Type,
+}
+
+/// Whether a type's namespace has a member, and whether it is visible
+/// from outside its module.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Membership {
+    Absent,
+    Private,
+    Visible,
 }
 
 /// Where an expression stands, for the text rule of `host.md`.
@@ -688,7 +702,7 @@ impl<'a> Resolver<'a> {
     /// Whether `ty`'s namespace has `member`: an impl member of the
     /// type in the module that owns it, or a method of a trait it
     /// implements. `None` when the owner is not a module we can read.
-    fn has_member(&self, ty: &Target, member: &str) -> Option<bool> {
+    fn has_member(&self, ty: &Target, member: &str) -> Option<Membership> {
         if let Target::Type {
             origin: Origin::Line(line),
             name,
@@ -701,7 +715,9 @@ impl<'a> Resolver<'a> {
                 .chain(lines.into_iter().flatten().filter_map(|index| {
                     frame.lines.get(*index).map(|line| &line.module)
                 }))
-                .any(|module| self.impl_has(module, name, member, false));
+                .map(|module| self.impl_has(module, name, member, false))
+                .find(|membership| *membership != Membership::Absent)
+                .unwrap_or(Membership::Absent);
             return Some(found);
         }
         let (module, name) = match ty {
@@ -739,14 +755,15 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether an impl of the type `name` in `module` has `member`; with
-    /// `public`, an inherent member only when it is `pub`.
+    /// `public`, an inherent member that is not `pub` is [`Membership::
+    /// Private`] rather than visible.
     fn impl_has(
         &self,
         module: &Module,
         name: &str,
         member: &str,
         public: bool,
-    ) -> bool {
+    ) -> Membership {
         for entry in &module.entries {
             let Entry::Item(item) = entry else { continue };
             let ItemKind::Impl {
@@ -760,18 +777,23 @@ impl<'a> Resolver<'a> {
             if named(module, *target).as_deref() != Some(name) {
                 continue;
             }
-            let written = members.iter().any(|m| match m {
+            let matched = members.iter().find_map(|m| match m {
                 ImplMember::Named {
                     name, public: is, ..
-                } => {
-                    last(name) == member
-                        && (*is || !public || implements.is_some())
+                } if last(name) == member => {
+                    Some(*is || !public || implements.is_some())
                 }
-                ImplMember::Type { name, .. } => last(name) == member,
-                ImplMember::Constructor(_) => false,
+                ImplMember::Type { name, .. } if last(name) == member => {
+                    Some(true)
+                }
+                _ => None,
             });
-            if written {
-                return true;
+            if let Some(visible) = matched {
+                return if visible {
+                    Membership::Visible
+                } else {
+                    Membership::Private
+                };
             }
             if let Some(trait_name) =
                 implements.and_then(|id| named(module, id))
@@ -780,11 +802,11 @@ impl<'a> Resolver<'a> {
                     .trait_methods(&trait_name)
                     .is_some_and(|methods| methods.iter().any(|m| m == member))
                 {
-                    return true;
+                    return Membership::Visible;
                 }
             }
         }
-        false
+        Membership::Absent
     }
 
     /// A record's constructor is the type's name; a sum's are its members.
@@ -1508,9 +1530,21 @@ impl<'a> Resolver<'a> {
             };
             if let Some(ty) = ty {
                 let member = &name.segments[1];
-                if self.has_member(&ty, member) == Some(false) {
-                    self.error(name.span, Reason::UnknownMember);
-                    return None;
+                match self.has_member(&ty, member) {
+                    Some(Membership::Absent) => {
+                        self.error(name.span, Reason::UnknownMember);
+                        return None;
+                    }
+                    Some(Membership::Private) => {
+                        self.error(
+                            name.span,
+                            Reason::PrivateMember {
+                                member: member.clone(),
+                            },
+                        );
+                        return None;
+                    }
+                    Some(Membership::Visible) | None => {}
                 }
                 let head = Target::TypeMember {
                     ty: Box::new(ty),
@@ -1546,9 +1580,21 @@ impl<'a> Resolver<'a> {
             if name.segments.len() > 2 && ty.starts_with(char::is_uppercase) {
                 if let Some(ty) = self.exported(origin, ty, Space::Type) {
                     let member = &name.segments[2];
-                    if self.has_member(&ty, member) == Some(false) {
-                        self.error(name.span, Reason::UnknownMember);
-                        return None;
+                    match self.has_member(&ty, member) {
+                        Some(Membership::Absent) => {
+                            self.error(name.span, Reason::UnknownMember);
+                            return None;
+                        }
+                        Some(Membership::Private) => {
+                            self.error(
+                                name.span,
+                                Reason::PrivateMember {
+                                    member: member.clone(),
+                                },
+                            );
+                            return None;
+                        }
+                        Some(Membership::Visible) | None => {}
                     }
                     let head = Target::TypeMember {
                         ty: Box::new(ty),
