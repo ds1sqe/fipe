@@ -47,9 +47,8 @@ raw_scalar = ? Unicode scalar except single-quote and
 escape = backslash, ( "n" | "t" | "r" | backslash | double_quote
                    | single_quote | "0" | "x", hex_digit, hex_digit ) ;
 
-keyword = "if" | "else" | "with" | "type" | "trait" | "impl" | "use"
-        | "pub" ;
-symbol = "+" | "-" | "*" | "/" | "%" | "(" | ")" | "{" | "}" | "[" | "]"
+keyword = "if" | "else" | "with" | "type" | "impl" | "use" | "pub" ;
+symbol = "+" | "-" | "*" | "/" | "%" | "++" | "(" | ")" | "{" | "}" | "[" | "]"
        | "," | ";" | ":" | "=" | "==" | "!" | "!=" | "<" | "<="
-       | ">" | ">=" | "->" | "=>" | "|" | "|:" | "|!" | "||" | "&&" ;
+       | ">" | ">=" | "->" | "=>" | "|" | "|:" | "|!" | "||" | "&" | "&&" ;
 newline = ? U+000A LF ? ;

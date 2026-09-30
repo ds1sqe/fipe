@@ -41,8 +41,10 @@ private fields. `line` accepts a line when it has no diagnostic of its
 own; `query` checks without accepting, and generalizes an expression line
 where `line` defaults it, so its scheme is the line's `typed.binding`.
 `retract` removes the last accepted line and what it defined, returning
-its text. The source is the accepted lines, each followed by a blank line;
-spans are in the source followed by the line being checked.
+its text. The host's strict session and compile budget, and the plan of
+open entries returned with a checked unit ([checks](checks.md)), have no
+Rust form yet. The source is the accepted lines, each followed by a blank
+line; spans are in the source followed by the line being checked.
 
 A `use` of a module that is neither a host module nor loaded, in the line
 or a loaded file, yields `Request::File`. A replied text is parsed and kept

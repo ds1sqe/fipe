@@ -1,7 +1,7 @@
 # Evaluation
 
 `e ⇓ v` denotes a value, `e ⇑ F` a Fault; a demanded subexpression that
-Faults ends the run. E1 and E2 in [open decisions](open.md) hold the
+Faults ends the run. E1, E2 and T5 in [open decisions](open.md) hold the
 proposals cited here.
 
 ## Order
@@ -9,10 +9,11 @@ proposals cited here.
 Values are immutable; a function returns a new value. E1: strict,
 left-to-right evaluation, callee first, supplied arguments in source order,
 defaults in parameter order, then body; each supplied expression exactly
-once, even when a named argument binds a later parameter. A block evaluates
-its lines in order and is its last line, or `()`. An `if` evaluates only
-its selected arm. Arms test patterns in source order, a guard only after
-its pattern matches, and only the chosen body.
+once, even when a named argument binds a later parameter; a tuple's parts
+left to right; tests where [checks](checks.md) §Order and charges places
+them. A block evaluates its lines in order and is its last line, or `()`.
+An `if` evaluates only its selected arm. Arms test patterns in source
+order, a guard only after its pattern matches, and only the chosen body.
 
 ## Parameter binding
 
@@ -28,21 +29,24 @@ arguments are kept in order until the signature is known, then bound:
    named Vec argument supplies one list.
 3. A pipe supplies the last spot still open, whatever its type: `x | f 1 2`
    is `f 1 2 x`; to place the input elsewhere, name it, `x | v => f v 2 3`.
-   A previously filled spot is a check error. Collections are never spread.
+   A previously filled spot is a check error. Collections and tuples are
+   never spread; `f (a, b)` passes one tuple ([containers](containers.md)).
 4. Each remaining spot takes its parameter default, then its type default,
    in declaration order; a default may name the spots before it, so `dir
    (width = 80) (cols = width / 8) => …` is well defined. A spot with
    neither stays open. The result is a function of the open spots in order,
    or the body result. Construction is application: `Point 1` fills `y`
-   from its default, and `Just` stays a function.
+   from its default, and `Just` stays a function; construction tests the
+   meaning's limits ([limits](limits.md) §Gates).
 
-Duplicate supply, unknown flags, non-Bool chaining, extra arguments and
-invalid casts are check errors where statically knowable. `--` is a word;
-quoting prevents flag recognition; there is no end-of-flags marker. T3
-resolves inferred Bool parameters.
+Each bound argument enters its spot ([checks](checks.md)). Duplicate
+supply, unknown flags, non-Bool chaining and extra arguments are check
+errors where statically knowable, and a refuted entry always is. `--` is a
+word; quoting prevents flag recognition; there is no end-of-flags marker.
+T3 resolves inferred Bool parameters.
 
 ```text
-add: i64 -> i64 -> i64 = a b => a + b
+add: Integer -> Integer -> Integer = a b => a + b
 add2 = add 2                   # one open spot
 add2 4                         # 6
 ```
@@ -70,10 +74,10 @@ Nothing |! v ⇓ rebuild_left(v)    # Maybe: v is a value
 A plain return from `f` is wrapped in the selected constructor; a return of
 the same family is used directly, and E1 prefers that reading when both
 unify. An inactive branch keeps its payload. For `Maybe`, a plain `|!`
-result is discarded and yields `Nothing`; for `Result`, a plain `|!` result
-must implement `Err`; `Either` constrains neither payload. Both branches
-have one static result type. A `Monad` type supports `|:` by `then` with
-`pure` for a plain return, and has no `|!`. Bool is unresolved in E1.
+result is discarded and yields `Nothing`; `Result` and `Either` constrain
+neither payload. Both branches have one static result type. Marked pipes
+on a user meaning, through its `then`, `pure`, `or` and `empty` members,
+are T5's. Bool is unresolved in E1.
 
 ## Fallback and sequencing
 
@@ -86,16 +90,17 @@ On Bool, `||` and `&&` short-circuit with Bool operands. For `Maybe` or
 | good payload type | unwrap good payload | evaluate right payload |
 
 An unneeded right side has no effects and no budget cost. Other right
-types are check errors after admitted casts; both branches have one result
-type, so a wrapper cannot survive where the failure branch returns a
-payload. `m && rhs` is `m |: (_ => rhs)`. `Either` refuses `||` and `&&`.
-A user `Alternative` supplies same-family fallback only (T3).
+types are check errors after entry; both branches have one result type,
+so a wrapper cannot survive where the failure branch returns a payload.
+`m && rhs` is `m |: (_ => rhs)`. `Either` refuses `||` and `&&`.
+A user meaning's fallback is T5's.
 
 ## Pattern binding
 
 `name = e` binds in the remaining scope; a later `name = …` shadows, and a
 closure keeps what it captured. A constructor pattern exposes fields or
-payloads; `_` discards.
+payloads; a gate pattern tests and binds the whole value
+([limits](limits.md) §Gates); `_` discards.
 
 ```text
 Just x = e
@@ -111,14 +116,15 @@ failing patterns; they are never runtime panics.
 ## Faults
 
 `fault message` ends the run without a value; budget exhaustion,
-arithmetic failure, dynamic cast failure and host failure do the same. The
-host receives a source-located Fault; prior host effects stand. An `Err`
-value is never a Fault merely by being returned. Writing is a host command
-with a value-last spot, in [embedding](host.md).
+arithmetic failure, a failed test, dynamic cast failure and host failure
+do the same. The host receives a source-located Fault; prior host effects
+stand. An `Err` value is never a Fault merely by being returned. Writing
+is a host command with a value-last spot, in [embedding](host.md).
 
 ## Arithmetic
 
-Integer overflow and division by zero Fault, including the minimum signed
-integer divided by -1; nothing wraps. E2 specifies division and remainder
-signs, float division and overflow, NaNs and ordering; constant evaluation
-obeys the same rules.
+`Integer`'s members never wrap and nothing overflows. `div` truncates
+toward zero and `rem` takes the dividend's sign; division by zero is a
+Fault. A width is a limit of the place ([members](members.md) §Number
+types). E2 specifies float division and overflow, NaNs and ordering;
+constant evaluation obeys the same rules.

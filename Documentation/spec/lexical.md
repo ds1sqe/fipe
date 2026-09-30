@@ -41,22 +41,22 @@ Symbols use longest match from this finite set:
 
 ```text
 |: |! || && => -> == != <= >=
-( ) { } [ ] , ; : = < > ! |
+( ) { } [ ] , ; : = < > ! | &
 ```
 
-Lone `&` is an error. `+ - * / %` are symbols when they are whole words.
-There is no `>>` token: `Vec<Vec<u8>>` ends with two `>`. `=` always
+`+ - * / % ++` are symbols when they are whole words. There is no `>>`
+token: `Vec<Vec<U8>>` ends with two `>`. `=` always
 delimits: `-n=-5` is `FLAG("n")`, `=`, `INTEGER(-5)`.
 
 ## Word classification
 
 Apply the first matching row. Malformed numeric-looking words reach the final
-row; numeric overflow is an error only after recognizing a valid spelling.
+row.
 
 | Condition | Token/payload |
 | --- | --- |
 | valid integer or float | `INTEGER` or `FLOAT`, exact source spelling |
-| exactly `+`, `-`, `*`, `/`, `%` | the corresponding symbol |
+| exactly `+`, `-`, `*`, `/`, `%`, `++` | the corresponding symbol |
 | one/two dashes then an ASCII letter | `FLAG`, text after the dashes |
 | starts `/`, `./` or `../` | `PATH`, original text |
 | `.` then a qualified name | `SELECTOR`, name segments |
@@ -75,11 +75,11 @@ name_continue  = name_start | decimal_digit ;
 Unicode bare text is a `WORD`. The keywords are exactly
 
 ```text
-if else with type trait impl use pub
+if else with type impl use pub
 ```
 
-Everything else is a name: `True`, `Just`, `self`, `Self`, `fault`, `let`,
-`fn`, `as`, `mod`, `struct`, `enum`, `for`, `ver`, `into`, `read`.
+Everything else is a name: `True`, `Just`, `self`, `Self`, `where`, `fault`,
+`let`, `fn`, `as`, `mod`, `struct`, `enum`, `for`, `ver`, `read`.
 [Syntax](syntax.md) defines binding, function and conversion by position.
 
 ## Numbers
@@ -99,10 +99,11 @@ case. A sign is adjacent; there are no suffixes or leading `+`. `1.`, `.5`,
 `1e`, `0xZZ`, `1__0` and `1st` are words; a lone minus is a symbol. `-0`
 keeps its sign.
 
-An integer payload is sign and magnitude with no width; above `2^64 - 1` is
-`IntegerRange`, and signed ranges are the checker's. A float payload is its
-spelling; the checker converts it once, to its selected `f32` or `f64`
-width, round-to-nearest ties-to-even, rejecting finite-source overflow.
+An integer payload is sign and magnitude with no width. The lexer has no
+bound on a number; a place has, and ranges are the checker's. A float
+payload is its spelling; the checker converts it once, to its selected
+`F32` or `F64` width, round-to-nearest ties-to-even, rejecting
+finite-source overflow.
 
 There is no resource literal: `rd:4` is `NAME("rd")`, `:`, `INTEGER(4)`.
 
@@ -157,9 +158,9 @@ nesting and no name's meaning.
 
 ## Diagnostics and progress
 
-The reasons are `UnterminatedQuote`, `BadEscape`, `InvalidUtf8`, `Stray`
-and `IntegerRange`. A failed quote or number emits one diagnostic spanning
-the whole literal and no token; an unterminated quote ends before LF or at
-EOF, keeping the newline. A stray scalar outside a quote is consumed and
-spanned alone. Scanning continues, offsets stay original, and EOF is
-emitted exactly once.
+The reasons are `UnterminatedQuote`, `BadEscape`, `InvalidUtf8` and
+`Stray`. A failed quote emits one diagnostic spanning the whole literal
+and no token; an unterminated quote ends before LF or at EOF, keeping the
+newline. A stray scalar outside a quote is consumed and spanned alone.
+Scanning continues, offsets stay original, and EOF is emitted exactly
+once.

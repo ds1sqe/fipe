@@ -32,13 +32,15 @@ Every node, name, field, argument and operator keeps its byte span.
 | `f a -l -c=80`, `f(a, b)` | call with callee, argument sequence and written style; `-c 80` is a flag then an operand |
 | `e.name`, `.name`, `(e).name` | qualified name kept in segments; selector; postfix field |
 | operators, pipes | distinct binary and pipe nodes with operator spans |
-| `read<i64>` | instance: name and type arguments |
+| `read<I64>`, `Bits<8>` | instance or named type: name and type arguments, a type or an integer |
 | `[:e]`, `[!]` | outcome node with side and optional payload, in values and patterns |
 | `Point { x, y: 2 }` | record: uppercase head and fields, a punned field holding a name |
 | `pub p: T = v` | binding: visibility, pattern, optional annotation, value |
 | `a (b = 0) if g => body` | arm: head patterns, guard, body; the default is a pattern atom; an arm list is the function |
-| `A -> B`, `Show a => T`, `(x: T = v) -> U` | curried function type; qualified type with constraints; labeled parameter with a default |
-| `use`, `type`, `trait`, `impl`, `name: T` | items with visibility; declarations keep parameters, constraints and associated types; a `type` without a body has no member list |
+| `(a, b)` | tuple, in values and patterns |
+| `A -> B`, `A * B`, `A & B`, `A | B`, `!A` | curried function type; tuple type; both, either and not |
+| `Show a => T`, `b.age: a => T`, `(x: T = v) -> U` | qualified type with constraints; labeled parameter with a default |
+| `use`, `type`, `impl`, `name: T` | items with visibility; declarations keep parameters, constraints, a base and limits; a `type` without a body has no member list |
 
 No parser rule decides which spot an argument fills, whether a dot is a
 field or a module, or whether a declaration form is allowed; checking
