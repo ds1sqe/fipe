@@ -12,6 +12,7 @@ use crate::{
     ast::{Entry, ExprKind, ImplMember, Module, Name, PatternKind},
     resolve::{resolve_partial, Origin, Target},
     token::Span,
+    typed::Typed,
     types::{Obligation, Scheme, Subst, Type},
 };
 use alloc::{string::String, vec::Vec};
@@ -127,8 +128,8 @@ impl<'a> Infer<'a> {
     }
 
     /// A function `name` in scope with a `self` spot: this module's
-    /// items, the head type's own members, then the prelude and the
-    /// commands.
+    /// items, the head type's own members, those of a file module's type
+    /// in its module, then the prelude and the commands.
     fn self_function(
         &mut self,
         name: &str,
@@ -173,6 +174,15 @@ impl<'a> Infer<'a> {
                 });
             if has_self {
                 return Some(self.local(site, span));
+            }
+        }
+        // A file module's type: its member, typed in that module.
+        if let Type::Named { name: owner, .. } = ty {
+            if let Origin::File(stem) = &owner.origin {
+                let callee = self.file_member(stem, &owner.name, name, span);
+                if let Some(callee) = callee.filter(|c| c.self_slot.is_some()) {
+                    return Some(callee);
+                }
             }
         }
         for origin in [Origin::Prelude, Origin::Commands] {
@@ -251,6 +261,13 @@ impl<'a> Infer<'a> {
         }
         if let Some(site) = self.frame_member(&owner, member) {
             return self.local(site, span);
+        }
+        if let Origin::File(stem) = &owner.origin {
+            if let Some(callee) =
+                self.file_member(stem, &owner.name, member, span)
+            {
+                return callee;
+            }
         }
         self.trait_member(&owner.origin, &owner.name, &named, member, span)
             .unwrap_or_else(|| {
@@ -422,34 +439,9 @@ impl<'a> Infer<'a> {
         name: &str,
         span: Span,
     ) -> Callee {
-        let origin = Origin::File(String::from(stem));
-        let Some(module) = self.owner(&origin) else {
+        let Some((module, typed)) = self.file_typed(stem, span) else {
             return Callee::plain(self.fresh());
         };
-        if self.visiting.iter().any(|s| s == stem) {
-            self.error(span, Reason::ImportCycle);
-            return Callee::plain(self.fresh());
-        }
-        // A file whose other lines fail still types the ones that resolve;
-        // the session reports its errors where it loads it.
-        let (resolved, _) =
-            resolve_partial(module, self.declarations, self.files);
-        let mut visiting = self.visiting.clone();
-        visiting.push(String::from(stem));
-        let (typed, errors) = super::run(
-            module,
-            &resolved,
-            self.declarations,
-            self.files,
-            None,
-            &visiting,
-            usize::MAX,
-        );
-        // A cycle below leaves the module's types unknown, not general.
-        if errors.iter().any(|e| e.reason == Reason::ImportCycle) {
-            self.error(span, Reason::ImportCycle);
-            return Callee::plain(self.fresh());
-        }
         // The module's final binding of the name is its export.
         let binding = module.entries.iter().rev().find_map(|entry| {
             let Entry::Line(id) = entry else { return None };
@@ -471,19 +463,99 @@ impl<'a> Infer<'a> {
         let Some(scheme) = typed.binding(id) else {
             return Callee::plain(self.fresh());
         };
-        // Its variables are another substitution's: quantify them all.
-        let scheme = Scheme::generalize(
-            &scheme.ty,
-            &scheme.obligations,
-            &[],
-            &Subst::default(),
-        );
-        let ty = self.instantiate(&scheme, span);
-
+        let ty = self.imported(scheme, stem, span);
         let heads = match &module.expressions[value.0].kind {
             ExprKind::Arms(arms) => Some(heads_in(module, arms)),
             _ => None,
         };
         self.with_heads(ty, heads.as_deref())
+    }
+
+    /// The `pub` inherent member `member` of type `ty` declared in file
+    /// module `stem`, typed there and instantiated here.
+    fn file_member(
+        &mut self,
+        stem: &str,
+        ty: &str,
+        member: &str,
+        span: Span,
+    ) -> Option<Callee> {
+        let origin = Origin::File(String::from(stem));
+        let module = self.owner(&origin)?;
+        let site = super::lower::impls(module, ty)
+            .filter(|(implements, _)| implements.is_none())
+            .flat_map(|(_, members)| members)
+            .find_map(|m| match m {
+                ImplMember::Named { public, name, .. }
+                    if *public && super::last(name) == member =>
+                {
+                    Some(name.span)
+                }
+                _ => None,
+            })?;
+        let Some((_, typed)) = self.file_typed(stem, span) else {
+            return Some(Callee::plain(self.fresh()));
+        };
+        let local = typed
+            .frozen
+            .iter()
+            .rev()
+            .find(|(key, _)| *key == (site.start, site.end))
+            .map(|(_, local)| local.clone());
+        let Some(local) = local else {
+            return Some(Callee::plain(self.fresh()));
+        };
+        let ty = self.imported(&local.scheme, stem, span);
+        Some(self.with_heads(ty, local.heads.as_deref()))
+    }
+
+    /// File module `stem` typed on its own for a use at `span`; `None`
+    /// when the use closes an import cycle, which is reported here.
+    fn file_typed(
+        &mut self,
+        stem: &str,
+        span: Span,
+    ) -> Option<(&'a Module, Typed)> {
+        let origin = Origin::File(String::from(stem));
+        let module = self.owner(&origin)?;
+        if self.visiting.iter().any(|s| s == stem) {
+            self.error(span, Reason::ImportCycle);
+            return None;
+        }
+        // A file whose other lines fail still types the ones that resolve;
+        // the session reports its errors where it loads it.
+        let (resolved, _) =
+            resolve_partial(module, self.declarations, self.files);
+        let mut visiting = self.visiting.clone();
+        visiting.push(String::from(stem));
+        let (typed, errors) = super::run(
+            module,
+            &resolved,
+            self.declarations,
+            self.files,
+            None,
+            &visiting,
+            usize::MAX,
+        );
+        // A cycle below leaves the module's types unknown, not general.
+        if errors.iter().any(|e| e.reason == Reason::ImportCycle) {
+            self.error(span, Reason::ImportCycle);
+            return None;
+        }
+        Some((module, typed))
+    }
+
+    /// A scheme typed in file module `stem`, instantiated here: its
+    /// variables are another substitution's, so all are quantified, and
+    /// the module's own declarations are named by the module.
+    fn imported(&mut self, scheme: &Scheme, stem: &str, span: Span) -> Type {
+        let scheme = Scheme::generalize(
+            &scheme.ty,
+            &scheme.obligations,
+            &[],
+            &Subst::default(),
+        )
+        .rehome(&Origin::File(String::from(stem)));
+        self.instantiate(&scheme, span)
     }
 }

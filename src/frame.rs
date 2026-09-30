@@ -12,9 +12,9 @@ use crate::{
     resolve::{Definition, Origin, Resolved, Target},
     token::Span,
     typed::Typed,
-    types::{Obligation, Scheme, Subst, Type, TypeName},
+    types::Subst,
 };
-use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 /// A name's span in the session's text: the key of a frozen binding.
 pub type Site = (usize, usize);
@@ -225,23 +225,14 @@ fn rebase_weak(weak: &Subst, index: usize) -> Subst {
     let bindings = weak.bindings().iter();
     Subst::from_bindings(
         bindings
-            .map(|ty| ty.as_ref().map(|ty| rebase(ty, index)))
+            .map(|ty| ty.as_ref().map(|ty| ty.rehome(&Origin::Line(index))))
             .collect(),
     )
 }
 
 fn rebase_local(local: &Local, index: usize) -> Local {
-    let scheme = &local.scheme;
     Local {
-        scheme: Scheme {
-            variables: scheme.variables.clone(),
-            obligations: scheme
-                .obligations
-                .iter()
-                .map(|o: &Obligation| o.map(|ty| rebase(ty, index)))
-                .collect(),
-            ty: rebase(&scheme.ty, index),
-        },
+        scheme: local.scheme.rehome(&Origin::Line(index)),
         heads: local.heads.clone(),
     }
 }
@@ -280,30 +271,5 @@ fn rebase_target(target: &Target, index: usize) -> Target {
             name: name.clone(),
         },
         other => other.clone(),
-    }
-}
-
-/// `ty` with this line's declarations named by their line.
-pub fn rebase(ty: &Type, index: usize) -> Type {
-    match ty {
-        Type::Named { name, arguments } => Type::Named {
-            name: TypeName {
-                origin: if name.origin == Origin::This {
-                    Origin::Line(index)
-                } else {
-                    name.origin.clone()
-                },
-                name: name.name.clone(),
-            },
-            arguments: arguments.iter().map(|a| rebase(a, index)).collect(),
-        },
-        Type::Array { element, length } => Type::Array {
-            element: Box::new(rebase(element, index)),
-            length: *length,
-        },
-        Type::Function { parameter, result } => {
-            Type::function(rebase(parameter, index), rebase(result, index))
-        }
-        Type::Unit | Type::Var(_) | Type::Rigid(_) => ty.clone(),
     }
 }

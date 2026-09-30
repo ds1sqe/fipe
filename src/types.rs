@@ -80,6 +80,34 @@ impl Type {
         }
     }
 
+    /// This type with the declarations of the module it was typed in,
+    /// `Origin::This`, named by `origin`: how a file module's or an
+    /// accepted line's types keep their identity outside it.
+    #[must_use]
+    pub fn rehome(&self, origin: &Origin) -> Self {
+        match self {
+            Self::Named { name, arguments } => Self::Named {
+                name: TypeName {
+                    origin: if name.origin == Origin::This {
+                        origin.clone()
+                    } else {
+                        name.origin.clone()
+                    },
+                    name: name.name.clone(),
+                },
+                arguments: arguments.iter().map(|a| a.rehome(origin)).collect(),
+            },
+            Self::Array { element, length } => Self::Array {
+                element: Box::new(element.rehome(origin)),
+                length: *length,
+            },
+            Self::Function { parameter, result } => {
+                Self::function(parameter.rehome(origin), result.rehome(origin))
+            }
+            Self::Unit | Self::Var(_) | Self::Rigid(_) => self.clone(),
+        }
+    }
+
     /// Whether `var` occurs in this type.
     #[must_use]
     pub fn contains(&self, var: Var) -> bool {
@@ -164,6 +192,21 @@ impl Scheme {
             variables: Vec::new(),
             obligations: Vec::new(),
             ty,
+        }
+    }
+
+    /// The scheme with its module's declarations named by `origin`
+    /// ([`Type::rehome`]).
+    #[must_use]
+    pub fn rehome(&self, origin: &Origin) -> Self {
+        Self {
+            variables: self.variables.clone(),
+            obligations: self
+                .obligations
+                .iter()
+                .map(|obligation| obligation.map(|ty| ty.rehome(origin)))
+                .collect(),
+            ty: self.ty.rehome(origin),
         }
     }
 
@@ -380,7 +423,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut variables = Vec::new();
         self.variables(&mut variables);
-        write(self, f, &letters(&variables))
+        write(self, f, &letters(&variables), &[])
     }
 }
 
@@ -403,19 +446,74 @@ impl fmt::Display for Scheme {
             match obligation {
                 Obligation::Class { class, ty } => {
                     write!(f, "{class} ")?;
-                    write(ty, f, &names)?;
+                    write(ty, f, &names, &[])?;
                 }
                 Obligation::Member { head, name, ty, .. } => {
-                    write(head, f, &names)?;
+                    write(head, f, &names, &[])?;
                     write!(f, ".{name}: ")?;
-                    write(ty, f, &names)?;
+                    write(ty, f, &names, &[])?;
                 }
             }
         }
         if !self.obligations.is_empty() {
             f.write_str(" => ")?;
         }
-        write(&self.ty, f, &names)
+        write(&self.ty, f, &names, &[])
+    }
+}
+
+/// A type written beside another in one message, as [`Type::beside`]
+/// makes it.
+pub struct Beside<'a> {
+    ty: &'a Type,
+    other: &'a Type,
+}
+
+impl Type {
+    /// This type written for a message that also names `other`: a name
+    /// the two give to different declarations is written with its
+    /// module, `primes.Prime` against this module's `Prime`.
+    #[must_use]
+    pub const fn beside<'a>(&'a self, other: &'a Self) -> Beside<'a> {
+        Beside { ty: self, other }
+    }
+
+    /// The declared names in this type, each with its origin.
+    fn declared<'a>(&'a self, out: &mut Vec<&'a TypeName>) {
+        match self {
+            Self::Unit | Self::Var(_) | Self::Rigid(_) => {}
+            Self::Named { name, arguments } => {
+                out.push(name);
+                for argument in arguments {
+                    argument.declared(out);
+                }
+            }
+            Self::Array { element, .. } => element.declared(out),
+            Self::Function { parameter, result } => {
+                parameter.declared(out);
+                result.declared(out);
+            }
+        }
+    }
+}
+
+impl fmt::Display for Beside<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut declared = Vec::new();
+        self.ty.declared(&mut declared);
+        self.other.declared(&mut declared);
+        let mut clashes: Vec<String> = Vec::new();
+        for (index, a) in declared.iter().enumerate() {
+            let clash = declared[index + 1..]
+                .iter()
+                .any(|b| a.name == b.name && a.origin != b.origin);
+            if clash && !clashes.contains(&a.name) {
+                clashes.push(a.name.clone());
+            }
+        }
+        let mut variables = Vec::new();
+        self.ty.variables(&mut variables);
+        write(self.ty, f, &letters(&variables), &clashes)
     }
 }
 
@@ -442,10 +540,13 @@ fn write_number(out: &mut String, number: usize) {
     let _ = write!(out, "{number}");
 }
 
+/// Write `ty`; a declared name among `clashes` is written with its
+/// module when that is another module.
 fn write(
     ty: &Type,
     f: &mut fmt::Formatter<'_>,
     names: &[(Var, String)],
+    clashes: &[String],
 ) -> fmt::Result {
     match ty {
         Type::Unit => f.write_str("()"),
@@ -456,6 +557,16 @@ fn write(
         },
         Type::Rigid(name) => f.write_str(name),
         Type::Named { name, arguments } => {
+            if clashes.contains(&name.name) {
+                match &name.origin {
+                    Origin::File(module) | Origin::Host(module) => {
+                        write!(f, "{module}.")?;
+                    }
+                    Origin::Prelude => f.write_str("prelude.")?,
+                    Origin::Commands => f.write_str("commands.")?,
+                    Origin::This | Origin::Line(_) => {}
+                }
+            }
             f.write_str(&name.name)?;
             if arguments.is_empty() {
                 return Ok(());
@@ -465,13 +576,13 @@ fn write(
                 if index > 0 {
                     f.write_str(", ")?;
                 }
-                write(argument, f, names)?;
+                write(argument, f, names, clashes)?;
             }
             f.write_str(">")
         }
         Type::Array { element, length } => {
             f.write_str("[")?;
-            write(element, f, names)?;
+            write(element, f, names, clashes)?;
             write!(f, "; {length}]")
         }
         Type::Function { parameter, result } => {
@@ -479,12 +590,12 @@ fn write(
             if grouped {
                 f.write_str("(")?;
             }
-            write(parameter, f, names)?;
+            write(parameter, f, names, clashes)?;
             if grouped {
                 f.write_str(")")?;
             }
             f.write_str(" -> ")?;
-            write(result, f, names)
+            write(result, f, names, clashes)
         }
     }
 }

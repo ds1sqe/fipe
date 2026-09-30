@@ -99,7 +99,11 @@ pub fn infer(reason: &infer::Reason) -> String {
     match reason {
         R::Mismatch {
             expected, actual, ..
-        } => format!("expected {expected}, found {actual}"),
+        } => format!(
+            "expected {}, found {}",
+            expected.beside(actual),
+            actual.beside(expected)
+        ),
         R::Occurs => "a type that would contain itself".into(),
         R::UnknownFamily => "no outcome family is known here".into(),
         R::NoField { ty, .. } => format!("no such field or method on {ty}"),

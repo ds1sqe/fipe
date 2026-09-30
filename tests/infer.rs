@@ -150,9 +150,9 @@ fn example(stem: &str) -> Vec<(usize, &'static str, String)> {
 fn literals_and_arithmetic() {
     assert_eq!(ty("1 + 2"), "i64");
     assert_eq!(ty("x: u8 = 1 + 2"), "u8");
-    let text = "1 + 2.0";
+    let text = "1 + \"a\"";
     let [error] = errors(text).try_into().unwrap();
-    assert_eq!(Source::new(text).slice(error.span), Some("2.0"));
+    assert_eq!(Source::new(text).slice(error.span), Some("\"a\""));
     let Reason::Mismatch {
         expected,
         actual,
@@ -163,7 +163,7 @@ fn literals_and_arithmetic() {
     };
     assert_eq!(
         (expected.to_string(), actual.to_string()),
-        ("i64".into(), "f64".into())
+        ("i64".into(), "String".into())
     );
     assert_eq!(Source::new(text).slice(other), Some("1"));
     assert_eq!(kinds("\"a\" + \"b\""), [("NotNumeric", "+")]);
@@ -334,10 +334,9 @@ fn the_examples_type_except_assigned_rows() {
                 float(17, "hypot x y"),
                 float(17, "x"),
                 float(17, "y"),
+                // Each once, at the operand the expected type reaches.
                 float(21, "self.x"),
-                float(21, "self.x - q.x"),
                 float(21, "self.y"),
-                float(21, "self.y - q.y"),
                 float(48, "p.x"),
                 float(48, "p.y"),
                 float(48, "p.y"),
@@ -503,4 +502,119 @@ fn long_marked_and_fallback_chains_type_without_deep_recursion() {
     assert_eq!(ty(&format!("True {fallback}")), "Bool");
     let and = "&& True ".repeat(20_000);
     assert_eq!(ty(&format!("True {and}")), "Bool");
+}
+
+const PRIMES: &str = "pub type Prime { pub n: u64 }
+impl Prime { pub check: Prime -> Bool = self => self.n > 1 }
+pub next: Prime -> Prime = p => Prime { n: p.n + 1 }
+";
+
+/// `text` typed with the file module `primes` beside it.
+fn with_primes(text: &str) -> Result<Typed, Vec<Error>> {
+    let parsed = module(text);
+    let files = [("primes".to_string(), module(PRIMES))];
+    let resolved = resolve(&parsed, &host(), &files)
+        .unwrap_or_else(|errors| panic!("{text:?}: {errors:?}"));
+    infer(&parsed, &resolved, &host(), &files)
+}
+
+/// The type of the last line of `text` with `primes`, as [`ty`].
+fn primes_ty(text: &str) -> String {
+    let parsed = module(text);
+    let typed = with_primes(text).unwrap_or_else(|errors| {
+        panic!("{text:?}: {:?}", located(text, &errors))
+    });
+    let Some(Entry::Line(id)) = parsed.entries.last() else {
+        panic!("{text:?}: no line")
+    };
+    match parsed.expr(*id).unwrap().kind {
+        ExprKind::Bind { .. } => typed.binding(*id).unwrap().to_string(),
+        _ => typed.expr(*id).unwrap().to_string(),
+    }
+}
+
+#[test]
+fn a_file_module_s_types_keep_their_identity_in_its_importer() {
+    // The module's own function on the module's own type.
+    let twice = "use primes.Prime primes.next
+pub twice: Prime -> Prime = p => next (next p)";
+    assert_eq!(primes_ty(twice), "Prime -> Prime");
+    // An importer's type of the same name is another type.
+    let text = "use primes.next\ntype Prime { s: String }\nnext (Prime \"x\")";
+    let [error] = with_primes(text).expect_err(text).try_into().unwrap();
+    assert_eq!(Source::new(text).slice(error.span), Some("Prime \"x\""));
+    let Reason::Mismatch {
+        expected, actual, ..
+    } = error.reason
+    else {
+        panic!("{:?}", error.reason)
+    };
+    let origin = |ty: &Type| match ty {
+        Type::Named { name, .. } => name.origin.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(origin(&expected), Origin::File("primes".into()));
+    assert_eq!(origin(&actual), Origin::This);
+    // The message says which module each is from.
+    assert_eq!(expected.beside(&actual).to_string(), "primes.Prime");
+    assert_eq!(actual.beside(&expected).to_string(), "Prime");
+    assert_eq!(expected.to_string(), "Prime");
+}
+
+#[test]
+fn an_imported_type_s_members_resolve_through_its_module() {
+    assert_eq!(primes_ty("use primes.Prime\nPrime.check"), "Prime -> Bool");
+    assert_eq!(primes_ty("use primes\nprimes.Prime.check"), "Prime -> Bool");
+    assert_eq!(primes_ty("use primes.Prime\n(Prime 7).check"), "Bool");
+    assert_eq!(primes_ty("use primes.Prime\nPrime 7 | .check"), "Bool");
+}
+
+#[test]
+fn one_mismatch_is_reported_once() {
+    let text = "use primes.Prime primes.next\np = Prime 7\nnext (p.n + 2)";
+    let errors = with_primes(text).expect_err(text);
+    let located: Vec<_> = errors
+        .iter()
+        .map(|e| (kind(&e.reason), Source::new(text).slice(e.span)))
+        .collect();
+    assert_eq!(located, [("Mismatch", Some("p.n"))]);
+    let text = "f: String -> String = s => s\nx: u64 = 1\nf (x + 2 * 3)";
+    assert_eq!(kinds(text), [("Mismatch", "x")]);
+}
+
+#[test]
+fn literal_operands_take_their_type_in_any_order() {
+    for text in ["2 + 2.5", "2.5 + 2", "2 + 2 + 2.5", "x = 2.5\n2 + x"] {
+        assert_eq!(ty(text), "f64", "{text}");
+    }
+    assert_eq!(ty("x = 2 * 2.5"), "f64");
+    assert_eq!(ty("y: u8 = 3\n2 + y"), "u8");
+    assert_eq!(ty("2 < 2.5"), "Bool");
+    assert_eq!(ty("1 + 1"), "i64");
+    assert_eq!(kinds("y: u8 = 3\n300 + y"), [("OutOfRange", "300")]);
+    // A float does not take an integer operand's type.
+    assert_eq!(kinds("y: u8 = 3\n2.5 + y"), [("Mismatch", "y")]);
+}
+
+#[test]
+fn the_neutral_conversion_example_converts_a_point() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("Documentation/examples/03-types.fipe");
+    let text = std::fs::read_to_string(path).unwrap();
+    let parsed = module(&text);
+    let files = examples();
+    let resolved = resolve(&parsed, &host(), &files).unwrap();
+    let (typed, _) = infer_partial(&parsed, &resolved, &host(), &files);
+    let source = Source::new(&text);
+    let conversion = parsed.entries.iter().find_map(|entry| {
+        let Entry::Line(id) = entry else { return None };
+        let expr = parsed.expr(*id).unwrap();
+        let spelled = source.slice(expr.span)?;
+        spelled.ends_with("to<Polar>").then_some(expr)
+    });
+    let ExprKind::Pipe { left, .. } = conversion.unwrap().kind else {
+        panic!("not a pipe")
+    };
+    // From `Point`, through `Polar`'s `From<Point>`, not `Polar` to itself.
+    assert_eq!(typed.expr(left).unwrap().to_string(), "Point");
 }

@@ -213,7 +213,7 @@ fn t_queries_an_expression_s_type() {
 
 #[test]
 fn t_reports_a_type_mismatch() {
-    let text = written(Repl::new().feed(b":t 1 + 2.0\n"));
+    let text = written(Repl::new().feed(b":t 1 + \"a\"\n"));
     let line = text.lines().next().unwrap();
     assert!(line.contains("expected"), "{text}");
     assert!(line.contains("found"), "{text}");
@@ -259,6 +259,42 @@ fn a_mismatch_prints_types_by_display() {
     assert_eq!(
         text,
         "1:5: expected i64, found String\n1 + \"a\"\n    ^^^\nfipe> "
+    );
+}
+
+const PRIMES: &str = "pub type Prime { pub n: u64 }
+impl Prime { pub check: Prime -> Bool = self => self.n > 1 }
+pub next: Prime -> Prime = p => Prime { n: p.n + 1 }
+";
+
+#[test]
+fn two_types_of_one_name_are_printed_with_their_modules() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b"use primes.Prime primes.next\n");
+    assert_eq!(outs, [Out::File("primes.fipe".into())]);
+    written(repl.file("primes.fipe", Some(PRIMES)));
+    let text = written(repl.feed(b"type Prime { s: String }\n"));
+    assert_eq!(text, "fipe> ");
+    let text = written(repl.feed(b"next (Prime \"x\")\n"));
+    assert_eq!(
+        text,
+        "1:7: expected primes.Prime, found Prime\n\
+         next (Prime \"x\")\n      ^^^^^^^^^\nfipe> "
+    );
+}
+
+#[test]
+fn the_identity_and_literal_smokes() {
+    let mut repl = Repl::new();
+    repl.feed(b"use primes.Prime primes.next\n");
+    written(repl.file("primes.fipe", Some(PRIMES)));
+    let text = written(repl.feed(b":t Prime.check\n:t 2 + 2.5\n"));
+    assert_eq!(text, "Prime.check: Prime -> Bool\n2 + 2.5: f64\nfipe> ");
+    let text = written(repl.feed(b"p = Prime 7\nnext (p.n + 2)\n"));
+    assert_eq!(
+        text,
+        "1:7: expected Prime, found u64\n\
+         next (p.n + 2)\n      ^^^\nfipe> "
     );
 }
 

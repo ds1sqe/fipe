@@ -701,7 +701,7 @@ impl<'a> Resolver<'a> {
                 .chain(lines.into_iter().flatten().filter_map(|index| {
                     frame.lines.get(*index).map(|line| &line.module)
                 }))
-                .any(|module| self.impl_has(module, name, member));
+                .any(|module| self.impl_has(module, name, member, false));
             return Some(found);
         }
         let (module, name) = match ty {
@@ -724,14 +724,29 @@ impl<'a> Resolver<'a> {
             Target::Type {
                 origin: Origin::File(stem),
                 name,
-            } => (self.file(stem)?, name),
+            } => {
+                // Another file module's inherent member must be `pub`.
+                return Some(self.impl_has(
+                    self.file(stem)?,
+                    name,
+                    member,
+                    true,
+                ));
+            }
             _ => return None,
         };
-        Some(self.impl_has(module, name, member))
+        Some(self.impl_has(module, name, member, false))
     }
 
-    /// Whether an impl of the type `name` in `module` has `member`.
-    fn impl_has(&self, module: &Module, name: &str, member: &str) -> bool {
+    /// Whether an impl of the type `name` in `module` has `member`; with
+    /// `public`, an inherent member only when it is `pub`.
+    fn impl_has(
+        &self,
+        module: &Module,
+        name: &str,
+        member: &str,
+        public: bool,
+    ) -> bool {
         for entry in &module.entries {
             let Entry::Item(item) = entry else { continue };
             let ItemKind::Impl {
@@ -746,8 +761,13 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             let written = members.iter().any(|m| match m {
-                ImplMember::Named { name, .. }
-                | ImplMember::Type { name, .. } => last(name) == member,
+                ImplMember::Named {
+                    name, public: is, ..
+                } => {
+                    last(name) == member
+                        && (*is || !public || implements.is_some())
+                }
+                ImplMember::Type { name, .. } => last(name) == member,
                 ImplMember::Constructor(_) => false,
             });
             if written {
@@ -1519,8 +1539,24 @@ impl<'a> Resolver<'a> {
         if !qualified {
             return Some(head);
         }
-        // `m.a`: a module's export, which must exist.
+        // `m.a`: a module's export, which must exist; `m.T.a` reads the
+        // namespace of its type `T`, as `T.a` does.
         if let Target::Module(origin) = &head {
+            let ty = &name.segments[1];
+            if name.segments.len() > 2 && ty.starts_with(char::is_uppercase) {
+                if let Some(ty) = self.exported(origin, ty, Space::Type) {
+                    let member = &name.segments[2];
+                    if self.has_member(&ty, member) == Some(false) {
+                        self.error(name.span, Reason::UnknownMember);
+                        return None;
+                    }
+                    let head = Target::TypeMember {
+                        ty: Box::new(ty),
+                        member: member.clone(),
+                    };
+                    return Some(members(head, &name.segments[3..]));
+                }
+            }
             let Some(export) =
                 self.exported(origin, &name.segments[1], Space::Value)
             else {

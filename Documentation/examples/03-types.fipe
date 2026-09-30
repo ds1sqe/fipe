@@ -65,7 +65,7 @@ Circle 1.5 | area
 [Circle 1.0, Rect 2.0 3.0, Dot] | map area | sum
 
 pl = p | Polar.from               # Polar's From<Point>
-pl | to<Polar>                    # the neutral word, same impl
+p | to<Polar>                     # the neutral word, same impl
 back = pl.try_into<Point>         # Result<Point, RangeError>
 back |: show || "out of range"
 "3,4" | read<Point>               # Result<Point, ParseError>

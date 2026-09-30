@@ -7,7 +7,7 @@
 
 use super::{
     bind::{in_range, Part},
-    is_prelude, prelude, prelude_of, Expected, Infer, Lit, Owed, Reason,
+    is_prelude, num, prelude, prelude_of, Expected, Infer, Lit, Owed, Reason,
     NUMERIC,
 };
 use crate::{
@@ -26,13 +26,16 @@ impl Infer<'_> {
         expected: Option<&Expected>,
     ) -> Type {
         let ty = self.synth(id, expected);
-        // A group, block, `with` or `if` checks its own last value.
+        // A group, block, `with` or `if` checks its own last value, an
+        // operator chain each node the expected type reaches.
         let checked = matches!(
             self.module.expressions[id.0].kind,
             ExprKind::Group(_)
                 | ExprKind::Block(_)
                 | ExprKind::With { .. }
                 | ExprKind::If { .. }
+                | ExprKind::Binary { .. }
+                | ExprKind::Pipe { .. }
         );
         if let Some(expected) = expected.filter(|_| !checked) {
             self.unify(&expected.ty, &ty, self.span(id), expected.span);
@@ -280,7 +283,10 @@ impl Infer<'_> {
     /// Operators and pipes nested to the left, as a flat chain parses,
     /// typed from the innermost left operand outward without a frame
     /// per element. Each inner node is finished as [`Self::expr`]
-    /// finishes it; `id` itself is finished by its caller.
+    /// finishes it; `id` itself is finished by its caller, except that
+    /// the chain checks every node the expected type reaches. An
+    /// arithmetic node's type is its left operand's, which was checked,
+    /// so it is not checked again.
     fn chain(&mut self, id: ExprId, expected: Option<&Expected>) -> Type {
         let module = self.module;
         // Each node, and whether `expected` reaches it: arithmetic
@@ -303,16 +309,33 @@ impl Infer<'_> {
                 _ => break,
             }
         }
-        let mut ty = self.expr(node, expected.filter(|_| reach));
+        let inner = expected.filter(|_| reach);
+        let operator = spine.last().is_some_and(|(n, _)| {
+            matches!(module.expressions[n.0].kind, ExprKind::Binary { .. })
+        });
+        // A literal operand with no expected type waits for the others.
+        let mut run = None;
+        let mut ty = match numeric_literal(&module.expressions[node.0].kind) {
+            Some(float) if inner.is_none() && operator => {
+                run = Some(float);
+                let open = Expected::new(self.fresh(), self.span(node));
+                self.expr(node, Some(&open))
+            }
+            _ => self.expr(node, inner),
+        };
         for (index, &(node, reach)) in spine.iter().enumerate().rev() {
             let expected = expected.filter(|_| reach);
-            ty = match &module.expressions[node.0].kind {
+            let kind = &module.expressions[node.0].kind;
+            if !matches!(kind, ExprKind::Binary { .. }) {
+                self.end_run(&ty, &mut run);
+            }
+            ty = match kind {
                 ExprKind::Binary {
                     op,
                     operator,
                     left,
                     right,
-                } => self.binary(*op, *operator, (*left, ty), *right),
+                } => self.binary(*op, *operator, (*left, ty), *right, &mut run),
                 ExprKind::Pipe {
                     op: PipeOp::Plain,
                     left,
@@ -331,40 +354,89 @@ impl Infer<'_> {
                 } => self.pipe(*op, (*left, ty), *right, *operator),
                 _ => unreachable!("the spine holds operators and pipes"),
             };
+            let arithmetic = matches!(kind,
+                ExprKind::Binary { op, .. } if class(*op) == "Num");
+            if let Some(expected) = expected.filter(|_| !arithmetic) {
+                self.unify(&expected.ty, &ty, self.span(node), expected.span);
+            }
             if index > 0 {
-                if let Some(expected) = expected {
-                    self.unify(
-                        &expected.ty,
-                        &ty,
-                        self.span(node),
-                        expected.span,
-                    );
-                }
                 self.state.types[node.0] = Some(ty.clone());
             }
         }
+        self.end_run(&ty, &mut run);
         ty
     }
 
     /// Arithmetic needs one type and its `Num` obligation; comparison
     /// one type and `Eq` or `Ord`, giving `Bool`. The left operand is
-    /// already typed.
+    /// already typed; the right is checked against it, or joins the
+    /// literal `run` the left is.
     fn binary(
         &mut self,
         op: BinaryOp,
         operator: Span,
         (left, left_ty): (ExprId, Type),
         right: ExprId,
+        run: &mut Option<bool>,
     ) -> Type {
         let class = class(op);
         let arithmetic = class == "Num";
-        let sibling = Expected::new(left_ty.clone(), self.span(left));
-        self.expr(right, Some(&sibling));
+        if run.is_some() {
+            self.run_operand(&left_ty, left, right, run);
+        } else {
+            let sibling = Expected::new(left_ty.clone(), self.span(left));
+            self.expr(right, Some(&sibling));
+        }
         self.obligation(class, left_ty.clone(), operator);
         if arithmetic {
             left_ty
         } else {
+            self.end_run(&left_ty, run);
             prelude("Bool")
+        }
+    }
+
+    /// The right operand of a run of literal operands, whose type is the
+    /// variable `var`: a literal joins the run; any other operand is
+    /// typed on its own, and the literals take its type when it is
+    /// numeric and fits them all, else their default before it is
+    /// checked against them.
+    fn run_operand(
+        &mut self,
+        var: &Type,
+        left: ExprId,
+        right: ExprId,
+        run: &mut Option<bool>,
+    ) {
+        let float = run.unwrap_or_default();
+        if let Some(right_float) =
+            numeric_literal(&self.module.expressions[right.0].kind)
+        {
+            let sibling = Expected::new(var.clone(), self.span(left));
+            self.expr(right, Some(&sibling));
+            *run = Some(float || right_float);
+            return;
+        }
+        let ty = self.expr(right, None);
+        let applied = self.apply(&ty);
+        let fits = num(&applied) == Some(true)
+            && (!float
+                || is_prelude(&applied, "f32")
+                || is_prelude(&applied, "f64"));
+        if fits {
+            *run = None;
+        } else {
+            self.end_run(var, run);
+        }
+        self.unify(var, &ty, self.span(right), self.span(left));
+    }
+
+    /// A literal run ends at its default, `f64` when a float literal is
+    /// in it, else `i64`, unless an operand gave it a type.
+    fn end_run(&mut self, var: &Type, run: &mut Option<bool>) {
+        if let Some(float) = run.take() {
+            let name = if float { "f64" } else { "i64" };
+            self.hint(var, &prelude(name));
         }
     }
 
@@ -480,6 +552,15 @@ impl Infer<'_> {
         };
         let fields = self.fields(&ty)?;
         Some((ty, fields))
+    }
+}
+
+/// Whether an expression is a numeric literal, and whether a float one.
+const fn numeric_literal(kind: &ExprKind) -> Option<bool> {
+    match kind {
+        ExprKind::Literal(Literal::Int { .. }) => Some(false),
+        ExprKind::Literal(Literal::Float(_)) => Some(true),
+        _ => None,
     }
 }
 

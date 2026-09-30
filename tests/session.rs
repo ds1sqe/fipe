@@ -678,3 +678,56 @@ fn a_signature_above_its_value_is_one_line() {
     assert_eq!(report.entries().len(), 1);
     assert_eq!(query(&mut session, "describe"), "i64 -> String");
 }
+
+const PRIMES: &str = "pub type Prime { pub n: u64 }
+impl Prime { pub check: Prime -> Bool = self => self.n > 1 }
+pub next: Prime -> Prime = p => Prime { n: p.n + 1 }
+pub make: u64 -> Prime = n => Prime { n }
+";
+
+/// A session with `primes` loaded by `use primes.Prime primes.next
+/// primes.make`.
+fn primes() -> Session {
+    let mut session = Session::new(host());
+    let Outcome::Request(_) =
+        session.line("use primes.Prime primes.next primes.make")
+    else {
+        panic!()
+    };
+    let report = done(session.reply(Reply::File(Some(PRIMES.into()))));
+    assert_eq!(report.diagnostics, []);
+    session
+}
+
+#[test]
+fn a_value_of_a_module_s_type_keeps_it_across_lines() {
+    let mut session = primes();
+    ok(&mut session, "p = make 3");
+    assert_eq!(line_type(&mut session, "next p"), "Prime");
+    assert_eq!(line_type(&mut session, "next (next p)"), "Prime");
+    ok(&mut session, "q = Prime 7");
+    assert_eq!(line_type(&mut session, "next q"), "Prime");
+    // The line's own type of that name is not the module's.
+    ok(&mut session, "type Prime { s: String }");
+    let report = done(session.line("next (Prime \"x\")"));
+    assert!(matches!(
+        type_reasons(&report).as_slice(),
+        [fipe::infer::Reason::Mismatch { .. }]
+    ));
+    // `q` was made before: still the module's.
+    assert_eq!(line_type(&mut session, "next q"), "Prime");
+}
+
+#[test]
+fn a_module_s_type_members_answer_queries() {
+    let mut session = primes();
+    assert_eq!(query(&mut session, "Prime.check"), "Prime -> Bool");
+    ok(&mut session, "p = make 3");
+    assert_eq!(query(&mut session, "p.check"), "Bool");
+    assert_eq!(query(&mut session, "2 + 2.5"), "f64");
+    let report = done(session.line("next (p.n + 2)"));
+    let [Diagnostic::Type(error)] = report.diagnostics.as_slice() else {
+        panic!("{:?}", report.diagnostics)
+    };
+    assert_eq!(error.span, span(6, 9));
+}

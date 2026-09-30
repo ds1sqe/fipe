@@ -712,3 +712,39 @@ fn resolve_reports_a_used_module_with_a_main_without_a_session() {
         [(Reason::NoMain, Some("via".into()))]
     );
 }
+
+const PRIMES: &str = "pub type Prime { pub n: u64 }
+impl Prime {
+    pub check: Prime -> Bool = self => self.n > 1,
+    hidden: Prime -> Prime = self => self,
+}
+";
+
+#[test]
+fn a_module_s_type_names_its_members_through_the_module() {
+    let text = "use primes\nprimes.Prime.check";
+    let parsed = module(text);
+    let files = [("primes".to_string(), module(PRIMES))];
+    let resolved = resolve(&parsed, &host(), &files).unwrap();
+    assert_eq!(
+        target(text, &parsed, &resolved, "primes.Prime.check"),
+        &Target::TypeMember {
+            ty: Box::new(Target::Type {
+                origin: Origin::File("primes".into()),
+                name: "Prime".into(),
+            }),
+            member: "check".into(),
+        }
+    );
+    // Outside its module an inherent member is reachable when `pub`.
+    for text in [
+        "use primes\nprimes.Prime.hidden",
+        "use primes.Prime\nPrime.hidden",
+    ] {
+        assert_eq!(
+            unit_errors(text, &[("primes", PRIMES)]),
+            [(Reason::UnknownMember, text.lines().nth(1).map(Into::into))],
+            "{text}"
+        );
+    }
+}
