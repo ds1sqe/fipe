@@ -14,7 +14,7 @@
 //! Typing the group early would read those bindings as unknown, and
 //! typing them out of order would break their sequence.
 //!
-//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
+//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/03-types.md
 
 use super::{bind::Part, Body, Callee, Expected, Infer, Status, Use};
 use crate::{
@@ -126,7 +126,6 @@ impl Infer<'_> {
             ty: item.ty.clone(),
             site: item.site,
             annotated: item.annotated,
-            public: item.public,
         };
         let expected = Expected::new(part.ty.clone(), part.site);
         match item.body.clone() {

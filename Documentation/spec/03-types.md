@@ -1,15 +1,15 @@
 # Types and checking
 
 Checking precedes all program effects. This chapter owns meanings and
-the forms that join them; [containers](containers.md), [limits](limits.md),
-[checks](checks.md) and [members](members.md) own the rest. T3 to T5 and E2 in
-[open decisions](open.md) name the remaining choices.
+the forms that join them; [containers](05-containers.md), [limits](06-limits.md),
+[checks](07-checks.md) and [members](04-members.md) own the rest. T3 to T5 and E2 in
+[open decisions](11-open.md) name the remaining choices.
 
 ## Meanings and places
 
 A **meaning** is what a value is: a record, a sum, an opaque type,
 `Integer`, `F32`, `F64`, `()`, a function, or a packed type
-([members](members.md)). Meanings are nominal: a declared meaning is its
+([members](04-members.md)). Meanings are nominal: a declared meaning is its
 declaration, in checking, in the value's tag and in messages. A value has
 exactly one meaning. A **limit** narrows a meaning and never changes what
 an operation means; where operations differ it is a new meaning, as
@@ -37,22 +37,22 @@ reference includes the host-resolved version. An arm with n head patterns
 has an n-ary curried type; a zero-parameter function is `() -> T`.
 
 A type name starts uppercase, the numeric ones included. A lowercase name
-in a type is a variable, a number parameter ([containers](containers.md)
+in a type is a variable, a number parameter ([containers](05-containers.md)
 §Parameters), or a used module as an API reference, `Rd<fs>`
-([embedding](host.md)); the host type that takes one declares the
+([embedding](09-host.md)); the host type that takes one declares the
 parameter uppercase, `type Rd<Api>`, since a lowercase parameter is a
 number. One that spells an old lowercase numeric type, `i64`, is a check
 error with the hint `I64`.
 
 Three **signs** join types, the ones of a Bool, since a limit is a Bool
-over `self`; [syntax](syntax.md) gives their precedence:
+over `self`; [syntax](02-syntax.md) gives their precedence:
 
 - `A & B` holds both. Its parts share one meaning, or are member limits,
   timings or holdings. Two holdings that disagree, `Bits<8> & Bits<16>`,
   are a check error.
 - `A | B` holds either. With one meaning it passes either test, tried left
   to right, stopping at the first that passes. With two it is a packed
-  type ([members](members.md)), and a gate pattern tells which: `Integer
+  type ([members](04-members.md)), and a gate pattern tells which: `Integer
   n`, `String s`. It is never inferred (§Core judgments) and has no
   holding. A literal at it takes its default meaning.
 - `!T` holds the values that fail at least one of `T`'s tests. It reads
@@ -65,11 +65,11 @@ over `self`; [syntax](syntax.md) gives their precedence:
 `type Name { members }` declares a meaning: a record, whose lowercase
 fields are its constructor's spots in order, or a sum, whose uppercase
 members are its constructors; a one-field record is the newtype.
-[Limits](limits.md) owns the other forms of `type`. Value types are
+[Limits](06-limits.md) owns the other forms of `type`. Value types are
 nonrecursive; whether a function type may make one indirect is T3's.
 `String` is the prelude's `type String { bytes: Vec<U8> }` with a private
 field and valid UTF-8; `Bool` is `type Bool { True, False }`. The language
-names no resource type; [embedding](host.md) says how a host declares one.
+names no resource type; [embedding](09-host.md) says how a host declares one.
 
 ## Core judgments
 
@@ -97,8 +97,8 @@ Fresh variables in each instantiation are distinct from all surrounding ones.
 
 The semicolon in BIND is metalanguage. A head with several patterns is
 nested ARMs; an arm list shares one input and result type per position.
-Application first binds spots under [evaluation](evaluation.md), then APP
-applies; each argument enters its spot ([checks](checks.md) §Entry and
+Application first binds spots under [evaluation](08-evaluation.md), then APP
+applies; each argument enters its spot ([checks](07-checks.md) §Entry and
 outcome), where a cast is admitted only at a place whose declared type is
 known, and inference only unifies. `name<τ…>` instantiates `name`'s
 declared type parameters in order, the target first for the conversion
@@ -110,15 +110,18 @@ mutation, so no value restriction, and a host call in a value does not
 block it. An arm binding may call itself, and the members of one `impl`
 may call each other: such a group is typed monomorphically and generalized
 at its boundary, so there is no polymorphic recursion. An annotation's
-lowercase names are rigid variables and its value is checked against it; a
-`pub` binding ends closed, with no unsolved variable and no quantified
-variable it did not write. A variable with a `Literal` limit defaults,
+lowercase names are rigid variables and its value is checked against it. A
+`pub` binding exports its scheme: a variable nothing fixes stays
+quantified with the member limits it carries, and each use instantiates
+it, so `pub id = x => x` is `a -> a` and `pub add = a b => a + b` is
+`Add<b> a => a -> b -> a`; only a host-callable signature is written out
+([host](09-host.md)). A variable with a `Literal` limit defaults,
 `Integer` first and `F64` next: at its binding when only literals
 constrain it, so `x = 1` is `Integer`, else where it leaves the type.
 Which other member limits it may carry is T5's; a member limit no default
 covers, whose variable left the type, is the error "ambiguous". Where an
 expected type is known, from an annotation, a spot or a sibling arm,
-inference checks against it; [members](members.md) §The dot infers member
+inference checks against it; [members](04-members.md) §The dot infers member
 limits.
 
 **Meanings have no order**: `Integer` and `F64` are neither wider.
@@ -130,7 +133,7 @@ the one meaning that reads every form, in the defaulting order. It is a
 check error when no meaning reads them all, or when one of them already
 has a meaning that cannot read the others' forms.
 
-```text
+```fipe
 z = if c { 2 } else { 2.5 }   # F64, in either order
 v = [1, 2.5]                  # [F64; 2]
 n: Integer = 2
@@ -143,12 +146,12 @@ u = if c { 2 } else { "a" }   # check error: no meaning reads both
 - If `Γ ⊢ e : S` and record `S` declares `field : T`, then `e.field : T`;
   `.field` is the same function. An absent field, or any field of a sum,
   is a check error; a sum's payload is reached by pattern. Any other dot
-  is [members](members.md)' §The dot.
+  is [members](04-members.md)' §The dot.
 - An `if` condition is `Bool`; both arms have one result type, and a
   missing `else` is `()`.
 - Arms have common input types and one result type; guards are `Bool`; the
   set is exhaustive, and a guard alone cannot establish coverage;
-  [limits](limits.md) §Gates adds a gate with its `!`. The first matching
+  [limits](06-limits.md) §Gates adds a gate with its `!`. The first matching
   arm with a true guard wins. `(name = v)` gives the parameter `v`'s type
   and a default.
 - Captures are values; shadowing never mutates a capture. A discarded
@@ -163,16 +166,20 @@ u = if c { 2 } else { "a" }   # check error: no meaning reads both
 
 A `type` puts one function per constructor in the value namespace, under
 the constructor's name or, for a record, the type's; nothing else does but
-a gate and the two timing forms ([limits](limits.md)), so `Integer`, `Vec`
+a gate and the two timing forms ([limits](06-limits.md)), so `Integer`, `Vec`
 and an opaque host type have no value unless a function is declared. Types
 and values are separate namespaces; a type's own members are read first
-after an uppercase head ([members](members.md) §The dot). `Point { x: 1,
+after an uppercase head ([members](04-members.md) §The dot). `Point { x: 1,
 y: 2 }` is the raw construction; `Point 1 2` is the same function applied,
 unless the type's module writes one: bare arms in `impl T { }` are `T`'s
 written constructor, joined in order, with its signature inferred from the
 record it builds and the type's visibility. A sum has no written
-constructor. Construction, braces included, tests a meaning's limits
-([limits](limits.md) §Gates); [limits](limits.md) §Self owns `Self`.
+constructor; inside the `impl`, `Self 1 2` calls it and `Self { x, y }`
+bypasses it. Construction, braces included, tests a meaning's limits
+([limits](06-limits.md) §Gates); a pattern never calls, it reads the raw
+fields, and only a gate tests. [limits](06-limits.md) §Self owns `Self`. A
+type with no members is a marker; a body is shape only, code lives in
+`impl`; `pub` is written only on a record's fields.
 
 `pub type` exports the type. A private record field is readable, matchable
 and suppliable only inside its module; outside it is not a spot and takes
@@ -181,7 +188,7 @@ private field defaults. A sum constructor's fields are its payload and are
 always visible. A member of a type is reached from another module only
 when it is `pub`; reaching a hidden one is a check error that says the
 member is private. `String`'s field has no default, so `utf8` is the only
-way in. A `pub` binding or member needs a complete type (T3).
+way in.
 
 ## Defaults and declarations
 
@@ -196,7 +203,11 @@ way in. A `pub` binding or member needs a complete type (T3).
 | `Maybe<T>` | `Nothing` |
 | limited type | its base's default, when that meets the limits |
 
-A default enters its field as any value does ([checks](checks.md)). A
+The table is the `default` member the prelude supplies
+([members](04-members.md) §Prelude). A zero is not a default: `Integer` has
+`zero` and no default, and a type that wants both writes `default =
+Self.zero`. A default enters its field as any value does
+([checks](07-checks.md)). A
 declaration's labeled parameters are its spot names and defaults, not
 part of its type: `(long: Bool = False) -> Vec<Entry>` has type `Bool ->
 Vec<Entry>`. An opaque type has no fields, constructors or derived
@@ -211,7 +222,7 @@ limits default expressions.
 ## Outcome types
 
 `Either<L,R>` has `Left L` / `Right R`; `Maybe<T>` has `Nothing` / `Just T`;
-`Result<T,E>` has `Err E` / `Ok T`. They are three
+`Result<T,E>` has `Err E` / `Ok T`, with no bound on `E`. They are three
 nominal prelude types with no shared type; a backend may share their
 layout. Eligibility is per type: `|:`, `|!`, `||` and `&&` on `Maybe`
 and `Result`; `|:` and `|!` on `Either`, `Left` bad and `Right` good;

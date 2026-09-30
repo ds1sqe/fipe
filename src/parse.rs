@@ -650,7 +650,7 @@ impl Parser {
     }
 
     /// The parts of a tuple after its opener: two or more, comma
-    /// separated, with a list's newlines and no trailing comma.
+    /// separated, with a list's newlines and trailing comma.
     fn tuple<T>(
         &mut self,
         mut part: impl FnMut(&mut Self) -> Result<T, Error>,
@@ -658,6 +658,9 @@ impl Parser {
         let mut parts = Vec::new();
         loop {
             self.newlines();
+            if parts.len() >= 2 && self.at(Symbol::RParen) {
+                break;
+            }
             parts.push(part(self)?);
             if !self.eat(Symbol::Comma) {
                 break;

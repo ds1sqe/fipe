@@ -2,12 +2,12 @@
 
 Observables to test per stage. Lexical and syntax cases are covered by
 public-API tests; checking and execution cases await their stages, and a
-case citing [open decisions](open.md) is conditional on it. A row marked
+case citing [open decisions](11-open.md) is conditional on it. A row marked
 *06.n* is specified and owed by that stage of the type model, not yet
-implemented: 06.1 surface, 06.2 members, 06.3 limits, 06.4 timing and
-holding, 06.5 containers.
+implemented: 06.4 limits, 06.5 timing and holding, 06.6 containers,
+06.7 narrowing (what a body, a branch or a variable proves).
 
-## Lexing
+## Lexical (01)
 
 Compare kinds, payloads, source slices and diagnostics.
 
@@ -45,7 +45,7 @@ Also every keyword and non-keyword name, every operator beside its
 neighbor, byte slices and scalar columns of `cat héllo "한글"`, CRLF, EOF
 inside an escape, negative zero, radix boundaries and all five pipes.
 
-## Docs and quotes
+## Docs and quotes (01, 02)
 
 | Case | Expected distinction |
 | --- | --- |
@@ -66,7 +66,7 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | affixed multiline quote / pipe after its closing quote | affix kept / same logical line |
 | REPL raw quote opened on one input line, closed on the next | continuation, one string |
 
-## Parsing and checking
+## Syntax, types and checks (02 to 07)
 
 | Case | Expected distinction |
 | --- | --- |
@@ -78,6 +78,7 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `a` LF LF `|: b`; `a` LF `# c` LF `|: b` | blank line ends continuation: error at `|:` |
 | `ls /` LF `next` / `8` LF `/ 2` | root path, then a line / division |
 | `f(x,` LF `y)` / `f(x` LF `, y)` | list continues / error at the first newline |
+| `(a, b,)` / `(a,)` / `A &` LF `B` in a type | tuple / error: no tuple of one / one type |
 | `(a` LF `b)` / `f (` LF `g` LF `)` / `f` LF `(g)` | two-line group / one argument / two lines |
 | `map { x }` / `Point { x, y: 2 }` / `Self { x }` | block argument / record with a punned field / record |
 | `if p == Point { x: 1 } { y }` | error: first `{` is the body |
@@ -92,12 +93,13 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `f(a,b)` / `f (x)` / `f()` | explicit arguments / grouped argument / empty call |
 | `(e).name` / `f .name` | postfix field / selector argument |
 | `type P { pub x: I64, y: I64 = 0 }` / `type S { C(r: F64), D }` | fields / constructors |
-| `impl P { x (y = 0) => Self { x, y }, f = p => … }` / `impl P: T { f = … }` | constructor arm and member / syntax error |
+| `impl P { x (y = 0) => Self { x, y }, f = p => … }` | constructor arm and member |
 | `impl P { f = a => 1, b => 2 }` / `impl P { f = a => 1 b => 2 }` | member then constructor arm / error: bracket the arms |
 | `use x.inc x.Point` / `use text 2` / `use fs ver 2` | names / version / error |
 | `foo 1`, `foo` / `cat foo` | unknown name / text |
 | `f 1` before `f = a => …` / `lookup` before `use sys.lookup` / `f = n => f n` / `impl P { a = … Self.b …, b = … Self.a … }` | unknown name, twice / self-recursion / members see each other through `Self` |
 | `pub x = 1` then `pub x = 2` in a file / `use a` inside `a` / a used module with a bare line | exports the final `x` / check error: import cycle / check error: no main |
+| `pub id = x => x` / `pub add = a b => a + b` / `impl P { pub f = a => a }` | `a -> a` / `Add<b> a => a -> b -> a`, instantiated per use / `a -> a` |
 | `type point {}`, `type S { circle(r: F64) }`, `Point = 1` | case rule at the declaration |
 | `type Rd<Api>` / `Rd<fs>` | a host type's uppercase parameter / an API reference at the use site |
 | `pub len: T`, `impl P { n: I64 }` in a program | declaration form |
@@ -137,40 +139,43 @@ inside an escape, negative zero, radix boundaries and all five pipes.
 | `(Vec2 1.0 2.0) + (Vec2 3.0 4.0)` / written `show` / `impl Maybe { map: … }` in the prelude | `Vec2`'s `add` / replaces the derived one / a supplied member |
 | `m: Mask = 0b0000_1111` | typed through `Mask.literal` |
 | `k: Mask = 15` | check error: the literal Faults *08* |
-| `who: Name = "fipe"` | `String`'s literal, then `Name`'s limits *06.3* |
+| `who: Name = "fipe"` | `String`'s literal, then `Name`'s limits *06.4* |
 | `total: Vec<Shape> -> F64` / `Add -> Add` / `| area` for a member | packed elements / packs and cannot add / unknown name |
 | `id: Integer | String = 3` then `id | { Integer n => n.show, String s => s }` | packed; the gate pattern tells which |
-| a gate and a constructor of one name / a test entering its own type / `!Shape` | check error, each *06.3* |
-| `U8 2.0` / `U8 300` / `try<U8> 300` / `U8 x` with `x` open | check error: no conversion / refuted / `Err` / Fault when the test fails *06.3* |
-| `n: U8 & Prime = 13` / `p: Prime = 7` / `type Handy: U8 | Prime` | both / proved at compile time / either *06.3* |
-| `kind` over `Prime` and `NonPrime` / `classify` with `_` | covered by a gate and its `!` / gates tried in order *06.3* |
-| `c: U8 = (a + b) / 2` / `d: U8 = a + b` with `a: U8 = 200`, `b: U8 = 100` | proved: 150 / refuted: 300 *06.3* |
-| `h: U8 = half 200` / `clamp` / `m: U8 = max a b` / `next` over `Odd` | proved: by the body / by branches / at one variable / by the declared result *06.3* |
-| `sum2: U8 -> U8 -> U8 = x y => x + y` / `:checks sum2` | open, tested per call / one plan entry *06.3* |
-| an open entry in a strict session / a gate in one | check error / allowed *06.3* |
-| `x / 0` / `x / y`, `y` known `0..5` | refuted / tested at run *06.3* |
-| `Range { lo: 2, hi: 1 }` / `Range 1 2` | refuted: braces test the limit / proved *06.3* |
-| `a + b` with `a: U8`, `b: U16` / `w: U16 = a` / `n: U8 = b` | `Integer`, known 1200 / proved / refuted *06.3* |
-| `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open *06.3* |
-| `f: F64 = 2` / `k: I64 = round 2.5` | `2.0` / `2` *06.3* |
-| `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / prepared at compile time *06.4* |
-| `Compile` alone, as a value or in a pattern | check error *06.4* |
-| `Bits<8> & Bits<16>` / `type Odd8: Integer & Bits<8>` | check error, each: the holdings disagree / does not fit its holding *06.4* |
-| `type Flag: Bool & Bits<1>` / `type Mode: Size<1> { … }` / `rgb: [U8; 3]` | one bit / 3 of 8 bits / `Size<3>` *06.4* |
-| `pair: Integer * String = (1, "one")` / `(n, name) = pair` | tuple / both bound *06.5* |
-| `swap = (a, b) => (b, a)` / `divmod` / `ends: U8 * U8 = (0, 255)` | `a * b -> b * a` / two results / each part a place: proved *06.5* |
-| `f(a, b)` / `f (a, b)` / `f ((a, b))` / the wrong one / both readings check | two arguments / one tuple / one tuple, whatever the spacing / check error saying which was written / warning *06.5* |
-| `type Pair<A, B> { … }`, `type Ring<T, n> { slots: [T; n], … }`, `type Sorted<T: Ord>: Vec<T> where …` in a program | type parameters, a number parameter, a member limit *06.5* |
-| `shapes: Vec<Shape> = [Circle 1.0, Square 2.0]` | each element packed before unification, then `sequence` *06.5* |
-| `xs = [1, 2, 3]` / `zs = xs ++ [4, 5]` / `v = [1, 2.5]` | `[Integer; 3]` / `[Integer; 5]`: `concat` adds the lengths / `[F64; 2]` *06.5* |
-| `s: Sorted<Integer> = [1, 2, 3]` / `impl Ring<T, n> { sequence = … }` / a `sequence` that Faults on exact elements | `Vec`'s `sequence`, then the limit / a program's own `sequence` / check error *06.5* |
-| `total xs` with `total` taking a `Vec` / `total (xs | to<Vec<Integer>>)` | check error: a bound array enters by a gate only / accepted *06.5* |
-| `map` / `filter` on an array | keeps its length / a `Vec` *06.5* |
-| `[T; n + m]` / `[T; m + n]` | one type: sums are equal in any order *06.5* |
+| a gate and a constructor of one name / a test entering its own type / `!Shape` | check error, each *06.4* |
+| `U8 2.0` / `U8 300` / `try<U8> 300` / `U8 x` with `x` open | check error: no conversion / refuted / `Err` / Fault when the test fails *06.4* |
+| `n: U8 & Prime = 13` / `p: Prime = 7` / `type Handy: U8 | Prime` | both / proved at compile time / either *06.4* |
+| `kind` over `Prime` and `NonPrime` / `classify` with `_` | covered by a gate and its `!` / gates tried in order *06.4* |
+| `c: U8 = (a + b) / 2` / `d: U8 = a + b` with `a: U8 = 200`, `b: U8 = 100` | proved: 150 / refuted: 300 *06.4* |
+| `h: U8 = half 200` / `clamp` / `m: U8 = max a b` / `next` over `Odd` | proved: by the body / by branches / at one variable / by the declared result *06.7* |
+| `sum2: U8 -> U8 -> U8 = x y => x + y` / `:checks sum2` | open, tested per call / one plan entry *06.4* |
+| an open entry in a strict session / a gate in one | check error / allowed *06.4* |
+| `x / 0` / `x / y`, `y` known `0..5` | refuted / tested at run *06.4* |
+| `Range { lo: 2, hi: 1 }` / `Range 1 2` | refuted: braces test the limit / proved *06.4* |
+| `a + b` with `a: U8`, `b: U16` / `w: U16 = a` / `n: U8 = b` | `Integer`, known 1200 / proved / refuted *06.4* |
+| `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open *06.7* |
+| `f: F64 = 2` / `k: I64 = round 2.5` | `2.0` / `2` *06.4* |
+| `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / prepared at compile time *06.5* |
+| `Compile` alone, as a value or in a pattern | check error *06.5* |
+| `Bits<8> & Bits<16>` / `type Odd8: Integer & Bits<8>` | check error, each: the holdings disagree / does not fit its holding *06.5* |
+| `type Flag: Bool & Bits<1>` / `type Mode: Size<1> { … }` / `rgb: [U8; 3]` | one bit / 3 of 8 bits / `Size<3>` *06.5* |
+| `pair: Integer * String = (1, "one")` / `(n, name) = pair` | tuple / both bound *06.6* |
+| `swap = (a, b) => (b, a)` / `divmod` / `ends: U8 * U8 = (0, 255)` | `a * b -> b * a` / two results / each part a place: proved *06.6* |
+| `f(a, b)` / `f (a, b)` / `f ((a, b))` / the wrong one / both readings check | two arguments / one tuple / one tuple, whatever the spacing / check error saying which was written / warning *06.6* |
+| `type Pair<A, B> { … }`, `type Ring<T, n> { slots: [T; n], … }`, `type Sorted<T: Ord>: Vec<T> where …` in a program | type parameters, a number parameter, a member limit *06.6* |
+| `shapes: Vec<Shape> = [Circle 1.0, Square 2.0]` | each element packed before unification, then `sequence` *06.6* |
+| `xs = [1, 2, 3]` / `zs = xs ++ [4, 5]` / `v = [1, 2.5]` | `[Integer; 3]` / `[Integer; 5]`: `concat` adds the lengths / `[F64; 2]` *06.6* |
+| `s: Sorted<Integer> = [1, 2, 3]` / `impl Ring<T, n> { sequence = … }` / a `sequence` that Faults on exact elements | `Vec`'s `sequence`, then the limit / a program's own `sequence` / check error *06.6* |
+| `total xs` with `total` taking a `Vec` / `total (xs | to<Vec<Integer>>)` | check error: a bound array enters by a gate only / accepted *06.6* |
+| `map` / `filter` on an array | keeps its length / a `Vec` *06.6* |
+| `type V: Zero { x: F64 }` with no `zero` / with `impl V: Zero { zero = Self 0.0 }` / `impl V: Show { … }` unlisted, or a member `Zero` does not ask | check error at the claim / accepted / check error at the block *06.4* |
+| `type V: Default { x: F64 = 0.0 }` / `type V: a.Zero & b.Zero` whose `zero` differ in type | met by the fields, no block / check error: one member per name *06.4* |
+| `[] | sum` at `Vec2` with `zero` / a field `n: Integer` with no value / `impl Vec2 { default = Self.zero }` | `Vec2.zero` / a spot: a zero is not a default / the default is the zero *06.6* |
+| `[T; n + m]` / `[T; m + n]` | one type: sums are equal in any order *06.6* |
 
-The [corpus](examples.fipe) follows the grammar; check AST shape, inferred types and diagnostics, not only successful parses.
+The [corpus](02-syntax.fipe) follows the grammar; check AST shape, inferred types and diagnostics, not only successful parses.
 
-## Evaluation and hosts
+## Evaluation and hosts (08, 09)
 
 Under a recording host that returns declared values and records every
 operation, test values and ordered effects together:

@@ -839,6 +839,7 @@ const fn operator(symbol: Symbol) -> bool {
                 | Symbol::LessEq
                 | Symbol::Greater
                 | Symbol::GreaterEq
+                | Symbol::Ampersand
                 | Symbol::FatArrow
         )
 }

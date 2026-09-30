@@ -1,6 +1,6 @@
 # Parser API
 
-[Syntax](syntax.md) owns the language rules; this chapter owns the Rust
+[Syntax](../spec/02-syntax.md) owns the language rules; this chapter owns the Rust
 representation and the implementation limits.
 
 ## Entry point

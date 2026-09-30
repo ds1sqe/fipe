@@ -1,8 +1,8 @@
 # Containers
 
 This chapter owns the tuple, the array, `Vec` and `Deque`, the bracket and
-type parameters. [Types](types.md) owns meanings and their forms,
-[members](members.md) packed elements, [limits](limits.md) holdings.
+type parameters. [Types](03-types.md) owns meanings and their forms,
+[members](04-members.md) packed elements, [limits](06-limits.md) holdings.
 
 ## Kinds
 
@@ -14,11 +14,11 @@ type parameters. [Types](types.md) owns meanings and their forms,
 | `Deque<T>` | | grows at both ends | one | on the heap |
 
 A tuple type is `A * B * C`, flat, two parts or more; its value and
-pattern are `(a, b)` ([syntax](syntax.md)). A tuple is known by its shape,
+pattern are `(a, b)` ([syntax](02-syntax.md)). A tuple is known by its shape,
 as an array and a function are, with no declaration. Its parts are reached
 by pattern only; there is no numeric selector, and a record is the answer
 when parts need names. Each part is a place of its own: `U8 * U8` tests
-both. A mismatch between `f(a, b)` and `f (a, b)` ([syntax](syntax.md)
+both. A mismatch between `f(a, b)` and `f (a, b)` ([syntax](02-syntax.md)
 §Arguments and calls) is a check error that says which was written. Where
 both readings check, as with a default, the checker warns; `f ((a, b))` is
 the form no spacing can change.
@@ -28,15 +28,17 @@ the form no spacing can change.
 A bracket is a written form: `[a, b, c]` means the array `[T; n]`, and
 with no place it is one. A place that expects another type hands the array
 to that type's `sequence` member. The place gives the element type; each
-element enters it as a place of its own ([checks](checks.md) §Entry and
+element enters it as a place of its own ([checks](07-checks.md) §Entry and
 outcome), then the array goes to `sequence`. A limited type uses its
 base's member, then tests its limits. A bracket of exact elements is
 handled at compile time, and a `sequence` that Faults on it is a check
 error. An array already bound enters a `Vec` place by a gate only.
 
 `Items<T>` is the member type the prelude's list functions are written
-over, held by the array, `Vec` and `Deque`; its member is T5's. `map` on
-an array keeps its length; `filter` returns a `Vec`.
+over, held by the array, `Vec` and `Deque`; its one member is `fold`, a
+walk from the front carrying a value. How a walk stops early or runs from
+either end is T5's. `map` on an array keeps its length; `filter` returns
+a `Vec`.
 
 ## Parameters
 
@@ -50,14 +52,14 @@ argument. There is no higher kind: a parameter never stands for a
 container without its argument. A parameter may take a default, trailing
 as a spot's: `type Add<R = Self, O = Self> where self.add: R -> O`. An
 argument left out is its default, and `Self` there is the meaning that
-meets the limit ([limits](limits.md) §Self), so `Add a` is `Add<a, a> a`
+meets the limit ([limits](06-limits.md) §Self), so `Add a` is `Add<a, a> a`
 and the printer leaves out an argument equal to its default.
 
 A number argument may be a sum of numbers and number parameters, and no
 other arithmetic. Two are equal when their sums are, in any order. An
 array's `concat` is `[T; m] -> (self: [T; n]) -> [T; n + m]`.
 
-```text
+```fipe
 pair: Integer * String = (1, "one")
 (n, name) = pair
 swap = (a, b) => (b, a)                       # a * b -> b * a
@@ -69,6 +71,7 @@ type Ring<T, n> { slots: [T; n], at: Natural }
 type Sorted<T: Ord>: Vec<T> where is_sorted self
 
 type Sequence<T> where Self.sequence: [T; n] -> Self
+type Items<T> where self.fold: b -> (b -> T -> b) -> b
 impl Vec<T>     { sequence: [T; n] -> Self }               # supplied
 impl Ring<T, n> { sequence = slots => Self slots 0 }
 xs = [1, 2, 3]                                   # [Integer; 3]

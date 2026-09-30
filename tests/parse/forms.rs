@@ -77,6 +77,7 @@ fn type_signs_bind_not_then_both_either_tuple_and_arrow() {
         ("f: Bits<8> & Size<1>", "(& Bits<8> Size<1>)"),
         ("f: Ring<T, n>", "Ring<T, n>"),
         ("f: Vec<Shape> -> F64", "(-> Vec<Shape> F64)"),
+        ("f: A &\n  B |\n  C *\n  D", "(* (| (& A B) C) D)"),
     ] {
         assert_eq!(declared(input), expected, "{input}");
     }
@@ -324,10 +325,17 @@ fn tuples_are_values_patterns_and_one_spaced_argument() {
         PatternKind::Tuple(_)
     ));
     assert!(matches!(node(&parsed, arms[0].body), ExprKind::Tuple(_)));
-    // An arm inside a tuple is grouped; there is no trailing comma.
+    // An arm inside a tuple is grouped; a trailing comma is a list's,
+    // and never makes a tuple of one.
     assert_eq!(errors("(a, b => c)")[0].reason, Reason::ArmsNeedGroup);
+    let (parsed, id) = only("(a, b,)");
+    assert!(
+        matches!(node(&parsed, id), ExprKind::Tuple(parts) if parts.len() == 2)
+    );
+    let (parsed, id) = only("(a, b) = (1,\n  2,\n)");
+    assert!(matches!(node(&parsed, id), ExprKind::Bind { .. }));
     assert_eq!(
-        errors("(a, b,)")[0].reason,
+        errors("(a,)")[0].reason,
         Reason::Expected(fipe::parse::Expected::Expression)
     );
     assert_eq!(errors("(a\n, b)")[0].reason, Reason::CommaBeforeLineBreak);

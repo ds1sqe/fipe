@@ -127,9 +127,9 @@ fn separated_doc_runs_preserve_paragraphs() {
 
 #[test]
 fn the_ruled_doc_example_parses() {
-    let chapter = include_str!("../../Documentation/spec/syntax.md");
+    let chapter = include_str!("../../Documentation/spec/02-syntax.md");
     let source = chapter
-        .rsplit_once("```text\n")
+        .rsplit_once("```fipe\n")
         .unwrap()
         .1
         .split("```")

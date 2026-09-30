@@ -102,7 +102,6 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::Discarded => "Discarded",
         Reason::MissingField { .. } => "MissingField",
         Reason::OutOfRange => "OutOfRange",
-        Reason::NotComplete => "NotComplete",
         Reason::Ambiguous { .. } => "Ambiguous",
         Reason::ImportCycle => "ImportCycle",
         Reason::PrivateMember { .. } => "PrivateMember",

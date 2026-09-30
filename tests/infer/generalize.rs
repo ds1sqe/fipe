@@ -83,15 +83,15 @@ fn groups_are_monomorphic_inside() {
 }
 
 #[test]
-fn annotations_are_rigid_and_pub_is_closed() {
+fn annotations_are_rigid_and_pub_may_be_open() {
     let area = "pub area: F64 -> F64 -> F64 = w h => w * h";
     assert_eq!(ty(area), "F64 -> F64 -> F64");
-    assert_eq!(kinds("pub f = x => x"), [("NotComplete", "f")]);
+    assert_eq!(ty("pub f = x => x"), "a -> a");
     assert_eq!(ty("f: a -> a = x => x"), "a -> a");
     assert_eq!(kinds("f: a -> a = x => x + x"), [("NoField", "+")]);
     assert_eq!(kinds("f: a -> a = x => 1"), [("NoField", "1")]);
-    let member = "type P { x: I64 }\nimpl P { pub f = a => a }";
-    assert_eq!(kinds(member), [("NotComplete", "f")]);
+    let member = "type P { x: I64 }\nimpl P { pub f = a => a }\nP.f";
+    assert_eq!(ty(member), "a -> a");
 }
 
 #[test]

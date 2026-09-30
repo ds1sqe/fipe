@@ -6,7 +6,7 @@
 //! Chained Bool flags (`-la`) and a trailing `Vec` collecting operands
 //! are 07's; they are reported as an unknown spot and an extra argument.
 //!
-//! [evaluation.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/evaluation.md
+//! [evaluation.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/08-evaluation.md
 
 use super::{
     is_prelude, prelude, Callee, Expected, Head, Infer, Key, Local, Reason,

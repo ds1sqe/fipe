@@ -154,6 +154,7 @@ impl Parser {
         }
         let mut parts = vec![first];
         while self.eat(sign) {
+            self.skip_newline();
             parts.push(part(self)?);
         }
         Ok(self.add_type(node(parts), self.since(start)))

@@ -2,8 +2,8 @@
 
 Every operation lives in a type. This chapter owns members and member
 limits, the dot, derived members, packed types, conversions, literals and
-the number types. [Limits](limits.md) owns the member limit as a kind of
-limit; [checks](checks.md) owns entry.
+the number types. [Limits](06-limits.md) owns the member limit as a kind of
+limit; [checks](07-checks.md) owns entry.
 
 ## Members
 
@@ -16,7 +16,7 @@ A type whose limits are member limits names who has an operation: `Add`,
 `Concat`, `Eq` and `Show` are declared with `type … where` (§Prelude).
 **Membership is by members**: a meaning is an `Add` when it has `add` of
 that type; nothing is declared. "Of that type" is the proof of
-[checks](checks.md) §What is known for a function, so a member whose
+[checks](07-checks.md) §What is known for a function, so a member whose
 parameter is narrower than the limit's does not meet it.
 
 An operation is a member of the meaning of its subject. An operator is a
@@ -34,29 +34,31 @@ type:
 
 `++` spells `concat` by name, not its type: an array is not a `Concat`,
 whose result is `Self`; its `concat` adds the lengths
-([containers](containers.md) §Parameters). The right operand and the
+([containers](05-containers.md) §Parameters). The right operand and the
 result of an arithmetic operator are what the left's member takes and
-gives, `Self` by the parameters' defaults ([containers](containers.md)
+gives, `Self` by the parameters' defaults ([containers](05-containers.md)
 §Parameters): `v * k` is a `Vec2`'s `Mul<F64>`, `p - q` a `Sub<Point,
 Vector>`, and the left operand owns the operation. On a head whose
 meaning is unknown a parameter the operands do not fix takes its
 default: the right operand fixes `R`, nothing fixes `O`, so `diff = p q
 => p - q` is `Sub<b> a => a -> b -> a` and a mixed result needs a known
 head. A literal operand is read by its other
-operand's meaning (§Literals). The other operators take one meaning. A
-prelude word is an ordinary function over such a type: `show = x =>
+operand's meaning (§Literals). The other operators take one meaning; a
+comparison across meanings is a conversion, not an operator. A prelude
+word is an ordinary function over such a type: `show = x =>
 x.show`, `len`, `map`, `concat`. `Functor`, `Monad` and `Alternative` are
 the members `map`, `then`, `pure`, `or` and `empty`, each meaning with its
-own types, as there is no higher kind ([containers](containers.md)
+own types, as there is no higher kind ([containers](05-containers.md)
 §Parameters).
 
 ## The dot
 
 `x.m` is a field of `x`'s meaning, else a member of it, else a member of
-module `x`; [embedding](host.md) resolves `x`. A type's member written on
+module `x`; [embedding](09-host.md) resolves `x`. A type's member written on
 the type, not on a value, is reached by the type's name: an uppercase
 head reads its type's members first, so `Point.from pl`, `Maybe.pure 1`,
-`Integer.add`. A function with a `self` parameter in scope is called as a
+`Integer.add`. The dot fills `self`; the rest bind positionally. A
+function with a `self` parameter in scope is called as a
 function, not by the dot. A private field is seen only in its own module.
 A member has no bare name, even in its own module: it is `x.m`, `T.m` or
 the selector `.m`, so `| .area`, not `| area`.
@@ -134,7 +136,7 @@ Faults on them. The target comes from `<T>` or the spot. A new type that
 must reach a foreign target writes a named member. Nothing chains and
 nothing is searched; text stays with `show` and `read`.
 
-```text
+```fipe
 pl | Point.from     "3,4" | Point.try_from     pl | to<Point>     "3,4" | try<Point>
 ```
 
@@ -151,10 +153,10 @@ In generic code it is known only where the function is used, so the
 literal is prepared there. With nothing fixed a number in any radix is an
 `Integer` known exactly, a fraction an `F64` known after rounding, text a
 `String`, bytes a `Vec<U8>`; literals side by side choose together
-([types](types.md) §Core judgments). A program's own meaning takes
+([types](03-types.md) §Core judgments). A program's own meaning takes
 literals by writing `literal`.
 
-A written form may carry a prefix and a suffix ([lexical](lexical.md)):
+A written form may carry a prefix and a suffix ([lexical](01-lexical.md)):
 each constructor of `Form` also holds `prefix: String` and `suffix:
 String`, empty when not written. A place decides as for any literal, and
 its type's `literal` reads both; with no place the claim in scope, a
@@ -162,16 +164,16 @@ type's statement that it reads a prefix or suffix, decides the type.
 Two claims of one prefix or suffix in scope with no place to decide are
 a check error; one with neither is a check error that names the missing
 claim, never an application. `b"…"` is the prelude's claim. The claim's
-spelling is open ([open decisions](open.md) L1).
+spelling is open ([open decisions](11-open.md) L1).
 
 ## Number types
 
 `Integer` is the one integer meaning, exact and unbounded; its arithmetic
-is [evaluation](evaluation.md)'s and is charged by operand size (H1). `I8
-I16 I32 I64 U8 U16 U32 U64` are widths, `U8` as in [limits](limits.md)
+is [evaluation](08-evaluation.md)'s and is charged by operand size (H1). `I8
+I16 I32 I64 U8 U16 U32 U64` are widths, `U8` as in [limits](06-limits.md)
 §Examples, and a width is a limit: values of different widths mix, since
 all are `Integer`. Only the way down can fail, at the place, by
-[checks](checks.md): a concrete integer operation is the exact one
+[checks](07-checks.md): a concrete integer operation is the exact one
 followed by the way down. Each width names `Bits<n>` beside its range,
 signed when the range holds a negative.
 
@@ -180,12 +182,14 @@ ranges: NaN is unordered.
 
 ## Prelude
 
-```text
+```fipe
 type Add<R = Self, O = Self> where self.add: R -> O     # prelude; Sub … Rem alike
 type Concat where self.concat: Self -> Self
 type Eq     where self.eq: Self -> Bool
 type Ord: Eq where self.cmp: Self -> Ordering
 type Show   where self.show: String
+type Zero    where Self.zero: Self           # the identity of `add`
+type Default where Self.default: Self        # what an empty place takes
 type Read   where Self.read: String -> Result<Self, ParseError>
 type From<A> where Self.from: A -> Self
 type TryFrom<A, E> where Self.try_from: A -> Result<Self, E>
@@ -206,7 +210,7 @@ impl Maybe   { map: (a -> b) -> (self: Maybe<a>) -> Maybe<b> }
 
 ## Examples
 
-```text
+```fipe
 type Vec2 { x: F64, y: F64 }
 impl Vec2 {
     add = o self => Self (self.x + o.x) (self.y + o.y),  # Vec2 is an Add

@@ -1,8 +1,8 @@
 # Syntax
 
-[syntax.ebnf](syntax.ebnf) is the grammar over the tokens of
-[lexical structure](lexical.md); the rules here resolve what EBNF cannot:
-lines, stages, bindings and commas. The [parser API](parser-api.md) owns
+[syntax.ebnf](02-syntax.ebnf) is the grammar over the tokens of
+[lexical structure](01-lexical.md); the rules here resolve what EBNF cannot:
+lines, stages, bindings and commas. The [parser API](../api/02-parser.md) owns
 representation and limits.
 
 In the grammar `,` concatenates, `|` chooses, `[ ]` is optional, `{ }`
@@ -13,7 +13,7 @@ are terminals. Definition sites, parameters and members take a one-segment
 `pattern_field` is `..`, the rest field. `_` in a pattern binds nothing.
 
 **The case rule.** A name whose last segment starts with an ASCII uppercase
-letter is a constructor, a gate ([limits](limits.md)) or a type wherever
+letter is a constructor, a gate ([limits](06-limits.md)) or a type wherever
 the parser must tell them apart: in a pattern it takes one payload, and
 before `{` it opens a record.
 Elsewhere case has no syntactic meaning; checking owns "a declared type or
@@ -27,8 +27,8 @@ closer or EOF ends the last line. There is no terminator, layout rule,
 fixed-array type. A line continues across one newline exactly when:
 
 - **After a trailing operator**: a pipe, `+ - * % ++`, a comparison, `->`
-  or `=>`. A trailing `/` is the root path, not a continuation, so `ls /`
-  ends there.
+  or `=>`, and `& | *` in a type. A trailing `/` is the root path, not a
+  continuation, so `ls /` ends there.
 - **Before a leading operator**, when no blank line intervenes: a pipe,
   `+ - * % ++`, `/` followed by an operand, a comparison, `=>` or `=`, so
   a signature may stand above its `= value`. `!`, a negative literal, a
@@ -55,11 +55,11 @@ and its value is its last line: a file, a body, any other `{ }`, and `( )`
 not touching a callee. An empty block is `()`, the unit literal.
 
 A **tuple** `(a, b)`, value or pattern, is a `( )` not touching a callee
-whose top level holds a comma before any `=>`. It takes the newlines of a
-list; an arm inside it is grouped. `(a)` stays a group and `()` unit:
+whose top level holds a comma before any `=>`. It takes the newlines and
+the trailing comma of a list; an arm inside it is grouped. `(a)` stays a group and `()` unit:
 there is no tuple of one.
 
-```text
+```fipe
 f(x,                # a list: the comma carries the line over
   y)
 f(x                 # error at the end of this line: expected `,`
@@ -105,7 +105,7 @@ non-arm line and may start after the newline following `=>`; a nested arm
 list needs its own brackets. An arm list is one function value, in order;
 checking owns totality.
 
-```text
+```fipe
 find x | {
     [:e] if e.size > 0 => e.name,
     [:_] => "empty",
@@ -167,12 +167,12 @@ else the root path: `ls /`; an earlier root-path argument is grouped,
 ## Arguments and calls
 
 The parser keeps positional operands and flags in order and never decides
-which spot one fills; [evaluation](evaluation.md) binds them. `-c=80` is
+which spot one fills; [evaluation](08-evaluation.md) binds them. `-c=80` is
 one flag argument, `-c 80` a flag and an operand. Space application needs
 a gap before each argument; a touching `(` is an explicit argument list, so
 `f(a,b)` and `f a b` supply the same sequence, `f()` calls with none,
 `f (x)` passes a group and `f (a, b)` one tuple
-([containers](containers.md)). A call paren touches its callee, so `f` and
+([containers](05-containers.md)). A call paren touches its callee, so `f` and
 `(g)` on the next line are two lines. A constructor is called like any
 function: `Point 3 4`, `Point -y 4 -x 3`, `Point(3, 4)`, `Width`,
 `Point.line 2`.
@@ -194,8 +194,8 @@ blank lines before the owner are allowed. Consecutive doc lines of one
 form join with LF. A doc with no owner or followed by the other form is
 a syntax error. `##!` documents the module, only before its first entry.
 Text is Markdown, opaque except the declaration spot check in
-[host](host.md); no doc changes meaning. There is no block doc or `@param`.
-Constructor fields and `use` lines take no docs ([open](open.md) L2).
+[host](09-host.md); no doc changes meaning. There is no block doc or `@param`.
+Constructor fields and `use` lines take no docs ([open](11-open.md) L2).
 
 Items are module-level: `use`, `type`, `impl` and a declaration; `pub`
 exports a `type`, binding or declaration. `use x` imports a module, `use
@@ -207,13 +207,15 @@ with the items, so it may recurse; every other binding is a line in order.
 `[pub] name: type [= operand]` or an uppercase constructor `Name` or
 `Name(fields)`; mixing and case are checked, not parsed. There is no
 alias, `struct` or `enum`. A `type` may also take a base after `:` and
-limits after `where`, [limits](limits.md) §Declaration. `where` is a word
-of the `type` item only, as `Self` is a name: `grep where` is a command.
+limits after `where`, [limits](06-limits.md) §Declaration; `:` joins a name
+to its type everywhere: an annotation, a field, a parameter to its limit,
+a type to its base. `where` is a word of the `type` item only, as `Self`
+is a name: `grep where` is a command.
 
 `impl Target { members }` has members `[pub] name [: type] = value`, a
-member `name: type` with no value, and bare arms, which together are the
-type's written constructor. Member values follow the list rule above: one
-arm, or a bracketed arm list.
+member `name: type` with no value, and bare arms, the type's written
+constructor; `impl Target: Limit { … }` holds one claim's members
+([limits](06-limits.md)). A member value is one arm or a bracketed list.
 
 The function type `A -> B -> C` is `A -> (B -> C)`; `() -> T` takes unit
 and `(A -> B) -> C` groups. There is no `fn`: the arm is the one function
@@ -227,10 +229,10 @@ elsewhere by the checker: a signature-only declaration, `pub len: Vec<a>
 -> Natural`, a file-level `name: type` with no `=`; an impl member with no
 value; a labeled parameter in a function type, `(long: Bool = False) ->
 …`, whose default is an operand; and `type Rd<Api>` with no body, an
-opaque type. [Types](types.md) §Type forms reads a lowercase name in a
+opaque type. [Types](03-types.md) §Type forms reads a lowercase name in a
 type.
 
-```text
+```fipe
 ##! Files: the shell reading of Fipe.
 use fs
 

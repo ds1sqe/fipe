@@ -73,7 +73,7 @@ fn opening_module_and_formal_corpus_parse() {
     let opening = include_str!("fixtures/opening.fipe");
     let parsed = module(opening);
     assert_eq!(Source::new(opening).slice(parsed.span), Some(opening));
-    let corpus = include_str!("../Documentation/spec/examples.fipe");
+    let corpus = include_str!("../Documentation/spec/02-syntax.fipe");
     let parsed = module(corpus);
     assert_eq!(Source::new(corpus).slice(parsed.span), Some(corpus));
     let prelude = include_str!("../prelude/prelude.fipe");
@@ -120,10 +120,10 @@ fn documentation_examples_parse() {
 fn type_model_chapter_examples_parse() {
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("Documentation/spec");
-    for chapter in ["limits.md", "members.md", "containers.md"] {
+    for chapter in ["06-limits.md", "04-members.md", "05-containers.md"] {
         let text = std::fs::read_to_string(directory.join(chapter)).unwrap();
         let blocks: Vec<_> = text
-            .split("```text\n")
+            .split("```fipe\n")
             .skip(1)
             .map(|rest| rest.split("```").next().unwrap())
             .collect();

@@ -1,6 +1,6 @@
 //! The embedding boundary. The crate calls nothing: every effect is a
 //! [`Request`] returned to the driver, every answer a [`Reply`] passed
-//! back. `Documentation/spec/embed-api.md` owns the protocol.
+//! back. `Documentation/api/09-embed.md` owns the protocol.
 
 use alloc::string::String;
 

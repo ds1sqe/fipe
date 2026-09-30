@@ -50,7 +50,7 @@ assert!(matches!(
 ));
 ~~~
 
-The [parser API](Documentation/spec/parser-api.md) keeps spans, argument
+The [parser API](Documentation/api/02-parser.md) keeps spans, argument
 order, docs and comment trivia without resolving names or types.
 
 ## Development

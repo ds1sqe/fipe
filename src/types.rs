@@ -1,7 +1,7 @@
 //! The type representation of [types.md]: types, schemes, substitution
 //! and unification. Nothing here reads syntax; inference does.
 //!
-//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
+//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/03-types.md
 
 use crate::{resolve::Origin, token::Span};
 use alloc::{boxed::Box, string::String, vec::Vec};

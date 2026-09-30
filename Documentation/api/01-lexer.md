@@ -1,6 +1,6 @@
 # Lexer API
 
-[Lexical structure](lexical.md) owns the behavior; this chapter owns its
+[Lexical structure](../spec/01-lexical.md) owns the behavior; this chapter owns its
 Rust representation.
 
 ## Entry point

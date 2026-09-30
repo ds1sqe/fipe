@@ -1,9 +1,9 @@
 # Limits
 
-A limit narrows a meaning ([types](types.md)). This chapter owns the kinds
+A limit narrows a meaning ([types](03-types.md)). This chapter owns the kinds
 of limit, their declaration, `Self`, gates, coverage by a gate, and
-holdings; [checks](checks.md) owns when a limit is decided and what it
-costs, and [members](members.md) what a member limit asks.
+holdings; [checks](07-checks.md) owns when a limit is decided and what it
+costs, and [members](04-members.md) what a member limit asks.
 
 ## Four kinds
 
@@ -19,7 +19,7 @@ costs, and [members](members.md) what a member limit asks.
 - A **member limit**, `self.area: F64`, has a meaning or a packed type as
   its type; it holds no test.
 - A **timing**, `Compile` or `Init`, says when a value is known
-  ([checks](checks.md) §Timing); it is checked, never tested. `Compile
+  ([checks](07-checks.md) §Timing); it is checked, never tested. `Compile
   (e)` and `Init (e)` are forms, a timing name with one operand: alone,
   passed as a value or in a pattern the name is a check error.
 - A **holding** says how a value is held, §Holdings.
@@ -30,19 +30,24 @@ type is a check error.
 
 ## Declaration
 
-The forms are `type_item` in [syntax.ebnf](syntax.ebnf):
+The forms are `type_item` in [syntax.ebnf](02-syntax.ebnf):
 
 - `type N: Base where …` narrows `Base`, a meaning or a limited type, so
   limits chain. `type N: A & B` names a combination and needs no limit.
   A single base with no limit would be an alias, and there is none.
 - `type N where …` has limits and no base.
 - `type N { … } where …` is a new meaning with limits; before its braces
-  `:` takes holdings only.
+  `:` takes holdings and claims, `type Vec2: Zero & Default { … }`. A
+  claim names a member limit the meaning promises, by any name in scope,
+  `a.Zero`. `impl Vec2: Zero { … }` holds exactly that claim's members; a
+  limit the type line does not list is a check error there. A claim
+  already met, `Default` by field defaults or a derived `Eq`, needs no
+  block; one left unmet is a check error at the claim.
 - `type N`, with nothing after the name, is opaque.
 
-`where` is the one word for limits ([syntax](syntax.md) §Definitions). A
+`where` is the one word for limits ([syntax](02-syntax.md) §Definitions). A
 limited type has no `impl`; code lives in the meaning
-([members](members.md)).
+([members](04-members.md)).
 
 ## Self
 
@@ -68,7 +73,7 @@ error.
 A gate is the written test, so a strict session allows it. A gate never
 converts: `U8 2.0` is a check error. `to` and `try` on a limited type
 first reach its meaning, by the number row or by `from` and `try_from`
-([members](members.md) §Conversions), then test. `U8 300` is refuted;
+([members](04-members.md) §Conversions), then test. `U8 300` is refuted;
 `try<U8> 300` is `Err`; an arm that cannot match is only dead.
 
 **Coverage** reads meanings, and one thing more: a gate pattern together
@@ -96,7 +101,7 @@ an `Integer` with none is unbounded. `Volatile`, `Pinned`, `At` and
 
 ## Examples
 
-```text
+```fipe
 type Natural: Integer where 0 <= self                 # a limited type
 type U8: Natural & Bits<8> where self <= 255          # chained, in 8 bits
 type Flag: Bool & Bits<1>                             # one bit

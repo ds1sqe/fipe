@@ -869,7 +869,7 @@ fn opening_module_is_one_complete_token_stream() {
 
 #[test]
 fn specification_corpus_preserves_every_emitted_spelling() {
-    let source = include_str!("../Documentation/spec/examples.fipe");
+    let source = include_str!("../Documentation/spec/02-syntax.fipe");
     let result = lex(source);
     assert_eq!(result.errors, []);
     for token in result.tokens {

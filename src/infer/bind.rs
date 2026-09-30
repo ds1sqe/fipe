@@ -6,7 +6,7 @@
 //! quantifies its written names; a `pub` binding ends closed. A member
 //! obligation's type stays with its head.
 //!
-//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
+//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/03-types.md
 
 use super::{
     is_prelude, prelude, Error, Expected, Infer, Lit, Local, Owed, Reason,
@@ -39,7 +39,6 @@ pub(super) struct Part {
     pub ty: Type,
     pub site: Span,
     pub annotated: bool,
-    pub public: bool,
 }
 
 impl Infer<'_> {
@@ -48,7 +47,6 @@ impl Infer<'_> {
     pub(super) fn bind(&mut self, id: ExprId, file: bool) -> Option<Lift> {
         let module = self.module;
         let ExprKind::Bind {
-            public,
             pattern,
             annotation,
             value,
@@ -98,7 +96,6 @@ impl Infer<'_> {
                         .map_or_else(|| ty.clone(), |e| e.ty.clone()),
                     site: name.span,
                     annotated: annotation.is_some(),
-                    public: *public,
                 };
                 let scheme = self.generalize(&[part], mark, &[]).remove(0);
                 let heads = match &module.expressions[value.0].kind {
@@ -252,7 +249,6 @@ impl Infer<'_> {
             .collect();
         self.default_literals(mark, &env, &reach.concat());
         let quiet = self.state.errors.len() > errors;
-        self.check_complete(parts, quiet);
         let types: Vec<Type> =
             parts.iter().map(|p| self.apply(&p.ty)).collect();
         let mut carried = alloc::vec![Vec::new(); parts.len()];
@@ -353,19 +349,6 @@ impl Infer<'_> {
             }
         }
         self.state.errors.extend(errors);
-    }
-
-    fn check_complete(&mut self, parts: &[Part], quiet: bool) {
-        if quiet {
-            return;
-        }
-        for part in parts.iter().filter(|p| p.public) {
-            let mut variables = Vec::new();
-            self.apply(&part.ty).variables(&mut variables);
-            if !variables.is_empty() {
-                self.error(part.site, Reason::NotComplete);
-            }
-        }
     }
 
     fn scheme(

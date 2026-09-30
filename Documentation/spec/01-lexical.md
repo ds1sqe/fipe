@@ -1,6 +1,6 @@
 # Lexical structure
 
-[lexical.ebnf](lexical.ebnf) defines the character-level forms; the
+[lexical.ebnf](01-lexical.ebnf) defines the character-level forms; the
 boundary, priority and recovery rules here complete it.
 
 ## Source and positions
@@ -80,7 +80,7 @@ if else with type impl use pub
 
 Everything else is a name: `True`, `Just`, `self`, `Self`, `where`, `fault`,
 `let`, `fn`, `as`, `mod`, `struct`, `enum`, `for`, `ver`, `read`.
-[Syntax](syntax.md) defines binding, function and conversion by position.
+[Syntax](02-syntax.md) defines binding, function and conversion by position.
 
 ## Numbers
 
@@ -100,7 +100,7 @@ case. A sign is adjacent; there is no leading `+`. `1.`, `.5`, `0x`,
 keeps its sign.
 
 A number may carry a program's prefix or suffix, read with no type
-([members](members.md) §Literals). A numeric word is read in order:
+([members](04-members.md) §Literals). A numeric word is read in order:
 
 1. After `0x`, `0o` or `0b` come that radix's digits, else it is a word.
 2. The longest number from the start; the whole word is that number, so
@@ -146,8 +146,8 @@ quote and no interpolation. Decoded literals admit exactly:
 
 An escape consumes exactly its spelling: `\x414` is `A4`. Unknown or
 incomplete escapes are `BadEscape`. Literal U+FEFF, U+200B and controls
-other than TAB, and LF in a decoded quote, are `Stray`; an unjoined LF in
-a decoded quote is `UnterminatedQuote`. A decoded string with neither must
+other than TAB are `Stray`; an unjoined LF in a decoded quote is
+`UnterminatedQuote`. A decoded string with neither must
 be valid UTF-8:
 `"\xFF"` is `InvalidUtf8`, `"\xC3\xA9"` is `é`, `b"\xFF"` is valid.
 
@@ -159,7 +159,7 @@ outside the token stream. Stray scalars inside comments and docs are
 still errors. `##` emits `Doc(text)` and `##!` emits `InnerDoc(text)`
 through LF, excluding it, with one space after the marker stripped.
 Consecutive lines of one form join with LF in the parser
-([syntax](syntax.md)); runs separated by blank lines join with one empty
+([syntax](02-syntax.md)); runs separated by blank lines join with one empty
 line, a paragraph. A doc line is blank for the logical-line rule, as a
 comment line is. A quote across lines is one token of its opening logical
 line; a pipe after its closing quote continues that line.
@@ -167,7 +167,7 @@ Every LF emits `NEWLINE`, including blank lines, except the first LF after
 one of the five pipes `| |: |! || &&` when only spacing, a doc or a comment
 intervenes; a second newline remains.
 
-```text
+```fipe
 a | # comment
   b                 # NAME(a), |, NAME(b), NEWLINE
 ```
@@ -178,7 +178,7 @@ comment, joins the lines: it, the spacing and the LF are discarded, no
 `NAME(x)`, `NAME(y)`). Any other `\` is a word character (`a\b` is one
 word), comment text, or an escape inside a decoded quote.
 
-```text
+```fipe
 cat x \
     y                 # NAME(cat), NAME(x), NAME(y), NEWLINE
 cat x # note \
@@ -198,7 +198,7 @@ stray scalar outside a quote is consumed and spanned alone.
 Scanning continues, offsets stay original, and EOF is emitted exactly
 once.
 
-```text
+```fipe
 banner = '
   Fipe
     a pipeline language

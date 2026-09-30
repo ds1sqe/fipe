@@ -27,7 +27,8 @@ members = member, { ",", newlines, member }, [ "," ] ;
 member = [ doc ], ( field | NAME, [ "(", newlines, [ fields ], newlines, ")" ] ) ;
 fields = field, { ",", newlines, field }, [ "," ] ;
 field = [ "pub" ], NAME, ":", type, [ "=", operand ] ;
-impl_item = "impl", type, "{", newlines, [ impl_members ], newlines, "}" ;
+impl_item = "impl", type, [ ":", type_atom ],
+            "{", newlines, [ impl_members ], newlines, "}" ;
 impl_members = impl_member, { ",", newlines, impl_member }, [ "," ] ;
 impl_member = [ doc ], ( [ "pub" ], NAME,
               ( ":", annotation, [ "=", member_value ] | "=", member_value )
@@ -79,7 +80,7 @@ unit = "(", newlines, ")" ;
 instance = NAME, type_arguments ;
 group = "(", newlines, body, newlines, ")" ;
 tuple = "(", newlines, line, ",", newlines, line, { ",", newlines, line },
-        newlines, ")" ;
+        [ "," ], newlines, ")" ;
 block = "{", newlines, [ body ], newlines, "}" ;
 body = arms | line, { NEWLINE, newlines, line } ;
 list = "[", newlines, [ elements ], newlines, "]" ;
@@ -100,7 +101,7 @@ pattern_atom = literal | NAME | list_pattern | outcome_pattern
 list_pattern = "[", newlines, [ pattern, { ",", newlines, pattern }, [ "," ] ],
                newlines, "]" ;
 tuple_pattern = "(", newlines, pattern, ",", newlines, pattern,
-                { ",", newlines, pattern }, newlines, ")" ;
+                { ",", newlines, pattern }, [ "," ], newlines, ")" ;
 outcome_pattern = "[", ( ":" | "!" ), [ pattern ], "]" ;
 record_pattern = NAME, "{", newlines, [ pattern_fields ], newlines, "}" ;
 pattern_fields = pattern_field, { ",", newlines, pattern_field }, [ "," ] ;

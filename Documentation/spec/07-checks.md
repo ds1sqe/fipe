@@ -1,6 +1,6 @@
 # Checks
 
-Each limit of a place ([limits](limits.md)) is decided in a phase, with
+Each limit of a place ([limits](06-limits.md)) is decided in a phase, with
 one of three outcomes, under a mode. The rules of §What is known are part
 of the language: a checker proves exactly what they give, so acceptance
 and charges are the same on every backend.
@@ -23,12 +23,14 @@ host and part of the checked unit.
 
 ## Entry and outcome
 
+`x: Limit = value`. The place is the lower bound, what `x` must meet;
+the value is the upper bound, what it is; entry decides the difference.
 A value **enters** a place when it is bound to it. A signature on an arm
 list declares that function's places: its parameters take the arguments,
 and each body enters the declared result.
 
 At a place of known type a value of another meaning is cast, not unified
-([types](types.md)), by the closed cast table of [members](members.md)
+([types](03-types.md)), by the closed cast table of [members](04-members.md)
 §Conversions: a number to another numeric meaning, a word read, text, the
 host codec, packing. Each element of a literal enters the element place
 before the elements are unified, so `[Circle 1.0, Square 2.0]` fills a
@@ -82,7 +84,7 @@ and no `compile` word.
 The checker lists every entry left open: its place, its limit, its phase,
 the reason (an unknown input, no rule, the budget) and how often it runs:
 once, per call, per element. The REPL shows it with `:checks`, and the
-[embedding API](embed-api.md) returns it with the checked unit.
+[embedding API](../api/09-embed.md) returns it with the checked unit.
 
 ```text
 :checks sum2
@@ -157,10 +159,10 @@ exact `2`, then `U8`, then `Natural`, then `Integer`. Narrow to wide is
 always permitted and costs no test; wide to narrow is an entry. Branches
 join (rule 4); a join never fails, a later entry may. No fixed point is
 computed, so no widening step is needed: a recursive result is known as
-declared (rule 5). Meanings have no order ([types](types.md) §Core
+declared (rule 5). Meanings have no order ([types](03-types.md) §Core
 judgments).
 
-```text
+```fipe
 y = if c { 2 } else { 200 }   # Integer, known 2..200
 a: U8 = y                     # proved
 b: I8 = y                     # open
@@ -177,7 +179,7 @@ test as one comparison, a proved entry nothing. Compile-time work is
 charged to the compile budget. A value that moves to a place with another
 holding is converted, charged per element.
 
-```text
+```fipe
 a: U8 = 200
 b: U8 = 100
 c: U8 = (a + b) / 2       # proved: 150

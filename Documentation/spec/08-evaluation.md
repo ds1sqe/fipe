@@ -1,7 +1,7 @@
 # Evaluation
 
 `e ⇓ v` denotes a value, `e ⇑ F` a Fault; a demanded subexpression that
-Faults ends the run. E1, E2 and T5 in [open decisions](open.md) hold the
+Faults ends the run. E1, E2 and T5 in [open decisions](11-open.md) hold the
 proposals cited here.
 
 ## Order
@@ -10,7 +10,7 @@ Values are immutable; a function returns a new value. E1: strict,
 left-to-right evaluation, callee first, supplied arguments in source order,
 defaults in parameter order, then body; each supplied expression exactly
 once, even when a named argument binds a later parameter; a tuple's parts
-left to right; tests where [checks](checks.md) §Order and charges places
+left to right; tests where [checks](07-checks.md) §Order and charges places
 them. A block evaluates its lines in order and is its last line, or `()`.
 An `if` evaluates only its selected arm. Arms test patterns in source
 order, a guard only after its pattern matches, and only the chosen body.
@@ -30,22 +30,22 @@ arguments are kept in order until the signature is known, then bound:
 3. A pipe supplies the last spot still open, whatever its type: `x | f 1 2`
    is `f 1 2 x`; to place the input elsewhere, name it, `x | v => f v 2 3`.
    A previously filled spot is a check error. Collections and tuples are
-   never spread; `f (a, b)` passes one tuple ([containers](containers.md)).
+   never spread; `f (a, b)` passes one tuple ([containers](05-containers.md)).
 4. Each remaining spot takes its parameter default, then its type default,
    in declaration order; a default may name the spots before it, so `dir
    (width = 80) (cols = width / 8) => …` is well defined. A spot with
    neither stays open. The result is a function of the open spots in order,
    or the body result. Construction is application: `Point 1` fills `y`
    from its default, and `Just` stays a function; construction tests the
-   meaning's limits ([limits](limits.md) §Gates).
+   meaning's limits ([limits](06-limits.md) §Gates).
 
-Each bound argument enters its spot ([checks](checks.md)). Duplicate
+Each bound argument enters its spot ([checks](07-checks.md)). Duplicate
 supply, unknown flags, non-Bool chaining and extra arguments are check
 errors where statically knowable, and a refuted entry always is. `--` is a
 word; quoting prevents flag recognition; there is no end-of-flags marker.
 T3 resolves inferred Bool parameters.
 
-```text
+```fipe
 add: Integer -> Integer -> Integer = a b => a + b
 add2 = add 2                   # one open spot
 add2 4                         # 6
@@ -77,7 +77,11 @@ unify. An inactive branch keeps its payload. For `Maybe`, a plain `|!`
 result is discarded and yields `Nothing`; `Result` and `Either` constrain
 neither payload. Both branches have one static result type. Marked pipes
 on a user meaning, through its `then`, `pure`, `or` and `empty` members,
-are T5's. Bool is unresolved in E1.
+are T5's. Bool is unresolved in E1. An outer `|!` sees a miss from any
+stage below it, and with `Maybe` cannot tell which. Prefer, in order:
+`Result` with one error type per chain; closing the inner pipeline,
+`find x |: (| cat || fault "unreadable") |! log`; reordering, `find x
+|! log || root | cat`.
 
 ## Fallback and sequencing
 
@@ -100,9 +104,9 @@ A user meaning's fallback is T5's.
 `name = e` binds in the remaining scope; a later `name = …` shadows, and a
 closure keeps what it captured. A constructor pattern exposes fields or
 payloads; a gate pattern tests and binds the whole value
-([limits](limits.md) §Gates); `_` discards.
+([limits](06-limits.md) §Gates); `_` discards.
 
-```text
+```fipe
 Just x = e
 body                ≡   e |: (x => body)
 ```
@@ -119,12 +123,12 @@ failing patterns; they are never runtime panics.
 arithmetic failure, a failed test, dynamic cast failure and host failure
 do the same. The host receives a source-located Fault; prior host effects
 stand. An `Err` value is never a Fault merely by being returned. Writing
-is a host command with a value-last spot, in [embedding](host.md).
+is a host command with a value-last spot, in [embedding](09-host.md).
 
 ## Arithmetic
 
 `Integer`'s members never wrap and nothing overflows. `div` truncates
 toward zero and `rem` takes the dividend's sign; division by zero is a
-Fault. A width is a limit of the place ([members](members.md) §Number
+Fault. A width is a limit of the place ([members](04-members.md) §Number
 types). E2 specifies float division and overflow, NaNs and ordering;
 constant evaluation obeys the same rules.

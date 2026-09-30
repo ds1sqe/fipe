@@ -324,6 +324,9 @@ fn an_open_bracket_or_trailing_operator_continues_the_entry() {
     assert_eq!(written(repl.feed(b":t\n")), "y: Integer\nfipe> ");
     assert_eq!(written(repl.feed(b":t 1 +\n")), "....> ");
     assert_eq!(written(repl.feed(b"  2\n")), "1 + 2: Integer\nfipe> ");
+    // A trailing `&` in a type continues too.
+    assert_eq!(written(repl.feed(b"type K: Integer &\n")), "....> ");
+    assert_eq!(written(repl.feed(b"  Natural\n")), "fipe> ");
 }
 
 #[test]

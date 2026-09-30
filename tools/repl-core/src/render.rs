@@ -130,7 +130,6 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::Discarded => "a line before the last must be ()".into(),
         R::MissingField { name } => format!("missing field `{name}`"),
         R::OutOfRange => "integer out of range for its type".into(),
-        R::NotComplete => "a pub binding needs a complete type".into(),
         R::Ambiguous { class } => {
             format!("ambiguous: `{class}` on an unknown type")
         }

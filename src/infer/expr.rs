@@ -3,7 +3,7 @@
 //! and branches). Where an expected type is known, the expression is
 //! checked against it.
 //!
-//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
+//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/03-types.md
 
 use super::{
     bind::Part, prelude, prelude_of, Expected, Infer, Lit, Owed, Reason,
@@ -280,7 +280,6 @@ impl Infer<'_> {
             ty,
             site: self.span(id),
             annotated: false,
-            public: false,
         };
         let scheme = self.generalize(&[part], mark, &[]).remove(0);
         self.state.bindings[id.0] = Some(scheme);

@@ -5,7 +5,7 @@ use fs
 use geometry.Point geometry.Polar
 use cli 2
 
-# Exported bindings need a complete type; inferred ones stay private.
+# A `pub` binding may be polymorphic; a host-callable one is written out.
 ## Compute a rectangular area.
 pub area: F64 -> F64 -> F64 = w h => w * h
 ## Run the module example.

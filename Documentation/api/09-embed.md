@@ -1,6 +1,6 @@
 # Embedding API
 
-[Embedding](host.md) owns what a host supplies; this chapter owns the Rust
+[Embedding](../spec/09-host.md) owns what a host supplies; this chapter owns the Rust
 boundary through which a driver supplies it.
 
 ## Requests and replies
@@ -42,7 +42,7 @@ own; `query` checks without accepting, and generalizes an expression line
 where `line` defaults it, so its scheme is the line's `typed.binding`.
 `retract` removes the last accepted line and what it defined, returning
 its text. The host's strict session and compile budget, and the plan of
-open entries returned with a checked unit ([checks](checks.md)), have no
+open entries returned with a checked unit ([checks](../spec/07-checks.md)), have no
 Rust form yet. The source is the accepted lines, each followed by a blank
 line; spans are in the source followed by the line being checked.
 

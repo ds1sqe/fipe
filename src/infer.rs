@@ -6,8 +6,8 @@
 //! boundary; an arm binding and the members of one impl are typed as a
 //! group, monomorphic inside.
 //!
-//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/types.md
-//! [evaluation.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/evaluation.md
+//! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/03-types.md
+//! [evaluation.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/08-evaluation.md
 
 mod arms;
 mod bind;
@@ -94,8 +94,6 @@ pub enum Reason {
     },
     /// An integer literal outside its type's range.
     OutOfRange,
-    /// A `pub` binding or member whose type is not closed.
-    NotComplete,
     /// An obligation on a variable that left the binding's type.
     Ambiguous {
         class: String,
