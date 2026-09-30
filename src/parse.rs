@@ -42,6 +42,10 @@ pub enum Reason {
     BindingValue,
     /// `|!` in a type, where either and not are written `| !`.
     EitherNot,
+    /// An outer doc has no eligible owner, or changes form.
+    UnattachedDoc,
+    /// Module docs belong before the first module entry only.
+    InnerDocPosition,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +90,10 @@ impl fmt::Display for Reason {
             Self::BindingValue => {
                 f.write_str("a binding's value is not a binding")
             }
+            Self::UnattachedDoc => f.write_str("doc has no owner"),
+            Self::InnerDocPosition => {
+                f.write_str("module doc must precede all entries")
+            }
             Self::EitherNot => f.write_str("in a type, write `| !`"),
         }
     }
@@ -107,6 +115,8 @@ pub fn parse(input: Lexed) -> Result<Module, Vec<Error>> {
             .collect());
     }
     let end = validate(&input.tokens).map_err(|error| vec![error])?;
+    validate_comments(&input.comments, &input.tokens, end)
+        .map_err(|error| vec![error])?;
     Parser {
         tokens: input.tokens,
         position: 0,
@@ -114,6 +124,7 @@ pub fn parse(input: Lexed) -> Result<Module, Vec<Error>> {
         depth: 0,
         module: Module {
             span: Span { start: 0, end },
+            comments: input.comments,
             ..Module::default()
         },
         errors: Vec::new(),
@@ -154,6 +165,32 @@ fn validate(tokens: &[Token]) -> Result<usize, Error> {
     Ok(end)
 }
 
+fn validate_comments(
+    comments: &[Span],
+    tokens: &[Token],
+    eof: usize,
+) -> Result<(), Error> {
+    let mut end = 0;
+    let mut token = 0;
+    for &span in comments {
+        while token < tokens.len() && tokens[token].span.end <= span.start {
+            token += 1;
+        }
+        if span.start < end
+            || span.end <= span.start
+            || span.end > eof
+            || tokens.get(token).is_some_and(|t| t.span.start < span.end)
+        {
+            return Err(Error {
+                span,
+                reason: Reason::InvalidTokenStream,
+            });
+        }
+        end = span.end;
+    }
+    Ok(())
+}
+
 /// Where a line is being parsed; newlines are handled the same everywhere.
 /// Only the arm rule and the `if`/`with` body rule depend on it.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -188,6 +225,12 @@ struct Parser {
 impl Parser {
     fn file(mut self) -> Result<Module, Vec<Error>> {
         self.newlines();
+        if matches!(self.peek(), Kind::InnerDoc(_)) {
+            match self.docs(true) {
+                Ok(doc) => self.module.doc = doc,
+                Err(error) => self.errors.push(error),
+            }
+        }
         while !matches!(self.peek(), Kind::Eof) {
             let recorded = self.errors.len();
             match self.entry() {
@@ -214,8 +257,17 @@ impl Parser {
     /// (`name: type` with no `=`), or a line; `pub` may precede a `type`,
     /// a `trait`, a binding or a declaration.
     fn entry(&mut self) -> Result<Entry, Error> {
+        let doc = self.docs(false)?;
+        if doc.is_some()
+            && !(self.item_start()
+                || self.binding_ahead()
+                || self.colon_follows()
+                || matches!(self.peek(), Kind::Kw(Keyword::Pub)))
+        {
+            return Err(self.error(Reason::UnattachedDoc));
+        }
         let public = self.keyword(Keyword::Pub);
-        let entry = if self.item_start() {
+        let mut entry = if self.item_start() {
             Entry::Item(self.item(public)?)
         } else if self.binding_ahead() {
             Entry::Line(self.binding(Context::Line, public)?)
@@ -226,8 +278,88 @@ impl Parser {
         } else {
             Entry::Line(self.line(Context::Line)?)
         };
+        if let Some(doc) = doc {
+            match &mut entry {
+                Entry::Item(item)
+                    if !matches!(item.kind, ast::ItemKind::Use { .. }) =>
+                {
+                    item.doc = Some(doc);
+                }
+                Entry::Line(id) => self.attach_doc(*id, doc)?,
+                Entry::Item(_) => return Err(self.error(Reason::UnattachedDoc)),
+            }
+        }
         self.line_end(None)?;
         Ok(entry)
+    }
+
+    fn docs(
+        &mut self,
+        inner: bool,
+    ) -> Result<Option<alloc::string::String>, Error> {
+        if matches!(self.peek(), Kind::InnerDoc(_)) && !inner {
+            return Err(self.error(Reason::InnerDocPosition));
+        }
+        let mut text = None;
+        let mut paragraph = false;
+        loop {
+            let same = matches!(
+                (self.peek(), inner),
+                (Kind::Doc(_), false) | (Kind::InnerDoc(_), true)
+            );
+            if !same {
+                break;
+            }
+            let token = self.bump();
+            let (Kind::Doc(line) | Kind::InnerDoc(line)) = token.kind else {
+                unreachable!()
+            };
+            let first = text.is_none();
+            let joined = text.get_or_insert_with(alloc::string::String::new);
+            if !first {
+                joined.push('\n');
+                if paragraph {
+                    joined.push('\n');
+                }
+            }
+            joined.push_str(&line);
+            let before = self.position;
+            self.newlines();
+            paragraph = self.position - before > 1;
+        }
+        if text.is_some()
+            && matches!((self.peek(), inner), (Kind::InnerDoc(_), false))
+        {
+            return Err(self.error(Reason::UnattachedDoc));
+        }
+        if !inner
+            && text.is_some()
+            && matches!(
+                self.peek(),
+                Kind::Eof
+                    | Kind::Symbol(
+                        Symbol::RBrace | Symbol::RParen | Symbol::RBracket
+                    )
+            )
+        {
+            return Err(self.error(Reason::UnattachedDoc));
+        }
+        Ok(text)
+    }
+
+    fn attach_doc(
+        &mut self,
+        id: ExprId,
+        text: alloc::string::String,
+    ) -> Result<(), Error> {
+        if let ExprKind::Bind { doc, .. } =
+            &mut self.module.expressions[id.0].kind
+        {
+            *doc = Some(text);
+            Ok(())
+        } else {
+            Err(self.error(Reason::UnattachedDoc))
+        }
     }
 
     /// Whether this line is a binding: a depth-zero `=` before its first

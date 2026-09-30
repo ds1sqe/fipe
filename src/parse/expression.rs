@@ -11,6 +11,15 @@ use alloc::{string::String, vec::Vec};
 impl Parser {
     pub(super) fn line(&mut self, context: Context) -> Result<ExprId, Error> {
         self.nested(|parser| {
+            let doc = parser.docs(false)?;
+            if let Some(doc) = doc {
+                if !parser.binding_ahead() {
+                    return Err(parser.error(Reason::UnattachedDoc));
+                }
+                let id = parser.binding(context, false)?;
+                parser.attach_doc(id, doc)?;
+                return Ok(id);
+            }
             if *parser.peek() == Kind::Kw(Keyword::With) {
                 parser.scoped(context)
             } else if parser.binding_ahead() {
@@ -44,6 +53,7 @@ impl Parser {
         let value = self.line(context)?;
         Ok(self.expression(
             ExprKind::Bind {
+                doc: None,
                 public,
                 pattern,
                 annotation,

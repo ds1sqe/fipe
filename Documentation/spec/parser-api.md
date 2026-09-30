@@ -15,7 +15,8 @@ or I/O. Lexical errors come back as `Reason::Lexical` without parsing.
 Any error rejects the whole result; recovery only collects more errors.
 `Lexed` is publicly constructible: a missing, repeated or nonempty-span
 EOF, or overlapping or reversed spans, is `InvalidTokenStream`, never a
-panic. An empty file is a module; the module span runs from byte zero
+panic. Comment spans must be nonempty, ordered, within EOF and disjoint
+from tokens. An empty file is a module; the module span runs from byte zero
 through EOF, including a skipped BOM.
 
 ## Representation
@@ -25,6 +26,12 @@ reached by `ExprId`, `PatternId` and `TypeId` through `expr`, `pattern`
 and `ty`. Cloning, comparing and dropping a module never recurse through
 source nesting. Entries keep source order and separate items from lines.
 Every node, name, field, argument and operator keeps its byte span.
+The module keeps `comments: Vec<Span>` from the lexer for a later formatter.
+The module, items, fields, constructors, impl members and `Bind` expressions
+keep `doc: Option<String>`. A `use` item and constructor fields have none.
+Docs do not participate in lookup or checking except declaration spot lists.
+`UnattachedDoc` diagnoses an outer doc without an owner or mixed forms;
+`InnerDocPosition` diagnoses a module doc after an entry or inside a body.
 
 | Form | Node |
 | --- | --- |

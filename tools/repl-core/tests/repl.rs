@@ -89,7 +89,7 @@ fn load_asks_for_the_stem() {
     // Its four `hypot`/`atan2` rows are 07's casts; the line is accepted.
     let text = written(repl.file("geometry.fipe", Some(GEOMETRY)));
     assert_eq!(text.matches("expected F64, found I64").count(), 4, "{text}");
-    assert!(text.starts_with("geometry.fipe:12:61: "), "{text}");
+    assert!(text.starts_with("geometry.fipe:30:52: "), "{text}");
     assert!(text.ends_with("fipe> "), "{text}");
     let text = written(repl.feed(b":r geometry.Point 1\n"));
     assert!(text.contains("Constructor"), "{text}");
@@ -522,7 +522,7 @@ fn a_where_line_continues_an_accepted_type_item() {
         text,
         "1:6: a test limit is not yet checked\n\
          type P { x: I64 }\n     ^\n\
-         Type P\n  Where\n    Binary <=\n      Int 0\n      Name self.x\n\
+         Type P\n  Field x\n    Type I64\n  Where\n    Binary <=\n      Int 0\n      Name self.x\n\
          P 1: P\nfipe> "
     );
 }
@@ -549,4 +549,58 @@ fn member_schemes_and_type_parameter_defaults_are_visible() {
         text.contains("no meaning reads all literal forms: Whole, Text"),
         "{text}"
     );
+}
+
+#[test]
+fn docs_are_displayed_above_types_and_under_tree_owners() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"## A value\n")), "....> ");
+    assert_eq!(
+        written(repl.feed(b"\nx = 1\n:t x\n")),
+        "A value\nx: Integer\nfipe> "
+    );
+    let text = written(
+        repl.feed(b"## A record\ntype P {\n## A field\nx: I64,\n}\n:ast\n"),
+    );
+    assert!(
+        text.contains(
+            "Type P\n  Doc \"A record\"\n  Field x\n    Doc \"A field\""
+        ),
+        "{text}"
+    );
+    let outs = repl.feed(b":host\n:t ls\n");
+    assert!(matches!(outs.as_slice(), [Out::File(_)]));
+    let mut text = String::new();
+    for (index, (path, source)) in HOST.iter().enumerate() {
+        let outs = repl.file(path, Some(source));
+        if index + 1 == HOST.len() {
+            text = written(outs);
+        } else {
+            assert!(matches!(outs.as_slice(), [Out::File(_)]));
+        }
+    }
+    assert!(text.contains("List directory entries.\n- path:"), "{text}");
+    assert!(text.contains("- depth: how far down to look"), "{text}");
+    assert!(
+        text.find("List directory entries.").unwrap()
+            < text.find("ls:").unwrap()
+    );
+}
+
+#[test]
+fn quotes_continue_across_physical_input_lines() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"banner = 'first\n")), "....> ");
+    assert_eq!(written(repl.feed(b"\n# text\n:q\n")), "....> ");
+    let text = written(repl.feed(b"last'\n:ast\n"));
+    assert!(
+        text.contains("Str \"first\\n\\n# text\\n:q\\nlast\""),
+        "{text}"
+    );
+    assert_eq!(written(repl.feed(b"msg = \"the file \\\n")), "....> ");
+    let text = written(repl.feed(b"   was not found\"\n:ast\n"));
+    assert!(text.contains("Str \"the file was not found\""), "{text}");
+    let text = written(repl.feed(b"x = \"unterminated\ny = 2\n:t y\n"));
+    assert!(text.contains("unterminated quote"), "{text}");
+    assert!(text.contains("y: Integer"), "{text}");
 }

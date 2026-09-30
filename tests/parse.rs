@@ -1,3 +1,5 @@
+#[path = "parse/docs.rs"]
+mod docs;
 use fipe::{
     ast::{Entry, ExprId, ExprKind, Literal, Module},
     lex::lex,

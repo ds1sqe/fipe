@@ -18,6 +18,9 @@ pub struct TypeId(pub(crate) usize);
 /// A complete syntactically valid file; no name or type has been resolved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Module {
+    pub doc: Option<String>,
+    /// Ordinary comment trivia retained for source tools.
+    pub comments: Vec<Span>,
     pub span: Span,
     pub entries: Vec<Entry>,
     pub(crate) expressions: Vec<Expr>,
@@ -127,6 +130,7 @@ pub enum ExprKind {
     },
     /// `pattern = line`, optionally annotated; `pub` only at file level.
     Bind {
+        doc: Option<String>,
         public: bool,
         pattern: PatternId,
         annotation: Option<TypeId>,
@@ -332,6 +336,7 @@ pub enum ConstraintKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
+    pub doc: Option<String>,
     pub kind: ItemKind,
     pub public: bool,
     pub span: Span,
@@ -368,6 +373,7 @@ pub enum ItemKind {
 pub enum Member {
     Field(Field),
     Constructor {
+        doc: Option<String>,
         name: Name,
         fields: Vec<Field>,
         span: Span,
@@ -376,6 +382,7 @@ pub enum Member {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
+    pub doc: Option<String>,
     pub public: bool,
     pub name: Name,
     pub ty: TypeId,
@@ -398,6 +405,7 @@ pub enum Limit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImplMember {
     Named {
+        doc: Option<String>,
         public: bool,
         name: Name,
         annotation: Option<TypeId>,
@@ -405,7 +413,10 @@ pub enum ImplMember {
         value: Option<ExprId>,
         span: Span,
     },
-    Constructor(Arm),
+    Constructor {
+        doc: Option<String>,
+        arm: Arm,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

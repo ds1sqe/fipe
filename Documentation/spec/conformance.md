@@ -38,12 +38,33 @@ Compare kinds, payloads, source slices and diagnostics.
 | broken quote, LF, `x = 1` | one diagnostic; following line survives |
 | `&` / `&&` / source NUL | symbol, pipe, stray; NUL never truncates source |
 | initial U+FEFF then `ls` | name `ls` at byte 3, scalar column 2 |
-| other U+FEFF / any literal U+200B | stray, including in comments and quotes |
+| other U+FEFF / any literal U+200B | stray, including in comments, docs and quotes |
 | `"\xEF\xBB\xBF"` / `"\xE2\x80\x8B"` | escaped marks are valid string data |
 
 Also every keyword and non-keyword name, every operator beside its
 neighbor, byte slices and scalar columns of `cat héllo "한글"`, CRLF, EOF
 inside an escape, negative zero, radix boundaries and all five pipes.
+
+## Docs and quotes
+
+| Case | Expected distinction |
+| --- | --- |
+| `##x` / `## x` / `##  x` / `##! module` | doc `x` / `x` / ` x` / inner doc |
+| `a | ## doc` LF `b` | pipe joins; doc token retained; no intervening newline |
+| `# ordinary` / `## doc` | comment span outside tokens / doc token; trivia kept in tree |
+| `## a` LF `## b` LF LF `x = 1` | binding doc `a\nb`, blank gap allowed |
+| `## a` LF LF `## b` LF `x = 1` / `##! module` then `## item` | paragraph `a\n\nb` / module and item docs |
+| public prelude and host declarations | each has a doc |
+| docs on module, type, binding, field, constructor and impl member | attached to each owner; body binding too |
+| `## orphan` at EOF / before a value or `use` / before `##!` | unattached-doc syntax error |
+| `x = 1` LF `##! late` / inner doc inside a body | inner-doc-position syntax error |
+| host doc `- depth: …` / `- missing: …` | existing spot accepted / declaration error |
+| `:t ls` / `:ast` on documented code | doc above type / doc under its owner |
+| raw quote across LF with indentation, `#` and `"` | exact bytes, one token and span; following positions physical |
+| decoded quote with backslash LF and leading spacing | join drops all three; explicit `\n` retained |
+| decoded quote with bare LF / raw quote at EOF | unterminated quote; decoded recovery keeps following line |
+| affixed multiline quote / pipe after its closing quote | affix kept / same logical line |
+| REPL raw quote opened on one input line, closed on the next | continuation, one string |
 
 ## Parsing and checking
 

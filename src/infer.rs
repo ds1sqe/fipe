@@ -650,7 +650,9 @@ impl Infer<'_> {
                     item.body = Some(Body::Value(*value));
                     self.push_item(item, group);
                 }
-                ImplMember::Constructor(arm) => constructor.push(arm.clone()),
+                ImplMember::Constructor { arm, .. } => {
+                    constructor.push(arm.clone());
+                }
             }
         }
         if !constructor.is_empty() {

@@ -21,6 +21,8 @@ use alloc::{string::String, vec::Vec};
 
 /// Accepted lines are joined by a blank line in the session's source,
 /// the text their spans are in.
+mod docs;
+
 const SEPARATOR: &str = "\n\n";
 
 /// The prelude, the host's declarations, the accepted lines and the file
@@ -374,6 +376,9 @@ fn shifted(mut lexed: Lexed, offset: usize) -> Lexed {
         span.start += offset;
         span.end += offset;
     };
+    for comment in &mut lexed.comments {
+        shift(comment);
+    }
     for token in &mut lexed.tokens {
         shift(&mut token.span);
     }

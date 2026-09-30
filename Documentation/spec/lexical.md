@@ -131,9 +131,11 @@ quote is its suffix, `"a+b"i`. A keyword is neither, and another word
 beside a quote is a token of its own. `f "abc"` applies `f`; `f"abc"` is
 a prefix. `b"…"` is the prefix `b`, bytes by the prelude's claim. With a
 prefix or suffix a decoded quote carries its bytes, which need not be
-UTF-8. A quote does not cross LF. A raw quote closes at
-the next `'` and has no escapes. No interpolation exists. Decoded literals
-admit exactly:
+UTF-8. A raw quote crosses LF, keeping its bytes and indentation; it
+closes at the next `'` and has no escapes. A decoded quote crosses LF only
+by a `\` right before it: the `\`, the LF and the next line's leading
+spacing are dropped, and `\n` writes an LF to keep. There is no triple
+quote and no interpolation. Decoded literals admit exactly:
 
 | Escape | Byte |
 | --- | --- |
@@ -144,16 +146,25 @@ admit exactly:
 
 An escape consumes exactly its spelling: `\x414` is `A4`. Unknown or
 incomplete escapes are `BadEscape`. Literal U+FEFF, U+200B and controls
-other than TAB are `Stray`; LF before the closing quote is
-`UnterminatedQuote`. A decoded string with neither must be valid UTF-8:
+other than TAB, and LF in a decoded quote, are `Stray`; an unjoined LF in
+a decoded quote is `UnterminatedQuote`. A decoded string with neither must
+be valid UTF-8:
 `"\xFF"` is `InvalidUtf8`, `"\xC3\xA9"` is `é`, `b"\xFF"` is valid.
 
 ## Comments and logical lines
 
-`#` outside a quote is a comment through the next LF, excluding it; it may
-begin right after a word, and stray scalars inside it are still errors.
+`#` outside a quote, except `##`, is a comment through the next LF,
+excluding it; it may begin right after a word. Its span is kept as trivia
+outside the token stream. Stray scalars inside comments and docs are
+still errors. `##` emits `Doc(text)` and `##!` emits `InnerDoc(text)`
+through LF, excluding it, with one space after the marker stripped.
+Consecutive lines of one form join with LF in the parser
+([syntax](syntax.md)); runs separated by blank lines join with one empty
+line, a paragraph. A doc line is blank for the logical-line rule, as a
+comment line is. A quote across lines is one token of its opening logical
+line; a pipe after its closing quote continues that line.
 Every LF emits `NEWLINE`, including blank lines, except the first LF after
-one of the five pipes `| |: |! || &&` when only spacing or a comment
+one of the five pipes `| |: |! || &&` when only spacing, a doc or a comment
 intervenes; a second newline remains.
 
 ```text
@@ -181,7 +192,26 @@ nesting and no name's meaning.
 
 The reasons are `UnterminatedQuote`, `BadEscape`, `InvalidUtf8` and
 `Stray`. A failed quote emits one diagnostic spanning the whole literal
-and no token; an unterminated quote ends before LF or at EOF, keeping the
-newline. A stray scalar outside a quote is consumed and spanned alone.
+and no token; an unterminated decoded quote ends before an unjoined LF or
+at EOF, keeping that newline; an unterminated raw quote ends at EOF. A
+stray scalar outside a quote is consumed and spanned alone.
 Scanning continues, offsets stay original, and EOF is emitted exactly
 once.
+
+```text
+banner = '
+  Fipe
+    a pipeline language
+'                                 # "⏎  Fipe⏎    a pipeline language⏎"
+msg = "the file \
+       was not found"             # "the file was not found"
+msg = "line one\n\
+       line two"                  # "line one⏎line two"
+sql = 'where name = "a" # text
+       and size > 1'              # the # and the " are text
+'user: fipe
+ role: admin
+' | put ./config.yaml             # three lines, the space before role kept
+x = "unterminated
+y = 2                             # error, as today
+```

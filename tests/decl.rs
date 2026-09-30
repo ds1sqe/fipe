@@ -207,3 +207,91 @@ fn declaration_files_report_each_unchecked_form_once() {
     // An array's integer length and `b"…"` are checked forms.
     Namespace::parse("x", "pub f: [A; 3] -> C\nx = b\"\\xFF\"").unwrap();
 }
+
+#[test]
+fn public_prelude_and_host_declarations_have_docs() {
+    use fipe::ast::{Entry, ExprKind, ImplMember, ItemKind, Member};
+    let declarations = host();
+    for namespace in std::iter::once(&declarations.prelude)
+        .chain(declarations.commands.iter())
+        .chain(&declarations.modules)
+    {
+        for entry in &namespace.module.entries {
+            match entry {
+                Entry::Item(item) => {
+                    if item.public {
+                        assert!(
+                            item.doc.is_some(),
+                            "{}: {item:?}",
+                            namespace.name
+                        );
+                    }
+                    match &item.kind {
+                        ItemKind::Type {
+                            members: Some(members),
+                            ..
+                        } => {
+                            for member in members {
+                                if let Member::Field(field) = member {
+                                    if field.public {
+                                        assert!(field.doc.is_some());
+                                    }
+                                }
+                            }
+                        }
+                        ItemKind::Impl { members, .. } => {
+                            for member in members {
+                                if let ImplMember::Named {
+                                    public: true,
+                                    doc,
+                                    ..
+                                } = member
+                                {
+                                    assert!(doc.is_some());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Entry::Line(id) => {
+                    if let ExprKind::Bind {
+                        public: true, doc, ..
+                    } = &namespace.module.expr(*id).unwrap().kind
+                    {
+                        assert!(doc.is_some());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn doc_lists_check_only_declared_spot_names() {
+    let source = "## List.\n## - depth: how far down to look\n## * missing: opaque\n## - NotASpot: opaque\n## - two words: opaque\n## -  depth: opaque\npub ls: (depth: U64 = 1) -> String\ntype P\nimpl P {\n## Read.\n## - self: the receiver\nf: (self: Self) -> Self,\n}";
+    Namespace::parse("commands", source).unwrap();
+    for namespace in ["prelude", "commands", "fs"] {
+        let errors = Namespace::parse(
+            namespace,
+            "## - missing: not a spot\nf: (depth: U64) -> String",
+        )
+        .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].reason,
+            Reason::UnknownDocSpot {
+                name: "missing".into()
+            }
+        );
+    }
+    let errors = Namespace::parse("host", "type P\nimpl P {\n## - absent: not a spot\nf: (self: Self) -> Self,\n}").unwrap_err();
+    assert_eq!(
+        errors[0].reason,
+        Reason::UnknownDocSpot {
+            name: "absent".into()
+        }
+    );
+    // An implemented member is program text, not a supplied signature.
+    Namespace::parse("host", "type P { x: Integer }\nimpl P {\n## - opaque: text\nf = self => self,\n}").unwrap();
+}

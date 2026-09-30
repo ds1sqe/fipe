@@ -1068,7 +1068,9 @@ impl<'a> Resolver<'a> {
                                         ),
                                     }
                                 }
-                                ImplMember::Constructor(arm) => self.arm(arm),
+                                ImplMember::Constructor { arm, .. } => {
+                                    self.arm(arm);
+                                }
                             }
                         }
                         self.self_type = None;
@@ -1380,9 +1382,9 @@ impl<'a> Resolver<'a> {
                     target, members, ..
                 } => {
                     named(module, *target).as_deref() == Some(&ty)
-                        && members
-                            .iter()
-                            .any(|m| matches!(m, ImplMember::Constructor(_)))
+                        && members.iter().any(|m| {
+                            matches!(m, ImplMember::Constructor { .. })
+                        })
                 }
                 _ => false,
             },

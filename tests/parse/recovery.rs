@@ -113,6 +113,7 @@ fn malformed_token_streams_are_diagnostics() {
         ],
     ] {
         let result = parse(Lexed {
+            comments: Vec::new(),
             tokens,
             errors: vec![],
         })

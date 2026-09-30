@@ -1,4 +1,4 @@
-use super::{invisible, word, Reason, Scanner};
+use super::{invisible, spacing, word, Reason, Scanner};
 use crate::token::{Affixed, Kind, Written};
 use alloc::{boxed::Box, string::String, vec::Vec};
 
@@ -45,7 +45,10 @@ impl Scanner<'_> {
         let mut error = None;
         loop {
             match self.peek() {
-                None | Some('\n') => {
+                None => {
+                    return Err(error.unwrap_or(Reason::UnterminatedQuote));
+                }
+                Some('\n') if !raw => {
                     return Err(error.unwrap_or(Reason::UnterminatedQuote));
                 }
                 Some(ch) if ch == quote => {
@@ -69,8 +72,17 @@ impl Scanner<'_> {
     ) -> Result<(), Reason> {
         let ch = self.bump().expect("quoted_char is called before EOF");
         if ch == '\\' && !raw {
-            out.push(self.escape()?);
-        } else if invisible(ch) || (ch.is_control() && ch != '\t') {
+            if self.peek() == Some('\n') {
+                self.bump();
+                while self.peek().is_some_and(spacing) {
+                    self.bump();
+                }
+            } else {
+                out.push(self.escape()?);
+            }
+        } else if invisible(ch)
+            || (ch.is_control() && ch != '\t' && !(raw && ch == '\n'))
+        {
             return Err(Reason::Stray(ch));
         } else {
             out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());

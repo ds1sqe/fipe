@@ -28,6 +28,8 @@ impl fmt::Display for Kind {
             Self::Str { value, raw: true } => write!(f, "'{value}'"),
             Self::Str { value, raw: false } => quoted(f, value.as_bytes()),
             Self::Affixed(affixed) => affixed.fmt(f),
+            Self::Doc(text) => write!(f, "## {text}"),
+            Self::InnerDoc(text) => write!(f, "##! {text}"),
             Self::Newline => f.write_str("\n"),
             Self::Eof => f.write_str("<eof>"),
         }

@@ -1,3 +1,6 @@
 # The conformance host's `text` module, API version 2.
+## Wrap text to a width.
+## - width: the line width
 pub wrap: (width: U64 = 72) -> String -> String
+## Remove surrounding spacing.
 pub trim: String -> String

@@ -49,6 +49,8 @@ pub fn syntax(reason: parse::Reason) -> String {
         | R::RecordInHead
         | R::NestingLimit
         | R::BindingValue
+        | R::UnattachedDoc
+        | R::InnerDocPosition
         | R::EitherNot => reason.to_string(),
     }
 }
@@ -142,6 +144,9 @@ pub fn declaration(reason: &decl::Reason, text: &str) -> String {
     use decl::Reason as R;
     match reason {
         R::Syntax(reason) => syntax(*reason),
+        R::UnknownDocSpot { name } => {
+            format!("doc names unknown spot `{name}`")
+        }
         R::NotDeclaration => "not a declaration or `name = value`".into(),
         R::Duplicate { first } => {
             let (line, col) = Source::new(text).line_col(first.start);

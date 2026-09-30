@@ -7,7 +7,7 @@ Rust representation.
 
 ~~~text
 lex::lex(text: &str) -> Lexed
-Lexed { tokens: Vec<Token>, errors: Vec<LexError> }
+Lexed { tokens: Vec<Token>, comments: Vec<Span>, errors: Vec<LexError> }
 Token { kind: Kind, span: Span }
 Span { start: usize, end: usize }
 LexError { span: Span, reason: Reason }
@@ -31,6 +31,7 @@ them remain; a unit with errors is never parsed or executed.
 | FLOAT | Float(String), exact spelling including separators/sign |
 | STRING | Str { value: String, raw: bool } |
 | with a prefix or suffix | Affixed(Box<Affixed>) |
+| docs | Doc(String), InnerDoc(String), one physical line per token |
 | NEWLINE, EOF | Newline, Eof |
 
 `raw` distinguishes single quotes. `Magnitude` is an exact natural of
@@ -46,6 +47,11 @@ and `Symbol::continues_line` the five pipes. `Reason` is the lexical
 contract's diagnostic enum; `Stray` carries the scalar. `Display` gives a
 canonical spelling that lexes back to the same kind and payload, not the
 source spelling; EOF displays as `<eof>`.
+
+Comment spans include `#` and exclude LF, in source order, outside tokens.
+Docs are tokens, not comment trivia. A multiline quote has one span from
+its prefix/opening quote through its suffix/closing quote; source lookup
+after it counts every physical LF and scalar column in the original text.
 
 ## Source lookup
 

@@ -14,6 +14,8 @@ mod word;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lexed {
     pub tokens: Vec<Token>,
+    /// Ordinary comments, including `#` but excluding LF, outside tokens.
+    pub comments: Vec<Span>,
     pub errors: Vec<LexError>,
 }
 
@@ -54,6 +56,7 @@ pub fn lex(text: &str) -> Lexed {
         continuation: false,
         output: Lexed {
             tokens: Vec::new(),
+            comments: Vec::new(),
             errors: Vec::new(),
         },
     }
@@ -148,6 +151,21 @@ impl Scanner<'_> {
     }
 
     fn comment(&mut self) {
+        let start = self.offset;
+        self.bump();
+        let doc = self.peek() == Some('#');
+        if doc {
+            self.bump();
+        }
+        let inner = doc && self.peek() == Some('!');
+        if inner {
+            self.bump();
+        }
+        if doc && self.peek() == Some(' ') {
+            self.bump();
+        }
+        let text = self.offset;
+        let errors = self.output.errors.len();
         while let Some(ch) = self.peek().filter(|&ch| ch != '\n') {
             let start = self.offset;
             self.bump();
@@ -160,6 +178,22 @@ impl Scanner<'_> {
                     reason: Reason::Stray(ch),
                 });
             }
+        }
+        let span = Span {
+            start,
+            end: self.offset,
+        };
+        if doc && self.output.errors.len() == errors {
+            let text = String::from(&self.text[text..self.offset]);
+            let kind = if inner {
+                Kind::InnerDoc(text)
+            } else {
+                Kind::Doc(text)
+            };
+            // A doc is blank for the line rule: preserve a preceding pipe.
+            self.output.tokens.push(Token { kind, span });
+        } else if !doc {
+            self.output.comments.push(span);
         }
     }
 

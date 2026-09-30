@@ -14,6 +14,8 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 
+mod docs;
+
 const PRELUDE: &str = include_str!("../prelude/prelude.fipe");
 
 /// The prelude, the host's command namespace and the host's modules.
@@ -118,6 +120,7 @@ impl Namespace {
             reason: Reason::NotYetChecked { form },
         })
         .collect();
+        docs::check(&namespace.module, &mut errors);
         for index in 0..namespace.module.entries.len() {
             if let Err(error) = namespace.collect(index) {
                 errors.push(error);
@@ -220,6 +223,10 @@ pub struct Error {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
+    /// A declaration doc names a spot absent from its signature.
+    UnknownDocSpot {
+        name: String,
+    },
     Syntax(parse::Reason),
     /// A line that is neither an item nor a `name = value` binding.
     NotDeclaration,

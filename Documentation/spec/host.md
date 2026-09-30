@@ -35,6 +35,15 @@ name or impl member with no value is implemented by the host. No Rust,
 kernel or transport type is part of Fipe type identity unless a
 declaration admits it.
 
+A declaration file keeps Markdown docs on its tree. After optional
+indentation, `- ` then a one-segment lowercase name and `:` documents a
+spot, as `- depth: …`; other heads, including `*`, are opaque. Every
+declaration file (prelude, commands and host modules) checks these names
+on top-level signatures and supplied impl members against their labeled
+spots, including `self`. An unknown spot is a declaration error naming it.
+Program docs are never checked; nothing else reads docs for a rule.
+The REPL prints a name's doc above its type with `:t name`.
+
 ## Name lookup
 
 Bindings and `use` are sequential in every scope: a name is visible from

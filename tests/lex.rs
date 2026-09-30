@@ -6,6 +6,8 @@ use fipe::{
     },
 };
 
+#[path = "lex/docs.rs"]
+mod docs;
 #[path = "lex/invisibles.rs"]
 mod invisibles;
 #[path = "lex/literals.rs"]

@@ -1,52 +1,107 @@
 # Parsed by the crate; signature-only members are supplied by it.
+## An integer with no fixed width.
 pub type Integer
+## A nonnegative integer.
 pub type Natural: Integer where 0 <= self
+## An integer in the signed 8-bit range.
 pub type I8: Integer & Bits<8> where -128 <= self, self <= 127
+## An integer in the signed 16-bit range.
 pub type I16: Integer & Bits<16> where -32768 <= self, self <= 32767
+## An integer in the signed 32-bit range.
 pub type I32: Integer & Bits<32> where -2147483648 <= self, self <= 2147483647
+## An integer in the signed 64-bit range.
 pub type I64: Integer & Bits<64> where -9223372036854775808 <= self, self <= 9223372036854775807
+## A natural in the unsigned 8-bit range.
 pub type U8: Natural & Bits<8> where self <= 255
+## A natural in the unsigned 16-bit range.
 pub type U16: Natural & Bits<16> where self <= 65535
+## A natural in the unsigned 32-bit range.
 pub type U32: Natural & Bits<32> where self <= 4294967295
+## A natural in the unsigned 64-bit range.
 pub type U64: Natural & Bits<64> where self <= 18446744073709551615
+## A binary32 floating-point value.
 pub type F32
+## A binary64 floating-point value.
 pub type F64
+## A bit-width holding.
 pub type Bits<n>
+## A fixed-size holding.
 pub type Size<n>
+## A sequence of elements.
 pub type Vec<T>
+## A double-ended sequence of elements.
 pub type Deque<T>
+## A failed limit check.
 pub type LimitError
+## A truth value.
 pub type Bool { True, False }
+## UTF-8 text.
 pub type String { bytes: Vec<U8> }
+## The result of comparing two values.
 pub type Ordering { Less, Equal, Greater }
+## A value or its absence.
 pub type Maybe<T> { Just(v: T), Nothing }
+## A success value or an error.
 pub type Result<T, E> { Ok(v: T), Err(e: E) }
+## One of two alternatives.
 pub type Either<L, R> { Left(l: L), Right(r: R) }
-pub type ParseError { pub message: String }
-pub type Utf8Error { pub at: Natural }
-pub type Count<T> { pub item: T, pub n: Natural }
+## An error reading text as a value.
+pub type ParseError {
+    ## The error message.
+    pub message: String,
+}
+## An invalid UTF-8 byte sequence.
+pub type Utf8Error {
+    ## The failing byte position.
+    pub at: Natural,
+}
+## An item and its occurrence count.
+pub type Count<T> {
+    ## The counted item.
+    pub item: T,
+    ## The occurrence count.
+    pub n: Natural,
+}
+## The exact written form of a literal.
 pub type Form {
     Whole(value: Integer, radix: U8, digits: Natural, prefix: String, suffix: String),
     Fraction(digits: Integer, exponent: Integer, prefix: String, suffix: String),
     Text(value: String, prefix: String, suffix: String),
     Bytes(value: Vec<U8>, prefix: String, suffix: String),
 }
+## An addition member with a right operand and result.
 pub type Add<R = Self, O = Self> where self.add: R -> O
+## A subtraction member with a right operand and result.
 pub type Sub<R = Self, O = Self> where self.sub: R -> O
+## A multiplication member with a right operand and result.
 pub type Mul<R = Self, O = Self> where self.mul: R -> O
+## A division member with a right operand and result.
 pub type Div<R = Self, O = Self> where self.div: R -> O
+## A remainder member with a right operand and result.
 pub type Rem<R = Self, O = Self> where self.rem: R -> O
+## A concatenation member.
 pub type Concat where self.concat: Self -> Self
+## An equality member.
 pub type Eq where self.eq: Self -> Bool
+## Equality and ordering members.
 pub type Ord: Eq where self.cmp: Self -> Ordering
+## A member that renders a value as text.
 pub type Show where self.show: String
+## A member that reads text into a value.
 pub type Read where Self.read: String -> Result<Self, ParseError>
+## A length member.
 pub type Len where self.len: Natural
+## A logical negation member.
 pub type Not where self.not: Self
+## A member that reads a written literal form.
 pub type Literal where Self.literal: Form -> Self
+## A conversion from another meaning.
 pub type From<A> where Self.from: A -> Self
+## A fallible conversion from another meaning.
 pub type TryFrom<A, E> where Self.try_from: A -> Result<Self, E>
+## Arithmetic, ordering and literal members.
 pub type Number: Add & Sub & Mul & Div & Rem & Ord & Literal
+## Number members and rounding.
 pub type Float: Number where self.round: Self
 impl Integer {
     add: Self -> (self: Self) -> Self,
@@ -117,48 +172,93 @@ impl Result {
     pure: a -> Result<a, e>,
     then: (a -> Result<b, e>) -> (self: Result<a, e>) -> Result<b, e>,
 }
+## Render a value as text.
 pub show: Show a => a -> String
+## Return the number of elements.
 pub len: Len a => a -> Natural
+## Read text as the requested meaning.
 pub read: Read a => String -> Result<a, ParseError>
+## Enter the requested type.
 pub to: a -> b
+## Try to enter the requested type.
 pub try: a -> Result<b, e>
+## Apply a function to each element.
 pub map: (a -> b) -> Vec<a> -> Vec<b>
+## Concatenate two values.
 pub concat: a.concat: b -> c => b -> a -> c
 
 # Text and bytes; the value comes last, so the pipe fills it.
+## Return the UTF-8 bytes of text.
 pub bytes: String -> Vec<U8>
+## Decode UTF-8 bytes, reporting invalid input.
 pub utf8: Vec<U8> -> Result<String, Utf8Error>
+## Split text into lines.
 pub lines: String -> Vec<String>
+## Split text into words.
 pub words: String -> Vec<String>
+## Split text at a separator.
+## - at: the separator
 pub split: (at: String) -> String -> Vec<String>
+## Join text elements with a separator.
+## - sep: the separator
 pub join: (sep: String) -> Vec<String> -> String
+## Convert text to lowercase.
 pub lower: String -> String
+## Convert text to uppercase.
 pub upper: String -> String
 
 # Numbers.
+## Round to the nearest integer value.
 pub round: Float a => a -> a
+## Round toward zero.
 pub trunc: Float a => a -> a
+## Round downward.
 pub floor: Float a => a -> a
+## Round upward.
 pub ceil: Float a => a -> a
+## Return the square root.
 pub sqrt: F64 -> F64
+## Return the sine.
 pub sin: F64 -> F64
+## Return the cosine.
 pub cos: F64 -> F64
+## Return the angle of a point.
+## - y: the vertical coordinate
+## - x: the horizontal coordinate
 pub atan2: (y: F64) -> (x: F64) -> F64
+## Return the length of a two-dimensional vector.
+## - x: the horizontal component
+## - y: the vertical component
 pub hypot: (x: F64) -> (y: F64) -> F64
 
 # Collections.
+## Keep elements satisfying a predicate.
 pub filter: (a -> Bool) -> Vec<a> -> Vec<a>
+## Accumulate elements from an initial value.
 pub fold: b -> (b -> a -> b) -> Vec<a> -> b
+## Return the first element, if present.
 pub first: Vec<a> -> Maybe<a>
+## Return the first element.
 pub head: Vec<a> -> a
+## Keep the first elements.
+## - n: the maximum number to keep
 pub take: (n: Natural) -> Vec<a> -> Vec<a>
+## Join nested sequences into one sequence.
 pub flatten: Vec<Vec<a>> -> Vec<a>
+## Collect successes or return an error.
 pub collect: Vec<Result<a, e>> -> Result<Vec<a>, e>
+## Sum the elements.
 pub sum: Number a => Vec<a> -> a
+## Count occurrences of each distinct item.
 pub count: Eq a => Vec<a> -> Vec<Count<a>>
+## Order elements by a key.
+## - by: the key function
+## - desc: whether to reverse the order
 pub sort: Ord k => (by: a -> k = (x => x)) -> (desc: Bool = False) ->
     Vec<a> -> Vec<a>
 
 # Effects the language owns.
+## End execution with a Fault.
 pub fault: String -> a
+## Log a value and return it.
 pub log: a -> a

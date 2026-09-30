@@ -93,6 +93,13 @@ Ruled 2026-09-30: a program's prefix and suffix on a number or quote
 - The `Form` of a quote whose bytes are not UTF-8, and of the digits
   after a program's prefix.
 
+## L2 — Docs and quotes
+
+- Docs on constructor fields, such as `Circle(## radius r: F64)`: not now.
+- Docs on a `use` line: none.
+- **Proposed, not ruled:** `dedent: String -> String`, removing common
+  leading spacing from lines after the first in a raw quote.
+
 ## E1 — Evaluation and outcome rebuilding
 
 **Proposed:** strict left-to-right evaluation, each supplied expression once,

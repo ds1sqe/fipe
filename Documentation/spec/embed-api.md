@@ -73,3 +73,7 @@ entries. `resolved` and `typed` index `module` once it resolves and types.
 which are empty exactly when it checks, spanned in the line's text, one
 before the line clamped to its start. The three `File` forms carry a span
 of the replied file; a reason's span stays in the text it was found in.
+
+`Session::documentation(&Report, ExprId)` returns the doc of a binding or
+resolved declaration from the report, accepted lines, prelude, host or
+loaded module. It reads syntax only and returns `None` without an owner.

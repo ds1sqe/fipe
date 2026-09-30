@@ -88,8 +88,7 @@ comma inside an annotation: `x = 1`, `[x, y] = e`, `Just x = e`,
 `x: I64 = e`, `id: Integer | String = 3`. `=` always makes a new binding,
 visible from its line to the end of its scope, so a second `x = …`
 shadows; an arm binding's own name is in scope in its arms. `cmd -c=80` is
-a call
-and `x => y = 1` an arm whose body binds. The value is a whole line:
+a call and `x => y = 1` an arm whose body binds. The value is a whole line:
 `add = a b => a + b` binds an arm list, `f: A -> B = x => …` puts the
 signature on the binding. `pub` before a file-level binding exports it;
 elsewhere it is an error.
@@ -189,6 +188,15 @@ including a `with` value, is grouped.
 
 ## Definitions
 
+`##` documents the next item (except `use`), binding, field, constructor
+or impl member; a binding inside a body may have a doc too. Spacing and
+blank lines before the owner are allowed. Consecutive doc lines of one
+form join with LF. A doc with no owner or followed by the other form is
+a syntax error. `##!` documents the module, only before its first entry.
+Text is Markdown, opaque except the declaration spot check in
+[host](host.md); no doc changes meaning. There is no block doc or `@param`.
+Constructor fields and `use` lines take no docs ([open](open.md) L2).
+
 Items are module-level: `use`, `type`, `impl` and a declaration; `pub`
 exports a `type`, binding or declaration. `use x` imports a module, `use
 x.inc x.Point` names, `use text 2` an API version. A
@@ -221,3 +229,20 @@ value; a labeled parameter in a function type, `(long: Bool = False) ->
 …`, whose default is an operand; and `type Rd<Api>` with no body, an
 opaque type. [Types](types.md) §Type forms reads a lowercase name in a
 type.
+
+```text
+##! Files: the shell reading of Fipe.
+use fs
+
+## The ten largest files under a directory, as names.
+## - depth: how far down to look
+pub biggest = (depth = 1) dir =>
+    ls -l -depth depth dir | sort -by .size -desc | take 10 | map .name
+
+type Point {
+    ## Horizontal, in cells.
+    pub x: I64,
+    ## Vertical, in cells.
+    pub y: I64,
+}
+```

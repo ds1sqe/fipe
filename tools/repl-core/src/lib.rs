@@ -238,6 +238,7 @@ impl Repl {
                 break;
             };
             if !self.entry.is_empty()
+                && !open_quote(&self.entry)
                 && self.input[..end].trim_ascii_start().starts_with(b":")
             {
                 // A command ends the entry before it.
@@ -248,7 +249,9 @@ impl Repl {
             let line = String::from_utf8_lossy(&bytes);
             let line = line.trim_end_matches(['\n', '\r']);
             let blank = line.trim().is_empty();
-            if blank || (self.entry.is_empty() && comment(line)) {
+            if (blank && !open_quote(&self.entry) && !pending_doc(&self.entry))
+                || (self.entry.is_empty() && comment(line))
+            {
                 if !self.entry.is_empty() {
                     self.submit(out);
                 }
@@ -313,7 +316,7 @@ impl Repl {
                 out.0.push(Out::Exit);
             }
             ("t", "") => match &self.last {
-                Some((report, text)) => types(report, text, out),
+                Some((report, text)) => types(&self.session, report, text, out),
                 None => out.write(b"no accepted line\n"),
             },
             ("t", arg) => self.start(arg, Mode::Types, out),
@@ -434,7 +437,7 @@ impl Repl {
                 }
             }
             Mode::Resolve => names(&report, &text, out),
-            Mode::Types => types(&report, &text, out),
+            Mode::Types => types(&self.session, &report, &text, out),
         }
     }
 
@@ -627,7 +630,7 @@ fn text_of(line: &str, offset: usize, span: Span) -> Option<&str> {
 
 /// Each top-level entry of the line: a binding's name and its scheme, or
 /// the entry's own source text and its type.
-fn types(report: &Report, line: &str, out: &mut Outs) {
+fn types(session: &Session, report: &Report, line: &str, out: &mut Outs) {
     let (Some(module), Some(typed)) = (&report.module, &report.typed) else {
         return;
     };
@@ -660,6 +663,10 @@ fn types(report: &Report, line: &str, out: &mut Outs) {
                 continue;
             }
         };
+        if let Some(doc) = session.documentation(report, *id) {
+            out.write(doc.as_bytes());
+            out.write(b"\n");
+        }
         out.write(rendered.as_bytes());
     }
 }
@@ -678,7 +685,7 @@ const fn from_file(diagnostic: &Diagnostic) -> bool {
 
 /// A comment-only line, which is blank to the grammar.
 fn comment(line: &str) -> bool {
-    line.trim_start().starts_with('#')
+    line.trim_start().starts_with('#') && !line.trim_start().starts_with("##")
 }
 
 /// A `:t` or `:r` entry, held for a next line that continues it.
@@ -707,7 +714,14 @@ fn opens(entry: &str) -> bool {
         .map_or(entry, |command| {
             command.split_once(' ').map_or("", |(_, arg)| arg)
         });
-    let tokens = lex(code).tokens;
+    if open_quote(code) || pending_doc(code) {
+        return true;
+    }
+    let lexed = lex(code);
+    if !lexed.errors.is_empty() {
+        return false;
+    }
+    let tokens = lexed.tokens;
     let limited = type_item(code);
     let mut depth = 0_isize;
     let mut trailing = false;
@@ -731,6 +745,34 @@ fn opens(entry: &str) -> bool {
             || matches!(symbol, Symbol::Assign | Symbol::Arrow | Symbol::Comma);
     }
     depth > 0 || trailing || (!assigns && signature(&tokens))
+}
+
+/// A lexer failure at EOF that another physical line can complete.
+fn open_quote(code: &str) -> bool {
+    let lexed = lex(code);
+    lexed.errors.iter().any(|error| {
+        if error.span.end != code.len() {
+            return false;
+        }
+        let written = &code[error.span.start..error.span.end];
+        let quote = written.chars().find(|ch| matches!(ch, '\'' | '"'));
+        (quote == Some('\'')
+            && error.reason == fipe::lex::Reason::UnterminatedQuote)
+            || (quote == Some('"')
+                && written.ends_with('\\')
+                && error.reason == fipe::lex::Reason::BadEscape)
+    })
+}
+
+fn pending_doc(code: &str) -> bool {
+    lex(code)
+        .tokens
+        .iter()
+        .rev()
+        .find(|token| !matches!(token.kind, Kind::Newline | Kind::Eof))
+        .is_some_and(|token| {
+            matches!(token.kind, Kind::Doc(_) | Kind::InnerDoc(_))
+        })
 }
 
 /// Whether the entry starts `[pub] NAME :`, a signature's head. Only the

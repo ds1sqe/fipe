@@ -25,6 +25,7 @@ impl Parser {
             _ => return Err(self.expected(Expected::Name)),
         };
         Ok(Item {
+            doc: None,
             kind,
             public,
             span: self.since(start),
@@ -56,6 +57,7 @@ impl Parser {
         self.expect(Symbol::Colon)?;
         let ty = self.annotation()?;
         Ok(Item {
+            doc: None,
             kind: ItemKind::Declare { name, ty },
             public,
             span: self.since(start),
@@ -157,8 +159,11 @@ impl Parser {
 
     /// A field when `pub` or `:` follows the name, else a constructor.
     fn member(&mut self) -> Result<Member, Error> {
+        let doc = self.docs(false)?;
         if self.at_keyword(Keyword::Pub) || self.colon_follows() {
-            return self.field().map(Member::Field);
+            let mut field = self.field()?;
+            field.doc = doc;
+            return Ok(Member::Field(field));
         }
         let name = self.name(true)?;
         let fields = if self.eat(Symbol::LParen) {
@@ -167,7 +172,12 @@ impl Parser {
             Vec::new()
         };
         let span = self.since(name.span.start);
-        Ok(Member::Constructor { name, fields, span })
+        Ok(Member::Constructor {
+            doc,
+            name,
+            fields,
+            span,
+        })
     }
 
     /// `[pub] name: type [= operand]`.
@@ -183,6 +193,7 @@ impl Parser {
             None
         };
         Ok(Field {
+            doc: None,
             public,
             name,
             ty,
@@ -198,8 +209,12 @@ impl Parser {
         let target = self.type_syntax()?;
         self.expect(Symbol::LBrace)?;
         let members = self.list(Symbol::RBrace, |parser| {
+            let doc = parser.docs(false)?;
             if parser.arm_arrow(Context::Line).is_some() {
-                return parser.arm().map(ImplMember::Constructor);
+                return Ok(ImplMember::Constructor {
+                    doc,
+                    arm: parser.arm()?,
+                });
             }
             let start = parser.here().start;
             let public = parser.keyword(Keyword::Pub);
@@ -216,6 +231,7 @@ impl Parser {
                 None
             };
             Ok(ImplMember::Named {
+                doc,
                 public,
                 name,
                 annotation,

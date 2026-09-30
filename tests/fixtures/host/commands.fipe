@@ -2,23 +2,54 @@
 # and the types they share. Every name is implemented by the host.
 use fs
 
+## A resource admitted by the host.
 pub type Rd<Api>
+## A resource admitted by the host.
 pub Rd: U64 -> Rd<api>
+## A host input source.
 pub type Src
 impl Src { read: String -> Result<Self, ParseError> }
+## A host output destination.
 pub type Sink
 impl Sink { read: String -> Result<Self, ParseError> }
-pub type Entry { pub name: String, pub path: String, pub size: U64, pub age: U64 }
+## A directory entry.
+pub type Entry {
+    ## The entry name.
+    pub name: String,
+    ## The entry path.
+    pub path: String,
+    ## The size in bytes.
+    pub size: U64,
+    ## The entry age.
+    pub age: U64,
+}
 impl Entry { read: String -> Result<Self, ParseError> }
 
+## The root resource.
 pub root: Rd<sys>
+## The default output destination.
 pub out: Sink
 
+## List directory entries.
+## - path: the directory to list
+## - long: include detailed entries
+## - recursive: visit subdirectories
+## - depth: how far down to look
+## - name: the name pattern
 pub ls: (path: Src = ".") -> (long: Bool = False) -> (recursive: Bool = False) ->
     (depth: U64 = 1) -> (name: String = "*") -> Vec<Entry>
+## Read an entry as text.
 pub cat: Entry -> String
+## Find an entry, if present.
 pub find: Src -> Maybe<Entry>
+## Filter text by a pattern.
+## - pattern: the text pattern
 pub grep: (pattern: String) -> String -> String
+## Remove a source.
 pub rm: Src -> Result<(), fs.Error>
+## Write bytes to a destination.
+## - to: the destination
 pub put: (to: Sink) -> Vec<U8> -> ()
+## Append bytes to a destination.
+## - to: the destination
 pub append: (to: Sink) -> Vec<U8> -> ()

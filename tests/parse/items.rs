@@ -133,6 +133,7 @@ fn bindings_carry_patterns_annotations_and_arm_heads() {
         pattern,
         annotation: Some(annotation),
         value,
+        ..
     } = node(&parsed, id)
     else {
         panic!()
@@ -307,7 +308,7 @@ fn types_traits_and_impls_have_member_lists() {
         Source::new(input).slice(parsed.ty(*target).unwrap().span),
         Some("Point")
     );
-    let [ImplMember::Constructor(arm), ImplMember::Named {
+    let [ImplMember::Constructor { arm, .. }, ImplMember::Named {
         public: true,
         name: line,
         annotation: Some(_),
@@ -340,7 +341,7 @@ fn types_traits_and_impls_have_member_lists() {
     };
     assert!(matches!(
         members.as_slice(),
-        [ImplMember::Named { .. }, ImplMember::Constructor(_)]
+        [ImplMember::Named { .. }, ImplMember::Constructor { .. }]
     ));
     assert_eq!(
         errors("impl P { f = a => 1 b => 2 }")[0].reason,

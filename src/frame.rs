@@ -200,10 +200,12 @@ fn delta(
                             .push((key, (name.span.start, name.span.end)));
                     }
                 }
-                ImplMember::Constructor(arm) if constructor.is_none() => {
+                ImplMember::Constructor { arm, .. }
+                    if constructor.is_none() =>
+                {
                     constructor = Some(arm.span);
                 }
-                ImplMember::Constructor(_) => {}
+                ImplMember::Constructor { .. } => {}
             }
         }
         if let Some(site) = constructor {

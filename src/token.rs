@@ -85,6 +85,10 @@ pub enum Kind {
     },
     /// A number or quote with a program's prefix or suffix.
     Affixed(Box<Affixed>),
+    /// Markdown documenting the next owner, without its marker.
+    Doc(String),
+    /// Markdown documenting the enclosing module.
+    InnerDoc(String),
     Newline,
     Eof,
 }

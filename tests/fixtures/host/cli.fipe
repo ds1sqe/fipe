@@ -1,3 +1,7 @@
 # The conformance host's `cli` module, API version 2.
-pub type Error { pub message: String }
+## A host operation error.
+pub type Error {
+    ## The error message.
+    pub message: String,
+}
 impl Error { show = self => self.message }

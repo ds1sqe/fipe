@@ -770,3 +770,55 @@ fn named_member_folds_span_session_lines() {
     ok(&mut session, "f: Named a => a -> String = x => x.name");
     assert_eq!(query(&mut session, "f"), "Named a => a -> String");
 }
+
+#[test]
+fn documentation_follows_resolved_owners_and_shadowing() {
+    let mut session = Session::new(host());
+    ok(&mut session, "## Original\nx = 1");
+    let report = ok(&mut session, "# retained\nx");
+    let fipe::ast::Entry::Line(id) = report.entries()[0] else {
+        panic!()
+    };
+    assert_eq!(session.documentation(&report, id), Some("Original"));
+    let comment = report.module.as_ref().unwrap().comments[0];
+    assert_eq!(comment.start, report.offset);
+    ok(&mut session, "x = 2");
+    let report = ok(&mut session, "x");
+    let fipe::ast::Entry::Line(id) = report.entries()[0] else {
+        panic!()
+    };
+    assert_eq!(session.documentation(&report, id), None);
+    let report = done(session.query("ls"));
+    let fipe::ast::Entry::Line(id) = report.entries()[0] else {
+        panic!()
+    };
+    assert!(session
+        .documentation(&report, id)
+        .unwrap()
+        .contains("- depth: how far down to look"));
+    let outcome = session.line("use documented.f");
+    assert!(matches!(outcome, Outcome::Request(Request::File { .. })));
+    let report = done(session.reply(Reply::File(Some(
+        "## Imported\npub f: Integer -> Integer = x => x".into(),
+    ))));
+    assert_eq!(report.diagnostics, []);
+    let report = done(session.query("f"));
+    let fipe::ast::Entry::Line(id) = report.entries()[0] else {
+        panic!()
+    };
+    assert_eq!(session.documentation(&report, id), Some("Imported"));
+}
+
+#[test]
+fn program_docs_never_validate_spot_lists() {
+    let mut session = Session::new(host());
+    ok(&mut session, "## - absent: opaque Markdown\nf = x => x");
+    let report = done(session.query("f"));
+    let fipe::ast::Entry::Line(id) = report.entries()[0] else {
+        panic!()
+    };
+    assert_eq!(
+        session.documentation(&report, id),
+        Some("- absent: opaque Markdown")
+    );
+}

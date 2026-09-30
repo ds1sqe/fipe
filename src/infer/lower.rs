@@ -721,7 +721,7 @@ impl<'a> Infer<'a> {
         let arms: Vec<_> = impls(module, ty)
             .flatten()
             .filter_map(|member| match member {
-                ImplMember::Constructor(arm) => Some(arm.clone()),
+                ImplMember::Constructor { arm, .. } => Some(arm.clone()),
                 ImplMember::Named { .. } => None,
             })
             .collect();

@@ -52,6 +52,7 @@ impl Infer<'_> {
             pattern,
             annotation,
             value,
+            ..
         } = &module.expressions[id.0].kind
         else {
             return None;

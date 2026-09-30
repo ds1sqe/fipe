@@ -51,7 +51,7 @@ assert!(matches!(
 ~~~
 
 The [parser API](Documentation/spec/parser-api.md) keeps spans, argument
-order and syntax without resolving names or types.
+order, docs and comment trivia without resolving names or types.
 
 ## Development
 

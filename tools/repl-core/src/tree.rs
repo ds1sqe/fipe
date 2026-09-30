@@ -5,8 +5,8 @@ use alloc::{format, string::String, vec, vec::Vec};
 use core::fmt::Write as _;
 use fipe::ast::{
     ArgumentKind, Arm, BinaryOp, CallStyle, ConstraintKind, Entry, ExprKind,
-    ImplMember, ItemKind, Limit, Literal, Module, Name, PatternKind, PipeOp,
-    TypeKind,
+    ImplMember, ItemKind, Limit, Literal, Member, Module, Name, PatternKind,
+    PipeOp, TypeKind,
 };
 use fipe::ast::{ExprId as E, PatternId as P, TypeId as T};
 
@@ -21,9 +21,14 @@ enum Node {
 pub fn entry(module: &Module, entry: &Entry) -> String {
     let root = match entry {
         Entry::Line(id) => Node::E(*id),
-        Entry::Item(item) => item_node(&item.kind),
+        Entry::Item(item) => {
+            documented(item_node(&item.kind), item.doc.as_deref())
+        }
     };
     let mut out = String::new();
+    if let Some(doc) = &module.doc {
+        let _ = writeln!(out, "Module doc {doc:?}");
+    }
     walk(module, root, 0, &mut out);
     out
 }
@@ -113,12 +118,14 @@ fn expr(kind: &ExprKind) -> (String, Vec<Node>) {
             op, left, right, ..
         } => (format!("Pipe {}", pipe(*op)), es(&[*left, *right])),
         ExprKind::Bind {
+            doc,
             public,
             pattern,
             annotation,
             value,
         } => {
-            let mut children = vec![Node::P(*pattern)];
+            let mut children = doc_node(doc.as_deref());
+            children.push(Node::P(*pattern));
             children.extend(annotation.map(Node::T));
             children.push(Node::E(*value));
             let label = if *public { "Bind pub" } else { "Bind" };
@@ -250,7 +257,7 @@ fn item_node(kind: &ItemKind) -> Node {
             parameters,
             base,
             limits,
-            ..
+            members,
         } => {
             let mut children: Vec<_> = parameters
                 .iter()
@@ -266,6 +273,20 @@ fn item_node(kind: &ItemKind) -> Node {
                     Node::L(label("Parameter", &p.name), bound)
                 })
                 .collect();
+            children.extend(members.iter().flatten().map(
+                |member| match member {
+                    Member::Field(field) => field_node(field),
+                    Member::Constructor {
+                        doc, name, fields, ..
+                    } => documented(
+                        Node::L(
+                            label("Constructor", name),
+                            fields.iter().map(field_node).collect(),
+                        ),
+                        doc.as_deref(),
+                    ),
+                },
+            ));
             children
                 .extend(base.map(|t| Node::L("Base".into(), vec![Node::T(t)])));
             children.extend(limits.iter().map(|limit| match limit {
@@ -287,6 +308,7 @@ fn item_node(kind: &ItemKind) -> Node {
             let mut children = vec![Node::T(*target)];
             children.extend(members.iter().map(|member| match member {
                 ImplMember::Named {
+                    doc,
                     name,
                     annotation,
                     value,
@@ -295,9 +317,14 @@ fn item_node(kind: &ItemKind) -> Node {
                     let mut children: Vec<_> =
                         annotation.iter().map(|t| Node::T(*t)).collect();
                     children.extend(value.map(Node::E));
-                    Node::L(label("Member", name), children)
+                    documented(
+                        Node::L(label("Member", name), children),
+                        doc.as_deref(),
+                    )
                 }
-                ImplMember::Constructor(member) => arm(member),
+                ImplMember::Constructor { arm: member, doc } => {
+                    documented(arm(member), doc.as_deref())
+                }
             }));
             Node::L("Impl".into(), children)
         }
@@ -344,4 +371,24 @@ const fn pipe(op: PipeOp) -> &'static str {
         PipeOp::Or => "||",
         PipeOp::And => "&&",
     }
+}
+
+fn doc_node(doc: Option<&str>) -> Vec<Node> {
+    doc.map(|text| Node::L(format!("Doc {text:?}"), Vec::new()))
+        .into_iter()
+        .collect()
+}
+
+fn documented(mut node: Node, doc: Option<&str>) -> Node {
+    if let Node::L(_, children) = &mut node {
+        children.splice(0..0, doc_node(doc));
+    }
+    node
+}
+
+fn field_node(field: &fipe::ast::Field) -> Node {
+    let mut children = doc_node(field.doc.as_deref());
+    children.push(Node::T(field.ty));
+    children.extend(field.default.map(Node::E));
+    Node::L(format!("Field {}", dotted(&field.name)), children)
 }

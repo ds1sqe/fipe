@@ -13,12 +13,19 @@ fn all_quote_errors_keep_the_following_line() {
         (r#""bad\x""#, Reason::BadEscape),
         (r#""bad\x1""#, Reason::BadEscape),
         (r#""bad\xg1""#, Reason::BadEscape),
-        ("\"bad\\", Reason::BadEscape),
+        ("\"bad\\ ", Reason::BadEscape),
         ("\"bad\0text\"", Reason::Stray('\0')),
         ("'bad\rtext'", Reason::Stray('\r')),
         (r#""\xFF""#, Reason::InvalidUtf8),
     ];
     for (broken, reason) in cases {
+        if broken == "'unfinished" {
+            let result = lex("'unfinished\nnext");
+            assert_eq!(result.errors[0].reason, reason);
+            assert_eq!(result.errors[0].span.end, 16);
+            assert_eq!(result.tokens[0].kind, Kind::Eof);
+            continue;
+        }
         let input = format!("{broken}\nnext");
         let result = lex(&input);
         assert_eq!(result.errors.len(), 1, "{input:?}");

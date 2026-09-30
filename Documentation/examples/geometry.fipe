@@ -1,13 +1,35 @@
 # A library module: `05-modules.fipe` imports `Point` and `Polar` from it.
-pub type Point { pub x: I64, pub y: I64 = 0 }
-impl Point { pub show: Self -> String = self => join "," [show self.x, show self.y] }
+## A point with integer coordinates.
+pub type Point {
+    ## The horizontal coordinate.
+    pub x: I64,
+    ## The vertical coordinate.
+    pub y: I64 = 0,
+}
 impl Point {
+    ## Render a value as text.
+    pub show: Self -> String = self => join "," [show self.x, show self.y],
+}
+impl Point {
+    ## Read text as the requested meaning.
     pub read: String -> Result<Self, ParseError> = s => s | split "," | map read<I64> | collect |: {
         [x, y] => Ok (Self x y),
         _ => Err (ParseError "two numbers"),
     },
 }
 
-pub type Polar { pub r: F64, pub t: F64 }
-impl Polar { pub from: Point -> Self = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x } }
-impl Polar { pub show: Self -> String = self => join "@" [show self.r, show self.t] }
+## A point in polar coordinates.
+pub type Polar {
+    ## The radius.
+    pub r: F64,
+    ## The angle.
+    pub t: F64,
+}
+impl Polar {
+    ## Convert from the source meaning.
+    pub from: Point -> Self = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x },
+}
+impl Polar {
+    ## Render a value as text.
+    pub show: Self -> String = self => join "@" [show self.r, show self.t],
+}

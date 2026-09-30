@@ -3,9 +3,17 @@
 
 # A record. Lowercase members are fields; `len` is private and computed
 # from the fields before it. A default is an operand, so a call is grouped.
-pub type Point { pub x: I64, pub y: I64 = 0, len: U64 = (hypot x y) }
+## A point with integer coordinates.
+pub type Point {
+    ## The horizontal coordinate.
+    pub x: I64,
+    ## The vertical coordinate.
+    pub y: I64 = 0,
+    len: U64 = (hypot x y),
+}
 
 # A sum. Uppercase members are constructors, each with named fields.
+## A circle, rectangle or dot.
 pub type Shape { Circle(r: F64), Rect(w: F64, h: F64), Dot }
 
 # A newtype is a record with one field.
@@ -15,7 +23,9 @@ type Width { w: U64 = 80 }
 # is the raw construction, legal here because the fields are visible.
 impl Point {
     x (y = 0) => Self { x, y, len: hypot x y },
+    ## The point at the origin.
     pub origin = Self 0 0,
+    ## A point with equal coordinates.
     pub line: I64 -> Self = p => Self p p,
     # dist: Point -> Point -> F64
     dist = self q => hypot (self.x - q.x) (self.y - q.y),
@@ -41,8 +51,18 @@ impl Point {
 }
 
 # Conversion: the target owns its from and try_from members.
-pub type Polar { pub r: F64, pub t: F64 }
-pub type RangeError { pub r: F64 }
+## A point in polar coordinates.
+pub type Polar {
+    ## The radius.
+    pub r: F64,
+    ## The angle.
+    pub t: F64,
+}
+## A radius outside the admitted range.
+pub type RangeError {
+    ## The radius.
+    pub r: F64,
+}
 impl RangeError { show = self => join " " ["out of range:", show self.r] }
 impl Polar { from: Point -> Self = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x } }
 impl Point {

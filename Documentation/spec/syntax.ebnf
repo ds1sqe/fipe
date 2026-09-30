@@ -4,8 +4,10 @@
    "where", a NAME read as a word only in a type item (lexical.md).
    INTEGER, FLOAT and STRING include a prefix or suffix; `b"…"` is a
    STRING with the prefix `b`. *)
-file = newlines, { entry, NEWLINE, newlines }, [ entry ], EOF ;
-entry = [ "pub" ], ( item | declaration | line ) ;
+file = newlines, [ inner_doc ], { entry, NEWLINE, newlines }, [ entry ], EOF ;
+entry = [ doc ], [ "pub" ], ( item | declaration | line ) ;
+doc = DOC, newlines, { DOC, newlines } ;
+inner_doc = INNER_DOC, newlines, { INNER_DOC, newlines } ;
 newlines = { NEWLINE } ;
 
 item = import | type_item | impl_item ;
@@ -22,14 +24,14 @@ type_parameters = "<", newlines, type_parameter,
                   { ",", newlines, type_parameter }, newlines, ">" ;
 type_parameter = NAME, [ ":", type_both ], [ "=", type ] ;
 members = member, { ",", newlines, member }, [ "," ] ;
-member = field | NAME, [ "(", newlines, [ fields ], newlines, ")" ] ;
+member = [ doc ], ( field | NAME, [ "(", newlines, [ fields ], newlines, ")" ] ) ;
 fields = field, { ",", newlines, field }, [ "," ] ;
 field = [ "pub" ], NAME, ":", type, [ "=", operand ] ;
 impl_item = "impl", type, "{", newlines, [ impl_members ], newlines, "}" ;
 impl_members = impl_member, { ",", newlines, impl_member }, [ "," ] ;
-impl_member = [ "pub" ], NAME,
+impl_member = [ doc ], ( [ "pub" ], NAME,
               ( ":", annotation, [ "=", member_value ] | "=", member_value )
-            | arm ;
+            | arm ) ;
 member_value = arm | line ;
 
 annotation = [ constraints, "=>", newlines ], type ;
@@ -51,7 +53,7 @@ unit_type = "(", ")" ;
 array_type = "[", type, ";", ( INTEGER | NAME ), "]" ;
 
 line = binding | scoped | pipeline ;
-binding = pattern, [ ":", annotation ], "=", line ;
+binding = [ doc ], pattern, [ ":", annotation ], "=", line ;
 scoped = "with", NAME, operand, block ;
 pipeline = stage, { pipe, stage } ;
 pipe = "|" | "|:" | "|!" | "||" | "&&" ;
