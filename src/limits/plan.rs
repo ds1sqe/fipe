@@ -2,9 +2,12 @@ use super::known::Known;
 use crate::{resolve::Origin, token::Span};
 use alloc::string::String;
 
-/// When an open test runs. Timing adds earlier phases in 06.6.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// When an expression is ready or an open test runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Phase {
+    Compile,
+    Init,
+    #[default]
     Eval,
 }
 /// Why the static rules could not settle a test.
@@ -44,6 +47,9 @@ pub struct Check {
     pub place_origin: Origin,
     pub limit_origin: Origin,
     pub name: String,
+    /// Number of written tests on the owning type, excluding its bases.
+    /// Renderers can distinguish multiple tests using `limit`'s source text.
+    pub test_count: usize,
     pub known: Known,
     pub gate: bool,
 }
@@ -64,6 +70,16 @@ impl core::fmt::Display for Reason {
             Self::NoRule => "no rule",
             Self::CompileTimeEvaluation => "compile-time evaluation",
             Self::Narrowing => "narrowing",
+        })
+    }
+}
+
+impl core::fmt::Display for Phase {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Compile => "compile",
+            Self::Init => "init",
+            Self::Eval => "eval",
         })
     }
 }

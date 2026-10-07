@@ -188,7 +188,8 @@ impl<'a> Infer<'a> {
                     _ => self.fresh(),
                 }
             }
-            TypeKind::Number(_) | TypeKind::Tuple(_) => self.fresh(),
+            TypeKind::Number(n) => Type::Number(n.clone()),
+            TypeKind::Tuple(_) => self.fresh(),
             TypeKind::Not(inner) => {
                 let inner = self.lower(scope, *inner, vars);
                 if !self
@@ -214,11 +215,15 @@ impl<'a> Infer<'a> {
             TypeKind::Both(parts) | TypeKind::Either(parts) => {
                 let parts: Vec<_> =
                     parts.iter().map(|p| self.lower(scope, *p, vars)).collect();
-                let Some(first) = parts.first() else {
+                let Some(first) =
+                    parts.iter().find(|p| !crate::limits::modifier(p))
+                else {
                     return self.fresh();
                 };
                 let meaning = super::meaning(first).clone();
-                let same = parts.iter().all(|p| super::meaning(p) == &meaning);
+                let same = parts.iter().all(|p| {
+                    crate::limits::modifier(p) || super::meaning(p) == &meaning
+                });
                 if same {
                     let name = if matches!(node.kind, TypeKind::Both(_)) {
                         Type::Both(parts)
@@ -303,12 +308,10 @@ impl<'a> Infer<'a> {
             _ => alloc::vec![base],
         };
         for part in parts {
-            if let Some(n) = named(module, part) {
-                if matches!(n.as_str(), "Bits" | "Size") {
-                    continue;
-                }
-            }
             let base = self.lower(&scope, part, &mut vars);
+            if crate::limits::modifier(&base) {
+                continue;
+            }
             let limits = self.member_limits(
                 &base,
                 &base,

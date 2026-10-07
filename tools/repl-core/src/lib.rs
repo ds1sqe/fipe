@@ -51,7 +51,7 @@ const PROMPT: &[u8] = b"fipe> ";
 const MORE: &[u8] = b"....> ";
 const HOST_DIR: &str = "tests/fixtures/host";
 /// The command namespace first, then the host modules by name.
-const HOST: [&str; 5] = ["commands", "fs", "sys", "cli", "text"];
+const HOST: [&str; 6] = ["commands", "fs", "sys", "cli", "text", "config"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
@@ -72,6 +72,8 @@ pub struct Repl {
     wait: Option<Wait>,
     /// Replied file texts by stem, for replays and file diagnostics.
     files: Vec<(String, String)>,
+    /// Declaration sources in HOST order, for written-test descriptions.
+    host_texts: Vec<String>,
     /// Paths `:load` chose for module names; others are `<name>.fipe`.
     paths: Vec<(String, String)>,
     /// Whether the last output was a prompt, which exit ends with LF.
@@ -143,6 +145,7 @@ impl Repl {
             unit: false,
             wait: None,
             files: Vec::new(),
+            host_texts: Vec::new(),
             paths: Vec::new(),
             prompted: false,
             last: None,
@@ -392,7 +395,7 @@ impl Repl {
         let checks = self.session.checks(name);
         let lines: Vec<_> = checks
             .iter()
-            .map(|check| render::check(check, None))
+            .map(|check| render::check(check, None, self.check_test(check)))
             .collect();
         for (check, line) in checks.iter().zip(&lines) {
             if lines.iter().filter(|other| *other == line).count() > 1 {
@@ -409,6 +412,7 @@ impl Repl {
                     render::check(
                         check,
                         Some(&format!("{prefix}{line}:{column}")),
+                        self.check_test(check),
                     )
                     .as_bytes(),
                 );
@@ -416,6 +420,24 @@ impl Repl {
                 out.write(line.as_bytes());
             }
         }
+    }
+
+    fn check_test(&self, check: &fipe::typed::Check) -> Option<&str> {
+        use fipe::resolve::Origin;
+        if check.test_count <= 1 {
+            return None;
+        }
+        let source = match &check.limit_origin {
+            Origin::This | Origin::Line(_) => self.session.source(),
+            Origin::File(stem) => self.cached(stem)?,
+            Origin::Prelude => include_str!("../../../prelude/prelude.fipe"),
+            Origin::Commands => self.host_texts.first()?.as_str(),
+            Origin::Host(name) => self
+                .host_texts
+                .get(HOST.iter().position(|n| *n == name)?)?
+                .as_str(),
+        };
+        Source::new(source).slice(check.limit)
     }
 
     /// `use` the module of a stem or path; a file name that is not a
@@ -605,6 +627,7 @@ impl Repl {
         }
         let lines: Vec<String> =
             self.session.lines().map(String::from).collect();
+        self.host_texts = texts.to_vec();
         self.session = Session::new(declarations);
         self.session.strict(self.strict);
         self.last = None;
@@ -757,6 +780,12 @@ fn types(session: &Session, report: &Report, line: &str, out: &mut Outs) {
         };
         if let Some(known) = typed.known(value) {
             out.write(format!("{known}").as_bytes());
+            if known.phase != fipe::typed::Phase::Eval {
+                out.write(format!("known at {}\n", known.phase).as_bytes());
+            }
+            if let Some(holding) = &known.holding {
+                out.write(format!("{holding}\n").as_bytes());
+            }
         }
     }
 }

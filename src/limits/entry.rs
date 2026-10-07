@@ -1,6 +1,6 @@
 use super::Range;
 use super::{
-    bool_op, test, Check, Error, Frequency, Known, Limit, Module, Origin, Pass,
+    bool_op, Check, Error, Frequency, Known, Limit, Module, Origin, Pass,
     Phase, Place, Reason, Span, Type, TypeId, TypeKind, TypeName, TypeReason,
 };
 use crate::ast::PipeOp;
@@ -232,7 +232,7 @@ impl Pass<'_> {
                         result = bool_op(
                             PipeOp::And,
                             &result,
-                            &test(module, *id, known),
+                            &self.test_value(module, &name.origin, *id, known),
                         );
                     }
                 }
@@ -266,11 +266,37 @@ impl Pass<'_> {
             TypeKind::Not(inner) => Type::Not(alloc::boxed::Box::new(
                 self.syntax_type(module, origin, *inner),
             )),
+            TypeKind::Number(n) => Type::Number(n.clone()),
+            TypeKind::Array { element, length } => {
+                let TypeKind::Number(n) = &module.types[length.0].kind else {
+                    return Type::Unit;
+                };
+                Type::Array {
+                    element: alloc::boxed::Box::new(
+                        self.syntax_type(module, origin, *element),
+                    ),
+                    length: n.to_u64().unwrap_or(0),
+                }
+            }
+            TypeKind::Function { parameter, result } => Type::function(
+                self.syntax_type(module, origin, *parameter),
+                self.syntax_type(module, origin, *result),
+            ),
             _ => {
                 self.type_name(module, origin, id)
                     .map_or(Type::Unit, |name| Type::Named {
                         name,
-                        arguments: Vec::new(),
+                        arguments: if let TypeKind::Named {
+                            arguments, ..
+                        } = &module.types[id.0].kind
+                        {
+                            arguments
+                                .iter()
+                                .map(|id| self.syntax_type(module, origin, *id))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
                     })
             }
         }
@@ -304,13 +330,23 @@ impl Pass<'_> {
                     place,
                     place_kind: self.place_kind.clone(),
                     limit,
-                    phase: Phase::Eval,
-                    reason: if known.narrowing {
-                        Reason::Narrowing
-                    } else if result.narrowing && known.is_exact() {
+                    phase: if known.is_exact()
+                        || known.demanded
+                        || self.entry_phase == Some(Phase::Compile)
+                    {
+                        Phase::Compile
+                    } else if frequency == Frequency::PerCall {
+                        Phase::Eval
+                    } else {
+                        self.site_phase(place)
+                    },
+                    reason: if known.demanded
+                        || known.is_exact()
+                        || self.entry_phase == Some(Phase::Compile)
+                    {
                         Reason::CompileTimeEvaluation
-                    } else if known.is_exact() {
-                        Reason::NoRule
+                    } else if known.narrowing {
+                        Reason::Narrowing
                     } else {
                         Reason::UnknownInput
                     },
@@ -318,6 +354,7 @@ impl Pass<'_> {
                     place_origin: Origin::This,
                     limit_origin: origin,
                     name,
+                    test_count: 1,
                     known: known.clone(),
                     gate: false,
                 });
@@ -354,7 +391,9 @@ impl Pass<'_> {
                 if let Limit::Test(id) = l {
                     Some((
                         module.expressions[id.0].span,
-                        test(module, *id, known),
+                        self.test_value(module, &name.origin, *id, known),
+                        self.timed_test(module, &name.origin, *id)
+                            .map(|(phase, _)| phase),
                     ))
                 } else {
                     None
@@ -372,7 +411,35 @@ impl Pass<'_> {
                 }
             }
         }
-        for (limit, result) in tests {
+        let test_count = tests.len();
+        for (limit, result, timing) in tests {
+            if result.boolean.is_none() {
+                let blocked = match timing {
+                    Some(Phase::Compile) => {
+                        !known.is_exact()
+                            && !known.demanded
+                            && self.entry_phase != Some(Phase::Compile)
+                    }
+                    Some(Phase::Init) => {
+                        frequency == Frequency::PerCall
+                            || self.site_phase(place) == Phase::Eval
+                    }
+                    _ => false,
+                };
+                if blocked {
+                    self.errors.push(Error {
+                        span: place,
+                        reason: TypeReason::Limit {
+                            message: format!(
+                                "{} test must be proved at this entry",
+                                timing.unwrap()
+                            ),
+                        },
+                    });
+                    continue;
+                }
+            }
+            let start = self.typed.checks.len();
             self.outcome(
                 (name.name.clone(), name.origin.clone(), limit),
                 place,
@@ -380,6 +447,9 @@ impl Pass<'_> {
                 known,
                 &result,
             );
+            for check in &mut self.typed.checks[start..] {
+                check.test_count = test_count;
+            }
         }
         self.active.pop();
     }

@@ -5,3 +5,13 @@ pub type Error: Show {
     pub message: String,
 }
 impl Error: Show { show = self => self.message }
+
+## The requested port.
+pub port: Integer
+## The requested seed.
+pub seed: Integer
+## Candidate prime numbers.
+pub primes: Vec<Integer>
+
+## A packed RGB sample.
+pub rgb: [U8; 3]

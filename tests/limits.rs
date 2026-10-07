@@ -359,3 +359,275 @@ fn entry_places_keep_names_and_precise_result_and_argument_spans() {
         assert_eq!(Source::new(session.source()).slice(check.place), Some("x"));
     }
 }
+
+#[test]
+fn timing_demands_and_host_inputs() {
+    use fipe::typed::Phase;
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .module("cli", "pub port: Integer\npub seed: Integer")
+        .unwrap();
+    declarations
+        .module("config", "pub max_port = 65535")
+        .unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in [
+        "use cli config",
+        "x = Compile (2 + 3)",
+        "y: Init & Integer = cli.port",
+        "f = n => n + 1",
+        "z = Compile (f 2)",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+    }
+    for text in [
+        "Compile",
+        "map Compile [1]",
+        "f = Compile x => x",
+        "Compile (cli.port)",
+        "f = n => Init (cli.port)",
+        "x: Compile & Integer = cli.port",
+    ] {
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    let report = line(&mut session, "x");
+    let fipe::ast::Entry::Line(id) = report.module.as_ref().unwrap().entries[0]
+    else {
+        panic!()
+    };
+    assert_eq!(
+        report.typed.unwrap().known(id).unwrap().phase,
+        Phase::Compile
+    );
+}
+
+#[test]
+fn holding_fit_and_agreement() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type Flag: Bool & Bits<1>",
+        "type Mode: Size<1> { read: Flag, write: Flag, exec: Flag }",
+        "type Pixel { rgb: [U8; 3] }",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+    }
+    for text in [
+        "type Odd8: Integer & Bits<8>",
+        "b: Bool & Bits<8> & Bits<16> = True",
+        "type Nib: U8 & Bits<4>",
+    ] {
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn timed_tests_keep_three_phases_and_never_become_tests_themselves() {
+    use fipe::typed::{CheckReason, Phase};
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .module("cli", "pub port: Integer\npub seed: Integer")
+        .unwrap();
+    declarations
+        .module("config", "pub max_port = 65535")
+        .unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in [
+        "use cli config",
+        "is_prime = n => n > 1",
+        "type Seed: Integer where Compile (is_prime self)",
+        "type Port: Integer where 0 < self, self <= config.max_port",
+        "type Start: Integer where Init (self > 0)",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+    }
+    assert_ne!(line(&mut session, "q: Seed = cli.seed").diagnostics, []);
+    let port = line(&mut session, "port: Port = cli.port");
+    assert_eq!(port.diagnostics, [], "{:?}", port.diagnostics);
+    assert_eq!(port.checks.len(), 2);
+    assert!(port.checks.iter().all(|c| c.phase == Phase::Init));
+    let seed = line(&mut session, "q: Seed = 7");
+    assert_eq!(seed.diagnostics, [], "{:?}", seed.diagnostics);
+    assert_eq!(seed.checks.len(), 1);
+    assert_eq!(seed.checks[0].phase, Phase::Compile);
+    assert_eq!(seed.checks[0].reason, CheckReason::CompileTimeEvaluation);
+    assert_ne!(
+        line(&mut session, "f: Integer -> Start = n => n").diagnostics,
+        []
+    );
+    assert_eq!(
+        line(&mut session, "start: Start = cli.port").diagnostics,
+        []
+    );
+    assert_eq!(line(&mut session, "port: Port = 65535").checks, []);
+    assert_ne!(line(&mut session, "port: Port = 65536").diagnostics, []);
+}
+
+#[test]
+fn holding_widths_are_type_facts_not_value_ranges() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("pixels", "pub rgb: [U8; 3]").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in [
+        "use pixels",
+        "rgb = pixels.rgb",
+        "type Flag: Bool & Bits<1>",
+        "type Mode: Size<1> { read: Flag, write: Flag, exec: Flag }",
+        "m = Mode True False True",
+        "type Byte: Integer & Bits<8> where 0 <= self, self <= 255",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+    }
+    for (text, expected) in
+        [("rgb", "held Size<3>"), ("m", "held Size<1>, 3 of 8 bits")]
+    {
+        let report = line(&mut session, text);
+        let fipe::ast::Entry::Line(id) =
+            report.module.as_ref().unwrap().entries[0]
+        else {
+            panic!()
+        };
+        assert_eq!(
+            report
+                .typed
+                .unwrap()
+                .known(id)
+                .unwrap()
+                .holding
+                .as_ref()
+                .unwrap()
+                .to_string(),
+            expected
+        );
+    }
+    for text in ["type Clash: U8 & U16", "type TooBig: Integer & Bits<8> where -129 <= self, self <= 127", "type Huge: Integer & Bits<64> where 0 <= self, self <= 18446744073709551616", "type Payload: Bits<8> { A(x: U8), B }"] {
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    assert_eq!(line(&mut session, "type Fits: Integer & Bits<65> where 0 <= self, self <= 18446744073709551616").diagnostics, []);
+}
+
+#[test]
+fn timing_is_only_a_binding_limit_and_cannot_be_negated() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "f: (Compile & Integer) -> Integer = n => n",
+        "f: Integer -> (Init & Integer) = n => n",
+        "type R { x: Compile & Integer }",
+    ] {
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    assert_eq!(
+        line(&mut session, "type T: Integer where Init (self > 0)").diagnostics,
+        []
+    );
+    assert_ne!(line(&mut session, "type N: Integer & !T").diagnostics, []);
+}
+
+#[test]
+fn purity_follows_called_and_passed_functions() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in [
+        "use cli",
+        "effect = n => cli.port + n",
+        "alias = effect",
+        "apply = f n => f n",
+        "pure = n => n + 1",
+        "answer = Compile (apply pure 2)",
+        "root = Compile (sqrt 4.0)",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+    }
+    for text in [
+        "answer = Compile (effect 2)",
+        "answer = Compile (alias 2)",
+        "answer = Compile (apply effect 2)",
+        "answer = Compile (sin 0.0)",
+        "answer = Compile (log 1)",
+    ] {
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn imported_phases_and_purity_keep_their_module_identity() {
+    use fipe::{
+        embed::{Outcome, Reply},
+        typed::Phase,
+    };
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    assert!(matches!(session.line("use functions"), Outcome::Request(_)));
+    let Outcome::Done(report) = session.reply(Reply::File(Some("use cli\nhelper = n => cli.port + n\npub effect = n => helper n\npub pure = n => n + 1\npub port = cli.port\npub exact = 3".into()))) else { panic!() };
+    assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
+    assert_eq!(
+        line(&mut session, "x = Compile (functions.pure 1)").diagnostics,
+        []
+    );
+    assert_ne!(
+        line(&mut session, "x = Compile (functions.effect 1)").diagnostics,
+        []
+    );
+    for (text, phase) in [
+        ("functions.port", Phase::Init),
+        ("functions.exact", Phase::Compile),
+    ] {
+        let report = line(&mut session, text);
+        let fipe::ast::Entry::Line(id) =
+            report.module.as_ref().unwrap().entries[0]
+        else {
+            panic!()
+        };
+        assert_eq!(report.typed.unwrap().known(id).unwrap().phase, phase);
+    }
+}
+
+#[test]
+fn operator_purity_uses_the_selected_meaning() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in [
+        "use cli",
+        "type V: Add { n: Integer }",
+        "impl V: Add { add = other self => V cli.port }",
+        "type P: Add { n: Integer }",
+        "impl P: Add { add = other self => P (self.n + other.n) }",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+    }
+    assert_ne!(
+        line(&mut session, "bad = Compile ((V 1) + (V 2))").diagnostics,
+        []
+    );
+    assert_eq!(
+        line(&mut session, "good = Compile ((P 1) + (P 2))").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn demands_reach_grouped_entries_and_host_constants_bound_holdings() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .module("config", "pub max_port = 65535")
+        .unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in ["use config", "type Port16: Integer & Bits<16> where 0 <= self, self <= config.max_port", "is_prime = n => n > 1", "type Seed: Integer where Compile (is_prime self)", "f = n => n + 1", "q: Compile & Seed = (f 7)"] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+        if text.starts_with("q:") {
+            assert_eq!(report.checks.len(), 1);
+            assert_eq!(report.checks[0].phase, fipe::typed::Phase::Compile);
+        }
+    }
+}

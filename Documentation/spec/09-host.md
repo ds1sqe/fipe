@@ -31,19 +31,21 @@ A host declares in Fipe, with the declaration forms of
 one for the command namespace, holding bare commands, bindings and the
 types they share. A declaration is a signature with labeled spots and
 defaults, an opaque type, a type, which may carry limits, or an impl; a
-name or impl member with no value is implemented by the host. No Rust,
+name or impl member with no value is implemented by the host. A host
+declaration with a written value, such as `pub max_port = 65535`, is
+an exact compile-time constant and belongs to the checked unit. No Rust,
 kernel or transport type is part of Fipe type identity unless a
 declaration admits it.
 
 A declaration file keeps Markdown docs on its tree. After optional
-indentation, `- ` then a one-segment lowercase name and `:`, then a space
-or the line's end, documents a spot, as `- depth: …`; other heads, including `*`, are opaque. Every
-declaration file (prelude, commands and host modules) checks these names
-on top-level signatures and supplied impl members against their labeled
-spots, including `self`. An unknown spot is a declaration error naming it.
-Program docs are never checked; nothing else reads docs for a rule. The
-prelude and every host declaration carry a doc.
-The REPL prints a name's doc above its type with `:t name`.
+indentation, `- ` then a one-segment lowercase name and `:`, then a space or
+the line's end, documents a spot, as `- depth: …`; other heads, including
+`*`, are opaque. Every declaration file (prelude, commands and host modules)
+checks these names on top-level signatures and supplied impl members against
+their labeled spots, including `self`. An unknown spot is a declaration
+error naming it. Program docs are never checked; nothing else reads docs for
+a rule. The prelude and every host declaration carry a doc. The REPL prints
+a name's doc above its type with `:t name`.
 
 ## Name lookup
 

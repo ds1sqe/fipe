@@ -25,6 +25,10 @@ pub type F32
 pub type F64
 ## A bit-width holding.
 pub type Bits<n>
+## A value known at compile time.
+pub type Compile
+## A value known once its module has run.
+pub type Init
 ## A fixed-size holding.
 pub type Size<n>
 ## A sequence of elements.

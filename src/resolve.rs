@@ -146,6 +146,8 @@ pub struct Error {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
     UnknownName,
+    /// A timing name used outside its one-operand form.
+    TimingForm,
     UnknownType,
     /// A declared type or constructor is uppercase; a
     /// binding, field, parameter or member is not.
@@ -266,6 +268,7 @@ impl Resolver<'_> {
     fn run(mut self) -> (Resolved, Vec<Error>) {
         self.collect();
         self.walk();
+        self.timing_forms();
         let mut definitions: Vec<Definition> = self
             .frame
             .iter()
@@ -290,6 +293,39 @@ impl Resolver<'_> {
         self.resolved.definitions = definitions;
         self.export_bindings();
         (self.resolved, self.errors)
+    }
+
+    fn timing_forms(&mut self) {
+        let mut allowed = Vec::new();
+        for expression in &self.module.expressions {
+            if let ExprKind::Call {
+                callee, arguments, ..
+            } = &expression.kind
+            {
+                if timing(self.resolved.expr(*callee)).is_some()
+                    && matches!(arguments.as_slice(), [crate::ast::Argument { kind: crate::ast::ArgumentKind::Positional(_), .. }])
+                    && !self.module.expressions.iter().any(|parent| matches!(parent.kind, ExprKind::Pipe { right, .. } if self.module.expressions[right.0].span == expression.span))
+                { allowed.push(*callee); }
+            }
+        }
+        for (index, target) in self.resolved.expressions.iter().enumerate() {
+            if timing(target.as_ref()).is_some()
+                && !allowed.contains(&ExprId(index))
+            {
+                self.errors.push(Error {
+                    span: self.module.expressions[index].span,
+                    reason: Reason::TimingForm,
+                });
+            }
+        }
+        for (index, target) in self.resolved.patterns.iter().enumerate() {
+            if timing(target.as_ref()).is_some() {
+                self.errors.push(Error {
+                    span: self.module.patterns[index].span,
+                    reason: Reason::TimingForm,
+                });
+            }
+        }
     }
 
     /// A module exports its final bindings: a name whose final
@@ -1861,9 +1897,22 @@ impl<'a> Resolver<'a> {
             TypeKind::Unit => {}
             TypeKind::Named { name, arguments } => {
                 let target = self.type_name(name);
+                let holding = matches!(&target, Some(Target::Type { origin: Origin::Prelude, name }) if matches!(name.as_str(), "Bits" | "Size"));
                 self.resolved.types[id.0] = target;
+                if holding
+                    && !matches!(arguments.as_slice(), [width] if matches!(self.module.types[width.0].kind, TypeKind::Number(_)))
+                {
+                    self.unchecked(ty.span, Unchecked::Number);
+                }
                 for argument in arguments {
-                    self.ty(*argument);
+                    if !(holding
+                        && matches!(
+                            self.module.types[argument.0].kind,
+                            TypeKind::Number(_)
+                        ))
+                    {
+                        self.ty(*argument);
+                    }
                 }
             }
             TypeKind::Array { element, length } => {
@@ -1889,6 +1938,9 @@ impl<'a> Resolver<'a> {
                 }
                 for part in parts {
                     self.ty(*part);
+                }
+                if matches!(ty.kind, TypeKind::Both(_)) && parts.iter().any(|id| matches!(self.resolved.ty(*id), Some(Target::Variable(_)))) && parts.iter().any(|id| matches!(self.resolved.ty(*id), Some(Target::Type { origin: Origin::Prelude, name }) if matches!(name.as_str(), "Bits" | "Size"))) {
+                    self.unchecked(ty.span, Unchecked::Number);
                 }
             }
             TypeKind::Not(inner) => {
@@ -2059,6 +2111,12 @@ fn namespace_value(
     origin: Origin,
     name: &str,
 ) -> Option<Target> {
+    if origin == Origin::Prelude && matches!(name, "Compile" | "Init") {
+        return Some(Target::Type {
+            origin,
+            name: name.to_string(),
+        });
+    }
     if namespace.module.entries.iter().any(|e| matches!(e, Entry::Item(item) if matches!(&item.kind, ItemKind::Type { name: n, members: None, .. } if last(n) == name))) && test_chain(&namespace.module, &namespace.module, name, 0) {
         return Some(Target::Type { origin, name: name.to_string() });
     }
@@ -2148,5 +2206,20 @@ fn test_base(
         }
         TypeKind::Not(inner) => test_base(module, prelude, *inner, depth),
         _ => false,
+    }
+}
+
+/// Timing forms are identified by origin, so user declarations may shadow them.
+pub(crate) fn timing(target: Option<&Target>) -> Option<crate::limits::Phase> {
+    match target {
+        Some(Target::Type {
+            origin: Origin::Prelude,
+            name,
+        }) if name == "Compile" => Some(crate::limits::Phase::Compile),
+        Some(Target::Type {
+            origin: Origin::Prelude,
+            name,
+        }) if name == "Init" => Some(crate::limits::Phase::Init),
+        _ => None,
     }
 }

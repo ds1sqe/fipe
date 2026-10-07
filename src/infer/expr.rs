@@ -139,6 +139,16 @@ impl Infer<'_> {
             ExprKind::Call {
                 callee, arguments, ..
             } => {
+                if crate::resolve::timing(self.resolved.expr(*callee)).is_some()
+                {
+                    if let [crate::ast::Argument {
+                        kind: crate::ast::ArgumentKind::Positional(value),
+                        ..
+                    }] = arguments.as_slice()
+                    {
+                        return self.expr(*value, expected);
+                    }
+                }
                 let callee = self.callee(*callee);
                 let expected = expected.map(|e| e.ty.clone());
                 self.apply_callee(

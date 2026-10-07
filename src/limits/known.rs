@@ -271,6 +271,11 @@ impl Range {
 /// Facts held of a value, independent of its type.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Known {
+    pub phase: super::Phase,
+    pub(crate) pure: bool,
+    /// A compile demand awaits preparation by the evaluator.
+    pub demanded: bool,
+    pub holding: Option<super::Holding>,
     pub range: Option<Range>,
     pub exact: Option<String>,
     pub boolean: Option<bool>,
@@ -312,7 +317,9 @@ impl fmt::Display for Known {
                     f.write_str(", ")?;
                 }
                 write!(f, "{name}: ")?;
-                if let Some(range) = &value.range {
+                if let Some(boolean) = value.boolean {
+                    f.write_str(if boolean { "True" } else { "False" })?;
+                } else if let Some(range) = &value.range {
                     if range.lo == range.hi {
                         write!(f, "{}", range.lo)?;
                     } else {

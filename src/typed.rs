@@ -3,7 +3,7 @@
 
 use crate::limits::known::Known;
 pub use crate::limits::{
-    Check, Frequency, Phase, Place, Reason as CheckReason,
+    Check, Frequency, Holding, Phase, Place, Reason as CheckReason,
 };
 use crate::{
     ast::ExprId,

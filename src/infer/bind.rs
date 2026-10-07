@@ -730,7 +730,7 @@ fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
         Type::Function { parameter, result } => {
             Type::function(unrigid(parameter, fresh), unrigid(result, fresh))
         }
-        Type::Unit | Type::Var(_) => ty.clone(),
+        Type::Unit | Type::Number(_) | Type::Var(_) => ty.clone(),
     }
 }
 

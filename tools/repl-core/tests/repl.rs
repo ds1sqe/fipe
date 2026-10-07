@@ -2,7 +2,7 @@ use fipe_repl_core::{Out, Repl};
 
 const GEOMETRY: &str =
     include_str!("../../../Documentation/examples/geometry.fipe");
-const HOST: [(&str, &str); 5] = [
+const HOST: [(&str, &str); 6] = [
     (
         "tests/fixtures/host/commands.fipe",
         include_str!("../../../tests/fixtures/host/commands.fipe"),
@@ -22,6 +22,10 @@ const HOST: [(&str, &str); 5] = [
     (
         "tests/fixtures/host/text.fipe",
         include_str!("../../../tests/fixtures/host/text.fipe"),
+    ),
+    (
+        "tests/fixtures/host/config.fipe",
+        include_str!("../../../tests/fixtures/host/config.fipe"),
     ),
 ];
 
@@ -105,7 +109,7 @@ fn load_takes_a_stem_or_a_path() {
     assert_eq!(text, "fipe> ");
     assert_eq!(
         written(repl.feed(b":t files.k\n")),
-        "files.k: Integer\nexact 1\nfipe> "
+        "files.k: Integer\nexact 1\nknown at compile\nfipe> "
     );
     let outs = repl.feed(b":load ./x/y.fipe\n");
     assert_eq!(outs, [Out::File("./x/y.fipe".into())]);
@@ -165,7 +169,7 @@ fn a_private_inherent_member_is_named() {
     assert!(text.contains("member `hidden` is private"), "{text}");
 }
 
-/// Answer `:host`'s five requests with the fixtures.
+/// Answer `:host`'s six requests with the fixtures.
 fn host(repl: &mut Repl, mut outs: Vec<Out>) -> String {
     for (index, (path, text)) in HOST.iter().enumerate() {
         assert_eq!(outs, [Out::File((*path).into())], "{index}");
@@ -220,7 +224,7 @@ fn t_shows_the_last_binding_s_scheme() {
 #[test]
 fn t_queries_an_expression_s_type() {
     let text = written(Repl::new().feed(b":t 1 + 2\n"));
-    assert_eq!(text, "1 + 2: Integer\nexact 3\nfipe> ");
+    assert_eq!(text, "1 + 2: Integer\nexact 3\nknown at compile\nfipe> ");
 }
 
 #[test]
@@ -239,7 +243,10 @@ fn q_exits() {
 #[test]
 fn a_redefinition_in_a_later_line_shadows() {
     let text = written(Repl::new().feed(b"f = x => x\nf = x => x + 1\n:t f\n"));
-    assert_eq!(text, "f: Add a, Literal a => a -> a\nfipe> ");
+    assert_eq!(
+        text,
+        "f: Add a, Literal a => a -> a\nknown at compile\nfipe> "
+    );
 }
 
 #[test]
@@ -301,7 +308,7 @@ fn the_identity_and_literal_smokes() {
     repl.feed(b"use primes.Prime primes.next\n");
     written(repl.file("primes.fipe", Some(PRIMES)));
     let text = written(repl.feed(b":t Prime.check\n:t 2 + 2.5\n"));
-    assert_eq!(text, "Prime.check: Prime -> Bool\n2 + 2.5: F64\nfipe> ");
+    assert_eq!(text, "Prime.check: Prime -> Bool\nknown at compile\n2 + 2.5: F64\nknown at compile\nheld Size<8>\nfipe> ");
     let text = written(repl.feed(b"p = Prime 7\nnext (p.n + 2)\n"));
     assert_eq!(
         text,
@@ -316,11 +323,14 @@ fn an_open_bracket_or_trailing_operator_continues_the_entry() {
     assert_eq!(written(repl.feed(b"y = (1 +\n")), "....> ");
     assert_eq!(written(repl.feed(b"2\n")), "....> ");
     assert_eq!(written(repl.feed(b")\n")), "fipe> ");
-    assert_eq!(written(repl.feed(b":t\n")), "y: Integer\nexact 3\nfipe> ");
+    assert_eq!(
+        written(repl.feed(b":t\n")),
+        "y: Integer\nexact 3\nknown at compile\nfipe> "
+    );
     assert_eq!(written(repl.feed(b":t 1 +\n")), "....> ");
     assert_eq!(
         written(repl.feed(b"  2\n")),
-        "1 + 2: Integer\nexact 3\nfipe> "
+        "1 + 2: Integer\nexact 3\nknown at compile\nfipe> "
     );
     // A trailing `&` in a type continues too.
     assert_eq!(written(repl.feed(b"type K: Integer &\n")), "....> ");
@@ -330,7 +340,7 @@ fn an_open_bracket_or_trailing_operator_continues_the_entry() {
 #[test]
 fn a_leading_operator_continues_a_line_given_with_it() {
     let text = written(Repl::new().feed(b"z = 1\n  + 2\n:t\n"));
-    assert_eq!(text, "z: Integer\nexact 3\nfipe> ");
+    assert_eq!(text, "z: Integer\nexact 3\nknown at compile\nfipe> ");
 }
 
 #[test]
@@ -387,7 +397,10 @@ fn a_rejected_continuation_keeps_the_line_before() {
         ),
         "{text}"
     );
-    assert_eq!(written(repl.feed(b":t y\n")), "y: Integer\nexact 1\nfipe> ");
+    assert_eq!(
+        written(repl.feed(b":t y\n")),
+        "y: Integer\nexact 1\nknown at compile\nfipe> "
+    );
 }
 
 /// All written text with the prompts taken out.
@@ -411,7 +424,10 @@ fn a_rejected_join_in_one_read_keeps_the_line_before() {
         ),
         "{whole}"
     );
-    assert!(whole.ends_with("x: Integer\nexact 1\n"), "{whole}");
+    assert!(
+        whole.ends_with("x: Integer\nexact 1\nknown at compile\n"),
+        "{whole}"
+    );
 }
 
 #[test]
@@ -449,7 +465,7 @@ fn load_of_a_second_file_for_a_loaded_module_changes_nothing() {
     assert_eq!(text, "02-files: already loaded as `files`\nfipe> ");
     assert_eq!(
         written(repl.feed(b":t files.k\n")),
-        "files.k: Integer\nexact 1\nfipe> "
+        "files.k: Integer\nexact 1\nknown at compile\nfipe> "
     );
     let outs = repl.feed(b":load 01-files\n");
     assert_eq!(
@@ -523,14 +539,17 @@ fn a_where_line_continues_an_accepted_type_item() {
     assert_eq!(
         text,
         "Type P\n  Field x\n    Type I64\n  Where\n    Binary <=\n      Int 0\n      Name self.x\n\
-         P 1: P\nnames P\nparts x: 1\nfipe> "
+         P 1: P\nnames P\nparts x: 1\nknown at compile\nfipe> "
     );
 }
 
 #[test]
 fn member_schemes_and_type_parameter_defaults_are_visible() {
     let text = written(Repl::new().feed(b"scale = v k => v * k\n:t scale\n"));
-    assert_eq!(text, "scale: Mul<b> a => a -> b -> a\nfipe> ");
+    assert_eq!(
+        text,
+        "scale: Mul<b> a => a -> b -> a\nknown at compile\nfipe> "
+    );
     let text = written(
         Repl::new()
             .feed(b"type Op<R = Self, O = Self> where self.op: R -> O\n:ast\n"),
@@ -560,7 +579,7 @@ fn docs_are_displayed_above_types_and_under_tree_owners() {
     assert_eq!(written(repl.feed(b"## A value\n")), "....> ");
     assert_eq!(
         written(repl.feed(b"\nx = 1\n:t x\n")),
-        "A value\nx: Integer\nexact 1\nfipe> "
+        "A value\nx: Integer\nexact 1\nknown at compile\nfipe> "
     );
     let text = written(
         repl.feed(b"## A record\ntype P {\n## A field\nx: I64,\n}\n:ast\n"),
@@ -725,7 +744,10 @@ fn explicit_unit_holds_lines_and_commands() {
 #[test]
 fn explicit_unit_checks_mutual_claims() {
     let source = b":{\ntype A: From<B> {}\ntype B: From<A> {}\nimpl A: From<B> { from: B -> Self = b => Self {} }\nimpl B: From<A> { from: A -> Self = a => Self {} }\n:}\na = A {}\nb = a | to<B>\n:t b\n";
-    assert_eq!(written(Repl::new().feed(source)), "b: B\nfipe> ");
+    assert_eq!(
+        written(Repl::new().feed(source)),
+        "b: B\nknown at compile\nfipe> "
+    );
 }
 
 #[test]
@@ -758,7 +780,7 @@ fn opaque_head_waits_for_where() {
         written(repl.feed(
             b"where self.area: F64\nx: Shape -> F64 = s => s.area\n:t x\n",
         ));
-    assert_eq!(text, "x: Shape -> F64\nfipe> ");
+    assert_eq!(text, "x: Shape -> F64\nknown at compile\nfipe> ");
 }
 
 #[test]
@@ -852,4 +874,62 @@ fn checks_name_places_and_disambiguate_identical_results() {
     let named =
         written(Repl::new().feed(b"f: U8 -> U8 = x => x + 1\n:checks f\n"));
     assert!(!named.contains("the result at "), "{named}");
+}
+
+#[test]
+fn timing_and_holding_facts_are_visible_on_both_driver_paths() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b":host\n");
+    host(&mut repl, outs);
+    let text = written(repl.feed(b"use cli config\ntype Port: Integer where 0 < self, self <= config.max_port\nport: Port = cli.port\n:t port\n:checks port\nx = Compile (2 + 3)\n:t x\nrgb = cli.rgb\n:t rgb\n"));
+    assert!(text.contains("known at init"), "{text}");
+    assert!(text.contains("init, once:"), "{text}");
+    assert!(text.contains("against Port: 0 < self"), "{text}");
+    assert!(
+        text.contains("against Port: self <= config.max_port"),
+        "{text}"
+    );
+    assert!(!text.contains("binding port at "), "{text}");
+    assert!(text.contains("known at compile"), "{text}");
+    assert!(text.contains("held Size<3>"), "{text}");
+    let text = written(repl.feed(b"type Flag: Bool & Bits<1>\ntype Mode: Size<1> { read: Flag, write: Flag, exec: Flag }\nm = Mode True False True\n:t m\n"));
+    assert!(text.contains("held Size<1>, 3 of 8 bits"), "{text}");
+    assert!(
+        text.contains("parts read: True, write: False, exec: True"),
+        "{text}"
+    );
+}
+
+#[test]
+fn written_tests_keep_sources_and_include_proved_siblings() {
+    let mut repl = Repl::new();
+    let text = written(repl.feed(b"type Band: Integer where 0 <= self, self < 10\nf: U8 -> Band = n => n\n:checks f\n"));
+    assert_eq!(text.matches("against Band:").count(), 1, "{text}");
+    assert!(text.contains("against Band: self < 10"), "{text}");
+    assert!(!text.contains("the result at "), "{text}");
+
+    assert_eq!(repl.feed(b"use bands\n"), [Out::File("bands.fipe".into())]);
+    written(repl.file("bands.fipe", Some("pub type Band: Integer where 0 <= self, self < 10\npub f: Integer -> Band = n => n\n")));
+    let text = written(repl.feed(b":checks\n"));
+    assert!(text.contains("against Band: 0 <= self"), "{text}");
+    assert!(text.contains("against Band: self < 10"), "{text}");
+
+    let mut repl = Repl::new();
+    let mut outs = repl.feed(b":host\n");
+    for (path, source) in HOST {
+        assert_eq!(outs, [Out::File(path.into())]);
+        let source = if path.ends_with("config.fipe") {
+            format!("{source}\n## A host limit.\npub type HostBand: Integer where 0 <= self, self < 10\n")
+        } else {
+            source.into()
+        };
+        outs = repl.file(path, Some(&source));
+    }
+    written(outs);
+    let text =
+        written(repl.feed(
+            b"use config\nf: U8 -> config.HostBand = n => n\n:checks f\n",
+        ));
+    assert!(text.contains("against HostBand: self < 10"), "{text}");
+    assert!(!text.contains("the result at "), "{text}");
 }

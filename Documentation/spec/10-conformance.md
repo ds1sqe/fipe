@@ -1,7 +1,6 @@
 # Conformance cases
 
 Observables to test per stage. Lexical and syntax cases are covered by public-API tests; checking and execution cases await their stages, and a case citing [open decisions](11-open.md) is conditional on it. A row marked *06.n* is specified and owed by that stage of the type model, not yet implemented: 06.5 limits, 06.6 timing and holding, 06.7 containers, 06.8 narrowing (what a body, a branch or a variable proves); *07* and *08* mark a row owed by that major.
-
 ## Lexical (01)
 
 Compare kinds, payloads, source slices and diagnostics.
@@ -37,7 +36,6 @@ Compare kinds, payloads, source slices and diagnostics.
 | `"\xEF\xBB\xBF"` / `"\xE2\x80\x8B"` | escaped marks are valid string data |
 
 Also every keyword and non-keyword name, every operator beside its neighbor, byte slices and scalar columns of `cat héllo "한글"`, CRLF, EOF inside an escape, negative zero, radix boundaries and all five pipes.
-
 ## Docs and quotes (01, 02)
 
 | Case | Expected distinction |
@@ -58,7 +56,6 @@ Also every keyword and non-keyword name, every operator beside its neighbor, byt
 | decoded quote with bare LF / raw quote at EOF | unterminated quote; decoded recovery keeps following line |
 | affixed multiline quote / pipe after its closing quote | affix kept / same logical line |
 | REPL raw quote opened on one input line, closed on the next | continuation, one string |
-
 ## Review regressions (06.4)
 | Case | Expected distinction |
 | --- | --- |
@@ -121,7 +118,6 @@ Also every keyword and non-keyword name, every operator beside its neighbor, byt
 | repeated uses of nested file modules; field typed by another imported module | resolve and type once per unit; field retains its imported type |
 | inferred type deeper than the parser nesting limit | type-depth check error, no stack overflow |
 | `k: Number a => a -> a = p => p + 1`; `f = k` | prints `Number a => a -> a`, no redundant `Literal` |
-
 ## Syntax, types and checks (02 to 07)
 | Case | Expected distinction |
 | --- | --- |
@@ -212,10 +208,14 @@ Also every keyword and non-keyword name, every operator beside its neighbor, byt
 | `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open *06.8* |
 | `f: F64 = 2` | `2.0` by the literal member |
 | `k: I64 = round 2.5` | `2` by the numeric cast *07* |
-| `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / prepared at compile time *06.6* |
-| `Compile` alone, as a value or in a pattern | check error *06.6* |
-| `Bits<8> & Bits<16>` / `type Odd8: Integer & Bits<8>` | check error, each: the holdings disagree / does not fit its holding *06.6* |
-| `type Flag: Bool & Bits<1>` / `type Mode: Size<1> { … }` / `rgb: [U8; 3]` | one bit / 3 of 8 bits / `Size<3>` *06.6* |
+| `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / compile demand met; preparation awaits *08* |
+| `Compile` alone, as a value or in a pattern | check error |
+| `x: Init & Integer = cli.port` / a parameter with `Init & Integer` | known at init / check error |
+| `Init (cli.port)` in a module binding / inside an arm | demand met / check error |
+| `Init (test)` open at a module binding / inside an arm | tested at init / must be proved |
+| `rgb: [U8; 3] = [255, 128, 0]` | array literal enters its annotated place *06.7* |
+| `Bits<8> & Bits<16>` / `type Odd8: Integer & Bits<8>` | check error, each: the holdings disagree / does not fit its holding |
+| `type Flag: Bool & Bits<1>` / `type Mode: Size<1> { … }` / `rgb: [U8; 3]` supplied by the host | one bit / 3 of 8 bits / `Size<3>` |
 | `pair: Integer * String = (1, "one")` / `(n, name) = pair` | tuple / both bound *06.7* |
 | `swap = (a, b) => (b, a)` / `divmod` / `ends: U8 * U8 = (0, 255)` | `a * b -> b * a` / two results / each part a place: proved *06.7* |
 | `f(a, b)` / `f (a, b)` / `f ((a, b))` / the wrong one / both readings check | two arguments / one tuple / one tuple, whatever the spacing / check error saying which was written / warning *06.7* |

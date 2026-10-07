@@ -103,11 +103,20 @@ sum in the bits its constructor count needs; a record or a tuple in the
 sum of its parts, in order, with no padding. On a type variable it is
 checked where the variable is known.
 
-A tuple or an array has a `Size` when every part has one; an array of
-packed elements has none, since a packed value has none. `Vec` and
-`Deque` have none. A place with no holding is the implementation's, and
-an `Integer` with none is unbounded. `Volatile`, `Pinned`, `At` and
-`Order`, byte order, offsets and addresses are holdings of a hatch (T4).
+Holdings follow bases and `&` parts: unequal widths disagree, even a
+base's width and the type's own. `!T` drops holdings, and `A | B`,
+packed types and functions have none. Fit means needing at most the
+written width; there is no padding between parts. A held part counts
+its width. `F32` needs 32 bits, `F64` 64, and `()` zero; a sum with
+payloads has no fitting holding until T4 settles its layout.
+
+A tuple or an array has a holding when every part has one; an array of
+packed elements has none, since a packed value has none. `Vec` and `Deque`
+have none. The sum is in bits, printed as `Size<k>` on whole bytes; an array
+of one-bit `Flag` therefore has a holding too. A place with no holding is
+the implementation's, and an `Integer` with none is unbounded. `Volatile`,
+`Pinned`, `At` and `Order`, byte order, offsets and addresses are holdings
+of a hatch (T4).
 
 ## Examples
 

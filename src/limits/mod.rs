@@ -1,7 +1,10 @@
 //! Static facts and entry checks over the typed tree; never unification.
 mod entry;
+mod holding;
 pub mod known;
+mod phase;
 mod plan;
+pub use holding::Holding;
 pub use plan::{Check, Frequency, Phase, Place, Reason};
 
 use crate::{
@@ -49,6 +52,8 @@ pub(crate) fn check(
         errors: Vec::new(),
         active: Vec::new(),
         place_kind: Place::Result,
+        entry_phase: None,
+        purity: core::cell::RefCell::new(Vec::new()),
     };
     pass.typed.known = vec![Known::default(); module.expressions.len()];
     for (site, local) in &pass.typed.frozen {
@@ -69,6 +74,14 @@ pub(crate) fn check(
             continue;
         }
         let mut known = pass.value(id);
+        known.pure = pass.pure_expression(id);
+        known.phase = pass.expression_phase(id);
+        known.demanded |= call_head(module, id)
+            .and_then(|callee| crate::resolve::timing(resolved.expr(callee)))
+            == Some(Phase::Compile);
+        if let Some(ty) = pass.typed.expr(id) {
+            known.holding = pass.holding(ty, &mut Vec::new()).or(known.holding);
+        }
         if matches!(
             module.expressions[index].kind,
             ExprKind::Record { .. }
@@ -104,25 +117,24 @@ pub(crate) fn check(
             }
         }
         pass.typed.known[index] = known.clone();
-        if let ExprKind::Bind {
-            pattern,
-            annotation,
-            value,
-            ..
-        } = module.expressions[index].kind
+        pass.binding_facts(id);
+    }
+    pass.timing_places();
+    pass.holdings();
+    pass.demands();
+    for check in &mut pass.typed.checks {
+        if module
+            .expressions
+            .iter()
+            .enumerate()
+            .any(|(i, e)| e.span == check.place && pass.typed.known[i].demanded)
         {
-            let mut fact = pass.typed.known[value.0].clone();
-            if annotation.is_some() {
-                if let Some(scheme) = pass.typed.binding(id).cloned() {
-                    pass.place_facts(&scheme.ty, &mut fact);
-                }
-            }
-            if let PatternKind::Name(name) = &module.patterns[pattern.0].kind {
-                pass.locals.insert((name.span.start, name.span.end), fact);
-            }
+            check.phase = Phase::Compile;
+            check.reason = Reason::CompileTimeEvaluation;
         }
     }
     pass.entries(entries);
+    pass.keep_facts();
     pass.typed.facts = pass
         .locals
         .into_iter()
@@ -143,8 +155,64 @@ struct Pass<'a> {
     errors: Vec<Error>,
     active: Vec<TypeName>,
     place_kind: Place,
+    entry_phase: Option<Phase>,
+    purity: core::cell::RefCell<Vec<(Target, bool)>>,
 }
 impl Pass<'_> {
+    fn binding_facts(&mut self, id: ExprId) {
+        if let ExprKind::Bind {
+            pattern,
+            annotation,
+            value,
+            ..
+        } = self.module.expressions[id.0].kind
+        {
+            let mut fact = self.typed.known[value.0].clone();
+            if annotation.is_some() {
+                if let Some(scheme) = self.typed.binding(id).cloned() {
+                    fact.demanded |= annotation.is_some_and(|annotation| {
+                        self.type_timings(
+                            self.module,
+                            &Origin::This,
+                            annotation,
+                            &mut Vec::new(),
+                        )
+                        .iter()
+                        .any(|(phase, _)| *phase == Phase::Compile)
+                    });
+                    self.typed.known[value.0].demanded = fact.demanded;
+                    self.place_facts(&scheme.ty, &mut fact);
+                    fact.holding = self.holding(&scheme.ty, &mut Vec::new());
+                    self.typed.known[value.0].holding.clone_from(&fact.holding);
+                }
+            }
+            if let PatternKind::Name(name) =
+                &self.module.patterns[pattern.0].kind
+            {
+                self.locals.insert((name.span.start, name.span.end), fact);
+            }
+        }
+    }
+
+    fn keep_facts(&mut self) {
+        for expr in &self.module.expressions {
+            if let ExprKind::Bind { pattern, value, .. } = expr.kind {
+                if let PatternKind::Name(name) =
+                    &self.module.patterns[pattern.0].kind
+                {
+                    if let Some(fact) =
+                        self.locals.get_mut(&(name.span.start, name.span.end))
+                    {
+                        fact.phase = self.typed.known[value.0].phase;
+                        fact.demanded = self.typed.known[value.0].demanded;
+                        fact.holding
+                            .clone_from(&self.typed.known[value.0].holding);
+                    }
+                }
+            }
+        }
+    }
+
     fn entries(&mut self, entries: &[(ExprId, Type, Span, Place)]) {
         let module = self.module;
         for (id, ty, place, place_kind) in entries {
@@ -175,6 +243,8 @@ impl Pass<'_> {
             if matches!(expr.kind, ExprKind::Arms(_)) && module.expressions.iter().any(|e| matches!(e.kind, ExprKind::Bind { value, annotation: Some(_), .. } if value == *id)) { continue; }
             let fact = self.typed.known[id.0].clone();
             self.place_kind = place_kind.clone();
+            self.entry_phase =
+                (fact.demanded || fact.is_exact()).then_some(Phase::Compile);
             self.enter(ty, &fact, *place, frequency(module, expr.span));
         }
     }
@@ -225,6 +295,26 @@ impl Pass<'_> {
             if let Some(Target::Type { origin, name }) = self.resolved.ty(id) {
                 return Some(TypeName {
                     origin: origin.clone(),
+                    name: name.clone(),
+                });
+            }
+        }
+        if let Origin::File(stem) = origin {
+            if let Some(Target::Type {
+                origin: target_origin,
+                name,
+            }) = self
+                .cache
+                .borrow()
+                .get(stem)
+                .and_then(|c| c.resolved.ty(id))
+            {
+                return Some(TypeName {
+                    origin: if *target_origin == Origin::This {
+                        origin.clone()
+                    } else {
+                        target_origin.clone()
+                    },
                     name: name.clone(),
                 });
             }
@@ -431,6 +521,16 @@ impl Pass<'_> {
         }
     }
     fn call_value(&mut self, id: ExprId) -> Known {
+        if call_head(self.module, id)
+            .and_then(|callee| {
+                crate::resolve::timing(self.resolved.expr(callee))
+            })
+            .is_some()
+        {
+            return first_input(self.module, id)
+                .map(|id| self.typed.known[id.0].clone())
+                .unwrap_or_default();
+        }
         match call_head(self.module, id)
             .and_then(|callee| self.resolved.expr(callee))
         {
@@ -518,12 +618,13 @@ impl Pass<'_> {
                     place: self.module.expressions[right.0].span,
                     place_kind: Place::Parameter(Some(String::from("divisor"))),
                     limit: *operator,
-                    phase: Phase::Eval,
+                    phase: self.site_phase(expression.span),
                     reason: Reason::UnknownInput,
                     frequency: frequency(self.module, expression.span),
                     place_origin: Origin::This,
                     limit_origin: Origin::This,
                     name: String::from("nonzero divisor"),
+                    test_count: 1,
                     known: b.clone(),
                     gate: false,
                 });
@@ -692,6 +793,16 @@ impl Pass<'_> {
                 })
                 .cloned()
                 .unwrap_or_default(),
+            Some(Target::Value { origin, name })
+                if matches!(origin, Origin::Host(_) | Origin::Commands) =>
+            {
+                self.owner(origin)
+                    .and_then(|module| {
+                        phase::binding(module, name)
+                            .map(|id| test(module, id, &Known::default()))
+                    })
+                    .unwrap_or_default()
+            }
             Some(Target::Value {
                 origin: Origin::File(stem),
                 name,
@@ -809,7 +920,7 @@ impl Pass<'_> {
             }
             for limit in limits {
                 if let Limit::Test(id) = limit {
-                    narrow_test(module, *id, known);
+                    self.narrow_test(module, &name.origin, *id, known);
                 }
             }
         }
@@ -973,101 +1084,115 @@ fn test(module: &Module, id: ExprId, value: &Known) -> Known {
         _ => Known::default(),
     }
 }
-fn narrow_test(module: &Module, id: ExprId, known: &mut Known) {
-    if let ExprKind::Pipe {
-        op: PipeOp::And,
-        left,
-        right,
-        ..
-    } = module.expressions[id.0].kind
-    {
-        narrow_test(module, left, known);
-        narrow_test(module, right, known);
-        return;
-    }
-    if let ExprKind::Group(ids) = &module.expressions[id.0].kind {
-        if let Some(id) = ids.last() {
-            narrow_test(module, *id, known);
+impl Pass<'_> {
+    fn narrow_test(
+        &self,
+        module: &Module,
+        origin: &Origin,
+        id: ExprId,
+        known: &mut Known,
+    ) {
+        if let Some((_, value)) = self.timed_test(module, origin, id) {
+            self.narrow_test(module, origin, value, known);
+            return;
         }
-        return;
-    }
-    let ExprKind::Binary {
-        op, left, right, ..
-    } = module.expressions[id.0].kind
-    else {
-        return;
-    };
-    let path = |id: ExprId| match &module.expressions[id.0].kind {
-        ExprKind::Name(n)
-            if n.segments.first().is_some_and(|s| s == "self") =>
-        {
-            Some(n.segments[1..].to_vec())
-        }
-        _ => None,
-    };
-    let (op, value, path) = if let Some(path) = path(left) {
-        (op, right, path)
-    } else if let Some(path) = path(right) {
-        (
-            match op {
-                BinaryOp::Less => BinaryOp::Greater,
-                BinaryOp::LessEqual => BinaryOp::GreaterEqual,
-                BinaryOp::Greater => BinaryOp::Less,
-                BinaryOp::GreaterEqual => BinaryOp::LessEqual,
-                other => other,
-            },
+        if let ExprKind::Pipe {
+            op: PipeOp::And,
             left,
-            path,
-        )
-    } else {
-        return;
-    };
-    let Some(Range {
-        lo: End::Finite(n),
-        hi: End::Finite(hi),
-    }) = test(module, value, &Known::default()).range
-    else {
-        return;
-    };
-    if n != hi {
-        return;
-    }
-    let one = Integer::from(1);
-    let range = match op {
-        BinaryOp::Less => Range {
-            lo: End::Negative,
-            hi: End::Finite(n.add(&one.negated())),
-        },
-        BinaryOp::LessEqual => Range {
-            lo: End::Negative,
-            hi: End::Finite(n),
-        },
-        BinaryOp::Greater => Range {
-            lo: End::Finite(n.add(&one)),
-            hi: End::Positive,
-        },
-        BinaryOp::GreaterEqual => Range {
+            right,
+            ..
+        } = module.expressions[id.0].kind
+        {
+            self.narrow_test(module, origin, left, known);
+            self.narrow_test(module, origin, right, known);
+            return;
+        }
+        if let ExprKind::Group(ids) = &module.expressions[id.0].kind {
+            if let Some(id) = ids.last() {
+                self.narrow_test(module, origin, *id, known);
+            }
+            return;
+        }
+        let ExprKind::Binary {
+            op, left, right, ..
+        } = module.expressions[id.0].kind
+        else {
+            return;
+        };
+        let path = |id: ExprId| match &module.expressions[id.0].kind {
+            ExprKind::Name(n)
+                if n.segments.first().is_some_and(|s| s == "self") =>
+            {
+                Some(n.segments[1..].to_vec())
+            }
+            _ => None,
+        };
+        let (op, value, path) = if let Some(path) = path(left) {
+            (op, right, path)
+        } else if let Some(path) = path(right) {
+            (
+                match op {
+                    BinaryOp::Less => BinaryOp::Greater,
+                    BinaryOp::LessEqual => BinaryOp::GreaterEqual,
+                    BinaryOp::Greater => BinaryOp::Less,
+                    BinaryOp::GreaterEqual => BinaryOp::LessEqual,
+                    other => other,
+                },
+                left,
+                path,
+            )
+        } else {
+            return;
+        };
+        let Some(Range {
             lo: End::Finite(n),
-            hi: End::Positive,
-        },
-        BinaryOp::Equal => Range::exact(n),
-        _ => return,
-    };
-    let mut part = known;
-    for name in path {
-        let index = part
-            .parts
-            .iter()
-            .position(|(n, _)| *n == name)
-            .unwrap_or_else(|| {
-                part.parts.push((name, Known::default()));
-                part.parts.len() - 1
-            });
-        part = &mut part.parts[index].1;
+            hi: End::Finite(hi),
+        }) = self
+            .test_value(module, origin, value, &Known::default())
+            .range
+        else {
+            return;
+        };
+        if n != hi {
+            return;
+        }
+        let one = Integer::from(1);
+        let range = match op {
+            BinaryOp::Less => Range {
+                lo: End::Negative,
+                hi: End::Finite(n.add(&one.negated())),
+            },
+            BinaryOp::LessEqual => Range {
+                lo: End::Negative,
+                hi: End::Finite(n),
+            },
+            BinaryOp::Greater => Range {
+                lo: End::Finite(n.add(&one)),
+                hi: End::Positive,
+            },
+            BinaryOp::GreaterEqual => Range {
+                lo: End::Finite(n),
+                hi: End::Positive,
+            },
+            BinaryOp::Equal => Range::exact(n),
+            _ => return,
+        };
+        let mut part = known;
+        for name in path {
+            let index = part
+                .parts
+                .iter()
+                .position(|(n, _)| *n == name)
+                .unwrap_or_else(|| {
+                    part.parts.push((name, Known::default()));
+                    part.parts.len() - 1
+                });
+            part = &mut part.parts[index].1;
+        }
+        part.range
+            .get_or_insert_with(Range::unknown)
+            .intersect(&range);
     }
-    part.range
-        .get_or_insert_with(Range::unknown)
-        .intersect(&range);
 }
 
 fn negated_gate(ty: &Type, gates: &[TypeName]) -> bool {
@@ -1188,4 +1313,9 @@ pub(crate) fn frequency(module: &Module, span: Span) -> Frequency {
     } else {
         Frequency::Once
     }
+}
+
+/// These limits carry no meaning and never participate in unification.
+pub(crate) fn modifier(ty: &Type) -> bool {
+    matches!(ty, Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "Bits" | "Size" | "Compile" | "Init"))
 }

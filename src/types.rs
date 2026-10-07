@@ -21,6 +21,8 @@ pub struct TypeName {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     Unit,
+    /// A literal number argument of a holding or container.
+    Number(crate::token::Magnitude),
     Var(Var),
     /// A rigid variable, written in an annotation.
     Rigid(String),
@@ -90,14 +92,16 @@ impl Type {
                 parameter.without_limits(),
                 result.without_limits(),
             ),
-            Self::Unit | Self::Var(_) | Self::Rigid(_) => self.clone(),
+            Self::Unit | Self::Number(_) | Self::Var(_) | Self::Rigid(_) => {
+                self.clone()
+            }
         }
     }
 
     /// The inference variables in this type, in order of appearance.
     pub fn variables(&self, out: &mut Vec<Var>) {
         match self {
-            Self::Unit | Self::Rigid(_) => {}
+            Self::Unit | Self::Number(_) | Self::Rigid(_) => {}
             Self::Var(var) => {
                 if !out.contains(var) {
                     out.push(*var);
@@ -158,7 +162,9 @@ impl Type {
             Self::Function { parameter, result } => {
                 Self::function(parameter.rehome(origin), result.rehome(origin))
             }
-            Self::Unit | Self::Var(_) | Self::Rigid(_) => self.clone(),
+            Self::Unit | Self::Number(_) | Self::Var(_) | Self::Rigid(_) => {
+                self.clone()
+            }
         }
     }
 
@@ -344,7 +350,7 @@ pub(crate) fn replace(ty: &Type, fresh: &[(Var, Type)]) -> Type {
             .iter()
             .find(|(old, _)| old == var)
             .map_or_else(|| ty.clone(), |(_, new)| new.clone()),
-        Type::Unit | Type::Rigid(_) => ty.clone(),
+        Type::Unit | Type::Number(_) | Type::Rigid(_) => ty.clone(),
         Type::Named { name, arguments } => Type::Named {
             name: name.clone(),
             arguments: arguments.iter().map(|a| replace(a, fresh)).collect(),
@@ -422,7 +428,7 @@ impl Subst {
             Type::Var(var) => self
                 .get(*var)
                 .map_or_else(|| ty.clone(), |bound| self.apply(bound)),
-            Type::Unit | Type::Rigid(_) => ty.clone(),
+            Type::Unit | Type::Number(_) | Type::Rigid(_) => ty.clone(),
             Type::Named { name, arguments } => Type::Named {
                 name: name.clone(),
                 arguments: arguments.iter().map(|a| self.apply(a)).collect(),
@@ -498,6 +504,7 @@ impl Subst {
                 Ok(())
             }
             (Type::Unit, Type::Unit) => Ok(()),
+            (Type::Number(a), Type::Number(b)) if a == b => Ok(()),
             (Type::Rigid(a), Type::Rigid(b)) if a == b => Ok(()),
             (
                 Type::Named {
@@ -632,7 +639,7 @@ impl Type {
     /// The declared names in this type, each with its origin.
     fn declared<'a>(&'a self, out: &mut Vec<&'a TypeName>) {
         match self {
-            Self::Unit | Self::Var(_) | Self::Rigid(_) => {}
+            Self::Unit | Self::Number(_) | Self::Var(_) | Self::Rigid(_) => {}
             Self::Named { name, arguments } => {
                 out.push(name);
                 for argument in arguments {
@@ -708,6 +715,7 @@ fn write(
 ) -> fmt::Result {
     match ty {
         Type::Unit => f.write_str("()"),
+        Type::Number(n) => write!(f, "{n}"),
         Type::Var(var) => match names.iter().find(|(v, _)| v == var) {
             Some((_, name)) => f.write_str(name),
             // Every variable is named before writing.
@@ -807,7 +815,7 @@ impl Subst {
                     stack.push((meaning, depth + 1));
                 }
                 Type::Array { element, .. } => stack.push((element, depth + 1)),
-                Type::Unit | Type::Rigid(_) => {}
+                Type::Unit | Type::Number(_) | Type::Rigid(_) => {}
             }
         }
         false

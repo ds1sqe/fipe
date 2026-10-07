@@ -178,9 +178,9 @@ fn declaration_files_report_each_unchecked_form_once() {
     use Unchecked as U;
     for (input, form, spelling) in [
         ("pub f: A * B -> C", U::Tuple, "A * B"),
-        ("pub f: Bits<8> -> C", U::Number, "8"),
+        ("pub f: Bits<n> -> C", U::Number, "n"),
         ("pub f: [A; n] -> C", U::Number, "n"),
-        ("pub f: Bits<8>", U::Number, "8"),
+        ("pub f: Bits<n>", U::Number, "n"),
         ("x = (1, 2)", U::Tuple, "(1, 2)"),
         ("x = 10ms", U::Affix, "10ms"),
     ] {

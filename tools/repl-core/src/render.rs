@@ -97,6 +97,7 @@ pub fn resolve(reason: &resolve::Reason, at: &Context) -> String {
         R::PrivateField { field } => format!("field `{field}` is private"),
         R::PrivateMember { member } => format!("member `{member}` is private"),
         R::NotYetChecked { form } => format!("{form} is not yet checked"),
+        R::TimingForm => String::from("a timing form takes exactly one operand; its name is not a value or pattern"),
         R::NumericName { upper } => {
             format!("numeric types are uppercase: write `{upper}`")
         }
@@ -227,7 +228,11 @@ fn origin_name(origin: &resolve::Origin) -> String {
 }
 
 /// Render a plan entry without exposing byte offsets to the reader.
-pub fn check(check: &fipe::typed::Check, location: Option<&str>) -> String {
+pub fn check(
+    check: &fipe::typed::Check,
+    location: Option<&str>,
+    test: Option<&str>,
+) -> String {
     use fipe::typed::Place;
     let mut place = match &check.place_kind {
         Place::Binding(name) => format!("binding {name}"),
@@ -245,8 +250,12 @@ pub fn check(check: &fipe::typed::Check, location: Option<&str>) -> String {
         place.push_str(", ");
         place.push_str(fact);
     }
+    let limit = test.map_or_else(
+        || check.name.clone(),
+        |test| format!("{}: {}", check.name, test.trim()),
+    );
     format!(
-        "eval, {}: {place}, against {} ({})\n",
-        check.frequency, check.name, check.reason
+        "{}, {}: {place}, against {limit} ({})\n",
+        check.phase, check.frequency, check.reason
     )
 }

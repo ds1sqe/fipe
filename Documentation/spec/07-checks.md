@@ -17,9 +17,16 @@ Init is ordinary evaluation of a module's bindings, once, under the same
 evaluator and charges; the phase is a label. Pure code reaches no host
 command, no `log` and nothing of a hatch; a float member is pure for the
 compile phase only when IEEE 754 rounds it correctly, so `sin` is not. A
-host constant is part of the checked unit, as the budget is. The compile
+host constant is a host declaration with a written value, exact and part
+of the checked unit, as the budget is. The compile
 budget is an allowance per evaluation, in the run's units, set by the
 host and part of the checked unit.
+
+The pure float members are the operators, comparisons, `sqrt`, the four
+roundings and the number conversions; `sin`, `cos`, `atan2` and `hypot`
+are not. Purity follows names, called or passed, through each binding
+group. A member at an unknown head is pure only when every member of
+that name in the checked unit is pure.
 
 ## Entry and outcome
 
@@ -74,17 +81,28 @@ phase: the value is then prepared in that phase, pure and within the
 budget, and is exact; a value that cannot be ready is a check error. The
 demand is read before anything is evaluated, and an effect is never moved
 out of the function that holds it. A parameter's phase is eval: a timing
-limits a binding, never a parameter, since a body is checked once.
+limits only a binding annotation, never another place, since a body is
+checked once. A demand moves pure code only: a host call is init only
+when it stands in a module-level binding outside every arm. A bare
+expression line is eval; a session binding is init. Names keep their
+binding value's phase across lines and modules. Pure calls take the
+latest phase of their callee and arguments; parameters are eval.
 `Compile (test)` in a limit asks that the truth of the test be known at
 compile time, by §What is known, not that `self` be. There is no `prove`
-and no `compile` word.
+and no `compile` word. `Compile` and `Init` are documented prelude names
+and may be shadowed. Their expression forms take exactly one operand;
+piping into them or passing the names as values is a check error.
 
 ## The plan
 
 The checker lists every entry left open: its place, its limit, its phase,
 the reason (an unknown input, no rule, the budget) and how often it runs:
-once, per call, per element. The REPL shows it with `:checks`, and the
-[embedding API](../api/09-embed.md) returns it with the checked unit.
+once, per call, per element. An open test is init at a module-level binding,
+eval inside an arm or on a bare expression line, and compile on an exact
+value or a value demanded at compile. Until evaluation is available, tests
+needing it stay open as "compile-time evaluation"; an open `Compile (test)`
+on any other value is a check error. The REPL shows it with `:checks`, and
+the [embedding API](../api/09-embed.md) returns it with the checked unit.
 
 ```text
 :checks sum2

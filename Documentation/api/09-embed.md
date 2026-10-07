@@ -99,18 +99,25 @@ loaded module. It reads syntax only and returns `None` without an owner.
 
 ~~~text
 typed::Check { place: Span, place_kind: typed::Place, limit: Span,
-               phase, reason, frequency }
+               phase, reason, frequency, test_count }
 typed::Place = Binding(String) | Parameter(Option<String>) | Result
              | Field { owner: String, name: String } | Element | Payload
 ~~~
 
-The phase is eval; timing adds other phases later. Reasons distinguish
+The phase is compile, init or eval. `test_count` counts the owning type's
+written tests, excluding its bases; when it exceeds one, `:checks` appends
+the written test from `limit` to the type name. Reasons distinguish
 an unknown input, no rule, compile-time evaluation and narrowing. Frequency
 is once, per call or per element. The place kind names a binding, parameter,
 result, field, element or payload. Spans identify the place itself where
 written and belong to the source containing
 the place or limit; imported declarations retain their source identity.
 An entry refuted by the known facts is an error in every session.
+
+A binding also retains its earliest phase and holding across session
+lines and file modules. `:t` prints `known at compile` or `known at init`
+and a holding such as `held Size<3>` or `held Size<1>, 3 of 8 bits`.
+Timings and holdings are checked and add no plan entry of their own.
 
 Known facts are separate from the inferred type: exact values, Integer
 ranges, names of limits passed, and construction parts. The REPL's `:t x`

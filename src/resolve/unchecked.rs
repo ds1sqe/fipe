@@ -18,7 +18,7 @@ pub enum Unchecked {
     /// A program's prefix or suffix on a number or quote; `b"…"` is
     /// checked as bytes.
     Affix,
-    /// A number argument, `Bits<8>`, or a number parameter, `[T; n]`.
+    /// A number parameter, `[T; n]`, or a holding on a type variable (06.7).
     Number,
     /// `a ++ b` on arrays.
     Concat,
@@ -78,6 +78,21 @@ pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
             _ => {}
         }
     }
+    let holdings: Vec<usize> = module
+        .types
+        .iter()
+        .filter_map(|ty| match &ty.kind {
+            TypeKind::Named { name, arguments }
+                if name.segments.len() == 1
+                    && matches!(name.segments[0].as_str(), "Bits" | "Size") =>
+            {
+                Some(arguments)
+            }
+            _ => None,
+        })
+        .flatten()
+        .map(|id| id.0)
+        .collect();
     let lengths: Vec<usize> = module
         .types
         .iter()
@@ -89,10 +104,14 @@ pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
     for (index, ty) in module.types.iter().enumerate() {
         let form = match &ty.kind {
             TypeKind::Tuple(_) => Unchecked::Tuple,
-            TypeKind::Number(_) if !lengths.contains(&index) => {
+            TypeKind::Number(_)
+                if !lengths.contains(&index) && !holdings.contains(&index) =>
+            {
                 Unchecked::Number
             }
-            TypeKind::Named { .. } if lengths.contains(&index) => {
+            TypeKind::Named { .. }
+                if lengths.contains(&index) || holdings.contains(&index) =>
+            {
                 Unchecked::Number
             }
             _ => continue,

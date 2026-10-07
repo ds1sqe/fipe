@@ -17,6 +17,14 @@ impl Magnitude {
         self.limbs.is_empty()
     }
 
+    /// Number of bits needed to represent this magnitude (zero needs none).
+    #[must_use]
+    pub fn bit_length(&self) -> usize {
+        self.limbs.last().map_or(0, |high| {
+            (self.limbs.len() - 1) * 64 + (64 - high.leading_zeros()) as usize
+        })
+    }
+
     /// The value, when it fits a `u64`.
     #[must_use]
     pub const fn to_u64(&self) -> Option<u64> {

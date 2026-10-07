@@ -54,7 +54,8 @@ parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays
 
 ## T4 — Limits and checks
 
-- Bit order inside a record held by `Bits` and `Size`.
+- Bit order and unused bits inside a record held by `Bits` and `Size`,
+  and the layout of a sum with payloads.
 - May literal patterns under a limit complete an arm set, as `0` and `1`
   under `Bit`? Not yet.
 - A default for a tuple: the tuple of its parts' defaults, when each has
@@ -100,13 +101,13 @@ operations on `Integer`.
 
 ## H1 — Host and backend observables
 
-Ruled 2026-09-29: `use` runs a module once where it stands and a cycle is
-a check error, and the compile budget and the strict session are host
-inputs ([host](09-host.md)). **Proposed:** identify modules by host-provided
-stable identity and fix a semantic charging schedule shared by backends,
-including `Integer` by operand size. Ruled 2026-09-30: the lexer has no
-bound on a number ([lexical](01-lexical.md) §Numbers). Specify closure environment capture,
-cancellation, cleanup failure, external byte charging, declaration
-validation and codec/formatter failure in the embedding contract. No
-Reovim paths, wire hashes or placeholder budget numbers become language
-constants. Tests replay one host response/effect trace on each backend.
+Ruled 2026-09-29: `use` runs a module once where it stands and a cycle is a
+check error, and the compile budget and the strict session are host inputs
+([host](09-host.md)). **Proposed:** identify modules by host-provided stable
+identity and fix a semantic charging schedule shared by backends, including
+`Integer` by operand size. Ruled 2026-09-30: the lexer has no bound on a
+number ([lexical](01-lexical.md) §Numbers). Specify closure environment
+capture, cancellation, cleanup failure, external byte charging, declaration
+validation and codec/formatter failure in the embedding contract. No Reovim
+paths, wire hashes or placeholder budget numbers become language constants.
+Tests replay one host response/effect trace on each backend.
