@@ -20,17 +20,12 @@ fn casts_are_recorded_at_places() {
             typed.casts
         );
     }
-    for text in ["f: F64 = 2", "2", "\"42\""] {
+    for text in ["f: F64 = 2", "2", "\"42\"", "n: I64 = 2.0"] {
         let (_, typed, errors) = check(text, &Declarations::new());
         assert!(errors.is_empty(), "{text}: {errors:?}");
         assert!(typed.casts.iter().all(Option::is_none));
     }
-    for text in [
-        "n: I64 = 2.5",
-        "n: I64 = 2.0",
-        "s: String = (x => x)",
-        "x: F64 = True",
-    ] {
+    for text in ["n: I64 = 2.5", "s: String = (x => x)", "x: F64 = True"] {
         assert!(!check(text, &Declarations::new()).2.is_empty(), "{text}");
     }
 }
@@ -160,5 +155,35 @@ fn byte_defaults_preserve_shape_without_changing_variable_binding() {
             .iter()
             .flatten()
             .any(|c| c.row == CastRow::Codec));
+    }
+}
+
+#[test]
+fn a_fraction_literal_at_an_integer_place_is_exact_or_refused() {
+    use fipe::infer::Reason;
+    for text in [
+        "n: I64 = 2.0",
+        "n: Integer = 1e3",
+        "n: U8 = 250e-1",
+        "n: I64 = -2.0e1",
+        "n: I64 = (2.0)",
+        "f: I64 -> I64 = x => x\nf (2.0)",
+    ] {
+        let (_, typed, errors) = check(text, &Declarations::new());
+        assert!(errors.is_empty(), "{text}: {errors:?}");
+        assert!(typed.casts.iter().all(Option::is_none), "{text}");
+    }
+    for text in [
+        "n: I64 = 2.5",
+        "n: I64 = (2.5)",
+        "n: I64 = ((25e-1))",
+        "f: I64 -> I64 = x => x\nf (2.5)",
+        "g: U8 -> U8 = x => x\ng 2.5",
+    ] {
+        let (_, _, errors) = check(text, &Declarations::new());
+        assert!(
+            errors.iter().any(|e| e.reason == Reason::NotExact),
+            "{text}: {errors:?}"
+        );
     }
 }

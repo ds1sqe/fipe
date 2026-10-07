@@ -133,6 +133,8 @@ pub enum Reason {
     },
     /// An integer literal outside its type's range.
     OutOfRange,
+    /// A fraction literal at an integer place that is not an integer.
+    NotExact,
     /// A refuted limit, or an open entry in a strict session.
     Limit {
         message: String,

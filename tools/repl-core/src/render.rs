@@ -195,6 +195,9 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::MissingField { name } => format!("missing field `{name}`"),
         R::Limit { message } => message.clone(),
         R::OutOfRange => "integer out of range for its type".into(),
+        R::NotExact => {
+            "not an integer: a literal at an integer place must be exact".into()
+        }
         R::Ambiguous { class } => {
             format!("ambiguous: `{class}` on an unknown type")
         }

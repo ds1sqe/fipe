@@ -428,6 +428,11 @@ impl Infer<'_> {
     }
 }
 
+/// A numeric meaning: the number row converts between any two.
+pub(super) fn numeric(ty: &Type) -> bool {
+    matches!(ty, Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "Integer" | "F32" | "F64"))
+}
+
 fn limited_conversion(
     target: &Type,
     source: &Type,
@@ -436,7 +441,6 @@ fn limited_conversion(
     if matches!(kind, "to" | "try") && matches!(target, Type::Limited { .. }) {
         let target_meaning = super::meaning(target);
         let source_meaning = super::meaning(source);
-        let numeric = |ty: &Type| matches!(ty, Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "Integer" | "F32" | "F64"));
         if target_meaning == source_meaning
             || (numeric(target_meaning) && numeric(source_meaning))
         {

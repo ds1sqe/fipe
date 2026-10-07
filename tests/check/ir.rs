@@ -1219,3 +1219,44 @@ fn indexed_main_free_meanings_are_not_hidden_arguments() {
         check_indices(&unit);
     }
 }
+
+#[test]
+fn a_whole_fraction_at_an_integer_place_is_handed_over_as_the_integer() {
+    let unit = |source: &str| {
+        let module = parse(lex(source)).unwrap();
+        check::check(
+            &module,
+            &Declarations::new(),
+            &[],
+            check::Options::default(),
+        )
+        .unwrap()
+    };
+    let integer = unit("n: U8 = 2.0");
+    let tables = integer.tables();
+    assert!(
+        tables.nodes.iter().any(|node| matches!(
+            &node.kind,
+            ir::Kind::Literal { form: ir::Form::Whole { magnitude, negative: false, .. }, .. }
+                if *magnitude == fipe::token::Magnitude::from(2)
+        )),
+        "{:?}",
+        tables.nodes
+    );
+    assert!(!tables.nodes.iter().any(|node| matches!(
+        node.kind,
+        ir::Kind::Literal {
+            form: ir::Form::Fraction { .. },
+            ..
+        }
+    )));
+    let float = unit("x: F64 = 2.0");
+    let tables = float.tables();
+    assert!(tables.nodes.iter().any(|node| matches!(
+        node.kind,
+        ir::Kind::Literal {
+            form: ir::Form::Fraction { .. },
+            ..
+        }
+    )));
+}

@@ -47,6 +47,9 @@ each once a defect: a row stays so the defect cannot return.
 | private field through a direct or deferred dot | private-field diagnostic naming the field |
 | `pq.Hidden 1` or `pq.Hidden { x: 1 }` with `secret: U64` private and no default | check error naming `secret`; the derived constructor exists outside only when every private field defaults |
 | `f = (n = f) => n`; `h = (n = 1) (m = h) => n + m` | check error at the default: it may not name its own binding |
+| `n: I64 = 2.0`; `n: Integer = 1e3`; `n: I64 = 2.5`; `n: I64 = (2.5)` | exact `2` and `1000`, no cast; a fraction that is no integer is a check error, grouped or not, never a run-time cast |
+| `to<U8> 300.0`; `to<U8> 2.5` | refuted as `U8 300` is; check error: not an integer |
+| `type V8: Vec<U8> where self.len < 5`, field `v: V8` | `v` defaults to `[]`, proved by the static checks; with `self.len > 0` it stays a spot |
 | `big = s => s.area > 10.0`; `big 1` | missing `area` at the argument |
 | plain member repeated in a later session impl | duplicate-member error |
 | repeated literal/member requirement; duplicate claim block; missing host members | one error per cause; missing members named |

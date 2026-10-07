@@ -419,7 +419,13 @@ impl Infer<'_> {
                 !matches!(kind.as_str(), "from" | "try_from" | "to" | "try");
             let source_slot =
                 usize::from(member && callee.self_slot == Some(0));
-            if filled.get(source_slot).is_some_and(Option::is_some) {
+            if let Some(Some(supply)) = filled.get(source_slot) {
+                self.read_literal_at_meaning(
+                    target,
+                    kind,
+                    supply,
+                    &slots[source_slot].ty,
+                );
                 self.default_literals(mark, &[], &[]);
                 let source = self.apply(&slots[source_slot].ty);
                 let converted = self.convert(target, kind, &source, stage);
@@ -1269,6 +1275,37 @@ impl Infer<'_> {
         is_default: bool,
     ) -> (Scheme, bool) {
         self.declared_context(home, slot, earlier, stage, is_default, None)
+    }
+
+    /// A numeric literal entering `to<T>` or `try<T>` on a limited
+    /// numeric type is read at the meaning it reaches: exact there or a
+    /// check error, and the gate then sees its value.
+    fn read_literal_at_meaning(
+        &mut self,
+        target: &Type,
+        kind: &str,
+        supply: &Supply,
+        slot: &Type,
+    ) {
+        let applied = self.apply(target);
+        let literal = match supply {
+            Supply::Expr(id) => super::casts::grouped_literal(self.module, *id),
+            _ => None,
+        };
+        if matches!(kind, "to" | "try")
+            && matches!(applied, Type::Limited { .. })
+            && super::conversions::numeric(super::meaning(&applied))
+            && matches!(
+                literal,
+                Some(
+                    crate::ast::Literal::Int { .. }
+                        | crate::ast::Literal::Float(_)
+                )
+            )
+        {
+            let meaning = super::meaning(&applied).clone();
+            self.hint(slot, &meaning);
+        }
     }
 
     pub(super) fn declared_context(

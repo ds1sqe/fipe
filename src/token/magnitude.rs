@@ -50,6 +50,52 @@ impl Magnitude {
         bits <= exponent && bits - trailing <= precision
     }
 
+    /// The integer a fractional spelling (`2.0`, `1e3`, `250e-1`) denotes
+    /// exactly, with its sign, when it denotes one. A shift of more than
+    /// `MAX_SHIFT` decimal places is not decided.
+    #[must_use]
+    pub fn whole_of_fraction(text: &str) -> Option<(bool, Self)> {
+        const MAX_SHIFT: u64 = 4096;
+        let (mantissa, exponent) =
+            text.split_once(['e', 'E']).unwrap_or((text, "0"));
+        let negative = mantissa.starts_with('-');
+        let mantissa = mantissa.trim_start_matches(['-', '+']);
+        let (whole, part) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let places =
+            u64::try_from(part.bytes().filter(|byte| *byte != b'_').count())
+                .ok()?;
+        let mut digits = alloc::string::String::from(whole);
+        digits.push_str(part);
+        let digits = Self::parse(&digits, 10)?;
+        let exponent_negative = exponent.starts_with('-');
+        let exponent =
+            Self::parse(exponent.trim_start_matches(['-', '+']), 10)?
+                .to_u64()?;
+        // The value is `digits` times ten to the `exponent` less `places`.
+        let (up, shift) = if exponent_negative {
+            (false, exponent.checked_add(places)?)
+        } else if exponent >= places {
+            (true, exponent - places)
+        } else {
+            (false, places - exponent)
+        };
+        if shift > MAX_SHIFT {
+            return None;
+        }
+        let scale = (0..shift)
+            .fold(Self::from(1), |scale, _| scale.multiply(&Self::from(10)));
+        let value = if up {
+            digits.multiply(&scale)
+        } else {
+            let (quotient, remainder) = digits.div_rem(&scale)?;
+            if !remainder.is_zero() {
+                return None;
+            }
+            quotient
+        };
+        Some((negative, value))
+    }
+
     /// Digits of `radix` 2, 8, 10 or 16, underscores skipped. `None` for
     /// another radix or a character that is not such a digit. Linear in
     /// the digits for a power of two, quadratic for decimal.

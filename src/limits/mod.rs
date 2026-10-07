@@ -1135,6 +1135,15 @@ impl Pass<'_> {
         };
 
         let mut known = literal_fact(literal);
+        if let Literal::Float(text) = literal {
+            if integer_type(self.typed.expr(id)) {
+                if let Some((negative, magnitude)) =
+                    crate::token::Magnitude::whole_of_fraction(text)
+                {
+                    known = exact(Integer::new(negative, magnitude));
+                }
+            }
+        }
         if !integer_type(self.typed.expr(id))
             && matches!(literal, Literal::Int { .. } | Literal::Float(_))
         {

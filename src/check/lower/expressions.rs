@@ -1,5 +1,33 @@
 use super::{form, ir, Index, Origin, Scope, Source, Type, Vec};
 
+/// A literal's form; a fraction the checker read as an integer is handed
+/// over as that integer.
+fn literal_form(
+    source: &Source<'_>,
+    id: crate::ast::ExprId,
+    literal: &crate::ast::Literal,
+) -> ir::Form {
+    let integer = source.typed.expr(id).is_some_and(|ty| {
+        matches!(crate::infer::meaning(ty), Type::Named { name, .. }
+            if name.origin == Origin::Prelude && name.name == "Integer")
+    });
+    let whole = match literal {
+        crate::ast::Literal::Float(text) if integer => {
+            crate::token::Magnitude::whole_of_fraction(text)
+        }
+        _ => None,
+    };
+    whole.map_or_else(
+        || form(literal),
+        |(negative, magnitude)| ir::Form::Whole {
+            negative,
+            digits: alloc::format!("{magnitude}").len(),
+            magnitude,
+            radix: 10,
+        },
+    )
+}
+
 impl Index {
     pub(super) fn expression(
         &mut self,
@@ -19,7 +47,7 @@ impl Index {
                     .contains_key(&site)
                     .then(|| self.chosen(source, span, None));
                 ir::Kind::Literal {
-                    form: form(literal),
+                    form: literal_form(source, id, literal),
                     reader,
                 }
             }

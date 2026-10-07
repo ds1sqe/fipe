@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     ast::{BinaryOp, ExprId, ExprKind, FieldValue, Literal, PipeOp},
-    resolve::{bytes, Target},
+    resolve::Target,
     token::Span,
     types::{Obligation, Type},
 };
@@ -204,20 +204,11 @@ impl Infer<'_> {
         expected: Option<&Expected>,
         span: Span,
     ) -> Type {
-        let lit = match literal {
-            Literal::Unit => return Type::Unit,
-            Literal::Int {
-                negative,
-                magnitude,
-                ..
-            } => Lit::Int {
-                negative: *negative,
-                magnitude: magnitude.clone(),
-            },
-            Literal::Float(_) => Lit::Float,
-            Literal::Str { .. } => Lit::Text,
-            Literal::Affixed(a) if bytes(a).is_some() => Lit::Bytes,
-            Literal::Affixed(_) => return self.fresh(),
+        if matches!(literal, Literal::Unit) {
+            return Type::Unit;
+        }
+        let Some(lit) = Lit::of(literal) else {
+            return self.fresh();
         };
         let ty = match expected {
             Some(e) => self.apply(&e.ty),

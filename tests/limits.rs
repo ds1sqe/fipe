@@ -90,7 +90,8 @@ fn user_tests_and_gates_check_the_meaning_and_entry() {
     assert_ne!(line(&mut session, "20 | Small").diagnostics, []);
     assert_ne!(line(&mut session, "300 | to<U8>").diagnostics, []);
     assert_eq!(line(&mut session, "300 | try<U8>").diagnostics, []);
-    assert_ne!(line(&mut session, "U8 2.0").diagnostics, []);
+    assert_eq!(line(&mut session, "U8 2.0").diagnostics, []);
+    assert_ne!(line(&mut session, "U8 2.5").diagnostics, []);
 }
 
 #[test]
@@ -1448,4 +1449,29 @@ fn a_record_field_default_enters_at_each_construction() {
     let test = line(&mut session, "type Q: Integer where 100 / self <= 10");
     assert_eq!(test.diagnostics, []);
     assert_eq!(test.checks, []);
+}
+
+#[test]
+fn a_fraction_literal_reaching_an_integer_meaning_meets_its_gate() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    let report = line(&mut session, "n: U8 = 2.0");
+    assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
+    assert_eq!(report.typed.unwrap().checks, []);
+    for text in ["h: U8 = 300.0", "u = to<U8> 300.0", "U8 (300.0)"] {
+        let report = line(&mut session, text);
+        let shown = format!("{:?}", report.diagnostics);
+        assert!(shown.contains("refuted"), "{text}: {shown}");
+    }
+    // `try` answers with a `Result`; nothing is refuted at compile time.
+    let report = line(&mut session, "v = try<U8> (300.0)");
+    assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
+    for text in ["w = to<U8> 2.5", "k: U8 = (2.5)"] {
+        let report = line(&mut session, text);
+        let shown = format!("{:?}", report.diagnostics);
+        assert!(shown.contains("NotExact"), "{text}: {shown}");
+    }
+    let report = line(&mut session, "t = to<U8> 2.0e2");
+    assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
+    assert_eq!(report.typed.unwrap().checks, []);
 }

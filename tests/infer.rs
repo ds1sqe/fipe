@@ -113,6 +113,7 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::MissingField { .. } => "MissingField",
         Reason::Limit { .. } => "Limit",
         Reason::OutOfRange => "OutOfRange",
+        Reason::NotExact => "NotExact",
         Reason::Ambiguous { .. } => "Ambiguous",
         Reason::ImportCycle => "ImportCycle",
         Reason::PrivateMember { .. } => "PrivateMember",
@@ -544,8 +545,9 @@ fn literal_operands_take_their_type_in_any_order() {
     assert_eq!(ty("2 < 2.5"), "Bool");
     assert_eq!(ty("1 + 1"), "Integer");
     assert_eq!(ty("y: U8 = 3\n300 + y"), "Integer");
-    // A float does not take an integer operand's type.
-    assert_eq!(kinds("y: U8 = 3\n2.5 + y"), [("Mismatch", "2.5")]);
+    // A fraction at an integer operand's type must be an integer.
+    assert_eq!(kinds("y: U8 = 3\n2.5 + y"), [("NotExact", "2.5")]);
+    assert_eq!(ty("y: U8 = 3\n2.0 + y"), "Integer");
 }
 
 #[test]

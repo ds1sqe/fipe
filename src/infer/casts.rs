@@ -30,6 +30,23 @@ const TABLE: [(CastRow, Meaning, Meaning); 6] = [
     (CastRow::Pack, Meaning::Packed, Meaning::Packed),
 ];
 
+/// The literal an expression is, through any groups around it: a literal
+/// is checked at compile time however it is parenthesized.
+pub(super) fn grouped_literal(
+    module: &crate::ast::Module,
+    mut id: ExprId,
+) -> Option<&crate::ast::Literal> {
+    loop {
+        match &module.expressions[id.0].kind {
+            crate::ast::ExprKind::Literal(literal) => return Some(literal),
+            crate::ast::ExprKind::Group(parts) if parts.len() == 1 => {
+                id = parts[0];
+            }
+            _ => return None,
+        }
+    }
+}
+
 impl Infer<'_> {
     fn cast_meaning(&mut self, ty: &Type, class: Meaning) -> bool {
         let ty = meaning(ty);
@@ -265,11 +282,12 @@ impl Infer<'_> {
             return self.check_expr(id, expected);
         };
         let target = self.apply(&expected.ty);
+        let literal = grouped_literal(self.module, id);
         if self.same_local_meaning(id, &target)
             || !self.cast_target(&target)
             || (matches!(
-                self.module.expressions[id.0].kind,
-                crate::ast::ExprKind::Literal(
+                literal,
+                Some(
                     crate::ast::Literal::Int { .. }
                         | crate::ast::Literal::Float(_)
                 )
@@ -316,31 +334,13 @@ impl Infer<'_> {
         {
             // Numeric literal exactness is decided by the existing literal checker.
             if row == CastRow::Number {
-                if let crate::ast::ExprKind::Literal(literal) =
-                    &self.module.expressions[id.0].kind
-                {
-                    let form = match literal {
-                        crate::ast::Literal::Int {
-                            negative,
-                            magnitude,
-                            ..
-                        } => Some(super::Lit::Int {
-                            negative: *negative,
-                            magnitude: magnitude.clone(),
-                        }),
-                        crate::ast::Literal::Float(_) => {
-                            Some(super::Lit::Float)
-                        }
-                        _ => None,
-                    };
-                    if let Some(form) = form {
-                        self.check_literal(
-                            form,
-                            &target,
-                            self.span(id),
-                            expected.span,
-                        );
-                    }
+                if let Some(form) = literal.and_then(super::Lit::of) {
+                    self.check_literal(
+                        form,
+                        &target,
+                        self.span(id),
+                        expected.span,
+                    );
                 }
             }
             self.record_cast(id, row, source, target.clone());

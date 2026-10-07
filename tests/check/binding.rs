@@ -922,3 +922,15 @@ fn literal_patterns_record_equality_and_preparation() {
     let (_, _, errors) = super::check(source, &Declarations::new());
     assert!(errors.iter().any(|error| matches!(&error.reason, Reason::MissingClaim { claim, .. } if claim.to_string() == "Eq")));
 }
+
+#[test]
+fn a_limited_container_type_defaults_when_the_empty_value_is_proved() {
+    assert_eq!(
+        ty("type V8: Vec<U8> where self.len < 5\ntype R4 { v: V8 }\nR4"),
+        "R4"
+    );
+    assert_eq!(
+        ty("type V9: Vec<U8> where self.len > 0\ntype R8 { v: V9 }\nR8"),
+        "V9 -> R8"
+    );
+}

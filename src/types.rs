@@ -303,9 +303,38 @@ pub(crate) enum Lit {
         negative: bool,
         magnitude: crate::token::Magnitude,
     },
-    Float,
+    /// `whole` is the integer the spelling denotes exactly, if any.
+    Float {
+        whole: Option<(bool, crate::token::Magnitude)>,
+    },
     Text,
     Bytes,
+}
+
+impl Lit {
+    /// The form of a written literal; `None` for `()` and an affix that
+    /// is not bytes.
+    pub(crate) fn of(literal: &crate::ast::Literal) -> Option<Self> {
+        use crate::ast::Literal;
+        Some(match literal {
+            Literal::Int {
+                negative,
+                magnitude,
+                ..
+            } => Self::Int {
+                negative: *negative,
+                magnitude: magnitude.clone(),
+            },
+            Literal::Float(text) => Self::Float {
+                whole: crate::token::Magnitude::whole_of_fraction(text),
+            },
+            Literal::Str { .. } => Self::Text,
+            Literal::Affixed(a) if crate::resolve::bytes(a).is_some() => {
+                Self::Bytes
+            }
+            Literal::Unit | Literal::Affixed(_) => return None,
+        })
+    }
 }
 
 /// `∀ variables. obligations ⇒ ty`.

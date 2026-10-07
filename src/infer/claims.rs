@@ -905,7 +905,10 @@ impl Infer<'_> {
                     ) =>
             {
                 if matches!(name.name.as_str(), "Vec" | "Deque") {
-                    return Some(length_fact(0.into()));
+                    return Some(Known {
+                        meaning: Some(name.clone()),
+                        ..length_fact(0.into())
+                    });
                 }
                 Some(Known {
                     boolean: (name.name == "Bool").then_some(false),

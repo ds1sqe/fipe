@@ -572,7 +572,7 @@ impl Infer<'_> {
             for form in &forms {
                 let kind = match form {
                     Lit::Int { .. } => "Whole",
-                    Lit::Float => "Fraction",
+                    Lit::Float { .. } => "Fraction",
                     Lit::Text => "Text",
                     Lit::Bytes => "Bytes",
                 };
@@ -607,7 +607,7 @@ impl Infer<'_> {
                 self.error(span, Reason::NoCommonMeaning { forms });
                 continue;
             }
-            let name = if forms.iter().any(|l| matches!(l, Lit::Float)) {
+            let name = if forms.iter().any(|l| matches!(l, Lit::Float { .. })) {
                 "F64"
             } else if forms.iter().any(|l| matches!(l, Lit::Int { .. })) {
                 "Integer"
@@ -688,10 +688,19 @@ impl Infer<'_> {
                 }
                 return;
             }
-            Lit::Float if float => return,
+            Lit::Float { .. } if float => return,
             Lit::Int { .. } if is_prelude(ty, "Integer") => return,
+            // A fraction at an integer place is the integer it spells
+            // exactly, or a check error (04-members §Conversions).
+            Lit::Float { whole: Some(_) } if is_prelude(ty, "Integer") => {
+                return;
+            }
+            Lit::Float { whole: None } if is_prelude(ty, "Integer") => {
+                self.error(span, Reason::NotExact);
+                return;
+            }
             Lit::Int { .. } => prelude("Integer"),
-            Lit::Float => prelude("F64"),
+            Lit::Float { .. } => prelude("F64"),
             Lit::Text if is_prelude(ty, "String") => return,
             Lit::Text => prelude("String"),
             Lit::Bytes if matches!(ty, Type::Named { name, arguments } if name.origin == Origin::Prelude && name.name == "Vec" && arguments.len() == 1 && is_prelude(super::meaning(&arguments[0]), "Integer")) => {
