@@ -298,6 +298,9 @@ pub struct Known {
     pub boolean: Option<bool>,
     pub names: Vec<crate::types::TypeName>,
     pub parts: Vec<(String, Self)>,
+    /// What is known of every element alike, when the parts are not
+    /// known one by one: the bytes of a text or a bytes literal are `U8`.
+    pub element: Option<alloc::boxed::Box<Self>>,
     pub constructor: Option<String>,
     pub narrowing: bool,
 }

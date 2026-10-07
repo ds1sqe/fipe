@@ -61,6 +61,7 @@ each once a defect: a row stays so the defect cannot return.
 | `kf: Key a => a -> Bool = p => p == p`, `Key: Eq & Show`, `kf 1` | written combination met by its parts |
 | session `type S: Show { f: Integer -> Integer }`, then its `Show` block | type line accepted; claim pending until block |
 | `g: Show -> String = s => s.show`; `h = n => g (n + 1)`; `h 2.5` | accepted; packing does not fix the outer parameter to `Integer` |
+| `g = a => { b => a + b }`; `g 1 2`; `compose inc inc 1` | the bound result, a function, takes the operands past the spot list; `inc 1 2` stays one argument too many |
 | exported type with mixed `pub` claim members across overloads | operator, dot and conversion reach every claim member |
 | cyclic bases, including bases with their own member limits | check error at the type declaration |
 | `Eq<E, E>` or `Add<A, A, A>` | excess type-argument error |
@@ -129,6 +130,9 @@ each once a defect: a row stays so the defect cannot return.
 | repeated module uses; `:checks module.member`; global `:checks` | entries unique, source identities preserved, owning function named |
 | exact String record field; limited F64 literal; unknown range | keep String and float spelling; omit unknown range; names list tested limits only |
 | private named constructor field and positional inputs | one private-field diagnostic, no repeated positional report |
+| `type Named: Shape where 0.0 < self.area`; `nn: Named = C 1.0`; `type PosS: Pos \| String`; `pp: PosS = 5` | the value packs as the base meaning and the test is entered; a literal takes its default meaning |
+| `put out "abc"`, `x: Vec<U8> = "abc"`, `put out n`, `b"\xC3\xA9"`, strict or not | no per-element entry: text shown or taken as bytes is `U8` by construction |
+| `dv8 = n => n / 8` | no divisor entry: a literal divisor is exact in every instance |
 
 ## REPL input and presentation
 

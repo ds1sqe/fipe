@@ -309,13 +309,13 @@ impl<'a> Infer<'a> {
                             matches!(l, crate::ast::Limit::Member { .. })
                         }) =>
                     {
-                        Some((parameters, *base))
+                        Some((parameters, *base, !limits.is_empty()))
                     }
                     _ => None,
                 },
                 Entry::Line(_) => None,
             });
-        let Some((parameters, base)) = declaration else {
+        let Some((parameters, base, tested)) = declaration else {
             return ty;
         };
         self.state.lowering.push(name.clone());
@@ -333,13 +333,17 @@ impl<'a> Infer<'a> {
             if crate::limits::modifier(&base) {
                 continue;
             }
+            // A base of member limits names a combination the type
+            // claims, unless the type tests it: then the base is a
+            // packed meaning and the type narrows it (06-limits
+            // §Declaration).
             let limits = self.member_limits(
                 &base,
                 &base,
                 Span::default(),
                 &mut Vec::new(),
             );
-            if !limits.is_empty() {
+            if !limits.is_empty() && !tested {
                 continue;
             }
             let meaning = match base {

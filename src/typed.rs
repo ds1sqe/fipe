@@ -149,6 +149,9 @@ pub struct Bound {
     pub defaults: Vec<(usize, DefaultValue)>,
     /// Unfilled spots in declaration order.
     pub open: Vec<usize>,
+    /// Operands past the spot list, applied in order to the bound result
+    /// when it is a function, each with the parameter it fills.
+    pub applied: Vec<(Type, ExprId)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -69,7 +69,10 @@ impl Infer<'_> {
         })
     }
 
+    /// A packed place: an `A | B`, or a meaning of member limits, and a
+    /// limited type narrowing either.
     pub(super) fn packed(&mut self, ty: &Type) -> bool {
+        let ty = super::meaning(ty);
         matches!(ty, Type::Either(_))
             || !self
                 .member_limits(ty, ty, Span::default(), &mut Vec::new())
@@ -86,6 +89,9 @@ impl Infer<'_> {
         if target == actual {
             return;
         }
+        // A limited packed type packs as its meaning; its tests are
+        // entered afterwards, as any limit is.
+        let target = super::meaning(target);
         if let Type::Either(parts) = target {
             if !parts
                 .iter()

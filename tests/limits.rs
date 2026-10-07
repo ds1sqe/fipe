@@ -1390,14 +1390,15 @@ fn a_cast_value_enters_by_its_meaning_alone() {
     assert!(short.checks.iter().all(|check| check.name != "Short"));
     assert_ne!(line(&mut session, "t: Short = \"abcdef\"").diagnostics, []);
     // A cast argument enters its parameter's place too.
-    let mut declarations = fipe::decl::Declarations::new();
-    declarations
-        .commands(include_str!("fixtures/host/commands.fipe"))
-        .unwrap();
-    let mut session = fipe::session::Session::new(declarations);
-    let report = line(&mut session, "put out (1, 2)");
+    let declared = line(&mut session, "shout: Short -> Integer = s => 0");
+    assert_eq!(declared.diagnostics, [], "{:?}", declared.diagnostics);
+    let report = line(&mut session, "shout (1, 2)");
     assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
-    assert_ne!(report.checks, []);
+    assert!(
+        report.checks.iter().any(|check| check.name == "Short"),
+        "{:?}",
+        report.checks
+    );
     let unit = report.unit.unwrap();
     assert!(
         unit.tables()
@@ -1474,4 +1475,100 @@ fn a_fraction_literal_reaching_an_integer_meaning_meets_its_gate() {
     let report = line(&mut session, "t = to<U8> 2.0e2");
     assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
     assert_eq!(report.typed.unwrap().checks, []);
+}
+
+#[test]
+fn a_limited_type_over_a_packed_base_narrows_it() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type Shape where self.area: F64",
+        "type C: Shape { r: F64 }",
+        "impl C: Shape { area = self => self.r }",
+        "type Named: Shape where 0.0 < self.area",
+        "type Pos: Integer where self > 0",
+        "type PosS: Pos | String",
+        "type Key: Eq & Show",
+        "type Key2: Key where True",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    // The value packs as the base and the type's test is entered.
+    let report = line(&mut session, "nn: Named = C 1.0");
+    assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
+    assert!(
+        report.checks.iter().any(|check| check.name == "Named"),
+        "{:?}",
+        report.checks
+    );
+    let packed = line(&mut session, "s: Shape = C 1.0");
+    assert_eq!(packed.diagnostics, []);
+    let again = line(&mut session, "n2: Named = s");
+    assert_eq!(again.diagnostics, [], "{:?}", again.diagnostics);
+    assert_ne!(line(&mut session, "bad: Named = 1").diagnostics, []);
+    // A literal at a named `A | B` takes its default meaning.
+    for text in ["pp: PosS = 5", "r: PosS = \"a\"", "k: Key2 = 5"] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn bytes_and_shown_text_enter_a_byte_place_whole() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .commands(include_str!("fixtures/host/commands.fipe"))
+        .unwrap();
+    for strict in [false, true] {
+        let mut session = fipe::session::Session::new(declarations.clone());
+        session.strict(strict);
+        for text in [
+            "put out \"abc\"",
+            "x: Vec<U8> = \"abc\"",
+            "s = \"abc\"",
+            "s | put out",
+            "n = 5",
+            "put out n",
+            "rb: Vec<U8> = b\"\\xC3\\xA9\"",
+            "sv: Vec<U8> = x",
+            "put out (1, 2)",
+        ] {
+            let report = line(&mut session, text);
+            assert_eq!(
+                report.diagnostics,
+                [],
+                "{text} strict={strict}: {:?}",
+                report.diagnostics
+            );
+            assert_eq!(report.checks, [], "{text}: {:?}", report.checks);
+        }
+    }
+    // A limit on the bytes themselves is still entered or decided.
+    let mut session = fipe::session::Session::new(declarations);
+    let short = line(&mut session, "type Short: Vec<U8> where self.len < 3");
+    assert_eq!(short.diagnostics, []);
+    assert_ne!(line(&mut session, "t: Short = \"abcdef\"").diagnostics, []);
+    assert_ne!(line(&mut session, "u: Short = b\"abcd\"").diagnostics, []);
+    let open = line(&mut session, "f = n => { v: Short = show n }");
+    assert_eq!(open.diagnostics, [], "{:?}", open.diagnostics);
+    assert_eq!(open.checks.len(), 1, "{:?}", open.checks);
+    assert_eq!(open.checks[0].name, "Short");
+}
+
+#[test]
+fn a_literal_divisor_is_exact_in_a_generic_function() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "dv8 = n => n / 8",
+        "dir = (width = 80) (cols = (width / 8)) => cols",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+        assert_eq!(report.checks, [], "{text}: {:?}", report.checks);
+    }
+    let open = line(&mut session, "dv = n d => n / d");
+    assert_eq!(open.diagnostics, []);
+    assert_eq!(open.checks.len(), 1, "{:?}", open.checks);
+    assert!(open.checks[0].when_integer);
 }

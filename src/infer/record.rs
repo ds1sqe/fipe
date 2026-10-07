@@ -435,6 +435,9 @@ pub(super) fn apply_bound(
     for (_, ty) in &mut binding.spots {
         *ty = subst.apply(ty);
     }
+    for (ty, _) in &mut binding.applied {
+        *ty = subst.apply(ty);
+    }
     for (_, default) in &mut binding.defaults {
         apply_default(default, subst);
     }
@@ -626,6 +629,7 @@ impl Infer<'_> {
                 supplies,
                 defaults: Vec::new(),
                 open: Vec::new(),
+                applied: Vec::new(),
             },
         );
     }

@@ -249,14 +249,18 @@ impl Pass<'_> {
         } else if !known.parts.iter().any(|(name, k)| {
             name == "len" && k.range == Some(Range::exact(0.into()))
         }) {
+            // Elements known alike, the bytes of a text, meet the limits
+            // they have passed; otherwise nothing is known of one.
+            let each =
+                known.element.as_deref().cloned().unwrap_or_else(|| Known {
+                    narrowing: known.narrowing,
+                    ..Known::default()
+                });
             self.enter_part(
                 Place::Element,
                 crate::ir::Projection::Element,
                 element,
-                &Known {
-                    narrowing: known.narrowing,
-                    ..Known::default()
-                },
+                &each,
                 place,
                 Frequency::PerElement,
             );

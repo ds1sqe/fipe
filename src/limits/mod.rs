@@ -333,6 +333,16 @@ impl Pass<'_> {
             Some(_) => Known::default(),
             None => self.value(id),
         };
+        // Text shown or taken as bytes is `Vec<U8>` by construction, so
+        // its elements meet that place; only their count is unknown.
+        if cast.as_ref().is_some_and(|cast| {
+            matches!(
+                cast.row,
+                crate::typed::CastRow::Bytes | crate::typed::CastRow::Show
+            ) && bytes_place(&cast.to)
+        }) {
+            known.element = Some(alloc::boxed::Box::new(self.byte_facts()));
+        }
         known.pure = self.pure_expression(id);
         known.phase = self.expression_phase(id);
         known.demanded |= call_head(self.module, id).and_then(|callee| {
@@ -1128,6 +1138,20 @@ impl Pass<'_> {
             },
         }
     }
+    /// What a byte is known to be: a `U8`, with its chain of limits.
+    fn byte_facts(&self) -> Known {
+        let mut known = Known::default();
+        self.named_facts(
+            &TypeName {
+                origin: Origin::Prelude,
+                name: String::from("U8"),
+            },
+            &mut known,
+            &mut Vec::new(),
+        );
+        known
+    }
+
     fn literal_value(&self, id: ExprId) -> Known {
         let expression = &self.module.expressions[id.0];
         let ExprKind::Literal(literal) = &expression.kind else {
@@ -1142,6 +1166,16 @@ impl Pass<'_> {
                 {
                     known = exact(Integer::new(negative, magnitude));
                 }
+            }
+        }
+        if let Literal::Affixed(affixed) = literal {
+            // A bytes literal is exact: its length, and every byte a `U8`.
+            if let Some(bytes) = crate::resolve::bytes(affixed) {
+                known.parts.push((
+                    String::from("len"),
+                    exact(Integer::from(bytes.len() as u64)),
+                ));
+                known.element = Some(alloc::boxed::Box::new(self.byte_facts()));
             }
         }
         if !integer_type(self.typed.expr(id))
@@ -1208,7 +1242,19 @@ impl Pass<'_> {
             && (integer_type(self.typed.expr(*right)) || when_integer)
             && self.divisor_entered(expression.span)
         {
-            let range = b.range.clone().unwrap_or_else(Range::unknown);
+            // A literal divisor is exact whatever meaning the instance
+            // gives it (07-checks §What is known 1): no entry for `n / 8`.
+            let literal = match &self.module.expressions[right.0].kind {
+                ExprKind::Literal(literal @ Literal::Int { .. })
+                    if when_integer =>
+                {
+                    literal_fact(literal).range
+                }
+                _ => None,
+            };
+            let range = literal
+                .or_else(|| b.range.clone())
+                .unwrap_or_else(Range::unknown);
             if !when_integer && range == Range::exact(0.into()) {
                 self.errors.push(Error {
                     span: *operator,
@@ -1640,6 +1686,24 @@ impl Pass<'_> {
             _ => (),
         }
     }
+}
+
+/// A `Vec<U8>` place, the bytes of a text.
+fn bytes_place(ty: &Type) -> bool {
+    let Type::Named { name, arguments } = crate::infer::meaning(ty) else {
+        return false;
+    };
+    let [element] = &arguments[..] else {
+        return false;
+    };
+    let element = match element {
+        Type::Limited { name, .. } => &**name,
+        other => other,
+    };
+    name.origin == Origin::Prelude
+        && name.name == "Vec"
+        && matches!(element, Type::Named { name, .. }
+            if name.origin == Origin::Prelude && name.name == "U8")
 }
 
 fn integer_type(ty: Option<&Type>) -> bool {

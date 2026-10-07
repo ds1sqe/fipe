@@ -1260,3 +1260,34 @@ fn a_whole_fraction_at_an_integer_place_is_handed_over_as_the_integer() {
         }
     )));
 }
+
+#[test]
+fn operands_past_the_spot_list_lower_to_a_call_of_the_bound_call() {
+    let module = parse(lex("g = a => { b => a + b }\ng 1 2")).unwrap();
+    let unit = check::check(
+        &module,
+        &Declarations::new(),
+        &[],
+        check::Options::default(),
+    )
+    .unwrap();
+    let tables = unit.tables();
+    let outer = &tables.nodes[*unit.main.last().unwrap()];
+    let ir::Kind::Call {
+        callee, supplies, ..
+    } = &outer.kind
+    else {
+        panic!("{:?}", outer.kind)
+    };
+    assert_eq!(supplies.len(), 1);
+    let inner = &tables.nodes[*callee];
+    assert!(
+        matches!(inner.ty, ir::Type::Function { .. }),
+        "{:?}",
+        inner.ty
+    );
+    assert!(matches!(
+        &inner.kind,
+        ir::Kind::Call { supplies, .. } if supplies.len() == 1
+    ));
+}

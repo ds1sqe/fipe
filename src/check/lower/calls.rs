@@ -85,12 +85,75 @@ impl Index {
             })
             .collect();
         let defaults = self.defaults(source, bound, &slots, span);
-        ir::Kind::Call {
+        let call = ir::Kind::Call {
             callee,
             slots,
             supplies,
             defaults,
             open: bound.open.clone(),
+        };
+        if bound.applied.is_empty() {
+            return call;
+        }
+        self.applied(source, scope, span, call, &bound.applied)
+    }
+
+    /// The operands past a spot list apply to the bound result: the bound
+    /// call is a node of its own, a function, and the stage's node applies
+    /// it to the operands as a call with one spot each.
+    fn applied(
+        &mut self,
+        source: &Source<'_>,
+        scope: &Scope,
+        span: crate::token::Span,
+        call: ir::Kind,
+        applied: &[(Type, crate::ast::ExprId)],
+    ) -> ir::Kind {
+        let id = source
+            .module
+            .expressions
+            .iter()
+            .position(|expression| expression.span == span)
+            .expect("stage expression");
+        let result = source
+            .typed
+            .expr(crate::ast::ExprId(id))
+            .expect("stage type")
+            .clone();
+        let function = applied
+            .iter()
+            .rev()
+            .fold(result, |result, (ty, _)| Type::function(ty.clone(), result));
+        let callee = self.node(&source.home, span, &function, call);
+        let slots = applied
+            .iter()
+            .map(|(ty, _)| {
+                let ty = self.ty(&source.home, ty);
+                let index = self.tables.borrow().slots.len();
+                self.tables.borrow_mut().slots.push(ir::Slot {
+                    ty,
+                    parameters: Vec::new(),
+                    hidden: Vec::new(),
+                    definition: None,
+                });
+                index
+            })
+            .collect();
+        let supplies = applied
+            .iter()
+            .enumerate()
+            .map(|(spot, (_, id))| ir::Supply {
+                spot,
+                value: scope.expression(*id),
+                element: false,
+            })
+            .collect();
+        ir::Kind::Call {
+            callee,
+            slots,
+            supplies,
+            defaults: Vec::new(),
+            open: Vec::new(),
         }
     }
 

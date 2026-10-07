@@ -586,3 +586,40 @@ mod claim_cases;
 
 #[path = "infer/claim_rules.rs"]
 mod claim_rules;
+
+#[test]
+fn operands_past_the_spot_list_apply_to_a_function_result() {
+    assert_eq!(ty("g = a => { b => a + b }\ng 1 2"), "Integer");
+    assert_eq!(
+        ty("h: Integer -> Integer -> Integer = a => { b => a + b }\nh 1 2"),
+        "Integer"
+    );
+    let compose = "compose = f g => { x => f (g x) }\ninc = n => n + 1\n";
+    assert_eq!(ty(&format!("{compose}compose inc inc 1")), "Integer");
+    assert_eq!(
+        ty("twice = f => { x => f (f x) }\ntwice (n => n + 1) 3"),
+        "Integer"
+    );
+    // A result that is no function, or a spot still open, keeps the error.
+    assert_eq!(kinds("inc = n => n + 1\ninc 1 2"), [("ExtraArgument", "2")]);
+    assert_eq!(
+        kinds("app = f x => f x\ninc = n => n + 1\napp inc 1 2"),
+        [("ExtraArgument", "2")]
+    );
+    let flags = kinds("type M { a: Bool, b: Bool }\nM True False");
+    assert_eq!(flags.len(), 2, "{flags:?}");
+    assert!(flags.iter().all(|(kind, _)| *kind == "ExtraArgument"));
+}
+
+#[test]
+fn a_limited_type_over_a_claimed_base_is_a_place_of_that_meaning() {
+    let shape = "type Shape where self.area: F64\ntype C: Shape { r: F64 }\nimpl C: Shape { area = self => self.r }\ntype Named: Shape where 0.0 < self.area\n";
+    assert_eq!(ty(&format!("{shape}nn: Named = C 1.0")), "Named");
+    assert_eq!(ty("type IS: Integer | String\nq: IS = 3"), "IS");
+    assert_eq!(
+        ty("type Pos: Integer where self > 0\ntype PosS: Pos | String\npp: PosS = 5"),
+        "PosS"
+    );
+    // Without a test the base names a combination the type claims.
+    assert_eq!(ty("type RS: Read & Show\nu: RS = 5"), "RS");
+}

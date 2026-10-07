@@ -395,7 +395,7 @@ impl Infer<'_> {
             filled[index] = Some(Supply::Typed(ty, span));
         }
         let consumed = self.flags(&slots, arguments, &mut filled);
-        self.positional(&slots, arguments, &consumed, &mut filled);
+        let extra = self.positional(&slots, arguments, &consumed, &mut filled);
         if let Some((ty, span)) = pipe {
             match filled.iter().rposition(Option::is_none) {
                 Some(index) => filled[index] = Some(Supply::Typed(ty, span)),
@@ -481,12 +481,17 @@ impl Infer<'_> {
             stage,
         );
         // Step 4: a defaulted spot closes; the rest stay open in order.
-        slots
+        let open = slots
+            .iter()
+            .zip(&filled)
+            .any(|(slot, supply)| supply.is_none() && !slot.default);
+        let result = slots
             .iter()
             .zip(&filled)
             .rev()
             .filter(|(slot, supply)| supply.is_none() && !slot.default)
-            .fold(result, |ty, (slot, _)| Type::function(slot.ty.clone(), ty))
+            .fold(result, |ty, (slot, _)| Type::function(slot.ty.clone(), ty));
+        self.apply_extra(result, extra, open, stage)
     }
 
     pub(super) fn record_constructors(&mut self) {
@@ -874,14 +879,16 @@ impl Infer<'_> {
         }
     }
 
-    /// Step 2: positional operands fill unfilled non-Bool spots in order.
+    /// Step 2: positional operands fill unfilled non-Bool spots in order;
+    /// those past the spot list are returned for the result to take.
     fn positional(
-        &mut self,
+        &self,
         slots: &[Slot],
         arguments: &[Argument],
         consumed: &[bool],
         filled: &mut [Option<Supply>],
-    ) {
+    ) -> Vec<ExprId> {
+        let mut extra = Vec::new();
         let trailing = slots
             .iter()
             .rposition(|slot| !self.is_bool(&slot.ty))
@@ -914,10 +921,62 @@ impl Infer<'_> {
                     filled[next] = Some(Supply::Expr(*value));
                 }
             } else {
-                self.error(argument.span, Reason::ExtraArgument);
-                self.expr(*value, None);
+                extra.push(*value);
             }
         }
+        extra
+    }
+
+    /// Step 4's tail: the bound result, a function, takes the operands
+    /// written past the spot list, as 08-evaluation's APP applies them.
+    fn apply_extra(
+        &mut self,
+        result: Type,
+        extra: Vec<ExprId>,
+        open: bool,
+        stage: Span,
+    ) -> Type {
+        if extra.is_empty() {
+            return result;
+        }
+        // A result still a variable may be a function, unless a claim on
+        // it says otherwise: `inc 1 2` has one argument too many.
+        let applied = self.apply(&result);
+        let function = match &applied {
+            Type::Function { .. } => true,
+            Type::Var(_) => !self.state.obligations.iter().any(|owed| {
+                self.state.subst.apply(owed.obligation.subject()) == applied
+            }),
+            _ => false,
+        };
+        let peeled = if open || !function {
+            None
+        } else {
+            self.peel(&result, extra.len())
+        };
+        let Some((parameters, rest)) = peeled else {
+            for operand in extra {
+                let span = self.span(operand);
+                self.error(span, Reason::ExtraArgument);
+                self.expr(operand, None);
+            }
+            return result;
+        };
+        for (operand, parameter) in extra.iter().zip(&parameters) {
+            let expected = Expected {
+                place_kind: crate::typed::Place::Parameter(None),
+                ty: parameter.clone(),
+                span: self.span(*operand),
+                spot: true,
+                cast: true,
+            };
+            self.expr(*operand, Some(&expected));
+        }
+        if let Some(bound) = self.state.bound.get_mut(&(stage.start, stage.end))
+        {
+            bound.applied = parameters.into_iter().zip(extra).collect();
+        }
+        rest
     }
 
     fn enter(
