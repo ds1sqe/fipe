@@ -1005,3 +1005,18 @@ fn a_file_default_names_the_file_s_own_type() {
         }
     }
 }
+
+#[test]
+fn dispatch_rows_keep_one_receiver_up_to_its_variable_names() {
+    let source = "a = { Just v => 1, Nothing => 0 }\nb = { Just v => 1, Nothing => 0 }\nsame = x y => x == y\nsame 1 2";
+    let (_, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let eq = typed.dispatch.iter().find(|d| d.name == "eq").unwrap();
+    let maybe: Vec<_> = eq
+        .rows
+        .iter()
+        .map(|row| row.receiver.to_string())
+        .filter(|receiver| receiver.starts_with("Maybe<"))
+        .collect();
+    assert_eq!(maybe.len(), 1, "{maybe:?}");
+}

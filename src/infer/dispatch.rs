@@ -15,8 +15,18 @@ impl Infer<'_> {
         if requests.is_empty() {
             return Vec::new();
         }
-        let mut receivers: Vec<_> =
-            shapes.iter().map(|shape| shape.ty.clone()).collect();
+        // Receivers are kept up to the names of their own variables: the
+        // rows for `Maybe<a>` and `Maybe<b>` are the same rows, and a unit
+        // of N arm lists over an unsolved input would otherwise try every
+        // request N times over a state that grows with N. A session's
+        // weak variable names a slot a later line may fix, so a receiver
+        // over one stays apart.
+        let weak = self.weak;
+        let mut receivers: Vec<Type> = Vec::new();
+        let mut keys: Vec<Type> = Vec::new();
+        for shape in shapes {
+            keep_receiver(&mut receivers, &mut keys, shape.ty.clone(), weak);
+        }
         let mut pending: Vec<_> = self
             .state
             .types
@@ -52,9 +62,8 @@ impl Infer<'_> {
                     | Type::Named { .. }
                     | Type::Tuple(_)
                     | Type::Array { .. }
-            ) && !receivers.contains(&ty)
-            {
-                receivers.push(ty);
+            ) {
+                keep_receiver(&mut receivers, &mut keys, ty, weak);
             }
         }
         requests
@@ -271,4 +280,37 @@ impl Infer<'_> {
             ty: self.apply(&callee.whole()),
         })
     }
+}
+
+/// Add `ty` to the receivers unless one differing only by the names of
+/// its own variables is there; `keys` holds each kept receiver renamed.
+fn keep_receiver(
+    receivers: &mut Vec<Type>,
+    keys: &mut Vec<Type>,
+    ty: Type,
+    weak: u32,
+) {
+    let key = renamed(&ty, weak);
+    if !keys.contains(&key) {
+        keys.push(key);
+        receivers.push(ty);
+    }
+}
+
+/// `ty` with its variables from `weak` on numbered from `weak` in order
+/// of appearance; the session's weak variables below it keep their names.
+fn renamed(ty: &Type, weak: u32) -> Type {
+    let mut vars = Vec::new();
+    ty.variables(&mut vars);
+    let names: Vec<_> = vars
+        .iter()
+        .filter(|var| var.0 >= weak)
+        .enumerate()
+        .map(|(index, var)| {
+            let fresh = u32::try_from(index)
+                .map_or(u32::MAX, |index| weak.saturating_add(index));
+            (*var, Type::Var(crate::types::Var(fresh)))
+        })
+        .collect();
+    crate::types::replace(ty, &names)
 }
