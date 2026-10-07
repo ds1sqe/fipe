@@ -100,7 +100,11 @@ impl Infer<'_> {
                 self.declared_value(origin, name, span)
             }
             Target::Constructor { origin, ty, name } => {
-                self.constructor(origin, ty, name)
+                let callee = self.constructor(origin, ty, name);
+                if let Some(field) = callee.sealed.clone() {
+                    self.error(span, Reason::NoConstructor { field });
+                }
+                callee
             }
             Target::SelfType => self.self_constructor(),
             Target::Members { head, members } => {

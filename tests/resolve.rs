@@ -834,3 +834,29 @@ fn gate_constructor_conflict_points_at_the_first_definition() {
     let errors = resolve(&parsed, &host(), &[]).unwrap_err();
     assert!(errors.iter().any(|error| matches!(error.reason, Reason::Duplicate { first } if first.start == 5 && first != error.span)), "{errors:?}");
 }
+
+#[test]
+fn a_default_may_not_name_the_binding_it_belongs_to() {
+    for text in [
+        "f = (n = f) => n",
+        "h = (n = 1) (m = h) => n + m",
+        "a = (n = 1) (m = (a 2)) => n + m",
+    ] {
+        let found = errors(text);
+        assert!(
+            found
+                .iter()
+                .any(|(reason, _)| *reason == Reason::SelfDefault),
+            "{text}: {found:?}"
+        );
+    }
+    // A local arm binding is the same case, not an enclosing local.
+    assert_eq!(
+        errors("g = x => { h = (m = h) => m\n  h 1 }"),
+        [(Reason::SelfDefault, Some("h"))]
+    );
+    // The body may name its binding; a default may name another one.
+    ok("f = n => f n");
+    ok("k = 5\nf = (m = k) => m");
+    ok("f = x => { g = (m = f) => m\n  g 1 }");
+}

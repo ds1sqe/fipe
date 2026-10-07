@@ -922,6 +922,9 @@ impl<'a> Infer<'a> {
             } if super::last(c) == name => Some(fields),
             _ => None,
         });
+        let inside = private
+            || core::ptr::eq(module, self.module)
+            || matches!(origin, Origin::This | Origin::Line(_));
         let fields: Vec<&crate::ast::Field> = if let Some(fields) = sum {
             fields.iter().collect()
         } else {
@@ -937,20 +940,23 @@ impl<'a> Infer<'a> {
                     Member::Field(field) => Some(field),
                     Member::Constructor { .. } => None,
                 })
-                // A private field outside its module is no spot.
-                .filter(|f| {
-                    private
-                        || f.public
-                        || core::ptr::eq(module, self.module)
-                        || matches!(origin, Origin::This | Origin::Line(_))
-                })
                 .collect()
         };
         let mut slots = Vec::new();
+        let mut sealed = None;
         for field in fields {
             let field_ty = self.lower(&scope, field.ty, &mut vars);
             let default = field.default.is_some()
                 || (sum.is_none() && self.default_available(&field_ty));
+            // A private field outside its module is no spot: it takes
+            // its default, and without one the derived constructor does
+            // not exist there.
+            if sum.is_none() && !inside && !field.public {
+                if !default && sealed.is_none() {
+                    sealed = Some(super::last(&field.name));
+                }
+                continue;
+            }
             slots.push(Slot {
                 place_kind: if sum.is_some() {
                     crate::typed::Place::Payload
@@ -981,6 +987,7 @@ impl<'a> Infer<'a> {
         callee.spots = Some(slots);
         callee.parameters = arguments;
         callee.home = Some(origin.clone()).filter(|o| *o != Origin::This);
+        callee.sealed = sealed;
         callee
     }
 

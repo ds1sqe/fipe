@@ -117,6 +117,7 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::ImportCycle => "ImportCycle",
         Reason::PrivateMember { .. } => "PrivateMember",
         Reason::PrivateField { .. } => "PrivateField",
+        Reason::NoConstructor { .. } => "NoConstructor",
     }
 }
 

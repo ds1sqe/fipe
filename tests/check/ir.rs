@@ -251,6 +251,79 @@ fn defaults_reject_enclosing_function_locals_at_the_name() {
 }
 
 #[test]
+fn a_default_naming_its_own_binding_is_refused_before_lowering() {
+    for source in [
+        "f = (n = f) => n\nf",
+        "h = (n = 1) (m = h) => n + m\nh",
+        "a = (n = 1) (m = (a 2)) => n + m",
+    ] {
+        let module = parse(lex(source)).unwrap();
+        let errors = check::check(
+            &module,
+            &Declarations::new(),
+            &[],
+            check::Options::default(),
+        )
+        .unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                check::Error::Resolve(error)
+                    if error.reason == fipe::resolve::Reason::SelfDefault
+            )),
+            "{source}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn no_derived_constructor_outside_over_a_private_field_without_default() {
+    let file = parse(lex("pub type Hidden { pub x: I64, secret: U64 }\n\
+         pub type Filled { pub x: I64, secret: U64 = 1 }\n\
+         pub type Listed { pub x: I64, secret: Vec<U8> }\n\
+         pub w = Hidden 1 2"))
+    .unwrap();
+    let files = [("pq".to_string(), file)];
+    let refused = |source: &str| {
+        let module = parse(lex(source)).unwrap();
+        let errors = check::check(
+            &module,
+            &Declarations::new(),
+            &files,
+            check::Options::default(),
+        )
+        .unwrap_err();
+        let [check::Error::Type(error)] = errors.as_slice() else {
+            panic!("{source}: {errors:?}")
+        };
+        assert_eq!(
+            error.reason,
+            fipe::infer::Reason::NoConstructor {
+                field: "secret".into()
+            },
+            "{source}"
+        );
+        source[error.span.start..error.span.end].to_string()
+    };
+    assert_eq!(refused("use pq\npq.Hidden 1"), "pq.Hidden");
+    assert_eq!(refused("use pq\nhh = pq.Hidden 1"), "pq.Hidden");
+    assert_eq!(refused("use pq\npq.Hidden { x: 1 }"), "pq.Hidden { x: 1 }");
+    // Every private field defaults, by declaration or by type: the
+    // constructor exists outside, and the module's own value is fine.
+    for source in ["use pq\npq.Filled 1", "use pq\npq.Listed 1", "use pq\npq.w"]
+    {
+        let module = parse(lex(source)).unwrap();
+        check::check(
+            &module,
+            &Declarations::new(),
+            &files,
+            check::Options::default(),
+        )
+        .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
+    }
+}
+
+#[test]
 fn indexed_constant_defaults_share_nodes() {
     let mut declarations = Declarations::new();
     declarations

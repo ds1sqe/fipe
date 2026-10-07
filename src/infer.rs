@@ -152,6 +152,11 @@ pub enum Reason {
     PrivateField {
         field: String,
     },
+    /// A record constructed outside its module while a private field
+    /// has no default: the derived constructor does not exist there.
+    NoConstructor {
+        field: String,
+    },
 }
 
 /// Type one resolved module. `files` are the file modules its `use`
@@ -514,6 +519,9 @@ struct Callee {
     /// The declaring module of a callee declared elsewhere.
     home: Option<Origin>,
     conversion: Option<(Type, String)>,
+    /// A private field with no default of a record declared elsewhere:
+    /// its derived constructor does not exist here.
+    sealed: Option<String>,
 }
 
 impl Callee {
@@ -528,6 +536,7 @@ impl Callee {
             parameters: Vec::new(),
             home: None,
             conversion: None,
+            sealed: None,
         }
     }
 

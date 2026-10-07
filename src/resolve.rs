@@ -147,6 +147,8 @@ pub struct Error {
 pub enum Reason {
     /// A default reads a local outside its earlier spots.
     DefaultScope,
+    /// A default names the binding it belongs to.
+    SelfDefault,
     UnknownName,
     /// A type without a test cannot be called as a gate.
     NoGate {
@@ -518,6 +520,9 @@ struct Resolver<'a> {
     parameters: Vec<String>,
     /// Every impl member of this module, by (type, name), for coherence.
     members: alloc::collections::BTreeMap<(String, String), (Span, bool)>,
+    /// The arm binding whose heads are being bound: its defaults may
+    /// not name it.
+    declaring: Option<Span>,
     errors: Vec<Error>,
     error_sites: alloc::collections::BTreeMap<Span, Vec<usize>>,
 }
@@ -564,6 +569,7 @@ impl<'a> Resolver<'a> {
             parameters: Vec::new(),
             members: alloc::collections::BTreeMap::new(),
             errors: Vec::new(),
+            declaring: None,
             error_sites: alloc::collections::BTreeMap::new(),
         }
     }
@@ -1405,7 +1411,7 @@ impl<'a> Resolver<'a> {
         if let Some(name) = recursive {
             self.local(name);
         }
-        self.expr(*value, Position::Other);
+        self.arms_of(recursive, *value);
         match &self.module.patterns[pattern.0].kind {
             PatternKind::Name(name) if name.is_uppercase() => {
                 self.error(name.span, Reason::CaseRule { uppercase: false });
@@ -1550,11 +1556,20 @@ impl<'a> Resolver<'a> {
         if let Some(name) = recursive {
             self.local(name);
         }
-        self.expr(value, Position::Other);
+        self.arms_of(recursive, value);
         if recursive.is_none() {
             self.bind(pattern);
         }
         self.scopes.pop();
+    }
+
+    /// The value of a binding; an arm binding's arms know their binding
+    /// while their heads are bound.
+    fn arms_of(&mut self, recursive: Option<&'a Name>, value: ExprId) {
+        let outer = self.declaring;
+        self.declaring = recursive.map(|name| name.span);
+        self.expr(value, Position::Other);
+        self.declaring = outer;
     }
 
     /// A callee stands in value position; an argument may be text.
@@ -1720,10 +1735,14 @@ impl<'a> Resolver<'a> {
         for pattern in &arm.patterns {
             self.bind(*pattern);
         }
+        // The body may name its binding; a default of a function written
+        // in it belongs to that function.
+        let declaring = self.declaring.take();
         if let Some(guard) = arm.guard {
             self.expr(guard, Position::Other);
         }
         self.expr(arm.body, Position::Other);
+        self.declaring = declaring;
         self.scopes.pop();
     }
 
@@ -2346,8 +2365,10 @@ impl Resolver<'_> {
             let Target::Local { site } = root else {
                 continue;
             };
-            if allowed.contains(root)
-                || (span.start <= site.start && site.end <= span.end)
+            let own = self.declaring == Some(*site);
+            if !own
+                && (allowed.contains(root)
+                    || (span.start <= site.start && site.end <= span.end))
             {
                 continue;
             }
@@ -2359,10 +2380,15 @@ impl Resolver<'_> {
                     name.end = name.start + first.len();
                 }
             }
-            errors.push(name);
+            errors.push((name, own));
         }
-        for span in errors {
-            self.error(span, Reason::DefaultScope);
+        for (span, own) in errors {
+            let reason = if own {
+                Reason::SelfDefault
+            } else {
+                Reason::DefaultScope
+            };
+            self.error(span, reason);
         }
     }
 }

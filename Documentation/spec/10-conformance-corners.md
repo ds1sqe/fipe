@@ -45,6 +45,8 @@ each once a defect: a row stays so the defect cannot return.
 | `impl Missing { … }` | unknown type once, no foreign-module error |
 | comparison of two session types both named `A` | diagnostic qualifies distinct session origins |
 | private field through a direct or deferred dot | private-field diagnostic naming the field |
+| `pq.Hidden 1` or `pq.Hidden { x: 1 }` with `secret: U64` private and no default | check error naming `secret`; the derived constructor exists outside only when every private field defaults |
+| `f = (n = f) => n`; `h = (n = 1) (m = h) => n + m` | check error at the default: it may not name its own binding |
 | `big = s => s.area > 10.0`; `big 1` | missing `area` at the argument |
 | plain member repeated in a later session impl | duplicate-member error |
 | repeated literal/member requirement; duplicate claim block; missing host members | one error per cause; missing members named |

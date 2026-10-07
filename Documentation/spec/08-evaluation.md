@@ -37,12 +37,12 @@ arguments are kept in order until the signature is known, then bound:
 4. Each remaining function spot takes its declared default; a record field
    takes its declared default, else its type default, in declaration order;
    a default may name the spots before it and module-level names, never a
-   local of an enclosing function, so `dir (width = 80) (cols = (width / 8))
-   => …` is well defined. A spot with neither stays open. The result is a
-   function of the open spots in order, or the body result. Construction is
-   application: `Point 1` fills `y` from its default, and `Just` stays a
-   function; construction tests the meaning's limits ([limits](06-limits.md)
-   §Gates).
+   local of an enclosing function nor the binding it belongs to, so
+   `dir (width = 80) (cols = (width / 8)) => …` is well defined. A spot
+   with neither stays open. The result is a function of the open spots in
+   order, or the body result. Construction is application: `Point 1` fills
+   `y` from its default, and `Just` stays a function; construction tests
+   the meaning's limits ([limits](06-limits.md) §Gates).
 
 Each bound argument enters its spot ([checks](07-checks.md)). Duplicate
 supply, unknown flags, non-Bool chaining and extra arguments are check

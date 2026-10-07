@@ -682,7 +682,12 @@ impl Infer<'_> {
                 && !fields.iter().any(|f| super::last(&f.name) == field.name)
             {
                 let name = field.name;
-                self.error(span, Reason::MissingField { name });
+                let reason = if field.public {
+                    Reason::MissingField { name }
+                } else {
+                    Reason::NoConstructor { field: name }
+                };
+                self.error(span, reason);
             }
         }
         ty
