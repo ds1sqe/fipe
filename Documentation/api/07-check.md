@@ -85,8 +85,10 @@ head and is called like any other callable.
 
 Patterns are `Any`, `Slot`, `Literal`, `Constructor`, `Record`, `Side`,
 `Gate` with its tests, `Tag`, `List` and `Tuple`. A pipe stage remains a node
-so a debugger can step by stage. The plan retains the phase, reason and
-frequency of each open test.
+so a debugger can step by stage: a stage that calls lists the piped value,
+cast to its spot, among its supplies and is typed as its result; a stage
+that is a function value keeps its function type and the pipe applies it.
+The plan retains the phase, reason and frequency of each open test.
 
 A session unit holds its current line and indexes tables the session keeps.
 `Unit::tables()` reads those shared tables, including `session_meanings`;

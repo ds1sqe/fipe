@@ -35,6 +35,9 @@ pub struct Typed {
     pub dispatch: Vec<Dispatch>,
     /// Member chains in source order, including intermediate applications.
     pub accesses: alloc::collections::BTreeMap<(usize, usize), Vec<Access>>,
+    /// A type's member at the head of a member chain, keyed by the
+    /// chain's span; `selected` there is the chain's last step.
+    pub roots: alloc::collections::BTreeMap<(usize, usize), Root>,
     /// The line's own variables that became weak, by their weak number;
     /// a variable below `weak_before` is an earlier weak variable with
     /// that number.
@@ -270,6 +273,13 @@ pub struct FieldShape {
     pub ty: Type,
     pub default: Option<DefaultValue>,
     pub public: bool,
+}
+
+/// The type's member a dotted member chain starts from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Root {
+    pub selected: Selected,
+    pub meanings: Vec<Type>,
 }
 
 /// One checked step in a dotted member chain.

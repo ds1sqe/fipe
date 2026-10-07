@@ -281,6 +281,7 @@ struct State {
     default_instances:
         BTreeMap<(usize, usize, usize), crate::typed::DeclaredExpression>,
     accesses: BTreeMap<(usize, usize), Vec<crate::typed::Access>>,
+    roots: BTreeMap<(usize, usize), crate::typed::Root>,
     pattern_types: BTreeMap<usize, Type>,
     selected: BTreeMap<(usize, usize), crate::typed::Selected>,
     meaning_arguments: BTreeMap<(usize, usize), Vec<Type>>,
@@ -335,6 +336,7 @@ impl State {
             derived_defaults: BTreeMap::new(),
             constructor_fields: BTreeMap::new(),
             accesses: BTreeMap::new(),
+            roots: BTreeMap::new(),
             pattern_types: BTreeMap::new(),
             selected: BTreeMap::new(),
             meaning_arguments: BTreeMap::new(),
@@ -1478,6 +1480,11 @@ impl State {
                         steps.iter().map(|step| step.applied(subst)).collect(),
                     )
                 })
+                .collect(),
+            roots: self
+                .roots
+                .iter()
+                .map(|(site, root)| (*site, root.applied(subst)))
                 .collect(),
             schemes: self
                 .locals

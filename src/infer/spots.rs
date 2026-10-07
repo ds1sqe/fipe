@@ -108,7 +108,17 @@ impl Infer<'_> {
             }
             Target::SelfType => self.self_constructor(),
             Target::Members { head, members } => {
+                let root = matches!(**head, Target::TypeMember { .. });
                 let head = self.target(head, span);
+                if let (true, Some(selected)) = (root, &head.selected) {
+                    self.state.roots.insert(
+                        (span.start, span.end),
+                        crate::typed::Root {
+                            selected: selected.clone(),
+                            meanings: head.meanings.clone(),
+                        },
+                    );
+                }
                 let value = self.apply_callee(head, &[], None, span, None);
                 self.members(value, members, span)
             }
@@ -1189,7 +1199,7 @@ impl Infer<'_> {
             | ExprKind::Instance { .. }
             | ExprKind::Field { .. } => {
                 let callee = self.callee(id);
-                return self.apply_callee(callee, &[], pipe, span, expected);
+                self.apply_callee(callee, &[], pipe, span, expected)
             }
             _ => {
                 let result = self.fresh();
@@ -1198,7 +1208,9 @@ impl Infer<'_> {
                 return result;
             }
         };
-        self.state.types[id.0] = Some(Type::function(input, result.clone()));
+        // The stage's call lists the piped value among its supplies, so
+        // its node is the stage's result, not a function of the input.
+        self.state.types[id.0] = Some(result.clone());
         result
     }
 

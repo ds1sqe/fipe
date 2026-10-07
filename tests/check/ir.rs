@@ -136,6 +136,54 @@ fn indexed_raw_records_keep_instantiated_defaults() {
 }
 
 #[test]
+fn a_pipe_stage_that_calls_is_typed_as_its_result_after_the_cast() {
+    let module = parse(lex("a: U8 = 5\na | hypot 3")).unwrap();
+    let unit = check::check(
+        &module,
+        &Declarations::new(),
+        &[],
+        check::Options::default(),
+    )
+    .unwrap();
+    let tables = unit.tables();
+    let pipe = &tables.nodes[*unit.main.last().unwrap()];
+    let ir::Kind::Pipe { left, stage } = pipe.kind else {
+        panic!("{:?}", pipe.kind)
+    };
+    assert!(matches!(tables.nodes[left].kind, ir::Kind::Cast { .. }));
+    assert_eq!(tables.nodes[left].ty, pipe.ty);
+    assert_eq!(tables.nodes[stage].ty, pipe.ty);
+    assert!(matches!(
+        &tables.nodes[stage].kind,
+        ir::Kind::Call { supplies, .. } if supplies.len() == 2
+    ));
+}
+
+#[test]
+fn a_member_of_a_type_member_lowers_to_a_field_of_its_definition() {
+    let module = parse(lex(
+        "type P { x: Integer }\nimpl P { origin = Self 1 }\nP.origin.x",
+    ))
+    .unwrap();
+    let unit = check::check(
+        &module,
+        &Declarations::new(),
+        &[],
+        check::Options::default(),
+    )
+    .unwrap();
+    let tables = unit.tables();
+    let ir::Kind::Field { value, index: 0 } = tables.nodes[unit.main[0]].kind
+    else {
+        panic!("{:?}", tables.nodes[unit.main[0]].kind)
+    };
+    assert!(matches!(
+        tables.nodes[value].kind,
+        ir::Kind::Definition { .. }
+    ));
+}
+
+#[test]
 fn indexed_documentation_examples() {
     let mut declarations = Declarations::new();
     declarations

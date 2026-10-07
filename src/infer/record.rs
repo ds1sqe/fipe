@@ -536,6 +536,9 @@ pub(super) fn apply_recorded(
     for step in typed.accesses.values_mut().flatten() {
         *step = step.applied(subst);
     }
+    for root in typed.roots.values_mut() {
+        *root = root.applied(subst);
+    }
     for shape in &mut typed.shapes {
         shape.ty = subst.apply(&shape.ty);
         for base in &mut shape.bases {
@@ -625,6 +628,15 @@ impl Infer<'_> {
                 open: Vec::new(),
             },
         );
+    }
+}
+
+impl crate::typed::Root {
+    pub(super) fn applied(&self, subst: &crate::types::Subst) -> Self {
+        Self {
+            selected: self.selected.applied(subst),
+            meanings: self.meanings.iter().map(|ty| subst.apply(ty)).collect(),
+        }
     }
 }
 

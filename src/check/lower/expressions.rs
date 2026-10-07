@@ -333,6 +333,17 @@ impl Index {
                     meanings: Vec::new(),
                 }
             }
+            crate::resolve::Target::TypeMember { .. } => {
+                let root = &source.typed.roots[&(span.start, span.end)];
+                return self.selected(
+                    source,
+                    span,
+                    &root.selected,
+                    &root.meanings,
+                    ty,
+                    None,
+                );
+            }
             _ => unreachable!("member root selection"),
         };
         self.node(&source.home, span, ty, kind)
