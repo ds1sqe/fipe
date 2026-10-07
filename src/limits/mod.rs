@@ -463,25 +463,33 @@ impl Pass<'_> {
         }
     }
 
-    /// The facts a call or construction supplies to each spot by name.
+    /// The facts a call or construction supplies to each spot by name,
+    /// in declaration order; a spot left to its declared default says
+    /// what the default says, read with the spots before it.
     fn supplied_facts(&self, stage: Span) -> Vec<(String, Known)> {
-        self.typed
-            .supplied
-            .get(&(stage.start, stage.end))
-            .map(|values| {
-                values
-                    .iter()
-                    .map(|(name, supply)| {
-                        (name.clone(), self.supply_fact(supply))
+        let mut parts: Vec<(String, Known)> = Vec::new();
+        let Some(values) = self.typed.supplied.get(&(stage.start, stage.end))
+        else {
+            return parts;
+        };
+        for (name, supply) in values {
+            let fact = match supply {
+                crate::infer::Supply::Declared(origin, id) => {
+                    self.owner(origin).map_or_else(Known::default, |module| {
+                        spot_test(module, *id, &parts)
                     })
-                    .collect()
-            })
-            .unwrap_or_default()
+                }
+                other => self.supply_fact(other),
+            };
+            parts.push((name.clone(), fact));
+        }
+        parts
     }
 
     fn supply_fact(&self, supply: &crate::infer::Supply) -> Known {
         let get = |id: ExprId| self.typed.known[id.0].clone();
         match supply {
+            crate::infer::Supply::Declared(..) => Known::default(),
             crate::infer::Supply::Expr(id) => get(*id),
             crate::infer::Supply::Collected(ids) => Known {
                 parts: core::iter::once((
@@ -1484,7 +1492,15 @@ impl Pass<'_> {
         for field in fields {
             let name = field.name.segments.last().cloned().unwrap_or_default();
             let value = supplied
-                .and_then(|values| values.iter().find(|(n, _)| *n == name))
+                .and_then(|values| {
+                    values.iter().find(|(n, supply)| {
+                        *n == name
+                            && !matches!(
+                                supply,
+                                crate::infer::Supply::Declared(..)
+                            )
+                    })
+                })
                 .map(|(_, supplied)| self.supply_fact(supplied))
                 .or_else(|| {
                     field.default.map(|id| spot_test(module, id, &parts))

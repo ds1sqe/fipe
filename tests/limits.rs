@@ -339,6 +339,38 @@ fn declared_default_values_enter_their_spots() {
 }
 
 #[test]
+fn a_defaulted_spot_s_exact_default_settles_a_default_s_divisor() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    let declared = line(
+        &mut session,
+        "type Rd { n: Integer = 0, d: Integer = (10 / n) }",
+    );
+    assert_eq!(declared.diagnostics, []);
+    // Left to its default, `n` is exactly zero: refuted at the site.
+    assert_ne!(line(&mut session, "z = Rd").diagnostics, [], "bare");
+    assert_ne!(line(&mut session, "Rd { }").diagnostics, [], "record");
+    let proved = line(&mut session, "Rd -n 2");
+    assert_eq!(proved.diagnostics, []);
+    assert_eq!(proved.checks, [], "exact two: nothing runs");
+    // A default that is no literal is read with the spots before it.
+    let text = "type Ro { m: Integer, n: Integer = (m + 1), \
+                d: Integer = (10 / n) }";
+    assert_eq!(line(&mut session, text).diagnostics, []);
+    assert_eq!(line(&mut session, "Ro 5").checks, []);
+    assert_ne!(line(&mut session, "Ro -1").diagnostics, []);
+    let open = line(&mut session, "h = k => Ro k");
+    assert_eq!(open.diagnostics, []);
+    assert_eq!(open.checks.len(), 1, "{:?}", open.checks);
+    // A function spot's default the same way.
+    let dz = line(&mut session, "dz = (n = 0) (d = (10 / n)) => d");
+    assert_eq!(dz.diagnostics, []);
+    assert_ne!(line(&mut session, "dz").diagnostics, []);
+    assert_eq!(line(&mut session, "dz -n 1").diagnostics, []);
+    assert_eq!(line(&mut session, "dz 1").checks, []);
+}
+
+#[test]
 fn a_field_default_s_open_entry_is_listed_at_each_construction_site() {
     use fipe::typed::{Frequency, Phase};
     let mut declarations = fipe::decl::Declarations::new();

@@ -28,6 +28,9 @@ pub enum Supply {
     True(Span),
     /// A value typed already: the pipe's input or a dot's head.
     Typed(Type, Span),
+    /// A spot left to its declared default, in the callee's home: what
+    /// the default's expression says, read with the spots before it.
+    Declared(Origin, ExprId),
 }
 
 impl Infer<'_> {
@@ -452,7 +455,12 @@ impl Infer<'_> {
             .iter()
             .zip(&filled)
             .filter_map(|(slot, value)| {
-                Some((slot.name.clone()?, value.clone()?))
+                let name = slot.name.clone()?;
+                let supply = match value {
+                    Some(value) => value.clone(),
+                    None => Supply::Declared(home.clone(), slot.value?),
+                };
+                Some((name, supply))
             })
             .collect();
         self.state
@@ -746,7 +754,7 @@ impl Infer<'_> {
                     }));
                     continue;
                 }
-                None | Some(Supply::Default(_)) => None,
+                None | Some(Supply::Default(_) | Supply::Declared(..)) => None,
             };
             if let Some((span, source)) = source {
                 supplied.push((span.start, index, source));
