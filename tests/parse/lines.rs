@@ -313,10 +313,18 @@ fn records_are_recognised_by_lookahead_and_kept_out_of_heads() {
         panic!()
     };
     name(&parsed, lines[0], "value");
-    let input = "if p == Point { x: 1 } { y }";
-    let result = errors(input);
-    assert_eq!(result[0].reason, Reason::RecordInHead);
-    assert_eq!(Source::new(input).slice(result[0].span), Some("{"));
-    assert_eq!(result[0].span.start, 14);
+    // In an `if` head the first top-level `{` is the body, so a record
+    // there is parenthesized; an uppercase name before the body is a name.
+    let (parsed, id) = only("if True { 1 } else { 2 }");
+    let ExprKind::If { condition, .. } = node(&parsed, id) else {
+        panic!("{parsed:?}")
+    };
+    name(&parsed, *condition, "True");
+    let (parsed, id) = only("if p == Point { y }");
+    let ExprKind::If { condition, .. } = node(&parsed, id) else {
+        panic!("{parsed:?}")
+    };
+    assert!(matches!(node(&parsed, *condition), ExprKind::Binary { .. }));
+    assert_ne!(errors("if p == Point { x: 1 } { y }"), []);
     module("if p == (Point { x: 1 }) { y }");
 }

@@ -46,7 +46,6 @@ pub fn syntax(reason: parse::Reason) -> String {
         | R::MixedArmsAndLines
         | R::InvalidRestPattern
         | R::CommaBeforeLineBreak
-        | R::RecordInHead
         | R::NestingLimit
         | R::BindingValue
         | R::UnattachedDoc

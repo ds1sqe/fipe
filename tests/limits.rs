@@ -339,6 +339,48 @@ fn declared_default_values_enter_their_spots() {
 }
 
 #[test]
+fn a_field_default_s_open_entry_is_listed_at_each_construction_site() {
+    use fipe::typed::{Frequency, Phase};
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    assert_eq!(line(&mut session, "use cli").diagnostics, []);
+    let declared = line(&mut session, "type Rc { n: U8 = cli.port }");
+    assert_eq!(declared.diagnostics, []);
+    assert_eq!(declared.checks, [], "listed per construction, not here");
+    // A session binding is init; inside an arm the entry runs per call;
+    // a bare constructor and a record form are construction sites too.
+    for (text, phase, frequency) in [
+        ("a = Rc", Phase::Init, Frequency::Once),
+        ("u = Rc { }", Phase::Init, Frequency::Once),
+        ("g = k => Rc", Phase::Eval, Frequency::PerCall),
+        ("h = x => { r = Rc\n  r }", Phase::Eval, Frequency::PerCall),
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}");
+        assert_eq!(report.checks.len(), 2, "{text}: {:?}", report.checks);
+        for check in &report.checks {
+            assert_eq!(check.phase, phase, "{text}: {check:?}");
+            assert_eq!(check.frequency, frequency, "{text}: {check:?}");
+        }
+    }
+    // A function spot's default is listed the same way at its calls.
+    let f = line(&mut session, "f: U8 -> U8 = (p = cli.port) => p");
+    assert_eq!(f.diagnostics, []);
+    let c = line(&mut session, "c = f");
+    assert!(
+        c.checks.iter().all(|check| check.phase == Phase::Init),
+        "{:?}",
+        c.checks
+    );
+    // What the declaration decides, it reports.
+    assert_ne!(
+        line(&mut session, "type R7 { n: U8 = 300 }").diagnostics,
+        []
+    );
+}
+
+#[test]
 fn entry_places_keep_names_and_precise_result_and_argument_spans() {
     use fipe::{token::Source, typed::Place};
     let mut session =

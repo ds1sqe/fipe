@@ -91,8 +91,8 @@ impl Index {
             E::Field { value, .. } => {
                 let receiver = scope.expression(*value);
                 scope.receivers.borrow_mut().insert(span, receiver);
-                let callee = self.chosen(source, span, Some(receiver));
                 if let Some(bound) = source.typed.bound.get(&site) {
+                    let callee = self.chosen(source, span, Some(receiver));
                     self.call(
                         source,
                         scope,
@@ -102,7 +102,7 @@ impl Index {
                         Some(receiver),
                     )
                 } else {
-                    self.tables.borrow().nodes[callee].kind.clone()
+                    self.chosen_kind(source, span, Some(receiver))
                 }
             }
             E::Pipe { .. } => Self::pipe(source, scope, id),
@@ -225,11 +225,11 @@ impl Index {
                     }
                     return kind;
                 }
-                let chosen = self.chosen(source, span, None);
                 if let Some(bound) = source.typed.bound.get(&site) {
+                    let chosen = self.chosen(source, span, None);
                     self.call(source, scope, span, chosen, bound, None)
                 } else {
-                    self.tables.borrow().nodes[chosen].kind.clone()
+                    self.chosen_kind(source, span, None)
                 }
             }
             _ => unreachable!("name expression"),
@@ -250,52 +250,65 @@ impl Index {
             {
                 let mut receiver =
                     self.member_root(source, scope, head, &steps[0].head, span);
-                for (index, step) in steps.iter().enumerate() {
-                    scope.receivers.borrow_mut().insert(span, receiver);
-                    let callee = self.selected(
-                        source,
-                        span,
-                        &step.selected,
-                        &step.meanings,
-                        if index + 1 == steps.len() {
-                            source
-                                .typed
-                                .callee_types
-                                .get(&site)
-                                .unwrap_or(&step.callee)
-                        } else {
-                            &step.callee
-                        },
-                        Some(receiver),
-                    );
-                    receiver = step.bound.as_ref().map_or(callee, |bound| {
-                        let kind = self.call(
-                            source,
-                            scope,
-                            span,
-                            callee,
-                            bound,
-                            Some(receiver),
-                        );
-                        self.node(&source.home, span, &step.result, kind)
-                    });
-                }
-                if let Some(bound) = source
+                let outer = source
                     .typed
                     .bound
                     .get(&site)
-                    .filter(|bound| !bound.spots.is_empty())
-                {
+                    .filter(|bound| !bound.spots.is_empty());
+                for (index, step) in steps.iter().enumerate() {
+                    let last = index + 1 == steps.len();
+                    scope.receivers.borrow_mut().insert(span, receiver);
+                    let ty = if last {
+                        source
+                            .typed
+                            .callee_types
+                            .get(&site)
+                            .unwrap_or(&step.callee)
+                    } else {
+                        &step.callee
+                    };
+                    let kind = self.selected_kind(
+                        source,
+                        &step.selected,
+                        &step.meanings,
+                        ty,
+                        Some(receiver),
+                    );
+                    let (kind, ty) = match &step.bound {
+                        Some(bound) => {
+                            let callee =
+                                self.node(&source.home, span, ty, kind);
+                            let kind = self.call(
+                                source,
+                                scope,
+                                span,
+                                callee,
+                                bound,
+                                Some(receiver),
+                            );
+                            (kind, &step.result)
+                        }
+                        None => (kind, ty),
+                    };
+                    // The last step is the expression's own node; an
+                    // earlier one is the receiver of the next.
+                    if !last {
+                        receiver = self.node(&source.home, span, ty, kind);
+                        continue;
+                    }
+                    let Some(bound) = outer else {
+                        return Some(kind);
+                    };
+                    let callee = self.node(&source.home, span, ty, kind);
                     return Some(self.call(
                         source,
                         scope,
                         span,
-                        receiver,
+                        callee,
                         bound,
                         scope.receivers.borrow().get(&span).copied(),
                     ));
                 }
-                return Some(self.tables.borrow().nodes[receiver].kind.clone());
             }
         }
         None
@@ -769,6 +782,38 @@ impl Index {
                 constructor,
                 fields: Vec::new(),
             },
+        )
+    }
+
+    /// The chosen callable's operation, for an expression that is that
+    /// callable itself: its own node holds it, with no copy beside.
+    pub(super) fn chosen_kind(
+        &mut self,
+        source: &Source<'_>,
+        span: crate::token::Span,
+        receiver: Option<usize>,
+    ) -> ir::Kind {
+        let site = (span.start, span.end);
+        if source.typed.derived_defaults.contains_key(&site)
+            || source.typed.conversions.contains_key(&site)
+        {
+            let node = self.chosen(source, span, receiver);
+            return self.tables.borrow().nodes[node].kind.clone();
+        }
+        self.selected_kind(
+            source,
+            source
+                .typed
+                .selected
+                .get(&site)
+                .expect("checked callable selection"),
+            source
+                .typed
+                .meaning_arguments
+                .get(&site)
+                .map_or(&[], Vec::as_slice),
+            &source.typed.callee_types[&site],
+            receiver,
         )
     }
 

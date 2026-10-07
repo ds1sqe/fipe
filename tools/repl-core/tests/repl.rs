@@ -1003,6 +1003,26 @@ fn a_type_without_a_test_explains_how_to_enter_it() {
 }
 
 #[test]
+fn ir_shows_collected_supplies_modes_and_rebuilds() {
+    let mut repl = Repl::new();
+    let text =
+        written(repl.feed(
+            b"g: Vec<Integer> -> Integer = xs => len xs\n\n:ir g 1 2 3\n",
+        ));
+    assert!(text.contains("collected into spot 0"), "{text}");
+    let text = written(repl.feed(b":ir Nothing || 4\n"));
+    assert!(text.contains("or values"), "{text}");
+    assert!(text.contains("by payload"), "{text}");
+    let text = written(repl.feed(b":ir Just 1 && Just 2\n"));
+    assert!(text.contains("by family"), "{text}");
+    let text = written(
+        repl.feed(b"m: Maybe<Integer> = Just 1\n\n:ir m |: (x => x + 1)\n"),
+    );
+    assert!(text.contains("good side of value"), "{text}");
+    assert!(text.contains("rebuilt by wrapping"), "{text}");
+}
+
+#[test]
 fn ir_queries_show_checked_operations_without_accepting() {
     let mut repl = Repl::new();
     let text = written(repl.feed(b"x = 1\n:ir x + 2\n:ir\n"));

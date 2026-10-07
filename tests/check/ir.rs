@@ -184,6 +184,62 @@ fn a_member_of_a_type_member_lowers_to_a_field_of_its_definition() {
 }
 
 #[test]
+fn a_callee_or_a_member_is_held_once_in_the_unit() {
+    let constructor = |kind: &ir::Kind, _: &ir::Tables| {
+        matches!(
+            kind,
+            ir::Kind::Constructor { .. } | ir::Kind::Construct { .. }
+        )
+    };
+    let field = |kind: &ir::Kind, _: &ir::Tables| {
+        matches!(kind, ir::Kind::Field { .. })
+    };
+    let declared = |kind: &ir::Kind, tables: &ir::Tables| {
+        matches!(kind, ir::Kind::Declared(index)
+            if tables.declarations[*index].label == "len")
+    };
+    for (source, counted, expected) in [
+        (
+            "type Point { x: Integer, y: Integer = 0 }\nPoint 1",
+            &constructor as &dyn Fn(&ir::Kind, &ir::Tables) -> bool,
+            1,
+        ),
+        (
+            "type Point { x: Integer, y: Integer = 0 }\nPoint",
+            &constructor,
+            1,
+        ),
+        ("Nothing || 4", &constructor, 1),
+        ("type P { x: Integer }\np = P 3\np.x", &field, 1),
+        (
+            "type P { x: Integer }\nimpl P { origin = Self 1 }\nP.origin.x",
+            &field,
+            1,
+        ),
+        ("len [1, 2]", &declared, 1),
+    ] {
+        let module = parse(lex(source)).unwrap();
+        let unit = check::check(
+            &module,
+            &Declarations::new(),
+            &[],
+            check::Options::default(),
+        )
+        .unwrap();
+        let tables = unit.tables();
+        let namespace = tables.nodes[unit.main[0]].namespace;
+        let count = tables
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.namespace == namespace && counted(&node.kind, &tables)
+            })
+            .count();
+        assert_eq!(count, expected, "{source}");
+    }
+}
+
+#[test]
 fn indexed_documentation_examples() {
     let mut declarations = Declarations::new();
     declarations

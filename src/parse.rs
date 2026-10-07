@@ -35,8 +35,6 @@ pub enum Reason {
     InvalidRestPattern,
     /// A list element ended at a line break that no comma carries over.
     CommaBeforeLineBreak,
-    /// A record literal in an `if` or `with` head, where `{` is the body.
-    RecordInHead,
     NestingLimit,
     /// A second top-level `=`: a binding's value is not a binding.
     BindingValue,
@@ -82,9 +80,6 @@ impl fmt::Display for Reason {
             }
             Self::CommaBeforeLineBreak => {
                 f.write_str("expected `,` before the line break")
-            }
-            Self::RecordInHead => {
-                f.write_str("group a record used in an `if` or `with` head")
             }
             Self::NestingLimit => f.write_str("parser nesting limit exceeded"),
             Self::BindingValue => {

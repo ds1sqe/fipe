@@ -54,7 +54,7 @@ fn operation(kind: &Kind, tables: &Tables) -> String {
         Kind::Definition { index, meanings } => format!("definition {}, {} hidden meanings", tables.definitions[*index].label, meanings.len()),
         Kind::Declared(index) => format!("declared {}.{}", tables.namespaces[tables.declarations[*index].namespace], tables.declarations[*index].label),
         Kind::Derived { kind, .. } => format!("derived {}", match kind { fipe::ir::Derived::Eq => "equality", fipe::ir::Derived::Cmp => "comparison", fipe::ir::Derived::Show => "display", fipe::ir::Derived::Default => "default" }),
-        Kind::Call { callee, supplies, defaults, open, .. } => format!("call value {callee}; {} supplies, {} defaults, {} open spots", supplies.len(), defaults.len(), open.len()),
+        Kind::Call { callee, supplies, defaults, open, .. } => format!("call value {callee}; {}; {} defaults, {} open spots", supplied(supplies), defaults.len(), open.len()),
         Kind::Dispatch { member, .. } => format!("dispatch {}, {} indexed choices", tables.dispatch[*member].label, tables.dispatch[*member].rows.len()),
         Kind::Function { arms, captures, hidden, .. } => format!("function with {} arms, {} captures, {} hidden meanings", arms.len(), captures.len(), hidden.len()),
         Kind::Construct { meaning, constructor, .. } | Kind::Constructor { meaning, constructor, .. } => format!("constructor {}.{}", tables.meanings[*meaning].label, tables.meanings[*meaning].constructors[*constructor].label),
@@ -65,17 +65,70 @@ fn operation(kind: &Kind, tables: &Tables) -> String {
         Kind::Block(values) => format!("sequence {}", indices(values)),
         Kind::Bind { value, .. } => format!("bind pattern from value {value}"),
         Kind::Pipe { left, stage } => format!("pipe value {left} through value {stage}"),
-        Kind::Marked { good, left, stage, .. } => format!("{} side of value {left} through value {stage}", if *good { "good" } else { "bad" }),
-        Kind::Or { left, right, .. } => format!("or values {left}, {right}"),
-        Kind::And { left, right, .. } => format!("and values {left}, {right}"),
+        Kind::Marked { good, left, stage, rebuild } => format!("{} side of value {left} through value {stage}, {}", if *good { "good" } else { "bad" }, rebuilt(*rebuild)),
+        Kind::Or { mode, left, right } => format!("or values {left}, {right} by {}", by(*mode)),
+        Kind::And { mode, rebuild, left, right } => format!("and values {left}, {right} by {}{}", by(*mode), rebuild.map_or_else(String::new, |rebuild| format!(", {}", rebuilt(rebuild)))),
         Kind::If { condition, then_body, else_body } => format!("if value {condition}, value {then_body}, otherwise value {else_body}"),
         Kind::With { key, value, body } => format!("with {} from value {value}, body value {body}", tables.keys[*key]),
-        Kind::Lift { value, body, .. } => format!("lift value {value} into body value {body}"),
+        Kind::Lift { value, body, rebuild, .. } => format!("lift value {value} into body value {body}, {}", rebuilt(*rebuild)),
         Kind::Ordering { value, .. } => format!("ordering from value {value}"),
         Kind::Cast { value, to, .. } => format!("cast value {value} to {}", meaning(to, tables)),
         Kind::Pack { value, tag } => format!("pack value {value} tagged {}", meaning(tag, tables)),
         Kind::Enter { entry, value } => format!("enter {} with value {value}", tables.entries[*entry].label),
         Kind::Convert { from, to, .. } => format!("conversion from {} to {}", meaning(from, tables), meaning(to, tables)),
+    }
+}
+
+/// A call's supplies: each value and the spot it fills, collected
+/// elements of one spot together.
+fn supplied(supplies: &[fipe::ir::Supply]) -> String {
+    if supplies.is_empty() {
+        return String::from("0 supplies");
+    }
+    let mut parts: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < supplies.len() {
+        let supply = &supplies[index];
+        if supply.element {
+            let mut values = Vec::new();
+            while index < supplies.len()
+                && supplies[index].element
+                && supplies[index].spot == supply.spot
+            {
+                values.push(supplies[index].value);
+                index += 1;
+            }
+            parts.push(format!(
+                "{} collected into spot {}",
+                indices(&values),
+                supply.spot
+            ));
+        } else {
+            parts.push(format!(
+                "value {} to spot {}",
+                supply.value, supply.spot
+            ));
+            index += 1;
+        }
+    }
+    format!("supplies {}", parts.join(", "))
+}
+
+/// The `Or` or `And` mode the checker recorded.
+const fn by(mode: fipe::ir::Mode) -> &'static str {
+    match mode {
+        fipe::ir::Mode::Bool => "bool",
+        fipe::ir::Mode::Family => "family",
+        fipe::ir::Mode::Payload => "payload",
+    }
+}
+
+/// The rebuild the checker selected for a marked stage or a lift.
+const fn rebuilt(rebuild: fipe::ir::Rebuild) -> &'static str {
+    match rebuild {
+        fipe::ir::Rebuild::Direct => "rebuilt direct",
+        fipe::ir::Rebuild::Wrap => "rebuilt by wrapping",
+        fipe::ir::Rebuild::Discard => "rebuilt by discarding",
     }
 }
 

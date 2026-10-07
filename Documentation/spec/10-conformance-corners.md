@@ -63,6 +63,7 @@ each once a defect: a row stays so the defect cannot return.
 | `kf: Key a => a -> Bool = p => p == p`, `Key: Eq & Show`, `kf 1` | written combination met by its parts |
 | session `type S: Show { f: Integer -> Integer }`, then its `Show` block | type line accepted; claim pending until block |
 | `g: Show -> String = s => s.show`; `h = n => g (n + 1)`; `h 2.5` | accepted; packing does not fix the outer parameter to `Integer` |
+| `if True { 1 } else { 2 }`; `if p == Point { x: 1 } { y }` | `Integer`: the head's first top-level `{` is the body, so no record opens after the name; the record form is a parse error unless parenthesized |
 | `g = a => { b => a + b }`; `g 1 2`; `compose inc inc 1` | the bound result, a function, takes the operands past the spot list; `inc 1 2` stays one argument too many |
 | exported type with mixed `pub` claim members across overloads | operator, dot and conversion reach every claim member |
 | cyclic bases, including bases with their own member limits | check error at the type declaration |
@@ -79,6 +80,7 @@ each once a defect: a row stays so the defect cannot return.
 
 | Case | Expected distinction |
 | --- | --- |
+| `type Rc { n: U8 = cli.port }` then `a = Rc`, `g = k => Rc` | the field default's open entry is listed at each construction site, init once at a session binding, eval per call inside an arm, and not at the declaration; a refuted default is reported at the declaration |
 | written constructor phase: `type C { n: Integer }` LF `impl C { n => Self { n: log n } }` LF `x: Compile & C = C 1` | timing error; written constructor bodies, guards and defaults must be pure |
 | brackets at Sequence places: `xs: Vec<U8> = [1, 2, 300]` | refuted at 300; likewise Deque and nested elements |
 | parameterized record fields: `type Pair<A, B> { first: A, second: B }` LF `p: Pair<U8, U8> = Pair 300 400` | both fields enter their limits |

@@ -68,6 +68,7 @@ pub(crate) fn check(
         let mut known = pass.fact(id);
         pass.construction_entry(id, &mut known);
         pass.settle_default_divisors(id);
+        pass.settle_default_sites(id);
         pass.expression_holding(id, entry_types[index]);
         pass.typed.known[index] = known.clone();
         pass.binding_facts(id);
@@ -403,27 +404,63 @@ impl Pass<'_> {
     fn divisor_entered(&self, span: Span) -> bool {
         let within =
             |outer: Span| outer.start <= span.start && span.end <= outer.end;
-        let Some(item) = self.module.entries.iter().find_map(|entry| {
+        let in_type_item = self.module.entries.iter().any(|entry| {
+            let Entry::Item(item) = entry else {
+                return false;
+            };
+            matches!(item.kind, ItemKind::Type { .. }) && within(item.span)
+        });
+        !in_type_item
+            || self
+                .field_default_of(span)
+                .is_some_and(|default| self.instance == Some(default))
+    }
+
+    /// The record field default an expression stands in, if any.
+    fn field_default_of(&self, span: Span) -> Option<ExprId> {
+        let within =
+            |outer: Span| outer.start <= span.start && span.end <= outer.end;
+        self.module.entries.iter().find_map(|entry| {
             let Entry::Item(item) = entry else {
                 return None;
             };
-            (matches!(item.kind, ItemKind::Type { .. }) && within(item.span))
-                .then_some(item)
-        }) else {
-            return true;
-        };
-        let ItemKind::Type { members, .. } = &item.kind else {
-            return true;
-        };
-        members.iter().flatten().any(|member| {
-            let crate::ast::Member::Field(field) = member else {
-                return false;
+            let ItemKind::Type { members, .. } = &item.kind else {
+                return None;
             };
-            field.default.is_some_and(|default| {
-                self.instance == Some(default)
-                    && within(self.module.expressions[default.0].span)
+            members.iter().flatten().find_map(|member| {
+                let crate::ast::Member::Field(field) = member else {
+                    return None;
+                };
+                field.default.filter(|default| {
+                    within(self.module.expressions[default.0].span)
+                })
             })
         })
+    }
+
+    /// A default's open entries are listed where it is applied: at each
+    /// construction or call, with that site's phase and frequency, as
+    /// the checker adopted them. The declaration keeps only what it
+    /// decides.
+    fn settle_default_sites(&mut self, id: ExprId) {
+        let Some(stage) = self.binding_stage(id) else {
+            return;
+        };
+        let phase = self.site_phase(stage);
+        let frequency = self.frequency(stage);
+        // The checks at this stage now are the adopted ones: the pass
+        // enters the stage's own places after this loop.
+        for check in &mut self.typed.checks {
+            if check.place != stage || check.phase == Phase::Compile {
+                continue;
+            }
+            check.frequency = frequency;
+            check.phase = if frequency == Frequency::PerCall {
+                Phase::Eval
+            } else {
+                phase
+            };
+        }
     }
 
     /// The facts a call or construction supplies to each spot by name.
@@ -529,17 +566,35 @@ impl Pass<'_> {
     /// is settled with what this call or construction supplies: exact
     /// zero refutes it, a range without zero proves it, the rest stays
     /// open with the supplied facts.
-    fn settle_default_divisors(&mut self, id: ExprId) {
+    /// The stage an expression binds spots at: a call, a construction,
+    /// a pipe's right side, or a bare callable whose spots all default.
+    fn binding_stage(&self, id: ExprId) -> Option<Span> {
         let expression = &self.module.expressions[id.0];
-        let stage = match expression.kind {
+        match expression.kind {
             ExprKind::Pipe {
                 op: PipeOp::Plain,
                 right,
                 ..
-            } => self.module.expressions[right.0].span,
-            ExprKind::Call { .. } | ExprKind::Record { .. } => expression.span,
-            _ => return,
+            } => Some(self.module.expressions[right.0].span),
+            ExprKind::Call { .. } | ExprKind::Record { .. } => {
+                Some(expression.span)
+            }
+            ExprKind::Name(_)
+            | ExprKind::Instance { .. }
+            | ExprKind::Field { .. } => self
+                .typed
+                .supplied
+                .contains_key(&(expression.span.start, expression.span.end))
+                .then_some(expression.span),
+            _ => None,
+        }
+    }
+
+    fn settle_default_divisors(&mut self, id: ExprId) {
+        let Some(stage) = self.binding_stage(id) else {
+            return;
         };
+        let expression = &self.module.expressions[id.0];
         let spots = if matches!(expression.kind, ExprKind::Record { .. }) {
             self.record_facts(id)
         } else {
@@ -859,6 +914,16 @@ impl Pass<'_> {
                 (fact.demanded || fact.is_exact()).then_some(Phase::Compile);
             let start = self.typed.checks.len();
             self.enter(ty, &fact, *place, self.frequency(expr.span));
+            // A field default's open entries are listed per construction
+            // site, not at the declaration; what the declaration decides
+            // it has reported.
+            if self
+                .field_default_of(expr.span)
+                .is_some_and(|default| self.instance != Some(default))
+            {
+                self.typed.checks.truncate(start);
+                continue;
+            }
             for check in &mut self.typed.checks[start..] {
                 check.value = Some(*id);
             }

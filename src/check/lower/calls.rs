@@ -193,7 +193,9 @@ impl Index {
                     ),
                     result: alloc::boxed::Box::new(result),
                 });
-        let node = ir::Node {
+        // The callee node is this call's own: it takes the fields in
+        // place rather than leaving an unused copy beside it.
+        self.tables.borrow_mut().nodes[callee] = ir::Node {
             ty: signature,
             kind: ir::Kind::Constructor {
                 meaning,
@@ -202,9 +204,7 @@ impl Index {
             },
             ..original
         };
-        let index = self.tables.borrow().nodes.len();
-        self.tables.borrow_mut().nodes.push(node);
-        index
+        callee
     }
 
     pub(super) fn selected(
@@ -216,8 +216,22 @@ impl Index {
         ty: &Type,
         receiver: Option<usize>,
     ) -> usize {
+        let kind =
+            self.selected_kind(source, selected, arguments, ty, receiver);
+        self.node(&source.home, span, ty, kind)
+    }
+
+    /// The operation a selection lowers to, for the node that holds it.
+    pub(super) fn selected_kind(
+        &mut self,
+        source: &Source<'_>,
+        selected: &crate::typed::Selected,
+        arguments: &[Type],
+        ty: &Type,
+        receiver: Option<usize>,
+    ) -> ir::Kind {
         use crate::typed::Selected;
-        let kind = match selected {
+        match selected {
             Selected::Value { origin, site } => {
                 let origin = home_origin(&source.home, origin);
                 let index = self.definitions[&(origin, *site)];
@@ -299,8 +313,7 @@ impl Index {
                 receiver: ir::Receiver::Meaning(self.ty(&source.home, head)),
                 member: self.dispatch[&(name.clone(), true)],
             },
-        };
-        self.node(&source.home, span, ty, kind)
+        }
     }
 
     pub(super) fn dispatch_rows(&mut self, source: &Source<'_>) {

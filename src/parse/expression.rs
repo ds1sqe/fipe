@@ -277,10 +277,12 @@ impl Parser {
             }
             Kind::Name(_) => {
                 let name = self.name(false)?;
-                if name.is_uppercase() && self.at(Symbol::LBrace) {
-                    if context.body() {
-                        return Err(self.error(Reason::RecordInHead));
-                    }
+                // In an `if` or `with` head the first top-level `{` is
+                // the body, so no record opens there (02-syntax §Heads).
+                if name.is_uppercase()
+                    && self.at(Symbol::LBrace)
+                    && !context.body()
+                {
                     return self.record(name);
                 }
                 if self.at(Symbol::Less) && self.here().start == name.span.end {
