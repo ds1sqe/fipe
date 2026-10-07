@@ -571,3 +571,354 @@ fn collected_and_defaulted_fields_keep_known_facts() {
     }
     assert_eq!(ty("type Pair<T> { x: T, y: T }\nPair True"), "Pair<Bool>");
 }
+
+#[test]
+fn calls_retain_implementations_and_instantiated_meanings() {
+    let (module, typed, errors) =
+        super::check("inc = n => n + 1\ninc 2.0", &Declarations::new());
+    assert_eq!(errors, []);
+    let fipe::ast::Entry::Line(call) = module.entries.last().unwrap() else {
+        panic!()
+    };
+    let span = module.expr(*call).unwrap().span;
+    let site = (span.start, span.end);
+    assert!(matches!(
+        typed.selected.get(&site),
+        Some(fipe::typed::Selected::Value { .. })
+    ));
+    assert_eq!(
+        typed.meaning_arguments[&site]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["F64"]
+    );
+    assert_eq!(typed.callee_types[&site].to_string(), "F64 -> F64");
+}
+
+#[test]
+fn function_references_record_instantiation_without_a_call() {
+    let source = "inc = n => n + 1\nf: F64 -> F64 = inc";
+    let (module, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let fipe::ast::Entry::Line(binding) = module.entries.last().unwrap() else {
+        panic!()
+    };
+    let fipe::ast::ExprKind::Bind { value, .. } =
+        module.expr(*binding).unwrap().kind
+    else {
+        panic!()
+    };
+    let reference = module.expr(value).unwrap();
+    let site = (reference.span.start, reference.span.end);
+    assert_eq!(
+        typed.meaning_arguments[&site]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["F64"]
+    );
+    assert!(matches!(
+        typed.selected[&site],
+        fipe::typed::Selected::Value { .. }
+    ));
+}
+
+#[test]
+fn member_chains_keep_each_field_index() {
+    let source = "type Inner { first: Bool, n: Integer }\ntype Outer { inner: Inner }\no = Outer (Inner { first: True, n: 3 })\no.inner.n";
+    let (module, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let fipe::ast::Entry::Line(value) = module.entries.last().unwrap() else {
+        panic!()
+    };
+    let span = module.expr(*value).unwrap().span;
+    let steps = &typed.accesses[&(span.start, span.end)];
+    assert_eq!(steps.len(), 2);
+    assert!(matches!(
+        steps[0].selected,
+        fipe::typed::Selected::Field { index: 0, .. }
+    ));
+    assert!(matches!(
+        steps[1].selected,
+        fipe::typed::Selected::Field { index: 1, .. }
+    ));
+    assert_eq!(steps[1].result.to_string(), "Integer");
+}
+
+#[test]
+fn operators_record_concrete_and_generic_implementations() {
+    for (source, generic) in [("1 + 2", false), ("add = x y => x + y", true)] {
+        let (_, typed, errors) = super::check(source, &Declarations::new());
+        assert_eq!(errors, []);
+        let start = source.find('+').unwrap();
+        let selected = &typed.selected[&(start, start + 1)];
+        assert_eq!(
+            matches!(selected, fipe::typed::Selected::Member { .. }),
+            generic
+        );
+        if !generic {
+            assert!(matches!(selected, fipe::typed::Selected::Declared { .. }));
+            let binding = &typed.bound[&(start, start + 1)];
+            assert_eq!(
+                binding
+                    .supplies
+                    .iter()
+                    .map(|(spot, _)| *spot)
+                    .collect::<Vec<_>>(),
+                [1, 0]
+            );
+            assert_eq!(
+                typed.callee_types[&(start, start + 1)].to_string(),
+                "Integer -> Integer -> Integer"
+            );
+        }
+    }
+}
+
+#[test]
+fn recursive_references_supply_the_generalized_meanings() {
+    let source = "f = n => if n == 0 { n } else { f (n - 1) }";
+    let (_, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let recursive = source.rfind("f (").unwrap();
+    let selected = &typed.selected[&(recursive, recursive + 1)];
+    let fipe::typed::Selected::Value { site, .. } = selected else {
+        panic!()
+    };
+    let scheme = &typed.schemes[&(site.start, site.end)];
+    assert_ne!(scheme.variables.len(), 0);
+    assert_eq!(
+        typed.meaning_arguments[&(recursive, recursive + 1)].len(),
+        scheme.variables.len()
+    );
+}
+
+#[test]
+fn type_layouts_keep_parameters_distinct_from_fixed_fields() {
+    let source = "type Pair<T> { fixed: Integer, value: T }\na = Pair 1 2\nb = Pair 3 \"text\"";
+    let (_, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let shapes: Vec<_> = typed.shapes.iter().filter(|s| matches!(&s.ty, fipe::types::Type::Named { name, .. } if name.name == "Pair")).collect();
+    assert_eq!(shapes.len(), 1);
+    let fipe::types::Type::Named { arguments, .. } = &shapes[0].ty else {
+        panic!()
+    };
+    let fields = &shapes[0].constructors[0].fields;
+    assert_eq!(fields[0].ty.to_string(), "Integer");
+    assert_eq!(fields[1].ty, arguments[0]);
+    assert_ne!(fields[0].ty, fields[1].ty);
+}
+
+#[test]
+fn hidden_meanings_are_only_for_receiverless_members() {
+    let source = "id = x => x\ninc = x => x + 1\nshow = x => x.show";
+    let (module, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let hidden: Vec<_> = module
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let fipe::ast::Entry::Line(id) = entry else {
+                return None;
+            };
+            let fipe::ast::ExprKind::Bind { pattern, .. } =
+                module.expr(*id)?.kind
+            else {
+                return None;
+            };
+            let span = module.pattern(pattern)?.span;
+            Some(typed.hidden[&(span.start, span.end)].len())
+        })
+        .collect();
+    assert_eq!(hidden, [0, 1, 0]);
+}
+
+#[test]
+fn program_literals_retain_the_selected_reader() {
+    let source = "type Mask: Literal { bits: U8 }\nimpl Mask: Literal { literal = f => Self 0 }\nm: Mask = 0b0000_1111";
+    let (_, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let start = source.rfind("0b").unwrap();
+    let fipe::typed::Selected::Value { site, .. } =
+        &typed.selected[&(start, source.len())]
+    else {
+        panic!()
+    };
+    assert_eq!(&source[site.start..site.end], "literal");
+}
+
+#[test]
+fn defaults_retain_each_receiving_instantiation() {
+    let mut declarations = Declarations::new();
+    declarations
+        .commands("copy: (value: a) -> (other: a = value) -> a")
+        .unwrap();
+    let (_, typed, errors) =
+        super::check("copy 1\ncopy \"text\"", &declarations);
+    assert_eq!(errors, []);
+    let meanings: Vec<_> = typed
+        .default_instances
+        .values()
+        .map(|instance| {
+            instance.typed.expr(instance.value).unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(meanings, ["Integer", "String"]);
+    assert!(typed
+        .default_instances
+        .keys()
+        .all(|(_, _, spot)| *spot == 1));
+}
+
+#[test]
+fn supplied_values_keep_their_definition_references() {
+    let mut declarations = Declarations::new();
+    declarations.commands("answer = 42").unwrap();
+    let (_, typed, errors) = super::check("answer\nanswer", &declarations);
+    assert_eq!(errors, []);
+    let first = &typed.selected[&(0, 6)];
+    assert!(matches!(
+        first,
+        fipe::typed::Selected::Value {
+            origin: fipe::resolve::Origin::Commands,
+            ..
+        }
+    ));
+    assert_eq!(first, &typed.selected[&(7, 13)]);
+    assert_eq!(typed.declared.len(), 1);
+}
+
+#[test]
+fn generic_members_record_field_and_member_dispatch_rows() {
+    let source = "type Record { n: Integer }\nget = r => r.n\na = get (Record 4)\ninc = n => n + 1\ninc a";
+    let (_, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let field = typed.dispatch.iter().find(|d| d.name == "n").unwrap();
+    assert!(field.rows.iter().any(|r| matches!(
+        r.selected,
+        fipe::typed::Selected::Field { index: 0, .. }
+    )));
+    let add = typed.dispatch.iter().find(|d| d.name == "add").unwrap();
+    let integer = add
+        .rows
+        .iter()
+        .find(|r| r.receiver.to_string() == "Integer")
+        .unwrap();
+    assert_eq!(integer.receiver_spot, Some(1));
+    assert!(matches!(
+        integer.selected,
+        fipe::typed::Selected::Declared { .. }
+    ));
+}
+
+#[test]
+fn dispatch_keeps_each_overload_argument_meaning() {
+    let source = "type W { n: F64 }\ntype V: Mul<F64> & Mul<W> { x: F64 }\nimpl V: Mul<F64> { mul = k self => Self (self.x * k) }\nimpl V: Mul<W> { mul = w self => Self (self.x * w.n) }\nscale = x y => x * y\nv = V 1.0\nk = 2.0\nscale v k";
+    let (_, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    let dispatch = typed.dispatch.iter().find(|d| d.name == "mul").unwrap();
+    let arguments: Vec<_> = dispatch
+        .rows
+        .iter()
+        .filter(|row| row.receiver.to_string() == "V")
+        .map(|row| row.argument.as_ref().unwrap().to_string())
+        .collect();
+    assert_eq!(arguments, ["F64", "W"]);
+}
+
+#[test]
+fn limits_retain_local_and_supplied_test_functions() {
+    let mut declarations = Declarations::new();
+    declarations.commands("accept: I64 -> ()").unwrap();
+    let (module, typed, errors) = super::check(
+        "type Positive: Integer where self > 0\nf = n => accept n",
+        &declarations,
+    );
+    assert_eq!(errors, []);
+    let local = typed
+        .tests
+        .iter()
+        .find(|test| test.owner.to_string() == "Positive")
+        .unwrap();
+    assert!(local.expression.is_none());
+    assert_eq!(typed.expr(local.value).unwrap().to_string(), "Bool");
+    assert!(module.expr(local.value).is_some());
+    let supplied: Vec<_> = typed
+        .tests
+        .iter()
+        .filter(|test| test.owner.to_string() == "I64")
+        .collect();
+    assert_eq!(supplied.len(), 2);
+    for test in supplied {
+        let expression = test.expression.as_ref().unwrap();
+        assert_eq!(
+            expression.typed.expr(expression.value).unwrap().to_string(),
+            "Bool"
+        );
+    }
+}
+
+#[test]
+fn supplied_generic_limit_tests_keep_their_parameter_assumptions() {
+    let mut declarations = Declarations::new();
+    declarations.commands("type Box<T: Eq> { v: T } where self.v == self.v\nkeep: Box<Integer> -> ()\nget: Box<Integer>").unwrap();
+    let (_, typed, errors) = super::check("keep get", &declarations);
+    assert_eq!(errors, []);
+    let functions: Vec<_> = typed
+        .tests
+        .iter()
+        .filter(|test| test.owner.to_string().starts_with("Box"))
+        .collect();
+    assert_eq!(functions.len(), 1);
+    assert!(functions[0].expression.is_some());
+}
+
+#[test]
+fn unused_static_constraints_do_not_need_hidden_meanings() {
+    let (_, typed, errors) =
+        super::check("id: Literal a => a -> a = x => x", &Declarations::new());
+    assert_eq!(errors, []);
+    assert_eq!(typed.hidden[&(0, 2)], []);
+}
+
+#[test]
+fn hidden_meanings_follow_references_and_written_body_parameters() {
+    let source = "id: Literal a => a -> a = x => x\nuse_id = x => id x\nread_text: Read a => String -> Result<a, ParseError> = s => read s\nget = s => read_text s";
+    let (_, typed, errors) = super::check(source, &Declarations::new());
+    assert_eq!(errors, []);
+    for (name, count) in
+        [("id", 0), ("use_id", 0), ("read_text", 1), ("get", 1)]
+    {
+        let start = source.find(name).unwrap();
+        let site = (start, start + name.len());
+        assert_eq!(typed.hidden[&site].len(), count, "{name}");
+    }
+    assert_eq!(
+        typed.body_parameters[&(0, 2)],
+        [fipe::types::Type::Rigid("a".into())]
+    );
+}
+
+#[test]
+fn literal_patterns_record_equality_and_preparation() {
+    for source in [
+        "f: Integer -> String = { 0 => \"a\", _ => \"b\" }",
+        "f: String -> String = { \"x\" => \"a\", _ => \"b\" }",
+        "type Mask: Literal & Eq { bits: U8 }\nimpl Mask: Literal { literal = f => Self 0 }\nf: Mask -> String = { 0 => \"a\", _ => \"b\" }",
+    ] {
+        let (module, typed, errors) = super::check(source, &Declarations::new());
+        assert_eq!(errors, [], "{source}");
+        assert_eq!(typed.pattern_equals.len(), 1);
+        let comparison = typed.pattern_equals.values().next().unwrap();
+        let fipe::ast::Entry::Line(line) = module.entries.last().unwrap() else { panic!() };
+        let fipe::ast::ExprKind::Bind { value, .. } = module.expr(*line).unwrap().kind else { panic!() };
+        let fipe::ast::ExprKind::Arms(arms) = &module.expr(value).unwrap().kind else { panic!() };
+        let span = module.pattern(arms[0].patterns[0]).unwrap().span;
+        assert!(typed.selected.contains_key(&(span.start, span.end)));
+        assert!(!matches!(comparison.selected, fipe::typed::Selected::Static { .. }));
+    }
+    let source = "type Mask: Literal { bits: U8 }\nimpl Mask: Literal { literal = f => Self 0 }\nf: Mask -> String = { 0 => \"a\", _ => \"b\" }";
+    let (_, _, errors) = super::check(source, &Declarations::new());
+    assert!(errors.iter().any(|error| matches!(&error.reason, Reason::MissingClaim { claim, .. } if claim.to_string() == "Eq")));
+}

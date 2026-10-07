@@ -86,6 +86,8 @@ fn number(word: &str) -> Option<Kind> {
             let form = Written::Int {
                 negative,
                 magnitude: Magnitude::parse(digits, radix)?,
+                radix: u8::try_from(radix).ok()?,
+                digits: digits.bytes().filter(|b| *b != b'_').count(),
             };
             return affixed(form, suffix);
         }
@@ -98,6 +100,8 @@ fn number(word: &str) -> Option<Kind> {
         Written::Int {
             negative,
             magnitude: Magnitude::parse(&body[..end], 10)?,
+            radix: 10,
+            digits: body[..end].bytes().filter(|b| *b != b'_').count(),
         }
     };
     if &body[..end] == "0" {
@@ -133,9 +137,13 @@ fn affixed(form: Written, suffix: &str) -> Option<Kind> {
             Written::Int {
                 negative,
                 magnitude,
+                radix,
+                digits,
             } => Kind::Int {
                 negative,
                 magnitude,
+                radix,
+                digits,
             },
             Written::Float(spelling) => Kind::Float(spelling),
             Written::Digits { .. } | Written::Text { .. } => return None,

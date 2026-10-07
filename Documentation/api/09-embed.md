@@ -55,8 +55,10 @@ A `use` of a module that is neither a host module nor loaded, in the line
 or a loaded file, yields `Request::File`. A replied text is parsed and kept
 for the session, and its resolve and type errors are reported once, with
 the line that loaded it; `None` or text that does not parse leaves the
-`use` as `UnknownModule` for that line, and a later line requests the stem
-again. `line` or `query` while a reply is owed abandons the owed line;
+`use` as `UnknownModule` for that line. An absent or unparsable reply is
+remembered for the session. A later line retries that stem only when it
+writes a `use` of it or of a module whose imports reach it; other lines
+reuse the remembered answer and report nothing new. `line` or `query` while a reply is owed abandons the owed line;
 `reply` with none owed panics. Each file module is resolved and typed once
 per checked unit; every use in that unit shares the result.
 
@@ -66,7 +68,7 @@ per checked unit; every use in that unit shares the result.
 Report { module: Option<ast::Module>, offset: usize,
          diagnostics: Vec<Diagnostic>, resolved: Option<resolve::Resolved>,
          typed: Option<typed::Typed>, checks: Vec<typed::Check>,
-         warnings: Vec<typed::Warning> }
+         warnings: Vec<typed::Warning>, unit: Option<ir::Unit> }
 Diagnostic = Syntax(parse::Error) | Resolve(resolve::Error)
            | Type(infer::Error) | File { stem: String, error: parse::Error }
            | FileResolve { stem: String, error: resolve::Error }
@@ -81,6 +83,10 @@ which are empty exactly when it checks, spanned in the line's text, one
 before the line clamped to its start. The three `File` forms carry a span
 of the replied file; a reason's span stays in the text it was found in.
 Resolve and type diagnostics within a file follow source order.
+
+`unit` is present only when all checking stages succeed without any diagnostic.
+It holds this line and indexes the tables retained by the session; values
+belong to evaluation. [Checking](07-check.md) defines the intermediate form.
 
 `warnings` never reject a line. `Warning { span, style: ast::CallStyle }`
 marks a call whose argument-list and tuple readings both bind its spots;

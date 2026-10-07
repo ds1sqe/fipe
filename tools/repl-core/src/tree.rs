@@ -342,6 +342,7 @@ fn literal(literal: &Literal) -> String {
         Literal::Int {
             negative,
             magnitude,
+            ..
         } => format!("Int {}{magnitude}", if *negative { "-" } else { "" }),
         Literal::Float(spelling) => format!("Float {spelling}"),
         Literal::Str { value, .. } => {

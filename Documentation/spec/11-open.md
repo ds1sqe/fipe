@@ -71,7 +71,8 @@ parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays
   ([limits](06-limits.md) §Gates); the prelude declares it opaque.
 - May a limit read a value known at init when it says `Init`?
 - The compile budget's default.
-- Is a value evaluated on an earlier session line exact on a later line?
+- Whether an earlier evaluated session value is exact remains open. The
+  checked line indexes tables kept by the session; evaluation owns values.
 - A hatch for hardware, in design: a trusted entry, and the holdings
   `Volatile`, `Pinned`, `At` and `Order`, byte order, offsets and
   addresses.
@@ -90,9 +91,14 @@ parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays
 defaults in parameter order. When a marked pipe's return could be either a
 payload or the same outcome family, prefer the latter; use an explicit
 constructor for nesting. Keep Bool to `||`/`&&` until `Bool |:`/`|!` has a
-defined payload. Define failing non-success patterns before admitting them.
+defined payload. Until failing non-success patterns are defined, a binding
+pattern neither total nor a good side is a check error; a good-side miss
+ends the implicit main as it ends any body.
 Test cases: `Just 1 |: (_ => Just 2)` yields `Just 2`; an inactive branch does
 not call the host; `[x] = []` must have a defined rejection or outcome.
+
+A default that names a local of an enclosing function is a check error
+today; letting it capture is open.
 
 ## E2 — Arithmetic
 

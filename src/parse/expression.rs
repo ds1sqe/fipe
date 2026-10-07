@@ -535,9 +535,13 @@ pub(super) fn literal(kind: Kind) -> Option<Literal> {
         Kind::Int {
             negative,
             magnitude,
+            radix,
+            digits,
         } => Literal::Int {
             negative,
             magnitude,
+            radix,
+            digits,
         },
         Kind::Float(text) => Literal::Float(text),
         Kind::Str { value, raw } => Literal::Str { value, raw },

@@ -11,6 +11,12 @@ use core::cell::RefCell;
 
 #[derive(Default)]
 pub struct FileCache {
+    pub expressions: RefCell<
+        BTreeMap<
+            (crate::resolve::Origin, usize),
+            crate::typed::DeclaredExpression,
+        >,
+    >,
     pub files: RefCell<BTreeMap<String, CheckedFile>>,
     pub values:
         RefCell<BTreeMap<(crate::resolve::Origin, String), DeclaredValue>>,

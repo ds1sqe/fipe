@@ -1,4 +1,6 @@
 //! Static facts and entry checks over the typed tree; never unification.
+#[path = "../coverage.rs"]
+mod coverage;
 mod entry;
 mod holding;
 pub mod known;
@@ -52,6 +54,7 @@ pub(crate) fn check(
         errors: Vec::new(),
         active: Vec::new(),
         place_kind: Place::Result,
+        path: Vec::new(),
         entry_phase: None,
         purity: core::cell::RefCell::new(BTreeMap::new()),
         purity_cycles: core::cell::Cell::new(0),
@@ -119,6 +122,7 @@ pub(crate) fn check(
     pass.finish_checks();
     pass.entries(entries);
     pass.keep_facts();
+    pass.coverage();
     pass.typed.facts = pass
         .locals
         .into_iter()
@@ -150,6 +154,7 @@ pub(crate) fn default_proved(
         errors: Vec::new(),
         active: Vec::new(),
         place_kind: Place::Result,
+        path: Vec::new(),
         entry_phase: None,
         purity: core::cell::RefCell::new(BTreeMap::new()),
         purity_cycles: core::cell::Cell::new(0),
@@ -187,6 +192,7 @@ pub(crate) fn flag_entry(
         errors: Vec::new(),
         active: Vec::new(),
         place_kind,
+        path: Vec::new(),
         entry_phase: None,
         purity: core::cell::RefCell::new(BTreeMap::new()),
         purity_cycles: core::cell::Cell::new(0),
@@ -351,12 +357,14 @@ struct Pass<'a> {
     errors: Vec<Error>,
     active: Vec<TypeName>,
     place_kind: Place,
+    path: Vec<crate::ir::Projection>,
     entry_phase: Option<Phase>,
     purity: core::cell::RefCell<BTreeMap<Target, bool>>,
     purity_cycles: core::cell::Cell<usize>,
     declarations_by_name: BTreeMap<TypeName, usize>,
     contexts: BTreeMap<usize, (Phase, Frequency, Option<String>)>,
-    checks_seen: BTreeSet<(Span, Place, Span, Origin)>,
+    checks_seen:
+        BTreeSet<(Span, Place, Span, Origin, Vec<crate::ir::Projection>)>,
 }
 impl Pass<'_> {
     fn finish_checks(&mut self) {
@@ -470,7 +478,6 @@ impl Pass<'_> {
             self.place_facts(&local.scheme.ty, &mut known);
             self.locals.insert(*site, known);
         }
-        self.coverage();
         // Parameters are places: seed their written limits before reading bodies.
         for entry in &self.module.entries {
             if let Entry::Line(id) = entry {
@@ -650,7 +657,11 @@ impl Pass<'_> {
             self.place_kind = place_kind.clone();
             self.entry_phase =
                 (fact.demanded || fact.is_exact()).then_some(Phase::Compile);
+            let start = self.typed.checks.len();
             self.enter(ty, &fact, *place, self.frequency(expr.span));
+            for check in &mut self.typed.checks[start..] {
+                check.value = Some(*id);
+            }
         }
     }
 
@@ -756,132 +767,6 @@ impl Pass<'_> {
             name,
         })
     }
-    fn pattern_gates(
-        &self,
-        pattern: crate::ast::PatternId,
-        path: Vec<String>,
-        gates: &mut BTreeMap<Vec<String>, Vec<TypeName>>,
-        fallbacks: &mut Vec<Vec<String>>,
-    ) {
-        if let Some(Target::Type { origin, name }) =
-            self.resolved.pattern(pattern)
-        {
-            let gate = TypeName {
-                origin: origin.clone(),
-                name: name.clone(),
-            };
-            if self
-                .declaration(&gate)
-                .is_some_and(|(_, base, _)| base.is_some())
-            {
-                gates.entry(path).or_default().push(gate);
-                return;
-            }
-        }
-        let child = |label: String| {
-            let mut p = path.clone();
-            p.push(label);
-            p
-        };
-        match &self.module.patterns[pattern.0].kind {
-            PatternKind::Wildcard | PatternKind::Default { .. } => {
-                fallbacks.push(path);
-            }
-            PatternKind::Name(n)
-                if n.segments
-                    .first()
-                    .is_some_and(|s| s.starts_with(char::is_lowercase)) =>
-            {
-                fallbacks.push(path);
-            }
-            PatternKind::Group(inner) => {
-                self.pattern_gates(*inner, path, gates, fallbacks);
-            }
-            PatternKind::Tuple(parts) | PatternKind::List(parts) => {
-                for (i, p) in parts.iter().enumerate() {
-                    self.pattern_gates(
-                        *p,
-                        child(i.to_string()),
-                        gates,
-                        fallbacks,
-                    );
-                }
-            }
-            PatternKind::Constructor { name, payload } => self.pattern_gates(
-                *payload,
-                child(name.segments.join(".")),
-                gates,
-                fallbacks,
-            ),
-            PatternKind::Outcome {
-                good,
-                payload: Some(payload),
-            } => self.pattern_gates(
-                *payload,
-                child(good.to_string()),
-                gates,
-                fallbacks,
-            ),
-            PatternKind::Record { fields, .. } => {
-                for field in fields {
-                    if let Some(p) = field.pattern {
-                        self.pattern_gates(
-                            p,
-                            child(field.name.segments.join(".")),
-                            gates,
-                            fallbacks,
-                        );
-                    }
-                }
-            }
-            _ => (),
-        }
-    }
-    fn coverage(&mut self) {
-        for expression in &self.module.expressions {
-            let ExprKind::Arms(arms) = &expression.kind else {
-                continue;
-            };
-            let mut positions = BTreeMap::new();
-            let mut fallbacks = Vec::new();
-            for arm in arms {
-                if arm.guard.is_some() {
-                    continue;
-                }
-                for (i, pattern) in arm.patterns.iter().enumerate() {
-                    self.pattern_gates(
-                        *pattern,
-                        vec![i.to_string()],
-                        &mut positions,
-                        &mut fallbacks,
-                    );
-                }
-            }
-            let uncovered = positions.iter().any(|(path, gates)| {
-                !fallbacks.iter().any(|fallback| path.starts_with(fallback))
-                    && !gates.iter().any(|gate| {
-                        self.declaration(gate)
-                            .filter(|(_, _, limits)| limits.is_empty())
-                            .and_then(|(module, base, _)| {
-                                base.map(|id| {
-                                    self.syntax_type(module, &gate.origin, id)
-                                })
-                            })
-                            .is_some_and(|base| self.negated_gate(&base, gates))
-                    })
-            });
-            if uncovered {
-                self.errors.push(Error {
-                    span: expression.span,
-                    reason: TypeReason::Limit {
-                        message: String::from(
-                            "gate arms need a complementary gate or a fallback",
-                        ),
-                    },
-                });
-            }
-        }
-    }
     fn negated_gate(&self, ty: &Type, gates: &[TypeName]) -> bool {
         match ty {
             Type::Not(inner) => {
@@ -897,8 +782,10 @@ impl Pass<'_> {
                             return false;
                         };
                         self.declaration(name).is_some_and(
-                            |(_, base, limits)| {
-                                base.is_none() && limits.is_empty()
+                            |(module, base, limits)| {
+                                let meaning = self.declarations_by_name.get(name)
+                                    .is_some_and(|index| matches!(&module.entries[*index], Entry::Item(item) if matches!(item.kind, ItemKind::Type { members: Some(_), .. })));
+                                (base.is_none() || meaning) && limits.is_empty()
                             },
                         )
                     })
@@ -1074,6 +961,7 @@ impl Pass<'_> {
                 Literal::Int {
                     negative,
                     magnitude,
+                    ..
                 } => Integer::new(*negative, magnitude.clone()).to_string(),
                 _ => String::new(),
             };
@@ -1140,6 +1028,9 @@ impl Pass<'_> {
                 });
             } else if range.contains_zero() {
                 self.typed.checks.push(Check {
+                    value: Some(*right),
+                    path: Vec::new(),
+                    target: None,
                     place: self.module.expressions[right.0].span,
                     place_kind: Place::Parameter(Some(if when_integer {
                         match &self.module.expressions[right.0].kind {
@@ -1607,6 +1498,7 @@ fn literal_fact(literal: &Literal) -> Known {
         Literal::Int {
             negative,
             magnitude,
+            ..
         } => exact(Integer::new(*negative, magnitude.clone())),
         Literal::Str { value, .. } => Known {
             exact: Some(format!("{value:?}")),

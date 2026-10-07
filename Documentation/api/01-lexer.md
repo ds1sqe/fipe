@@ -27,7 +27,7 @@ them remain; a unit with errors is never parsed or executed.
 | NAME, SELECTOR | Name/Selector(Vec<String>), segments without dots |
 | WORD, PATH | Word/Path(String), exact spelling |
 | FLAG | Flag(String), without leading dash(es) |
-| INTEGER | Int { negative: bool, magnitude: Magnitude } |
+| INTEGER | Int { negative: bool, magnitude: Magnitude, radix: u8, digits: usize } |
 | FLOAT | Float(String), exact spelling including separators/sign |
 | STRING | Str { value: String, raw: bool } |
 | with a prefix or suffix | Affixed(Box<Affixed>) |
@@ -64,3 +64,7 @@ Lexing is O(n) time and storage in the source length and never recurses,
 except that a decimal integer's magnitude takes time quadratic in its
 digits.
 Allocation failure is not a lexical diagnostic.
+
+Integer forms retain radix and written digit count, excluding underscores
+and the sign or radix prefix; leading zeros count. The syntax literal
+keeps the same metadata for the checked literal Form.

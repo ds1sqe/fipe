@@ -25,13 +25,31 @@ fn int(magnitude: u64) -> Kind {
     Kind::Int {
         negative: false,
         magnitude: Magnitude::from(magnitude),
+        radix: 10,
+        digits: magnitude.to_string().len(),
     }
+}
+
+fn form(mut token: Kind, radix: u8, digits: usize) -> Kind {
+    let Kind::Int {
+        radix: r,
+        digits: d,
+        ..
+    } = &mut token
+    else {
+        panic!()
+    };
+    *r = radix;
+    *d = digits;
+    token
 }
 
 fn negative(magnitude: u64) -> Kind {
     Kind::Int {
         negative: true,
         magnitude: Magnitude::from(magnitude),
+        radix: 10,
+        digits: magnitude.to_string().len(),
     }
 }
 
@@ -99,7 +117,14 @@ fn literal_forms_and_payloads() {
         ("True False", vec![name("True"), name("False")]),
         (
             "199 -5 0x199 0o17 0b1010 1_000",
-            vec![int(199), negative(5), int(409), int(15), int(10), int(1000)],
+            vec![
+                int(199),
+                negative(5),
+                form(int(409), 16, 3),
+                form(int(15), 8, 2),
+                form(int(10), 2, 4),
+                int(1000),
+            ],
         ),
         (
             "1.5 1e3",
@@ -357,7 +382,7 @@ fn word_boundaries_are_not_arithmetic_or_name_resolution() {
         vec![name("rd"), S(Colon), Kind::Word("4-x".into())],
     );
     tokens("rd:-4", vec![name("rd"), S(Colon), negative(4)]);
-    tokens("rd:0004", vec![name("rd"), S(Colon), int(4)]);
+    tokens("rd:0004", vec![name("rd"), S(Colon), form(int(4), 10, 4)]);
     tokens("rd:", vec![name("rd"), S(Colon)]);
 }
 

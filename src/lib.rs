@@ -5,10 +5,12 @@
 extern crate alloc;
 
 pub mod ast;
+pub mod check;
 pub mod decl;
 pub mod embed;
 mod frame;
 pub mod infer;
+pub mod ir;
 pub mod lex;
 pub mod limits;
 pub mod parse;

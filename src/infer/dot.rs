@@ -27,27 +27,28 @@ impl<'a> Infer<'a> {
             let applied = super::meaning(&self.apply(&current)).clone();
             if matches!(applied, Type::Var(_) | Type::Rigid(_)) {
                 current = self.fresh();
-                let prior =
-                    self.state.obligations.iter().rev().find_map(|o| match &o
-                        .obligation
-                    {
-                        Obligation::Member { head, name, ty, .. }
-                            if !o.solved
-                                && name == member
-                                && self.apply(head) == applied =>
-                        {
-                            Some(ty.clone())
-                        }
-                        _ => None,
-                    });
-                if let Some(prior) = prior {
-                    self.unify(&prior, &current, span, span);
-                } else {
-                    self.require_member(applied, member, current.clone(), span);
-                }
+                self.owe_member(&applied, member, &current, span);
+                self.record_access(
+                    span,
+                    applied.clone(),
+                    current.clone(),
+                    crate::typed::Selected::Member {
+                        head: applied,
+                        name: member.clone(),
+                        argument: None,
+                    },
+                    None,
+                );
                 continue;
             }
-            if let Some(ty) = self.field(&applied, member) {
+            if let Some((ty, selected)) = self.field(&applied, member) {
+                self.record_access(
+                    span,
+                    applied.clone(),
+                    ty.clone(),
+                    selected,
+                    None,
+                );
                 current = ty;
                 continue;
             }
@@ -76,13 +77,92 @@ impl<'a> Infer<'a> {
                 return Callee::plain(self.fresh());
             };
             let slot = callee.self_slot.unwrap_or_default();
-            callee.supplied = Some((slot, applied, span));
+            callee.supplied = Some((slot, applied.clone(), span));
+            let selected = callee.selected.clone().unwrap_or_else(|| {
+                crate::typed::Selected::Member {
+                    head: applied.clone(),
+                    name: member.clone(),
+                    argument: None,
+                }
+            });
+            self.record_access(
+                span,
+                applied,
+                callee.whole(),
+                selected,
+                Some(&callee),
+            );
             if index + 1 == members.len() {
                 return callee;
             }
             current = self.apply_callee(callee, &[], None, span, None);
+            let key = (span.start, span.end);
+            if let Some(step) = self
+                .state
+                .accesses
+                .get_mut(&key)
+                .and_then(|steps| steps.last_mut())
+            {
+                step.result = current.clone();
+                step.bound = self.state.bound.get(&key).cloned();
+            }
         }
-        Callee::plain(current)
+        let mut callee = Callee::plain(current);
+        callee.selected = self
+            .state
+            .accesses
+            .get(&(span.start, span.end))
+            .and_then(|steps| steps.last())
+            .map(|step| step.selected.clone());
+        callee
+    }
+
+    fn owe_member(
+        &mut self,
+        applied: &Type,
+        member: &str,
+        current: &Type,
+        span: Span,
+    ) {
+        let prior = self.state.obligations.iter().rev().find_map(|o| match &o
+            .obligation
+        {
+            Obligation::Member { head, name, ty, .. }
+                if !o.solved
+                    && name == member
+                    && self.apply(head) == *applied =>
+            {
+                Some(ty.clone())
+            }
+            _ => None,
+        });
+        if let Some(prior) = prior {
+            self.unify(&prior, current, span, span);
+        } else {
+            self.require_member(applied.clone(), member, current.clone(), span);
+        }
+    }
+
+    fn record_access(
+        &mut self,
+        span: Span,
+        head: Type,
+        result: Type,
+        selected: crate::typed::Selected,
+        callee: Option<&Callee>,
+    ) {
+        self.state
+            .accesses
+            .entry((span.start, span.end))
+            .or_default()
+            .push(crate::typed::Access {
+                callee: callee.map_or_else(|| result.clone(), Callee::whole),
+                head,
+                result,
+                selected,
+                meanings: callee.map_or_else(Vec::new, |c| c.meanings.clone()),
+                bound: None,
+            });
     }
 
     /// Resolve the member obligations whose head is known.
@@ -147,6 +227,38 @@ impl<'a> Infer<'a> {
     /// `head.name: ty` on a known head: its field, else the remaining
     /// application of a `self`-spot function to it.
     fn member(&mut self, owed: &Owed) {
+        let Obligation::Member { name, dot, .. } = &owed.obligation else {
+            self.claim(owed);
+            return;
+        };
+        let dot = if *dot == Span::default() {
+            owed.span
+        } else {
+            *dot
+        };
+        let site = (dot.start, dot.end);
+        let written = self.state.accesses.get(&site).is_some_and(|steps| steps.iter().any(|step| matches!(&step.selected,
+            crate::typed::Selected::Member { name: member, .. } | crate::typed::Selected::Static { name: member, .. } if member == name)))
+            || matches!(self.state.selected.get(&site), Some(crate::typed::Selected::Member { name: member, .. } | crate::typed::Selected::Static { name: member, .. }) if member == name);
+        if written {
+            self.solve_member(owed);
+            return;
+        }
+        // A structural requirement checks an implementation without executing it here.
+        let selected = self.state.selected.get(&site).cloned();
+        let ty = self.state.callee_types.get(&site).cloned();
+        let meanings = self.state.meaning_arguments.get(&site).cloned();
+        let bound = self.state.bound.get(&site).cloned();
+        let conversion = self.state.conversions.get(&site).cloned();
+        self.solve_member(owed);
+        restore(&mut self.state.selected, site, selected);
+        restore(&mut self.state.callee_types, site, ty);
+        restore(&mut self.state.meaning_arguments, site, meanings);
+        restore(&mut self.state.bound, site, bound);
+        restore(&mut self.state.conversions, site, conversion);
+    }
+
+    fn solve_member(&mut self, owed: &Owed) {
         let Obligation::Member {
             head,
             name,
@@ -210,7 +322,8 @@ impl<'a> Infer<'a> {
             self.unify(ty, &selected, dot, owed.span);
             return;
         }
-        let value = if let Some(field) = self.field(&head, name) {
+        let value = if let Some((field, selected)) = self.field(&head, name) {
+            self.record_field(dot, &head, name, &selected);
             field
         } else if self.private_field(&head, name) {
             self.error(
@@ -243,6 +356,28 @@ impl<'a> Infer<'a> {
             return;
         };
         self.unify(ty, &value, dot, owed.span);
+    }
+
+    fn record_field(
+        &mut self,
+        dot: Span,
+        head: &Type,
+        name: &str,
+        selected: &crate::typed::Selected,
+    ) {
+        self.state
+            .selected
+            .insert((dot.start, dot.end), selected.clone());
+        let subst = &self.state.subst;
+        if let Some(steps) = self.state.accesses.get_mut(&(dot.start, dot.end))
+        {
+            for step in steps {
+                if matches!(&step.selected, crate::typed::Selected::Member { head: h, name: n, .. } if subst.apply(h) == *head && n == name)
+                {
+                    step.selected = selected.clone();
+                }
+            }
+        }
     }
 
     fn assumed_member(
@@ -285,12 +420,24 @@ impl<'a> Infer<'a> {
     }
 
     /// A readable field of a record type.
-    fn field(&mut self, ty: &Type, name: &str) -> Option<Type> {
+    pub(super) fn field(
+        &mut self,
+        ty: &Type,
+        name: &str,
+    ) -> Option<(Type, crate::typed::Selected)> {
         if let Some(fields) = self.fields(ty) {
-            if let Some(field) =
-                fields.into_iter().find(|f| f.name == name && f.public)
+            if let Some((index, field)) = fields
+                .into_iter()
+                .enumerate()
+                .find(|(_, f)| f.name == name && f.public)
             {
-                return Some(field.ty);
+                return Some((
+                    field.ty,
+                    crate::typed::Selected::Field {
+                        head: ty.clone(),
+                        index,
+                    },
+                ));
             }
         }
         self.member_limits(ty, ty, Span::default(), &mut Vec::new())
@@ -305,14 +452,23 @@ impl<'a> Infer<'a> {
                     return None;
                 };
                 (n == name && (name == "eq" || !contains_type(&member, ty)))
-                    .then_some(member)
+                    .then(|| {
+                        (
+                            member,
+                            crate::typed::Selected::Member {
+                                head: ty.clone(),
+                                name: String::from(name),
+                                argument: None,
+                            },
+                        )
+                    })
             })
     }
 
     /// A function `name` in scope with a `self` spot: this module's
     /// items, the head type's own members, those of a file module's type
     /// in its module, then the prelude and the commands.
-    fn self_function(
+    pub(super) fn self_function(
         &mut self,
         name: &str,
         ty: &Type,
@@ -483,7 +639,12 @@ impl<'a> Infer<'a> {
             && self.has_claim(ty, &super::prelude("Default"))
             && self.default_available(ty)
         {
-            return Some(Callee::plain(ty.clone()));
+            let mut callee = Callee::plain(ty.clone());
+            callee.selected = Some(crate::typed::Selected::Derived {
+                ty: ty.clone(),
+                kind: crate::ir::Derived::Default,
+            });
+            return Some(callee);
         }
         if !matches!(member, "eq" | "cmp" | "show") {
             return None;
@@ -585,6 +746,14 @@ impl<'a> Infer<'a> {
         let mut callee = Callee::plain(result);
         callee.spots = Some(spots);
         callee.self_slot = Some(slot);
+        callee.selected = Some(crate::typed::Selected::Derived {
+            ty: ty.clone(),
+            kind: match member {
+                "eq" => crate::ir::Derived::Eq,
+                "cmp" => crate::ir::Derived::Cmp,
+                _ => crate::ir::Derived::Show,
+            },
+        });
         callee
     }
 
@@ -616,9 +785,16 @@ impl<'a> Infer<'a> {
                             *site == (name.span.start, name.span.end)
                         })
                     {
-                        let ty = self.imported(&local.scheme, stem, span);
-                        callees
-                            .push(self.with_heads(ty, local.heads.as_deref()));
+                        let (ty, meanings) =
+                            self.imported_meanings(&local.scheme, stem, span);
+                        let mut callee =
+                            self.with_heads(ty, local.heads.as_deref());
+                        callee.meanings = meanings;
+                        callee.selected = Some(crate::typed::Selected::Value {
+                            origin: origin.clone(),
+                            site: name.span,
+                        });
+                        callees.push(callee);
                     }
                 }
             }
@@ -718,6 +894,10 @@ impl<'a> Infer<'a> {
                     let mut callee = self
                         .finish_callee(slots, result, self_slot, vars, span);
                     callee.home = Some(origin.clone());
+                    callee.selected = Some(crate::typed::Selected::Declared {
+                        origin: origin.clone(),
+                        site: name.span,
+                    });
                     callees.push(callee);
                 }
             }
@@ -789,23 +969,28 @@ impl<'a> Infer<'a> {
             };
             match &module.patterns[pattern.0].kind {
                 PatternKind::Name(n) if super::last(n) == name => {
-                    Some((*id, *value))
+                    Some((*id, *value, n.span))
                 }
                 _ => None,
             }
         });
-        let Some((id, value)) = binding else {
+        let Some((id, value, site)) = binding else {
             return Callee::plain(self.fresh());
         };
         let Some(scheme) = typed.binding(id) else {
             return Callee::plain(self.fresh());
         };
-        let ty = self.imported(scheme, stem, span);
+        let (ty, meanings) = self.imported_meanings(scheme, stem, span);
         let heads = match &module.expressions[value.0].kind {
             ExprKind::Arms(arms) => Some(heads_in(module, arms)),
             _ => None,
         };
         let mut callee = self.with_heads(ty, heads.as_deref());
+        callee.meanings = meanings;
+        callee.selected = Some(crate::typed::Selected::Value {
+            origin: Origin::File(String::from(stem)),
+            site,
+        });
         callee.home = Some(Origin::File(String::from(stem)));
         callee
     }
@@ -876,7 +1061,8 @@ impl<'a> Infer<'a> {
         };
         let ty = self.imported(&local.scheme, stem, span);
         let mut callee = self.with_heads(ty, local.heads.as_deref());
-        callee.home = Some(origin);
+        callee.home = Some(origin.clone());
+        callee.selected = Some(crate::typed::Selected::Value { origin, site });
         Some(callee)
     }
 
@@ -915,6 +1101,15 @@ impl<'a> Infer<'a> {
     /// variables are another substitution's, so all are quantified, and
     /// the module's own declarations are named by the module.
     fn imported(&mut self, scheme: &Scheme, stem: &str, span: Span) -> Type {
+        self.imported_meanings(scheme, stem, span).0
+    }
+
+    fn imported_meanings(
+        &mut self,
+        scheme: &Scheme,
+        stem: &str,
+        span: Span,
+    ) -> (Type, Vec<Type>) {
         let mut imported = scheme.rehome(&Origin::File(String::from(stem)));
         imported.variables = Scheme::generalize(
             &imported.ty,
@@ -923,7 +1118,7 @@ impl<'a> Infer<'a> {
             &Subst::default(),
         )
         .variables;
-        self.instantiate(&imported, span)
+        self.instantiate_with_meanings(&imported, span)
     }
 }
 
@@ -970,5 +1165,17 @@ impl Infer<'_> {
                 self.member(&owed);
             }
         }
+    }
+}
+
+fn restore<T>(
+    map: &mut alloc::collections::BTreeMap<(usize, usize), T>,
+    site: (usize, usize),
+    value: Option<T>,
+) {
+    if let Some(value) = value {
+        map.insert(site, value);
+    } else {
+        map.remove(&site);
     }
 }

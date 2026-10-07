@@ -48,3 +48,30 @@ fn outcome_text_guard_checks_only_the_source_family() {
     }
     assert_eq!(ty("s: String = [Just 1]"), "String");
 }
+
+#[test]
+fn outcome_readings_are_recorded_for_lowering() {
+    use fipe::typed::{Mode, Rebuild};
+    for (text, expected) in [
+        ("Just 1 |: (x => x + 1)", Rebuild::Wrap),
+        ("Just 1 |: (_ => Just 2)", Rebuild::Direct),
+        ("Nothing |! 1", Rebuild::Discard),
+    ] {
+        let (_, typed, errors) = super::check(text, &Declarations::new());
+        assert_eq!(errors, []);
+        assert!(typed.rebuilds.values().any(|v| *v == expected));
+        assert!(typed
+            .rebuilds
+            .keys()
+            .all(|site| typed.rebuild_types.contains_key(site)));
+    }
+    for (text, expected) in [
+        ("True || False", Mode::Bool),
+        ("Nothing || Just 4", Mode::Family),
+        ("Nothing || 4", Mode::Payload),
+    ] {
+        let (_, typed, errors) = super::check(text, &Declarations::new());
+        assert_eq!(errors, []);
+        assert!(typed.modes.values().any(|v| *v == expected));
+    }
+}

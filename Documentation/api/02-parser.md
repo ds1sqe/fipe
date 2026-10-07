@@ -67,3 +67,7 @@ closer or at EOF; a carried-over newline is not a recovery point. A missing
 comma before a line break inside a list is `CommaBeforeLineBreak`, spanning
 the newline; `|!` in a type is `EitherNot`. Reasons and spans are stable;
 wording is the host's.
+
+Integer forms retain radix and written digit count, excluding underscores
+and the sign or radix prefix; leading zeros count. The syntax literal
+keeps the same metadata for the checked literal Form.

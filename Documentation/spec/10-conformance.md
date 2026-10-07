@@ -4,7 +4,7 @@ Observables to test per stage. Lexical and syntax cases are covered by
 public-API tests; checking and execution cases await their stages, and a
 case citing [open decisions](11-open.md) is conditional on it. A row marked
 *06.8* is owed by narrowing (what a body, a branch or a variable proves),
-which is deferred; *07* and *08* mark a row owed by that major.
+which is deferred; *08* marks a row owed by evaluation.
 
 The rows for syntax, types and checks are in
 [checks](10-conformance-checks.md); the corner cases that reviews found

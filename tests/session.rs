@@ -1017,3 +1017,107 @@ fn private_named_constructor_field_has_one_diagnostic() {
     );
     assert_eq!(done(session.line("gen.P -len 5 3")).diagnostics.len(), 1);
 }
+
+#[test]
+fn missing_transitive_imports_retry_only_for_written_uses() {
+    let mut session = Session::new(host());
+    assert!(matches!(session.line("use outer"), Outcome::Request(_)));
+    assert!(
+        matches!(session.reply(Reply::File(Some("use missing\npub n = 1".into()))), Outcome::Request(Request::File { stem }) if stem == "missing")
+    );
+    let report = done(session.reply(Reply::File(None)));
+    assert_ne!(report.diagnostics, []);
+    for _ in 0..10 {
+        ok(&mut session, "1");
+    }
+    assert!(
+        matches!(session.line("use outer"), Outcome::Request(Request::File { stem }) if stem == "missing")
+    );
+    done(session.reply(Reply::File(Some("pub n = 2".into()))));
+    ok(&mut session, "use outer");
+}
+
+#[test]
+fn weak_meaning_metadata_keeps_the_session_slot() {
+    let mut session = Session::new(host());
+    let first = done(session.line("[empty] = [[]]"));
+    assert_eq!(first.diagnostics, []);
+    let first = first.typed.unwrap();
+    assert_eq!(
+        first
+            .session_variables
+            .values()
+            .copied()
+            .collect::<Vec<_>>(),
+        [0]
+    );
+    let second = done(session.line("empty"));
+    assert_eq!(second.diagnostics, []);
+    let second = second.typed.unwrap();
+    assert!(second.session_variables.values().any(|slot| *slot == 0));
+}
+
+#[test]
+fn later_lines_record_receivers_for_earlier_generic_members() {
+    let mut session = Session::new(Declarations::new());
+    ok(&mut session, "inc = n => n + 1");
+    let report = ok(&mut session, "inc 2.0");
+    let typed = report.typed.unwrap();
+    let dispatch = typed.dispatch.iter().find(|d| d.name == "add").unwrap();
+    assert!(dispatch
+        .rows
+        .iter()
+        .any(|row| row.receiver.to_string() == "F64"));
+}
+
+#[test]
+fn indexed_session_meanings_follow_accept_query_and_retract() {
+    let mut session = Session::new(host());
+    let unit = ok(&mut session, "[empty] = [[]]").unit.unwrap();
+    assert_eq!(unit.tables().session_meanings, [None]);
+    let nodes = unit.tables().nodes.len();
+    let queried = done(session.query("fixed: [Integer; 0] = empty"));
+    assert_eq!(queried.diagnostics, []);
+    assert_eq!(unit.tables().session_meanings, [None]);
+    assert_eq!(unit.tables().nodes.len(), nodes);
+    let next = ok(&mut session, "fixed: [Integer; 0] = empty")
+        .unit
+        .unwrap();
+    assert!(unit.tables().session_meanings[0].is_some());
+    assert_eq!(unit.tables().nodes.len(), next.tables().nodes.len());
+    session.retract();
+    assert_eq!(unit.tables().session_meanings[0], None);
+    ok(&mut session, "fixed: [String; 0] = empty");
+    let tables = unit.tables();
+    let Some(fipe::ir::Type::Meaning { index, .. }) =
+        &tables.session_meanings[0]
+    else {
+        panic!("fixed meaning")
+    };
+    assert_eq!(tables.meanings[*index].label, "String");
+}
+
+#[test]
+fn indexed_dispatch_rows_follow_retraction() {
+    let mut session = Session::new(Declarations::new());
+    let unit = ok(&mut session, "inc = n => n + 1").unit.unwrap();
+    let before: Vec<_> = unit
+        .tables()
+        .dispatch
+        .iter()
+        .map(|d| d.rows.clone())
+        .collect();
+    ok(&mut session, "inc 2.0");
+    assert_ne!(
+        unit.tables()
+            .dispatch
+            .iter()
+            .map(|d| d.rows.clone())
+            .collect::<Vec<_>>(),
+        before
+    );
+    session.retract();
+    for (dispatch, rows) in unit.tables().dispatch.iter().zip(before) {
+        assert_eq!(dispatch.rows, rows);
+    }
+}

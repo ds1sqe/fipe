@@ -726,6 +726,10 @@ impl<'a> Infer<'a> {
                 let mut callee =
                     self.finish_callee(slots, result, self_slot, vars, span);
                 callee.home = Some(origin.clone());
+                callee.selected = Some(crate::typed::Selected::Declared {
+                    origin: origin.clone(),
+                    site: declared.span,
+                });
                 if *origin == Origin::Prelude && matches!(name, "to" | "try") {
                     let target = callee.parameters[0].clone();
                     callee.conversion = Some((target, String::from(name)));
@@ -748,10 +752,21 @@ impl<'a> Infer<'a> {
     ) -> Callee {
         use super::files::DeclaredValue;
         let key = (home.clone(), String::from(name));
+        let Some(module) = self.owner(home) else {
+            return Callee::plain(self.fresh());
+        };
+        let binding = module.entries.iter().rev().find_map(|entry| {
+            let Entry::Line(id) = entry else { return None };
+            let crate::ast::ExprKind::Bind { pattern, value, .. } = module.expressions[id.0].kind else { return None };
+            matches!(&module.patterns[pattern.0].kind, crate::ast::PatternKind::Name(n) if super::last(n) == name).then_some((value, module.patterns[pattern.0].span))
+        });
+        let Some((value, site)) = binding else {
+            return Callee::plain(self.fresh());
+        };
         let cached = self.file_cache.values.borrow().get(&key).cloned();
         match cached {
             Some(DeclaredValue::Typed(scheme)) => {
-                return Callee::plain(self.instantiate(&scheme, span))
+                return self.declared_reference(home, site, &scheme, span)
             }
             Some(DeclaredValue::Failed) => return Callee::plain(self.fresh()),
             Some(DeclaredValue::Checking) => {
@@ -767,17 +782,6 @@ impl<'a> Infer<'a> {
             }
             None => {}
         }
-        let Some(module) = self.owner(home) else {
-            return Callee::plain(self.fresh());
-        };
-        let binding = module.entries.iter().rev().find_map(|entry| {
-            let Entry::Line(id) = entry else { return None };
-            let crate::ast::ExprKind::Bind { pattern, value, .. } = module.expressions[id.0].kind else { return None };
-            matches!(&module.patterns[pattern.0].kind, crate::ast::PatternKind::Name(n) if super::last(n) == name).then_some((value, module.patterns[pattern.0].span))
-        });
-        let Some((value, site)) = binding else {
-            return Callee::plain(self.fresh());
-        };
         let ty = match annotation {
             Some(id) => self.lower(
                 &Scope::Declared {
@@ -819,7 +823,24 @@ impl<'a> Infer<'a> {
                 },
             );
         }
-        Callee::plain(self.instantiate(&scheme, span))
+        self.declared_reference(home, site, &scheme, span)
+    }
+
+    fn declared_reference(
+        &mut self,
+        home: &Origin,
+        site: Span,
+        scheme: &crate::types::Scheme,
+        span: Span,
+    ) -> Callee {
+        let (ty, meanings) = self.instantiate_with_meanings(scheme, span);
+        let mut callee = Callee::plain(ty);
+        callee.meanings = meanings;
+        callee.selected = Some(crate::typed::Selected::Value {
+            origin: home.clone(),
+            site,
+        });
+        callee
     }
 
     pub(super) fn finish_callee(
@@ -856,6 +877,27 @@ impl<'a> Infer<'a> {
         ty: &str,
         name: &str,
     ) -> Callee {
+        self.constructor_kind(origin, ty, name, false)
+    }
+
+    pub(super) fn constructor_kind(
+        &mut self,
+        origin: &Origin,
+        ty: &str,
+        name: &str,
+        raw: bool,
+    ) -> Callee {
+        self.constructor_fields_kind(origin, ty, name, raw, false)
+    }
+
+    pub(super) fn constructor_fields_kind(
+        &mut self,
+        origin: &Origin,
+        ty: &str,
+        name: &str,
+        raw: bool,
+        private: bool,
+    ) -> Callee {
         let (Some(module), Some(scope)) =
             (self.owner(origin), self.scope(origin))
         else {
@@ -883,8 +925,11 @@ impl<'a> Infer<'a> {
         let fields: Vec<&crate::ast::Field> = if let Some(fields) = sum {
             fields.iter().collect()
         } else {
-            if let Some(callee) = self.written(origin, ty, module, &result) {
-                return callee;
+            if !raw {
+                if let Some(callee) = self.written(origin, ty, module, &result)
+                {
+                    return callee;
+                }
             }
             members
                 .iter()
@@ -894,7 +939,10 @@ impl<'a> Infer<'a> {
                 })
                 // A private field outside its module is no spot.
                 .filter(|f| {
-                    f.public || matches!(origin, Origin::This | Origin::Line(_))
+                    private
+                        || f.public
+                        || core::ptr::eq(module, self.module)
+                        || matches!(origin, Origin::This | Origin::Line(_))
                 })
                 .collect()
         };
@@ -925,7 +973,11 @@ impl<'a> Infer<'a> {
                 .obligations
                 .push(super::Owed::new(obligation, Span::default()));
         }
-        let mut callee = Callee::plain(result);
+        let mut callee = Callee::plain(result.clone());
+        callee.selected = Some(crate::typed::Selected::Constructor {
+            ty: result,
+            name: String::from(name),
+        });
         callee.spots = Some(slots);
         callee.parameters = arguments;
         callee.home = Some(origin.clone()).filter(|o| *o != Origin::This);
@@ -1013,6 +1065,7 @@ impl<'a> Infer<'a> {
                     name: super::last(&field.name),
                     ty,
                     public: field.public
+                        || core::ptr::eq(module, self.module)
                         || matches!(
                             name.origin,
                             Origin::This | Origin::Line(_)

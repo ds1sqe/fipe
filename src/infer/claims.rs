@@ -297,7 +297,7 @@ impl Infer<'_> {
         })
     }
 
-    fn claim_member_count(
+    pub(super) fn claim_member_count(
         &mut self,
         head: &Type,
         class: &Type,
@@ -1288,6 +1288,9 @@ impl Infer<'_> {
                 ..Default::default()
             };
             self.state.checks.push(crate::typed::Check {
+                value: None,
+                path: Vec::new(),
+                target: Some(expected.clone()),
                 place: span,
                 place_kind: crate::typed::Place::Result,
                 limit: other,

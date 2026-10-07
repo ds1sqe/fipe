@@ -105,40 +105,29 @@ impl Infer<'_> {
             };
         }
         if let Some(result) = limited_conversion(&target, &source, kind) {
+            self.state.conversions.insert(
+                (span.start, span.end),
+                crate::typed::Conversion {
+                    result: result.clone(),
+                    mode: if kind == "try" {
+                        crate::ir::ConversionMode::TryCheck
+                    } else {
+                        crate::ir::ConversionMode::Check
+                    },
+                    from: source,
+                    parameter: target.clone(),
+                    to: target,
+                },
+            );
             return result;
         }
-        let mut candidates = Vec::new();
-        for member in ["from", "try_from"] {
-            if (kind == "from" || kind == "try_from") && member != kind {
-                continue;
-            }
-            if matches!(name.origin, Origin::This | Origin::Line(_)) {
-                let key = Key::Member(name.name.clone(), String::from(member));
-                let indices: Vec<_> = self
-                    .items
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, item)| (item.key == key).then_some(i))
-                    .collect();
-                for index in indices {
-                    let callee = self.item_callee(index, span);
-                    candidates.push((member, callee.whole()));
-                }
-            }
-            for callee in self.conversion_members(
-                &name.origin,
-                &name.name,
-                &target,
-                member,
-                span,
-            ) {
-                candidates.push((member, callee.whole()));
-            }
-        }
+        let candidates = self.conversion_candidates(&target, name, kind, span);
         let mut selected = Vec::new();
         let mut sources = Vec::new();
-        for (member, ty) in candidates {
-            if let Type::Function { parameter, result } = self.apply(&ty) {
+        for (member, callee) in candidates {
+            if let Type::Function { parameter, result } =
+                self.apply(&callee.whole())
+            {
                 let claimed = self.claims(&target, true).iter().any(|class| matches!(class, Type::Named { name, arguments } if name.origin == Origin::Prelude && name.name == (if member == "from" { "From" } else { "TryFrom" }) && arguments.first().is_some_and(|a| self.same_source(a, &parameter))));
                 if !claimed {
                     continue;
@@ -148,7 +137,7 @@ impl Infer<'_> {
                     && self.same_source(&parameter, &source)
                 {
                     self.unify(&parameter, &source, span, span);
-                    selected.push((member, *result));
+                    selected.push((member, *result, callee));
                 }
             }
         }
@@ -158,9 +147,17 @@ impl Infer<'_> {
         {
             return self.fresh();
         }
-        let [(member, result)] = selected.as_slice() else {
+        let [(member, result, callee)] = selected.as_slice() else {
             return self.fresh();
         };
+        self.record_conversion(
+            callee,
+            (member, kind),
+            source,
+            &target,
+            result,
+            span,
+        );
         if *member == "try_from" {
             if let Type::Named { name, arguments } = result {
                 if name.origin == Origin::Prelude
@@ -185,10 +182,86 @@ impl Infer<'_> {
             }
         }
     }
+    fn record_conversion(
+        &mut self,
+        callee: &Callee,
+        (member, kind): (&str, &str),
+        source: Type,
+        target: &Type,
+        result: &Type,
+        span: Span,
+    ) {
+        self.record_callee(callee, span);
+        let mode = match (member, kind) {
+            ("try_from", "to") => crate::ir::ConversionMode::Unwrap,
+            ("from", "try") => crate::ir::ConversionMode::Wrap,
+            _ => crate::ir::ConversionMode::Direct,
+        };
+        let Type::Function { parameter, .. } = callee.whole() else {
+            unreachable!("conversion input")
+        };
+        self.state.conversions.insert(
+            (span.start, span.end),
+            crate::typed::Conversion {
+                result: if kind == "to" {
+                    target.clone()
+                } else if mode == crate::ir::ConversionMode::Wrap {
+                    super::prelude_of(
+                        "Result",
+                        vec![target.clone(), super::prelude("LimitError")],
+                    )
+                } else {
+                    result.clone()
+                },
+                mode,
+                from: source,
+                to: target.clone(),
+                parameter: *parameter,
+            },
+        );
+    }
+
+    fn conversion_candidates(
+        &mut self,
+        target: &Type,
+        name: &crate::types::TypeName,
+        kind: &str,
+        span: Span,
+    ) -> Vec<(&'static str, Callee)> {
+        let mut candidates = Vec::new();
+        for member in ["from", "try_from"] {
+            if (kind == "from" || kind == "try_from") && member != kind {
+                continue;
+            }
+            if matches!(name.origin, Origin::This | Origin::Line(_)) {
+                let key = Key::Member(name.name.clone(), String::from(member));
+                let indices: Vec<_> = self
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, item)| (item.key == key).then_some(i))
+                    .collect();
+                for index in indices {
+                    let callee = self.item_callee(index, span);
+                    candidates.push((member, callee));
+                }
+            }
+            for callee in self.conversion_members(
+                &name.origin,
+                &name.name,
+                target,
+                member,
+                span,
+            ) {
+                candidates.push((member, callee));
+            }
+        }
+        candidates
+    }
 }
 
 impl Infer<'_> {
-    fn same_source(&self, a: &Type, b: &Type) -> bool {
+    pub(super) fn same_source(&self, a: &Type, b: &Type) -> bool {
         self.state
             .subst
             .clone()

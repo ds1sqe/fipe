@@ -111,7 +111,130 @@ impl Infer<'_> {
         from: Type,
         to: Type,
     ) {
-        self.state.casts[id.0] = Some(Cast { row, from, to });
+        self.state.casts[id.0] = Some(Cast {
+            operation: None,
+            row,
+            from,
+            to,
+        });
+    }
+
+    pub(super) fn record_cast_operations(&mut self) {
+        if !self.state.errors.is_empty() {
+            return;
+        }
+        let casts: alloc::vec::Vec<_> = self
+            .state
+            .casts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cast)| Some((index, cast.clone()?)))
+            .collect();
+        for (index, cast) in casts {
+            let (head, name, result, receiverless) = match cast.row {
+                CastRow::Read => (
+                    self.apply(meaning(&cast.to)),
+                    "read",
+                    super::prelude_of(
+                        "Result",
+                        alloc::vec![
+                            self.apply(meaning(&cast.to)),
+                            prelude("ParseError")
+                        ],
+                    ),
+                    true,
+                ),
+                CastRow::Show => (
+                    self.apply(meaning(&cast.from)),
+                    "show",
+                    prelude("String"),
+                    false,
+                ),
+                _ => continue,
+            };
+            let span = self.span(ExprId(index));
+            let callee = self.cast_operation(&head, name, receiverless, span);
+            let expected = Type::function(
+                if receiverless {
+                    prelude("String")
+                } else {
+                    head.clone()
+                },
+                result,
+            );
+            let operation = if let Some(callee) = callee {
+                self.unify(&callee.whole(), &expected, span, span);
+                crate::typed::Comparison {
+                    selected: callee
+                        .selected
+                        .unwrap_or_else(|| crate::typed::Selected::Member {
+                            head: head.clone(),
+                            name: name.into(),
+                            argument: None,
+                        })
+                        .applied(&self.state.subst),
+                    meanings: callee
+                        .meanings
+                        .iter()
+                        .map(|ty| self.apply(ty))
+                        .collect(),
+                    ty: self.apply(&expected),
+                    self_slot: callee.self_slot.unwrap_or(0),
+                }
+            } else {
+                crate::typed::Comparison {
+                    selected: if receiverless {
+                        crate::typed::Selected::Static {
+                            head,
+                            name: name.into(),
+                        }
+                    } else {
+                        crate::typed::Selected::Member {
+                            head,
+                            name: name.into(),
+                            argument: None,
+                        }
+                    },
+                    meanings: alloc::vec::Vec::new(),
+                    ty: expected,
+                    self_slot: 0,
+                }
+            };
+            self.state.casts[index]
+                .as_mut()
+                .expect("recorded cast")
+                .operation = Some(operation);
+        }
+    }
+
+    fn cast_operation(
+        &mut self,
+        head: &Type,
+        name: &str,
+        receiverless: bool,
+        span: Span,
+    ) -> Option<super::Callee> {
+        let selected = self.state.selected.clone();
+        let arguments = self.state.meaning_arguments.clone();
+        let callee = if receiverless {
+            if let Type::Named { name: owner, .. } = head {
+                Some(self.type_member(
+                    &crate::resolve::Target::Type {
+                        origin: owner.origin.clone(),
+                        name: owner.name.clone(),
+                    },
+                    name,
+                    span,
+                ))
+            } else {
+                None
+            }
+        } else {
+            self.self_function(name, head, span)
+        };
+        self.state.selected = selected;
+        self.state.meaning_arguments = arguments;
+        callee
     }
 
     fn same_local_meaning(&self, id: ExprId, target: &Type) -> bool {
@@ -200,6 +323,7 @@ impl Infer<'_> {
                         crate::ast::Literal::Int {
                             negative,
                             magnitude,
+                            ..
                         } => Some(super::Lit::Int {
                             negative: *negative,
                             magnitude: magnitude.clone(),

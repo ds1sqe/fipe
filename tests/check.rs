@@ -33,8 +33,12 @@ fn ty(text: &str) -> String {
 
 #[path = "check/binding.rs"]
 mod binding;
+#[path = "check/ir.rs"]
+mod ir;
 
 #[path = "check/casts.rs"]
 mod casts;
+#[path = "check/coverage.rs"]
+mod coverage;
 #[path = "check/outcomes.rs"]
 mod outcomes;

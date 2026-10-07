@@ -60,6 +60,8 @@ fn integer(module: &Module, id: ExprId, expected: u64) {
         &ExprKind::Literal(Literal::Int {
             negative: false,
             magnitude: expected.into(),
+            radix: 10,
+            digits: expected.to_string().len(),
         })
     );
 }

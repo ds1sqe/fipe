@@ -32,6 +32,7 @@ impl Infer<'_> {
             let item = &self.items[index];
             (item.ty.clone(), item.heads.clone(), item.group)
         };
+        let mut meanings = Vec::new();
         let ty = match self.state.status[index].clone() {
             Status::Pending if self.ready(group) => {
                 self.type_group(group);
@@ -55,9 +56,20 @@ impl Infer<'_> {
                 });
                 copy
             }
-            Status::Done(scheme) => self.instantiate(&scheme, span),
+            Status::Done(scheme) => {
+                let (ty, arguments) =
+                    self.instantiate_with_meanings(&scheme, span);
+                meanings = arguments;
+                ty
+            }
         };
-        self.with_heads(ty, heads.as_deref())
+        let mut callee = self.with_heads(ty, heads.as_deref());
+        callee.meanings = meanings;
+        callee.selected = Some(crate::typed::Selected::Value {
+            origin: crate::resolve::Origin::This,
+            site: self.items[index].site,
+        });
+        callee
     }
 
     /// A member's type with fresh variables throughout.
@@ -113,7 +125,11 @@ impl Infer<'_> {
             else {
                 continue;
             };
-            let ty = self.instantiate(&scheme, used.span);
+            let (ty, meanings) =
+                self.instantiate_with_meanings(&scheme, used.span);
+            self.state
+                .meaning_arguments
+                .insert((used.span.start, used.span.end), meanings);
             let site = self.items[used.item].site;
             self.unify(&ty, &used.ty, used.span, site);
         }

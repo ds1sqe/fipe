@@ -110,6 +110,7 @@ impl Infer<'_> {
     /// Check a pattern against its input type, which `input` gave, and
     /// bind its names.
     pub(super) fn pattern(&mut self, id: PatternId, ty: &Type, input: Span) {
+        self.state.pattern_types.insert(id.0, ty.clone());
         let module = self.module;
         let span = module.patterns[id.0].span;
         match &module.patterns[id.0].kind {
@@ -125,6 +126,7 @@ impl Infer<'_> {
                 let literal_ty = self.literal(literal, Some(&expected), span);
 
                 self.unify(ty, &literal_ty, span, input);
+                self.require_claim(ty.clone(), prelude("Eq"), span);
             }
             PatternKind::Default { name, value } => {
                 let expected = Expected::new(ty.clone(), input);
@@ -304,5 +306,58 @@ fn module_result_span(module: &Module, span: Span) -> Span {
             _ => return ty.span,
         };
         ty = &module.types[next.0];
+    }
+}
+
+impl Infer<'_> {
+    pub(super) fn record_pattern_equals(&mut self) {
+        if !self.state.errors.is_empty() {
+            return;
+        }
+        let patterns: Vec<_> = self
+            .state
+            .pattern_types
+            .iter()
+            .filter(|(id, _)| {
+                matches!(
+                    self.module.patterns[**id].kind,
+                    PatternKind::Literal(_)
+                )
+            })
+            .map(|(id, ty)| (*id, self.apply(ty)))
+            .collect();
+        for (id, ty) in patterns {
+            let span = self.module.patterns[id].span;
+            let head = super::meaning(&ty).clone();
+            let mut comparison = crate::typed::Comparison {
+                selected: crate::typed::Selected::Member {
+                    head: head.clone(),
+                    name: alloc::string::String::from("eq"),
+                    argument: Some(head.clone()),
+                },
+                meanings: Vec::new(),
+                ty: Type::function(
+                    head.clone(),
+                    Type::function(head.clone(), prelude("Bool")),
+                ),
+                self_slot: 1,
+            };
+            if !matches!(head, Type::Var(_) | Type::Rigid(_)) {
+                if let Some(callee) = self.self_function("eq", &head, span) {
+                    if let Some(spots) = &callee.spots {
+                        for spot in spots {
+                            self.unify(&spot.ty, &head, span, span);
+                        }
+                    }
+                    if let Some(selected) = &callee.selected {
+                        comparison.selected = selected.clone();
+                        comparison.meanings.clone_from(&callee.meanings);
+                        comparison.ty = self.apply(&callee.whole());
+                        comparison.self_slot = callee.self_slot.unwrap_or(1);
+                    }
+                }
+            }
+            self.state.pattern_equals.insert(id, comparison);
+        }
     }
 }

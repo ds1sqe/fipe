@@ -111,8 +111,10 @@ A number may carry a program's prefix or suffix, read with no type
 4. A letter, then letters, digits and underscores: a suffix, `10ms`,
    `2i`, `1st`, `1e`, `0x1Fg`. Anything else makes the word a word.
 
-A name before digits is a name: `x10`. `0x`, `0o` and `0b` arrive
-decoded; the digits after a program's prefix arrive as written.
+A name before digits is a name: `x10`. A number arrives decoded with
+its radix and its count of digits, underscores not counted, so `0b0111`
+is 7 in radix 2 with four digits; the digits after a program's prefix
+arrive as written.
 
 An integer payload is sign and magnitude with no width. The lexer has no
 bound on a number; a place has, and ranges are the checker's. A float

@@ -16,14 +16,18 @@ mod casts;
 mod claims;
 mod containers;
 mod conversions;
+mod dispatch;
 mod dot;
 mod expr;
 pub(crate) mod files;
 mod groups;
+mod hidden;
 mod index;
 mod lower;
 mod outcome;
+mod record;
 mod spots;
+mod test;
 pub(crate) use spots::Supply;
 
 use crate::{
@@ -189,34 +193,10 @@ pub fn infer_partial(
     )
 }
 
-/// [`infer_partial`] after the definitions of a session's accepted
-/// lines, with the lines from byte `query` on queried rather than run: a
-/// queried expression line is generalized like a binding, not defaulted
-/// where it leaves, and its scheme is [`Typed::binding`] of the line.
-pub(crate) fn infer_in(
-    module: &Module,
-    resolved: &Resolved,
-    declarations: &Declarations,
-    files: &[(String, Module)],
-    frame: &Frame,
-    query: usize,
-    cache: &files::FileCache,
-) -> (Typed, Vec<Error>) {
-    run(
-        module,
-        resolved,
-        declarations,
-        files,
-        Some(frame),
-        (&[], cache),
-        query,
-    )
-}
-
 /// Inference with the file modules already being typed, which a cycle
 /// of `use` lines must not enter again; lines from byte `query` on are
 /// queried.
-fn run(
+pub(crate) fn run(
     module: &Module,
     resolved: &Resolved,
     declarations: &Declarations,
@@ -248,7 +228,7 @@ fn run(
                 if module.expressions[id.0].span.start >= query {
                     infer.query_line(*id);
                 } else {
-                    infer.line(*id, true);
+                    infer.line(*id);
                 }
             }
             // An impl is order-free: typed here unless a use typed it
@@ -287,6 +267,23 @@ fn run(
 /// Everything inference changes, cloned to try one reading of `||`.
 #[derive(Clone)]
 struct State {
+    constructor_fields: BTreeMap<(usize, usize), Vec<usize>>,
+    derived_defaults: BTreeMap<(usize, usize), crate::typed::DefaultValue>,
+    conversions: BTreeMap<(usize, usize), crate::typed::Conversion>,
+    pattern_equals: BTreeMap<usize, crate::typed::Comparison>,
+    body_parameters: BTreeMap<(usize, usize), Vec<Type>>,
+    tests: Vec<crate::typed::Test>,
+    default_instances:
+        BTreeMap<(usize, usize, usize), crate::typed::DeclaredExpression>,
+    accesses: BTreeMap<(usize, usize), Vec<crate::typed::Access>>,
+    pattern_types: BTreeMap<usize, Type>,
+    selected: BTreeMap<(usize, usize), crate::typed::Selected>,
+    meaning_arguments: BTreeMap<(usize, usize), Vec<Type>>,
+    main_lifts: Vec<bind::Lift>,
+    callee_types: BTreeMap<(usize, usize), Type>,
+    rebuild_types: BTreeMap<(usize, usize), Type>,
+    rebuilds: BTreeMap<(usize, usize), crate::typed::Rebuild>,
+    modes: BTreeMap<(usize, usize), crate::typed::Mode>,
     subst: Subst,
     types: Vec<Option<Type>>,
     entries: Vec<(ExprId, Type, Span, crate::typed::Place)>,
@@ -324,7 +321,23 @@ impl State {
     /// A fresh state over `subst` for a module of `size` expressions.
     fn new(subst: Subst, size: usize) -> Self {
         Self {
+            conversions: BTreeMap::new(),
+            pattern_equals: BTreeMap::new(),
+            body_parameters: BTreeMap::new(),
+            tests: Vec::new(),
             subst,
+            default_instances: BTreeMap::new(),
+            derived_defaults: BTreeMap::new(),
+            constructor_fields: BTreeMap::new(),
+            accesses: BTreeMap::new(),
+            pattern_types: BTreeMap::new(),
+            selected: BTreeMap::new(),
+            meaning_arguments: BTreeMap::new(),
+            main_lifts: Vec::new(),
+            callee_types: BTreeMap::new(),
+            rebuild_types: BTreeMap::new(),
+            rebuilds: BTreeMap::new(),
+            modes: BTreeMap::new(),
             types: vec![None; size],
             entries: Vec::new(),
             checks: Vec::new(),
@@ -412,6 +425,7 @@ pub(crate) struct Head {
 
 /// A value of this module known before its line: an impl member, or
 /// a written constructor.
+#[derive(Clone)]
 struct Item {
     key: Key,
     ty: Type,
@@ -435,6 +449,7 @@ enum Body {
 }
 
 /// The items of one impl, typed together, and its `Self`.
+#[derive(Clone)]
 struct Group {
     members: Vec<usize>,
     self_type: Option<Type>,
@@ -485,6 +500,8 @@ struct Slot {
 /// A value about to be applied.
 #[derive(Clone, Debug)]
 struct Callee {
+    selected: Option<crate::typed::Selected>,
+    meanings: Vec<Type>,
     /// The whole type without a spot list; the result with one.
     ty: Type,
     spots: Option<Vec<Slot>>,
@@ -502,6 +519,8 @@ struct Callee {
 impl Callee {
     const fn plain(ty: Type) -> Self {
         Self {
+            selected: None,
+            meanings: Vec::new(),
             ty,
             spots: None,
             self_slot: None,
@@ -651,8 +670,10 @@ impl Infer<'_> {
                         *dot = span;
                     }
                 }
-                let ty = self.instantiate(&local.scheme, span);
+                let (ty, meanings) =
+                    self.instantiate_with_meanings(&local.scheme, span);
                 let mut callee = self.with_heads(ty, local.heads.as_deref());
+                callee.meanings = meanings;
                 if !self.state.locals.contains_key(&key) {
                     callee.home = self
                         .frame
@@ -666,6 +687,10 @@ impl Infer<'_> {
                         })
                         .map(Origin::Line);
                 }
+                callee.selected = Some(crate::typed::Selected::Value {
+                    origin: callee.home.clone().unwrap_or(Origin::This),
+                    site,
+                });
                 callee
             }
             None => Callee::plain(self.fresh()),
@@ -915,6 +940,7 @@ impl Infer<'_> {
                 {
                     let (named, mark) =
                         self.assume_type_parameters(name, parameters);
+                    let owner = named.clone();
                     let ty = self.limited(named);
                     let ty = meaning(&ty).clone();
                     self.bind_local(
@@ -977,6 +1003,7 @@ impl Infer<'_> {
                                 );
                                 continue;
                             }
+                            self.record_local_test(&owner, name.span, *id);
                             self.expr(
                                 *id,
                                 Some(&Expected::new(
@@ -996,30 +1023,67 @@ impl Infer<'_> {
         }
     }
 
+    fn record_decisions(&self) -> Typed {
+        let mut decisions = self.state.decisions();
+        decisions.schemes.extend(
+            self.items.iter().zip(&self.state.status).filter_map(
+                |(item, status)| {
+                    let Status::Done(scheme) = status else {
+                        return None;
+                    };
+                    Some((
+                        (item.site.start, item.site.end),
+                        bind::applied(scheme, &self.state.subst),
+                    ))
+                },
+            ),
+        );
+        if self.state.errors.is_empty() {
+            decisions.complete_references(&self.state.subst);
+        }
+        decisions.hidden = self.record_hidden(&decisions.schemes);
+        decisions
+    }
+
     fn finish(mut self) -> (Typed, Vec<Error>) {
         self.check_conversions();
         self.dots();
         self.default_literals(0, &[], &[]);
         self.finish_dots();
         self.solve_families(true);
+        let main = self.main_type();
         self.left_members();
+        self.record_supplied_tests();
+        self.record_operations();
+        let shapes = self.record_shapes();
         let unsolved = self.settle();
-        let (frozen, weak) = self.frozen();
+        let dispatch = self.record_dispatch(&shapes);
+        let (frozen, weak, session_variables) = self.frozen();
+        let decisions = self.record_decisions();
         let subst = &self.state.subst;
-        for bound in self.state.bound.values_mut() {
-            for (_, default) in &mut bound.defaults {
-                if let crate::typed::DefaultValue::Type(ty) = default {
-                    *ty = subst.apply(ty);
-                }
-            }
-        }
         let mut typed = Typed {
+            dispatch,
+            shapes,
+            declared: self
+                .file_cache
+                .expressions
+                .borrow()
+                .values()
+                .cloned()
+                .collect(),
+            main: Some(subst.apply(&main)),
+            rebuilds: self.state.rebuilds,
+            modes: self.state.modes,
             casts: self
                 .state
                 .casts
                 .iter()
                 .map(|cast| {
                     cast.as_ref().map(|cast| crate::typed::Cast {
+                        operation: cast
+                            .operation
+                            .as_ref()
+                            .map(|operation| operation.applied(subst)),
                         row: cast.row,
                         from: subst.apply(&cast.from),
                         to: subst.apply(&cast.to),
@@ -1042,12 +1106,21 @@ impl Infer<'_> {
 
             unsolved,
             supplied: self.state.supplied,
-            bound: self.state.bound,
-            checks: self.state.checks,
+            checks: self
+                .state
+                .checks
+                .into_iter()
+                .map(|mut check| {
+                    check.target = check.target.map(|ty| subst.apply(&ty));
+                    check
+                })
+                .collect(),
             known: Vec::new(),
             facts: Vec::new(),
             frozen,
             weak,
+            session_variables,
+            ..decisions
         };
         let entries: Vec<_> = self
             .state
@@ -1067,20 +1140,7 @@ impl Infer<'_> {
             &entries,
             &mut typed,
         ));
-        for (stem, checked) in self.file_cache.files.borrow().iter() {
-            for check in &checked.typed.checks {
-                if check.place_origin != Origin::This {
-                    continue;
-                }
-                let mut check = check.clone();
-                check.place_origin = Origin::File(stem.clone());
-                if check.limit_origin == Origin::This {
-                    check.limit_origin = Origin::File(stem.clone());
-                }
-                check.known.rehome(&Origin::File(stem.clone()));
-                typed.checks.push(check);
-            }
-        }
+        import_checks(self.file_cache, &mut typed);
         errors.sort_by_key(|error| (error.span.start, error.span.end));
         (typed, errors)
     }
@@ -1100,7 +1160,7 @@ impl Infer<'_> {
     /// it freezes monomorphic: its variables stay weak, shared with the
     /// lines after it, which may solve them as the file's later lines
     /// would. Every other variable is quantified.
-    fn frozen(&self) -> (Frozen, Subst) {
+    fn frozen(&self) -> (Frozen, Subst, BTreeMap<u32, usize>) {
         let subst = &self.state.subst;
         // The earlier lines' weak variables and the file-level
         // monomorphic types: parameters and blocks have left `env`.
@@ -1178,7 +1238,20 @@ impl Infer<'_> {
             (ty != Type::Var(Var(var))).then(|| replace(&ty, &weak))
         });
         let later = weak.iter().map(|_| None);
-        (frozen, Subst::from_bindings(earlier.chain(later).collect()))
+        let session_variables = (0..self.weak)
+            .map(|var| (var, var as usize))
+            .chain(weak.iter().map(|(var, target)| {
+                let Type::Var(target) = target else {
+                    unreachable!()
+                };
+                (var.0, target.0 as usize)
+            }))
+            .collect();
+        (
+            frozen,
+            Subst::from_bindings(earlier.chain(later).collect()),
+            session_variables,
+        )
     }
 }
 
@@ -1337,5 +1410,122 @@ fn test_enters_self(
             matches!(&module.expressions[expr.0].kind, ExprKind::Instance { arguments, .. } if arguments.iter().any(|arg| matches!(resolved.ty(*arg), Some(Target::Type { origin: Origin::This, name: target }) if target == name)))
         }
         _ => false,
+    }
+}
+
+impl State {
+    fn decisions(&self) -> Typed {
+        let subst = &self.subst;
+        let mut bound = self.bound.clone();
+        for binding in bound.values_mut() {
+            record::apply_bound(binding, subst);
+        }
+        Typed {
+            constructor_fields: self.constructor_fields.clone(),
+            derived_defaults: self
+                .derived_defaults
+                .iter()
+                .map(|(site, value)| {
+                    let mut value = value.clone();
+                    record::apply_default(&mut value, subst);
+                    (*site, value)
+                })
+                .collect(),
+            body_parameters: self.body_parameters.clone(),
+            tests: self
+                .tests
+                .iter()
+                .map(|test| crate::typed::Test {
+                    owner: subst.apply(&test.owner),
+                    ..test.clone()
+                })
+                .collect(),
+            default_instances: self
+                .default_instances
+                .iter()
+                .map(|(site, instance)| {
+                    (*site, record::apply_recorded(instance, subst))
+                })
+                .collect(),
+            rebuild_types: self
+                .rebuild_types
+                .iter()
+                .map(|(site, ty)| (*site, subst.apply(ty)))
+                .collect(),
+            accesses: self
+                .accesses
+                .iter()
+                .map(|(site, steps)| {
+                    (
+                        *site,
+                        steps.iter().map(|step| step.applied(subst)).collect(),
+                    )
+                })
+                .collect(),
+            schemes: self
+                .locals
+                .iter()
+                .map(|(site, local)| {
+                    (*site, bind::applied(&local.scheme, subst))
+                })
+                .collect(),
+            bound,
+            pattern_types: self
+                .pattern_types
+                .iter()
+                .map(|(i, t)| (*i, subst.apply(t)))
+                .collect(),
+            meaning_arguments: self
+                .meaning_arguments
+                .iter()
+                .map(|(s, ts)| {
+                    (*s, ts.iter().map(|t| subst.apply(t)).collect())
+                })
+                .collect(),
+            conversions: self
+                .conversions
+                .iter()
+                .map(|(site, conversion)| (*site, conversion.applied(subst)))
+                .collect(),
+            pattern_equals: self
+                .pattern_equals
+                .iter()
+                .map(|(id, comparison)| (*id, comparison.applied(subst)))
+                .collect(),
+            selected: self
+                .selected
+                .iter()
+                .map(|(site, selected)| {
+                    let selected = selected.applied(subst);
+                    (*site, selected)
+                })
+                .collect(),
+            callee_types: self
+                .callee_types
+                .iter()
+                .map(|(s, t)| (*s, subst.apply(t)))
+                .collect(),
+            ..Typed::default()
+        }
+    }
+}
+
+fn import_checks(cache: &files::FileCache, typed: &mut Typed) {
+    for (stem, checked) in cache.files.borrow().iter() {
+        for check in &checked.typed.checks {
+            if check.place_origin != Origin::This {
+                continue;
+            }
+            let mut check = check.clone();
+            check.place_origin = Origin::File(stem.clone());
+            if check.limit_origin == Origin::This {
+                check.limit_origin = Origin::File(stem.clone());
+            }
+            check.target = check
+                .target
+                .map(|ty| ty.rehome(&Origin::File(stem.clone())));
+            check.known.rehome(&Origin::File(stem.clone()));
+            typed.checks.push(check);
+        }
     }
 }

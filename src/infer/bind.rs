@@ -22,6 +22,7 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 
 /// A refutable binding in a body, `[:x] = e`: the rest of the body is
 /// `e |: (x => rest)` (evaluation.md §Pattern binding).
+#[derive(Clone)]
 pub(super) struct Lift {
     pub value: Type,
     pub span: Span,
@@ -44,7 +45,7 @@ pub(super) struct Part {
 impl Infer<'_> {
     /// `pattern = value` (BIND). An arm binding's own name is in scope
     /// in its arms, monomorphic there and generalized after.
-    pub(super) fn bind(&mut self, id: ExprId, file: bool) -> Option<Lift> {
+    pub(super) fn bind(&mut self, id: ExprId) -> Option<Lift> {
         let module = self.module;
         let ExprKind::Bind {
             pattern,
@@ -131,19 +132,28 @@ impl Infer<'_> {
                 self.state.env.push(ty.clone());
             }
         }
-        let good = match &pattern_node.kind {
+        let good = self.good_side(*pattern);
+        good.then_some(Lift {
+            value: ty,
+            span: pattern_node.span,
+        })
+    }
+
+    fn good_side(&self, pattern: crate::ast::PatternId) -> bool {
+        let module = self.module;
+        let mut side = pattern;
+        while let PatternKind::Group(inner) = module.patterns[side.0].kind {
+            side = inner;
+        }
+        match &module.patterns[side.0].kind {
             PatternKind::Outcome { good: true, .. } => true,
             PatternKind::Constructor { .. } => matches!(
-                self.resolved.pattern(*pattern),
+                self.resolved.pattern(side),
                 Some(Target::Constructor { origin: Origin::Prelude, name, .. })
                     if name == "Just" || name == "Ok"
             ),
             _ => false,
-        };
-        (good && !file).then_some(Lift {
-            value: ty,
-            span: pattern_node.span,
-        })
+        }
     }
 
     pub(super) const fn mark(&self) -> Mark {
@@ -164,7 +174,11 @@ impl Infer<'_> {
     }
 
     /// VAR: fresh variables, and the scheme's obligations owed at `span`.
-    pub(super) fn instantiate(&mut self, scheme: &Scheme, span: Span) -> Type {
+    pub(super) fn instantiate_with_meanings(
+        &mut self,
+        scheme: &Scheme,
+        span: Span,
+    ) -> (Type, Vec<Type>) {
         let fresh: Vec<_> = scheme
             .variables
             .iter()
@@ -195,7 +209,7 @@ impl Infer<'_> {
             }
             self.state.obligations.push(Owed::new(obligation, span));
         }
-        ty
+        (ty, fresh.into_iter().map(|(_, ty)| ty).collect())
     }
 
     /// The free variables of the environment: every monomorphic type in
@@ -427,6 +441,10 @@ impl Infer<'_> {
                 obligation.variables(&mut variables);
             }
             variables.retain(|var| !env.contains(var));
+            self.state.body_parameters.insert(
+                (part.site.start, part.site.end),
+                variables.iter().map(|var| Type::Var(*var)).collect(),
+            );
             return Scheme {
                 variables,
                 obligations,
@@ -441,6 +459,15 @@ impl Infer<'_> {
             .into_iter()
             .map(|name| (name, self.state.subst.fresh()))
             .collect();
+        self.state.body_parameters.insert(
+            (part.site.start, part.site.end),
+            variables
+                .iter()
+                .filter(|var| !env.contains(var))
+                .map(|var| Type::Var(*var))
+                .chain(fresh.iter().map(|(name, _)| Type::Rigid(name.clone())))
+                .collect(),
+        );
         Scheme {
             variables: variables
                 .into_iter()

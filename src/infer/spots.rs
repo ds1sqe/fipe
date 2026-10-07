@@ -11,12 +11,12 @@ use super::{
 };
 use crate::{
     ast::{Argument, ArgumentKind, ExprId, ExprKind},
-    resolve::{resolve_default, Origin, Target},
+    resolve::{Origin, Target},
     token::Span,
     types::{Scheme, Type},
 };
 
-use alloc::{vec, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
 
 /// What fills a spot.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +70,7 @@ impl Infer<'_> {
             }
             _ => return Callee::plain(self.expr(id, None)),
         };
+        self.record_callee(&callee, span);
         self.state.types[id.0] = Some(callee.whole());
         callee
     }
@@ -114,10 +115,18 @@ impl Infer<'_> {
             Target::Type { origin, name } => {
                 let limited =
                     self.limited(Type::named(origin.clone(), name, Vec::new()));
-                Callee::plain(Type::function(
-                    super::meaning(&limited).clone(),
-                    limited,
-                ))
+                let from = super::meaning(&limited).clone();
+                self.state.conversions.insert(
+                    (span.start, span.end),
+                    crate::typed::Conversion {
+                        mode: crate::ir::ConversionMode::Check,
+                        from: from.clone(),
+                        parameter: from.clone(),
+                        to: limited.clone(),
+                        result: limited.clone(),
+                    },
+                );
+                Callee::plain(Type::function(from, limited))
             }
             Target::Module(_) | Target::Variable(_) => {
                 self.error(span, Reason::NotAFunction);
@@ -186,6 +195,20 @@ impl Infer<'_> {
         Some((parameters, current))
     }
 
+    pub(super) fn record_callee(&mut self, callee: &Callee, stage: Span) {
+        self.state
+            .callee_types
+            .insert((stage.start, stage.end), callee.whole());
+        self.state
+            .meaning_arguments
+            .insert((stage.start, stage.end), callee.meanings.clone());
+        if let Some(selected) = &callee.selected {
+            self.state
+                .selected
+                .insert((stage.start, stage.end), selected.clone());
+        }
+    }
+
     /// Apply a callee to written arguments and an optional piped input.
     pub(super) fn apply_callee(
         &mut self,
@@ -195,6 +218,7 @@ impl Infer<'_> {
         stage: Span,
         expected: Option<&Type>,
     ) -> Type {
+        self.record_callee(&callee, stage);
         if callee.spots.is_none() {
             let mut ty = self.apply(&callee.ty);
             let mut slots = Vec::new();
@@ -401,14 +425,10 @@ impl Infer<'_> {
                 ));
             }
         }
-        if let Some(
-            home @ (Origin::Prelude | Origin::Commands | Origin::Host(_)),
-        ) = &callee.home
-        {
-            for (index, supply) in filled.iter().enumerate() {
-                if supply.is_none() && slots[index].value.is_some() {
-                    self.declared_default(home, &slots, index, stage);
-                }
+        let home = callee.home.as_ref().unwrap_or(&Origin::This);
+        for (index, supply) in filled.iter().enumerate() {
+            if supply.is_none() && slots[index].value.is_some() {
+                self.declared_default(home, &slots, index, stage);
             }
         }
         self.dots();
@@ -449,6 +469,202 @@ impl Infer<'_> {
             .fold(result, |ty, (slot, _)| Type::function(slot.ty.clone(), ty))
     }
 
+    pub(super) fn record_constructors(&mut self) {
+        if !self.state.errors.is_empty() {
+            return;
+        }
+        let uses: Vec<_> = self
+            .state
+            .selected
+            .iter()
+            .filter_map(|(site, selected)| {
+                let crate::typed::Selected::Constructor { ty, name } = selected
+                else {
+                    return None;
+                };
+                self.state.bound.get(site).map(|bound| {
+                    (*site, self.apply(ty), name.clone(), bound.clone())
+                })
+            })
+            .collect();
+        for ((start, end), ty, label, mut bound) in uses {
+            let Type::Named { name, .. } = &ty else {
+                continue;
+            };
+            let span = Span { start, end };
+            let callee = self.constructor_fields_kind(
+                &name.origin,
+                &name.name,
+                &label,
+                true,
+                true,
+            );
+            self.unify(&callee.ty, &ty, span, span);
+            let Some(slots) = callee.spots else { continue };
+            let mut fields: Vec<_> = bound
+                .spots
+                .iter()
+                .map(|(site, _)| {
+                    slots
+                        .iter()
+                        .position(|slot| slot.site == *site)
+                        .expect("constructor spot")
+                })
+                .collect();
+            let saved = self.state.default_instances.clone();
+            for (field, slot) in slots.iter().enumerate() {
+                if fields.contains(&field) {
+                    continue;
+                }
+                let value = if slot.value.is_some() {
+                    self.declared_default(&name.origin, &slots, field, span);
+                    self.state
+                        .default_instances
+                        .get(&(start, end, field))
+                        .map_or_else(
+                            || {
+                                crate::typed::DefaultValue::Type(
+                                    self.apply(&slot.ty),
+                                )
+                            },
+                            |instance| {
+                                crate::typed::DefaultValue::Expression(
+                                    alloc::boxed::Box::new(instance.clone()),
+                                )
+                            },
+                        )
+                } else {
+                    self.default_value(&slot.ty, span)
+                };
+                bound.defaults.push((bound.spots.len(), value));
+                bound.spots.push((slot.site, self.apply(&slot.ty)));
+                fields.push(field);
+            }
+            self.state.default_instances = saved;
+            bound.defaults.sort_by_key(|(spot, _)| fields[*spot]);
+            self.state.bound.insert((start, end), bound);
+            self.state.constructor_fields.insert((start, end), fields);
+        }
+    }
+
+    pub(super) fn record_defaults(&mut self) {
+        if !self.state.errors.is_empty() {
+            return;
+        }
+        let uses: Vec<_> = self
+            .state
+            .selected
+            .iter()
+            .filter_map(|(site, selected)| {
+                if let crate::typed::Selected::Derived {
+                    kind: crate::ir::Derived::Default,
+                    ty,
+                } = selected
+                {
+                    Some((*site, self.apply(ty)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for ((start, end), ty) in uses {
+            let value = self.default_value(&ty, Span { start, end });
+            self.state.derived_defaults.insert((start, end), value);
+        }
+    }
+
+    pub(super) fn default_value(
+        &mut self,
+        ty: &Type,
+        span: Span,
+    ) -> crate::typed::DefaultValue {
+        let ty = self.apply(ty);
+        if let Type::Limited { meaning, .. } = &ty {
+            return self.default_value(meaning, span);
+        }
+        if let Type::Named { name, .. } = &ty {
+            if self.claim_member_count(&ty, &prelude("Default"), "default") > 0
+            {
+                let callee = self.type_member(
+                    &Target::Type {
+                        origin: name.origin.clone(),
+                        name: name.name.clone(),
+                    },
+                    "default",
+                    span,
+                );
+                self.unify(&callee.ty, &ty, span, span);
+                if let Some(selected) = callee.selected {
+                    return crate::typed::DefaultValue::Prepared {
+                        selected: alloc::boxed::Box::new(
+                            selected.applied(&self.state.subst),
+                        ),
+                        meanings: callee
+                            .meanings
+                            .iter()
+                            .map(|ty| self.apply(ty))
+                            .collect(),
+                        ty: self.apply(&callee.ty),
+                    };
+                }
+            }
+        }
+        match &ty {
+            Type::Named { name, .. } if name.origin != Origin::Prelude => {
+                let callee = self.constructor_fields_kind(
+                    &name.origin,
+                    &name.name,
+                    &name.name,
+                    true,
+                    true,
+                );
+                self.unify(&callee.ty, &ty, span, span);
+                let slots = callee.spots.unwrap_or_default();
+                let saved = self.state.default_instances.clone();
+                let mut fields = Vec::new();
+                for (index, slot) in slots.iter().enumerate() {
+                    let value = if slot.value.is_some() {
+                        self.declared_default(
+                            &name.origin,
+                            &slots,
+                            index,
+                            span,
+                        );
+                        self.state
+                            .default_instances
+                            .get(&(span.start, span.end, index))
+                            .map_or_else(
+                                || {
+                                    crate::typed::DefaultValue::Type(
+                                        self.apply(&slot.ty),
+                                    )
+                                },
+                                |instance| {
+                                    crate::typed::DefaultValue::Expression(
+                                        alloc::boxed::Box::new(
+                                            instance.clone(),
+                                        ),
+                                    )
+                                },
+                            )
+                    } else {
+                        self.default_value(&slot.ty, span)
+                    };
+                    fields.push((slot.site, self.apply(&slot.ty), value));
+                }
+                self.state.default_instances = saved;
+                return crate::typed::DefaultValue::Record { ty, fields };
+            }
+            Type::Array { element, .. } => {
+                let element =
+                    alloc::boxed::Box::new(self.default_value(element, span));
+                return crate::typed::DefaultValue::Array { ty, element };
+            }
+            _ => (),
+        }
+        crate::typed::DefaultValue::Type(ty)
+    }
+
     fn record_binding(
         &mut self,
         slots: &[Slot],
@@ -458,7 +674,13 @@ impl Infer<'_> {
         stage: Span,
     ) {
         use crate::typed::{Bound, DefaultValue, Supply as Source};
-        let mut bound = Bound::default();
+        let mut bound = Bound {
+            spots: slots
+                .iter()
+                .map(|slot| (slot.site, slot.ty.clone()))
+                .collect(),
+            ..Bound::default()
+        };
         let mut supplied = Vec::new();
         for (index, (slot, value)) in slots.iter().zip(filled).enumerate() {
             let source = match value {
@@ -486,7 +708,7 @@ impl Infer<'_> {
                 supplied.push((span.start, index, source));
             } else if slot.default {
                 let default = slot.value.map_or_else(
-                    || DefaultValue::Type(self.apply(&slot.ty)),
+                    || self.default_value(&slot.ty, stage),
                     |value| DefaultValue::Declared {
                         origin: home.cloned().unwrap_or(Origin::This),
                         value,
@@ -891,7 +1113,10 @@ impl Infer<'_> {
             }
             return self.fresh();
         };
-        let mut bound = crate::typed::Bound::default();
+        let mut bound = crate::typed::Bound {
+            spots: parameters.iter().map(|ty| (stage, ty.clone())).collect(),
+            ..crate::typed::Bound::default()
+        };
         if let Some((_, span)) = &pipe {
             bound
                 .supplies
@@ -998,6 +1223,21 @@ impl Infer<'_> {
             stage,
             true,
         );
+        if valid {
+            if let Some(value) = slots[index].value {
+                if let Some(recorded) = self
+                    .file_cache
+                    .expressions
+                    .borrow()
+                    .get(&(home.clone(), value.0))
+                    .cloned()
+                {
+                    self.state
+                        .default_instances
+                        .insert((stage.start, stage.end, index), recorded);
+                }
+            }
+        }
         if !valid {
             self.error(
                 stage,
@@ -1016,6 +1256,18 @@ impl Infer<'_> {
         stage: Span,
         is_default: bool,
     ) -> (Scheme, bool) {
+        self.declared_context(home, slot, earlier, stage, is_default, None)
+    }
+
+    pub(super) fn declared_context(
+        &mut self,
+        home: &Origin,
+        slot: &Slot,
+        earlier: &[Slot],
+        stage: Span,
+        is_default: bool,
+        owner: Option<&Type>,
+    ) -> (Scheme, bool) {
         // Recursive defaults use their signatures. Evaluation decides termination.
         let key = (home.clone(), slot.site);
         if self.state.defaults.contains(&key) {
@@ -1033,7 +1285,7 @@ impl Infer<'_> {
             .map(|(name, site, _)| (name.clone(), *site))
             .collect();
         let (resolved, resolve_errors) =
-            resolve_default(module, self.declarations, home, value, &names);
+            self.default_resolution(home, module, value, &names, owner);
         let subst = core::mem::take(&mut self.state.subst);
         let mut inner = Infer {
             module,
@@ -1051,6 +1303,16 @@ impl Infer<'_> {
             groups: Vec::new(),
             self_type: None,
         };
+        if *home == Origin::This {
+            inner.state.locals.clone_from(&self.state.locals);
+            inner.state.status.clone_from(&self.state.status);
+            inner.items.clone_from(&self.items);
+            inner.groups.clone_from(&self.groups);
+            inner.self_type.clone_from(&self.self_type);
+        }
+        if let Some(owner) = owner {
+            inner.assume_test_owner(owner, slot.site);
+        }
         inner.state.defaults.clone_from(&self.state.defaults);
         inner.state.defaults.push(key);
         for (_, site, ty) in earlier {
@@ -1060,6 +1322,78 @@ impl Infer<'_> {
             };
             inner.state.locals.insert((site.start, site.end), local);
         }
+        let (scheme, mut typed, errors) =
+            inner.check_declared_body(value, slot, stage, is_default);
+        if !is_default {
+            typed
+                .schemes
+                .insert((slot.site.start, slot.site.end), scheme.clone());
+            typed.hidden = inner.record_hidden(&typed.schemes);
+        }
+        let valid = inner.state.errors.is_empty()
+            && resolve_errors.is_empty()
+            && errors.is_empty();
+        let recorded = valid.then(|| typed.clone());
+        for mut check in typed.checks.into_iter().filter(|_| owner.is_none()) {
+            check.place = stage;
+            check.frequency = crate::limits::frequency(self.module, stage);
+            check.place_origin = Origin::This;
+            if check.limit_origin == Origin::This {
+                check.limit_origin = home.clone();
+            }
+            check.target = check.target.map(|ty| ty.rehome(home));
+            check.known.rehome(home);
+            self.state.checks.push(check);
+        }
+        self.state.subst = inner.state.subst;
+        for mut owed in inner
+            .state
+            .obligations
+            .into_iter()
+            .filter(|_| owner.is_none())
+        {
+            owed.span = stage;
+            self.state.obligations.push(owed);
+        }
+        self.record_declared(home, value, resolved, recorded);
+        (scheme, valid)
+    }
+    fn default_resolution(
+        &self,
+        home: &Origin,
+        module: &crate::ast::Module,
+        value: ExprId,
+        names: &[(String, Span)],
+        owner: Option<&Type>,
+    ) -> (crate::resolve::Resolved, Vec<crate::resolve::Error>) {
+        let owner_name = owner.and_then(|ty| {
+            if let Type::Named { name, .. } = ty {
+                Some(name.name.as_str())
+            } else {
+                None
+            }
+        });
+        if *home == Origin::This {
+            (self.resolved.clone(), Vec::new())
+        } else {
+            crate::resolve::resolve_declared_expression(
+                module,
+                self.declarations,
+                home,
+                value,
+                names,
+                owner_name,
+            )
+        }
+    }
+
+    fn check_declared_body(
+        &mut self,
+        value: ExprId,
+        slot: &Slot,
+        stage: Span,
+        is_default: bool,
+    ) -> (Scheme, crate::typed::Typed, Vec<super::Error>) {
         let expected = Expected {
             place_kind: slot.place_kind.clone(),
             ty: slot.ty.clone(),
@@ -1067,50 +1401,58 @@ impl Infer<'_> {
             spot: is_default,
             cast: true,
         };
-        let mark = inner.mark();
-        inner.expr(value, Some(&expected));
-        inner.dots();
+        let mark = self.mark();
+        self.expr(value, Some(&expected));
+        self.dots();
         let scheme = if is_default {
-            inner.default_literals(0, &[], &[]);
-            Scheme::mono(inner.apply(&slot.ty))
+            self.default_literals(0, &[], &[]);
+            Scheme::mono(self.apply(&slot.ty))
         } else {
-            inner
-                .generalize(
-                    &[super::bind::Part {
-                        ty: slot.ty.clone(),
-                        site: slot.site,
-                        annotated: false,
-                    }],
-                    mark,
-                    &[],
-                )
-                .remove(0)
+            self.generalize(
+                &[super::bind::Part {
+                    ty: slot.ty.clone(),
+                    site: slot.site,
+                    annotated: false,
+                }],
+                mark,
+                &[],
+            )
+            .remove(0)
         };
-        inner.finish_dots();
-        inner.settle();
-        let (typed, errors) = inner.default_checks();
-        let valid = inner.state.errors.is_empty()
-            && resolve_errors.is_empty()
-            && errors.is_empty();
-        for mut check in typed.checks {
-            check.place = stage;
-            check.frequency = crate::limits::frequency(self.module, stage);
-            check.place_origin = Origin::This;
-            if check.limit_origin == Origin::This {
-                check.limit_origin = home.clone();
-            }
-            check.known.rehome(home);
-            self.state.checks.push(check);
-        }
-        self.state.subst = inner.state.subst;
-        for mut owed in inner.state.obligations {
-            owed.span = stage;
-            self.state.obligations.push(owed);
-        }
-        (scheme, valid)
+        self.finish_dots();
+        self.settle();
+        let (typed, errors) = self.default_checks();
+        (scheme, typed, errors)
     }
-    fn default_checks(&self) -> (crate::typed::Typed, Vec<super::Error>) {
+
+    fn record_declared(
+        &self,
+        home: &Origin,
+        value: ExprId,
+        resolved: crate::resolve::Resolved,
+        recorded: Option<crate::typed::Typed>,
+    ) {
+        if let Some(typed) = recorded {
+            self.file_cache.expressions.borrow_mut().insert(
+                (home.clone(), value.0),
+                crate::typed::DeclaredExpression {
+                    origin: home.clone(),
+                    value,
+                    resolved: alloc::rc::Rc::new(resolved),
+                    typed: alloc::rc::Rc::new(typed),
+                },
+            );
+        }
+    }
+    fn default_checks(&mut self) -> (crate::typed::Typed, Vec<super::Error>) {
+        self.record_operations();
+        let shapes = self.record_shapes();
+        let dispatch = self.record_dispatch(&shapes);
         let mut typed = crate::typed::Typed {
+            dispatch,
+            shapes,
+            rebuilds: self.state.rebuilds.clone(),
+            modes: self.state.modes.clone(),
             casts: self.state.casts.clone(),
             expressions: self
                 .state
@@ -1119,14 +1461,23 @@ impl Infer<'_> {
                 .map(|ty| ty.as_ref().map(|ty| self.apply(ty)))
                 .collect(),
             supplied: self.state.supplied.clone(),
-            checks: self.state.checks.clone(),
+            checks: self
+                .state
+                .checks
+                .iter()
+                .cloned()
+                .map(|mut check| {
+                    check.target = check.target.map(|ty| self.apply(&ty));
+                    check
+                })
+                .collect(),
             frozen: self
                 .state
                 .locals
                 .iter()
                 .map(|(site, local)| (*site, local.clone()))
                 .collect(),
-            ..crate::typed::Typed::default()
+            ..self.record_decisions()
         };
         let entries: Vec<_> = self
             .state
@@ -1180,5 +1531,64 @@ impl Infer<'_> {
                 }
             }
         }
+    }
+}
+
+impl Infer<'_> {
+    pub(super) fn record_fields(
+        &mut self,
+        id: ExprId,
+        fields: &[crate::ast::FieldValue],
+        ty: &Type,
+        span: Span,
+    ) {
+        let Type::Named { name, .. } = super::meaning(ty) else {
+            return;
+        };
+        let label = match self.resolved.expr(id) {
+            Some(Target::Constructor { name, .. }) => name.clone(),
+            _ => name.name.clone(),
+        };
+        let callee =
+            self.constructor_kind(&name.origin, &name.name, &label, true);
+        self.unify(&callee.ty, ty, span, span);
+        let Some(slots) = &callee.spots else { return };
+        let mut bound = crate::typed::Bound {
+            spots: slots
+                .iter()
+                .map(|slot| (slot.site, slot.ty.clone()))
+                .collect(),
+            ..Default::default()
+        };
+        for field in fields {
+            if let Some(index) = slots.iter().position(|slot| {
+                slot.name.as_deref() == Some(super::last(&field.name).as_str())
+            }) {
+                bound.supplies.push((
+                    index,
+                    crate::typed::Supply::Expression(field.value),
+                ));
+            }
+        }
+        for (index, slot) in slots.iter().enumerate() {
+            if bound.supplies.iter().any(|(spot, _)| *spot == index)
+                || !slot.default
+            {
+                continue;
+            }
+            let value = match slot.value {
+                Some(value) => {
+                    self.declared_default(&name.origin, slots, index, span);
+                    crate::typed::DefaultValue::Declared {
+                        origin: name.origin.clone(),
+                        value,
+                    }
+                }
+                None => self.default_value(&slot.ty, span),
+            };
+            bound.defaults.push((index, value));
+        }
+        self.record_callee(&callee, span);
+        self.state.bound.insert((span.start, span.end), bound);
     }
 }

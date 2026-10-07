@@ -996,3 +996,15 @@ fn a_type_without_a_test_explains_how_to_enter_it() {
     );
     assert!(text.contains("to<Flag>"), "{text}");
 }
+
+#[test]
+fn ir_queries_show_checked_operations_without_accepting() {
+    let mut repl = Repl::new();
+    let text = written(repl.feed(b"x = 1\n:ir x + 2\n:ir\n"));
+    assert!(text.contains("checked unit:"), "{text}");
+    assert!(text.contains("call value"), "{text}");
+    assert!(!text.contains("Span"), "{text}");
+    assert!(!text.contains("start:"), "{text}");
+    let text = written(repl.feed(b":t x\n"));
+    assert!(text.contains("Integer"), "{text}");
+}

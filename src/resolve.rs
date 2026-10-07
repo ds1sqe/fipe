@@ -145,6 +145,8 @@ pub struct Error {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
+    /// A default reads a local outside its earlier spots.
+    DefaultScope,
     UnknownName,
     /// A type without a test cannot be called as a gate.
     NoGate {
@@ -358,14 +360,39 @@ impl Resolver<'_> {
 /// Resolve one declared spot default of a declaration module, with the
 /// spots before it in scope by name and site. Its other names are the
 /// prelude's and the commands'; what does not resolve stays unresolved.
-pub(crate) fn resolve_default(
+pub(crate) fn resolve_declared_expression(
     module: &Module,
     declarations: &Declarations,
     home: &Origin,
     value: ExprId,
     spots: &[(String, Span)],
+    owner: Option<&str>,
 ) -> (Resolved, Vec<Error>) {
     let mut resolver = Resolver::new(module, declarations, &[]);
+    resolver.self_type = owner.map(String::from);
+    if let Some(owner) = owner {
+        resolver.parameters = module
+            .entries
+            .iter()
+            .find_map(|entry| {
+                let Entry::Item(item) = entry else {
+                    return None;
+                };
+                let ItemKind::Type {
+                    name, parameters, ..
+                } = &item.kind
+                else {
+                    return None;
+                };
+                (last(name) == owner).then(|| {
+                    parameters
+                        .iter()
+                        .map(|parameter| last(&parameter.name))
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+    }
     let namespace = match home {
         Origin::Prelude => Some(&declarations.prelude),
         Origin::Commands => declarations.commands.as_ref(),
@@ -1264,7 +1291,7 @@ impl<'a> Resolver<'a> {
                                     self.ty(field.ty);
                                     if let Some(default) = field.default {
                                         self.scopes.push(fields.clone());
-                                        self.expr(default, Position::Other);
+                                        self.default_expression(default);
                                         self.scopes.pop();
                                     }
                                     fields.push((
@@ -1663,7 +1690,7 @@ impl<'a> Resolver<'a> {
 
     /// The module that owns a declaration, and whether it is another one.
     fn owner(&self, origin: &Origin) -> Option<(&Module, bool)> {
-        Some(match origin {
+        let (module, foreign) = match origin {
             Origin::This => (self.module, false),
             Origin::Prelude => (&self.declarations.prelude.module, true),
             Origin::Commands => {
@@ -1675,7 +1702,8 @@ impl<'a> Resolver<'a> {
             Origin::File(stem) => (self.file(stem)?, true),
             // The session is one module for privacy.
             Origin::Line(_) => (self.frame_in?.module(origin)?, false),
-        })
+        };
+        Some((module, foreign && !core::ptr::eq(module, self.module)))
     }
 
     /// A head binds its parameters in order; a default sees the earlier
@@ -1723,7 +1751,7 @@ impl<'a> Resolver<'a> {
                 self.bind(*payload);
             }
             PatternKind::Default { name, value } => {
-                self.expr(*value, Position::Other);
+                self.default_expression(*value);
                 self.local(name);
             }
             PatternKind::Group(inner) => self.bind(*inner),
@@ -2279,5 +2307,55 @@ pub(crate) fn timing(target: Option<&Target>) -> Option<crate::limits::Phase> {
             name,
         }) if name == "Init" => Some(crate::limits::Phase::Init),
         _ => None,
+    }
+}
+
+impl Resolver<'_> {
+    fn default_expression(&mut self, value: ExprId) {
+        let mut allowed: Vec<_> = self
+            .scopes
+            .first()
+            .into_iter()
+            .chain(self.scopes.last())
+            .flat_map(|scope| scope.iter().map(|(_, target)| target.clone()))
+            .collect();
+        if let Some(frame) = self.frame_in {
+            allowed.extend(frame.values.values().cloned());
+        }
+        self.expr(value, Position::Other);
+        let span = self.module.expressions[value.0].span;
+        let mut errors = Vec::new();
+        for (id, target) in self.resolved.expressions() {
+            let expression = &self.module.expressions[id.0];
+            if expression.span.start < span.start
+                || expression.span.end > span.end
+            {
+                continue;
+            }
+            let mut root = target;
+            while let Target::Members { head, .. } = root {
+                root = head;
+            }
+            let Target::Local { site } = root else {
+                continue;
+            };
+            if allowed.contains(root)
+                || (span.start <= site.start && site.end <= span.end)
+            {
+                continue;
+            }
+            let mut name = expression.span;
+            if let ExprKind::Name(written)
+            | ExprKind::Instance { name: written, .. } = &expression.kind
+            {
+                if let Some(first) = written.segments.first() {
+                    name.end = name.start + first.len();
+                }
+            }
+            errors.push(name);
+        }
+        for span in errors {
+            self.error(span, Reason::DefaultScope);
+        }
     }
 }

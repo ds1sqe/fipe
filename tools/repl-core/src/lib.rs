@@ -29,6 +29,7 @@
 
 extern crate alloc;
 
+mod ir;
 mod render;
 mod tree;
 
@@ -110,6 +111,7 @@ enum Mode {
     Load,
     Resolve,
     Types,
+    Ir,
 }
 
 /// Output with adjacent writes merged.
@@ -371,6 +373,11 @@ impl Repl {
                 None => out.write(b"no accepted line\n"),
             },
             ("t", arg) => self.start(arg, Mode::Types, out),
+            ("ir", "") => match &self.last {
+                Some((report, _)) => ir::render(report.unit.as_ref(), out),
+                None => out.write(b"no accepted line\n"),
+            },
+            ("ir", arg) => self.start(arg, Mode::Ir, out),
             ("checks", arg) => {
                 if !arg.is_empty() {
                     self.start(arg, Mode::Types, out);
@@ -512,7 +519,7 @@ impl Repl {
     fn start(&mut self, text: &str, mode: Mode, out: &mut Outs) {
         let outcome = match mode {
             Mode::Accept | Mode::Load => self.session.line(text),
-            Mode::Resolve | Mode::Types => self.session.query(text),
+            Mode::Resolve | Mode::Types | Mode::Ir => self.session.query(text),
         };
         self.step(text.to_string(), mode, outcome, out);
     }
@@ -576,6 +583,7 @@ impl Repl {
             }
             Mode::Resolve => names(&self.session, &report, &text, out),
             Mode::Types => types(&self.session, &report, &text, out),
+            Mode::Ir => ir::render(report.unit.as_ref(), out),
         }
     }
 

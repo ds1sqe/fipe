@@ -153,8 +153,12 @@ u = if c { 2 } else { "a" }   # check error: no meaning reads both
 - Arms have common input types and one result type; guards are `Bool`; the
   set is exhaustive, and a guard alone cannot establish coverage;
   [limits](06-limits.md) §Gates adds a gate with its `!`. The first matching
-  arm with a true guard wins. `(name = v)` gives the parameter `v`'s type
-  and a default.
+  arm with a true guard wins. Coverage splits sums, Bool, outcome sides,
+  record fields, tuples and packed meanings; literal patterns and Vec list
+  patterns never complete a column. A literal pattern is matched by its
+  meaning's `eq`, so its meaning claims `Literal` and `Eq`. An uncovered set
+  names one missing pattern. `(name = v)` gives the parameter `v`'s type and
+  a default.
 - Captures are values; shadowing never mutates a capture. A discarded
   non-unit value in a body is a check error; `_ = e` discards. A file's
   top-level line is the implicit main's output, not a discard.

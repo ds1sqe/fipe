@@ -71,6 +71,7 @@ fn thing(expected: Expected) -> String {
 pub fn resolve(reason: &resolve::Reason, at: &Context) -> String {
     use resolve::Reason as R;
     match reason {
+        R::DefaultScope => "a default may name earlier spots and module-level names, not an enclosing function’s locals".into(),
         R::UnknownName => "unknown name".into(),
         R::NoGate { name } => format!("`{name}` has no test, so it is no gate: annotate the place, `x: {name} = …`, or write `to<{name}>`"),
         R::UnknownType => "unknown type".into(),

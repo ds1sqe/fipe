@@ -72,7 +72,7 @@ opening says how a row is read and what a mark means.
 | `find x |! log "gone"` / `find x |! find y` / `find x |! log` | `Maybe<Entry>`, the stage is a value / fallback / check error: open spot |
 | `x = 1`, `inc = x => x + 1`, `even 4`, `[] == []` | `Integer` / `Add a, Literal a => a -> a` / `Bool` (T5) / ambiguous |
 | `z = if c { 2 } else { 2.5 }` / `w = if c { n } else { 2.5 }`, `n: Integer = 2` / `u = if c { 2 } else { "a" }` | `F64`, in either order / check error: `n` has a meaning / check error: no meaning reads both |
-| non-total arms | check error, never runtime match failure *07* |
+| non-total arms | check error naming an uncovered pattern, never runtime match failure |
 | `x: i64 = 1` / `g: I46 -> I46 = x => x` | check error with the hint `I64` / unknown type |
 | `a++b` / `trait` / `grep where` | one word / a name / a command |
 | `a ++ b` | `a.concat b` |
@@ -134,3 +134,5 @@ opening says how a row is read and what a mark means.
 
 The [corpus](02-syntax.fipe) follows the grammar; check AST shape, inferred
 types and diagnostics, not only successful parses.
+
+| `[x, y] = e` with `e: Vec<Integer>` / `Just x = e` in main | non-total binding check error / good-side lift of the remaining main |

@@ -75,6 +75,8 @@ pub enum Kind {
     Int {
         negative: bool,
         magnitude: Magnitude,
+        radix: u8,
+        digits: usize,
     },
     /// Exact decimal spelling; the checker chooses width and rounds once.
     Float(String),
@@ -111,6 +113,8 @@ pub enum Written {
     Int {
         negative: bool,
         magnitude: Magnitude,
+        radix: u8,
+        digits: usize,
     },
     /// Exact spelling, sign included, suffix excluded.
     Float(String),

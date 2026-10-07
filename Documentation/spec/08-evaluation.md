@@ -36,12 +36,13 @@ arguments are kept in order until the signature is known, then bound:
    never spread; `f (a, b)` passes one tuple ([containers](05-containers.md)).
 4. Each remaining function spot takes its declared default; a record field
    takes its declared default, else its type default, in declaration order;
-   a default may name the spots before it, so `dir (width = 80) (cols =
-   (width / 8)) => …` is well defined. A spot with neither stays open. The
-   result is a function of the open spots in order, or the body result.
-   Construction is application: `Point 1` fills `y` from its default, and
-   `Just` stays a function; construction tests the meaning's limits
-   ([limits](06-limits.md) §Gates).
+   a default may name the spots before it and module-level names, never a
+   local of an enclosing function, so `dir (width = 80) (cols = (width / 8))
+   => …` is well defined. A spot with neither stays open. The result is a
+   function of the open spots in order, or the body result. Construction is
+   application: `Point 1` fills `y` from its default, and `Just` stays a
+   function; construction tests the meaning's limits ([limits](06-limits.md)
+   §Gates).
 
 Each bound argument enters its spot ([checks](07-checks.md)). Duplicate
 supply, unknown flags, non-Bool chaining and extra arguments are check
@@ -118,8 +119,10 @@ body                ≡   e |: (x => body)
 `Ok` is analogous and `[:x] = e` is the same binding spelled by side: a
 failure ends the current body with that failure, lifted by the marked-pipe
 rule; nested pattern bindings nest. Where implicit rebuilding would leave
-two meanings, an explicit constructor is required. E1 defines other
-failing patterns; they are never runtime panics.
+two meanings, an explicit constructor is required. The implicit main is
+also a body: a failed good-side binding ends it with that failure. A
+binding pattern that is neither total nor a good side is a check error
+until E1 defines its failure; it is never a runtime panic.
 
 ## Faults
 

@@ -719,7 +719,7 @@ impl Parser {
     fn nonnegative(&mut self) -> Result<(Magnitude, Span), Error> {
         if matches!(
             self.peek(),
-            Kind::Int { negative, magnitude }
+            Kind::Int { negative, magnitude, .. }
                 if !negative || magnitude.is_zero()
         ) {
             let token = self.bump();

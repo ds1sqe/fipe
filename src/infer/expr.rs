@@ -57,6 +57,18 @@ impl Infer<'_> {
         ty
     }
 
+    fn binding_value(&mut self, id: ExprId) -> Type {
+        self.bind(id).map_or(Type::Unit, |lift| {
+            self.rebuild(
+                &self.apply(&lift.value),
+                true,
+                Type::Unit,
+                lift.span,
+                lift.span,
+            )
+        })
+    }
+
     pub(super) fn packed(&mut self, ty: &Type) -> bool {
         matches!(ty, Type::Either(_))
             || !self
@@ -163,15 +175,13 @@ impl Infer<'_> {
             ExprKind::Not { operator, value } => {
                 let ty = self.expr(*value, expected);
                 self.require_claim(ty.clone(), prelude("Not"), *operator);
+                self.record_not(*operator, &ty);
                 ty
             }
             ExprKind::Binary { .. } | ExprKind::Pipe { .. } => {
                 self.chain(id, expected)
             }
-            ExprKind::Bind { .. } => {
-                self.bind(id, false);
-                Type::Unit
-            }
+            ExprKind::Bind { .. } => self.binding_value(id),
             ExprKind::With { value, body, .. } => {
                 self.expr(*value, None);
                 self.expr(*body, expected)
@@ -199,6 +209,7 @@ impl Infer<'_> {
             Literal::Int {
                 negative,
                 magnitude,
+                ..
             } => Lit::Int {
                 negative: *negative,
                 magnitude: magnitude.clone(),
@@ -212,6 +223,17 @@ impl Infer<'_> {
             Some(e) => self.apply(&e.ty),
             None => self.fresh(),
         };
+        self.state.selected.insert(
+            (span.start, span.end),
+            crate::typed::Selected::Static {
+                head: ty.clone(),
+                name: alloc::string::String::from("literal"),
+            },
+        );
+        self.state.callee_types.insert(
+            (span.start, span.end),
+            Type::function(prelude("Form"), ty.clone()),
+        );
         let obligation = Obligation::Claim {
             head: ty.clone(),
             class: prelude("Literal"),
@@ -237,7 +259,7 @@ impl Infer<'_> {
             let last = index + 1 == lines.len();
             if matches!(module.expressions[line.0].kind, ExprKind::Bind { .. })
             {
-                if let Some(lift) = self.bind(*line, false) {
+                if let Some(lift) = self.bind(*line) {
                     lifts.push(lift);
                 }
                 self.state.types[line.0] = Some(Type::Unit);
@@ -263,10 +285,12 @@ impl Infer<'_> {
     }
 
     /// A line of the module.
-    pub(super) fn line(&mut self, id: ExprId, file: bool) {
+    pub(super) fn line(&mut self, id: ExprId) {
         let module = self.module;
         if matches!(module.expressions[id.0].kind, ExprKind::Bind { .. }) {
-            self.bind(id, file);
+            if let Some(lift) = self.bind(id) {
+                self.state.main_lifts.push(lift);
+            }
             self.state.types[id.0] = Some(Type::Unit);
         } else {
             let mark = self.mark();
@@ -279,7 +303,7 @@ impl Infer<'_> {
     /// value, its variables and obligations kept in its scheme.
     pub(super) fn query_line(&mut self, id: ExprId) {
         if matches!(self.module.expressions[id.0].kind, ExprKind::Bind { .. }) {
-            self.line(id, true);
+            self.line(id);
             return;
         }
         let mark = self.mark();
@@ -478,16 +502,18 @@ impl Infer<'_> {
         } else {
             prelude("Bool")
         };
-        let name = match op {
-            BinaryOp::Add => "add",
-            BinaryOp::Subtract => "sub",
-            BinaryOp::Multiply => "mul",
-            BinaryOp::Divide => "div",
-            BinaryOp::Remainder => "rem",
-            BinaryOp::Concat => "concat",
-            BinaryOp::Equal | BinaryOp::NotEqual => "eq",
-            _ => "cmp",
-        };
+        let name = operator_member(op);
+        self.record_operation(
+            operator,
+            left_ty.clone(),
+            name,
+            Some(right_ty.clone()),
+            if name == "cmp" {
+                prelude("Ordering")
+            } else {
+                result.clone()
+            },
+        );
         if name == "concat" {
             self.require_member(
                 left_ty,
@@ -650,6 +676,7 @@ impl Infer<'_> {
             });
             self.expr(field.value, expected.as_ref());
         }
+        self.record_fields(id, fields, &ty, span);
         for field in declared {
             if !field.default
                 && !fields.iter().any(|f| super::last(&f.name) == field.name)
@@ -696,4 +723,23 @@ const fn is_arithmetic(op: BinaryOp) -> bool {
             | BinaryOp::Divide
             | BinaryOp::Remainder
     )
+}
+
+const fn operator_member(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add => "add",
+        BinaryOp::Subtract => "sub",
+        BinaryOp::Multiply => "mul",
+        BinaryOp::Divide => "div",
+        BinaryOp::Remainder => "rem",
+        BinaryOp::Concat => "concat",
+        BinaryOp::Equal | BinaryOp::NotEqual => "eq",
+        _ => "cmp",
+    }
+}
+
+impl Infer<'_> {
+    fn record_not(&mut self, operator: Span, ty: &Type) {
+        self.record_operation(operator, ty.clone(), "not", None, ty.clone());
+    }
 }

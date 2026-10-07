@@ -6,13 +6,14 @@
 
 use crate::{
     ast::{Entry, ItemKind, Module},
+    check::{local, within},
     decl::Declarations,
     embed::{Outcome, Reply, Request},
     frame::Frame,
-    infer::{self, infer_in},
+    infer,
     lex::{lex, Lexed},
     parse::{self, parse},
-    resolve::{self, resolve_in, Resolved},
+    resolve::{self, Resolved},
     token::Span,
     typed::Typed,
     types::Subst,
@@ -27,7 +28,7 @@ const SEPARATOR: &str = "\n\n";
 
 /// The prelude, the host's declarations, the accepted lines and the file
 /// modules loaded through [`Request::File`].
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Session {
     declarations: Declarations,
     source: String,
@@ -35,8 +36,35 @@ pub struct Session {
     lines: Vec<(String, usize)>,
     frame: Frame,
     files: Vec<(String, Module)>,
+    absent: Vec<String>,
     pending: Option<Pending>,
     strict: bool,
+    index: Option<crate::check::lower::Index>,
+    indexed: Vec<(crate::check::lower::Index, Vec<Option<crate::ir::Type>>)>,
+}
+
+impl Clone for Session {
+    fn clone(&self) -> Self {
+        let index = self.index.as_ref().map(crate::check::lower::Index::fork);
+        let mut indexed = self.indexed.clone();
+        if let Some(index) = &index {
+            for (snapshot, _) in &mut indexed {
+                snapshot.tables = index.tables.clone();
+            }
+        }
+        Self {
+            declarations: self.declarations.clone(),
+            source: self.source.clone(),
+            lines: self.lines.clone(),
+            frame: self.frame.clone(),
+            files: self.files.clone(),
+            absent: self.absent.clone(),
+            pending: self.pending.clone(),
+            strict: self.strict,
+            index,
+            indexed,
+        }
+    }
 }
 
 /// A line waiting for a [`Reply`].
@@ -73,9 +101,33 @@ pub struct Report {
     pub typed: Option<Typed>,
     /// Open entries left by this line.
     pub checks: Vec<crate::typed::Check>,
+    /// Indexed backend input, present only for a diagnostic-free line.
+    pub unit: Option<crate::ir::Unit>,
 }
 
 impl Report {
+    fn syntax(errors: Vec<parse::Error>, offset: usize) -> Self {
+        let diagnostics = errors
+            .into_iter()
+            .map(|error| {
+                Diagnostic::Syntax(parse::Error {
+                    span: local(error.span, offset),
+                    ..error
+                })
+            })
+            .collect();
+        Self {
+            warnings: Vec::new(),
+            module: None,
+            offset,
+            diagnostics,
+            resolved: None,
+            typed: None,
+            checks: Vec::new(),
+            unit: None,
+        }
+    }
+
     /// The line's own entries of [`Report::module`].
     #[must_use]
     pub fn entries(&self) -> &[Entry] {
@@ -93,34 +145,7 @@ impl Report {
     }
 }
 
-/// A located diagnostic.
-///
-/// Its span is in the line's text, except for a file module's, which is
-/// in that file's text; a span inside a reason, such as a duplicate's
-/// first site, stays in the text it was found in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Diagnostic {
-    /// A lexical or syntax error.
-    Syntax(parse::Error),
-    Resolve(resolve::Error),
-    Type(infer::Error),
-    /// A replied file module that does not parse, at a span of its text.
-    File {
-        stem: String,
-        error: parse::Error,
-    },
-    /// A resolve error of a file module the line loaded.
-    FileResolve {
-        stem: String,
-        error: resolve::Error,
-    },
-    /// A type error of a file module the line loaded, outside any of
-    /// its entries that failed to resolve.
-    FileType {
-        stem: String,
-        error: infer::Error,
-    },
-}
+pub use crate::check::Error as Diagnostic;
 
 impl Session {
     #[must_use]
@@ -141,8 +166,11 @@ impl Session {
                 weak: Subst::from_bindings(Vec::new()),
             },
             files: Vec::new(),
+            absent: Vec::new(),
             pending: None,
             strict: false,
+            index: None,
+            indexed: Vec::new(),
         }
     }
 
@@ -248,6 +276,10 @@ impl Session {
         self.pending = None;
         let (text, offset) = self.lines.pop()?;
         self.frame.retract();
+        if let Some((index, meanings)) = self.indexed.pop() {
+            index.restore_meanings(&meanings);
+            self.index = Some(index);
+        }
         self.source.truncate(offset);
         Some(text)
     }
@@ -275,6 +307,7 @@ impl Session {
         match reply {
             Reply::File(Some(text)) => match parse(lex(&text)) {
                 Ok(module) => {
+                    self.absent.retain(|name| *name != stem);
                     self.files.push((stem.clone(), module));
                     pending.loaded.push(stem);
                 }
@@ -289,6 +322,11 @@ impl Session {
                 }
             },
             Reply::File(None) => pending.absent.push(stem),
+        }
+        for stem in &pending.absent {
+            if !self.absent.contains(stem) {
+                self.absent.push(stem.clone());
+            }
         }
         self.step(pending)
     }
@@ -310,24 +348,7 @@ impl Session {
         let module = match parse(shifted(lex(&pending.text), offset)) {
             Ok(module) => module,
             Err(errors) => {
-                let diagnostics = errors
-                    .into_iter()
-                    .map(|error| {
-                        Diagnostic::Syntax(parse::Error {
-                            span: local(error.span, offset),
-                            ..error
-                        })
-                    })
-                    .collect();
-                return Outcome::Done(Report {
-                    warnings: Vec::new(),
-                    module: None,
-                    offset,
-                    diagnostics,
-                    resolved: None,
-                    typed: None,
-                    checks: Vec::new(),
-                });
+                return Outcome::Done(Report::syntax(errors, offset))
             }
         };
         if let Some(stem) = self.missing(&module, &pending.absent) {
@@ -338,58 +359,69 @@ impl Session {
         let cache = infer::files::FileCache::default();
         let mut diagnostics = pending.errors;
         for stem in &pending.loaded {
-            diagnostics.extend(self.check_file(stem, &cache));
+            diagnostics.extend(crate::check::file_errors(
+                stem,
+                &self.declarations,
+                &self.files,
+                &cache,
+            ));
         }
         let files = diagnostics.len();
-        let (resolved, errors) = resolve_in(
+        let checked = crate::check::stages(
             &module,
             &self.declarations,
             &self.files,
             Some(&self.frame),
+            &cache,
+            crate::check::Options {
+                strict: self.strict,
+            },
+            (if pending.accept { usize::MAX } else { offset }, offset),
         );
-        let resolved = if errors.is_empty() {
-            Some(resolved)
-        } else {
-            diagnostics.extend(errors.into_iter().map(|error| {
-                Diagnostic::Resolve(resolve::Error {
-                    span: local(error.span, offset),
-                    ..error
-                })
-            }));
-            None
-        };
-        let typed = resolved.as_ref().and_then(|resolved| {
-            let query = if pending.accept { usize::MAX } else { offset };
-            let (typed, errors) = infer_in(
-                &module,
-                resolved,
-                &self.declarations,
-                &self.files,
-                &self.frame,
-                query,
-                &cache,
-            );
-            if errors.is_empty() {
-                return Some(typed);
-            }
-            diagnostics.extend(errors.into_iter().map(|error| {
-                Diagnostic::Type(infer::Error {
-                    span: local(error.span, offset),
-                    ..error
-                })
-            }));
-            None
-        });
+        diagnostics.extend(checked.diagnostics);
+        let resolved = checked.resolved;
+        let typed = checked.typed;
         let checks = typed
             .as_ref()
             .map_or_else(Vec::new, |typed| typed.checks.clone());
-        diagnostics.extend(self.open_errors(&checks, offset));
+        if pending.accept && diagnostics.len() == files {
+            let index = self.index.get_or_insert_with(Default::default);
+            self.indexed.push((
+                index.checkpoint(),
+                index.tables.borrow().session_meanings.clone(),
+            ));
+        }
+        let files_valid = cache.files.borrow().values().all(|file| {
+            file.resolve_errors.is_empty() && file.type_errors.is_empty()
+        });
+        let unit = if diagnostics.is_empty() && files_valid {
+            if let (Some(resolved), Some(typed)) = (&resolved, &typed) {
+                let index = self.index.get_or_insert_with(Default::default);
+                let mut query;
+                let index = if pending.accept {
+                    index
+                } else {
+                    query = index.fork();
+                    &mut query
+                };
+                index.session(self.frame.lines.len(), typed);
+                Some(index.emit(
+                    &module,
+                    resolved.clone(),
+                    typed.clone(),
+                    &self.declarations,
+                    &self.files,
+                    &cache,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if pending.accept && diagnostics.len() == files {
             if let (Some(resolved), Some(typed)) = (&resolved, &typed) {
-                self.frame.accept(module.clone(), resolved.clone(), typed);
-                self.lines.push((pending.text.clone(), offset));
-                self.source.push_str(&pending.text);
-                self.source.push_str(SEPARATOR);
+                self.accept(&pending.text, &module, resolved, typed);
             }
         }
         Outcome::Done(Report {
@@ -400,95 +432,27 @@ impl Session {
             resolved,
             typed,
             checks,
+            unit,
         })
     }
 
-    fn open_errors(
-        &self,
-        checks: &[crate::typed::Check],
-        offset: usize,
-    ) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        if self.strict {
-            let mut seen = alloc::collections::BTreeSet::new();
-            diagnostics.extend(
-                checks
-                    .iter()
-                    .filter(|check| {
-                        !check.gate
-                            && check.name != "nonzero divisor"
-                            && seen.insert((
-                                check.place_origin.clone(),
-                                check.place,
-                                check.name.clone(),
-                            ))
-                    })
-                    .map(|check| match &check.place_origin {
-                        resolve::Origin::File(stem) => Diagnostic::FileType {
-                            stem: stem.clone(),
-                            error: strict_error(check, 0),
-                        },
-                        _ => Diagnostic::Type(strict_error(check, offset)),
-                    }),
-            );
-        }
-        diagnostics
-    }
-
-    /// A loaded file module's own diagnostics. A type error inside an
-    /// entry that failed to resolve is a consequence and is dropped.
-    fn check_file(
-        &self,
-        stem: &str,
-        cache: &infer::files::FileCache,
-    ) -> Vec<Diagnostic> {
-        let Some((_, module)) = self.files.iter().find(|(f, _)| f == stem)
-        else {
-            return Vec::new();
-        };
-        let Some(checked) = infer::files::check_file(
-            stem,
-            &self.declarations,
-            &self.files,
-            cache,
-            &[],
-        ) else {
-            return Vec::new();
-        };
-        let errors = checked.resolve_errors;
-        let types = checked.type_errors;
-        let failed: Vec<Span> = module
-            .entries
-            .iter()
-            .map(|entry| entry_span(module, entry))
-            .filter(|span| errors.iter().any(|e| within(e.span, *span)))
-            .collect();
-        let resolve = errors.into_iter().map(|error| Diagnostic::FileResolve {
-            stem: String::from(stem),
-            error,
-        });
-        let types = types
-            .into_iter()
-            .filter(|error| {
-                !failed.iter().any(|span| within(error.span, *span))
-            })
-            .map(|error| Diagnostic::FileType {
-                stem: String::from(stem),
-                error,
-            });
-        let mut diagnostics: Vec<_> = resolve.chain(types).collect();
-        diagnostics.sort_by_key(|d| match d {
-            Diagnostic::FileResolve { error, .. } => error.span.start,
-            Diagnostic::FileType { error, .. } => error.span.start,
-            _ => 0,
-        });
-        diagnostics
+    fn accept(
+        &mut self,
+        text: &str,
+        module: &Module,
+        resolved: &Resolved,
+        typed: &Typed,
+    ) {
+        self.frame.accept(module.clone(), resolved.clone(), typed);
+        self.lines.push((String::from(text), self.source.len()));
+        self.source.push_str(text);
+        self.source.push_str(SEPARATOR);
     }
 
     /// The first `use`d module that is neither a host module, nor loaded,
-    /// nor answered absent for this line; the loaded files' `use` lines
-    /// count too.
+    /// nor answered absent. A use written in this line retries its imports.
     fn missing(&self, module: &Module, absent: &[String]) -> Option<String> {
+        let retry = self.imports(module);
         core::iter::once(module)
             .chain(self.files.iter().map(|(_, file)| file))
             .flat_map(|module| &module.entries)
@@ -505,23 +469,35 @@ impl Session {
                 self.declarations.get_module(stem).is_none()
                     && !self.files.iter().any(|(file, _)| file == *stem)
                     && !absent.contains(stem)
+                    && (!self.absent.contains(stem) || retry.contains(*stem))
             })
             .cloned()
     }
-}
-
-fn entry_span(module: &Module, entry: &Entry) -> Span {
-    match entry {
-        Entry::Item(item) => item.span,
-        Entry::Line(id) => {
-            module.expr(*id).map_or_else(Span::default, |e| e.span)
+    fn imports(&self, module: &Module) -> alloc::collections::BTreeSet<String> {
+        let mut stems = alloc::collections::BTreeSet::new();
+        let mut pending = alloc::vec![module];
+        while let Some(module) = pending.pop() {
+            for entry in &module.entries {
+                let Entry::Item(item) = entry else { continue };
+                let ItemKind::Use { names, .. } = &item.kind else {
+                    continue;
+                };
+                for name in names {
+                    let Some(stem) = name.segments.first() else {
+                        continue;
+                    };
+                    if stems.insert(stem.clone()) {
+                        if let Some((_, file)) =
+                            self.files.iter().find(|(name, _)| name == stem)
+                        {
+                            pending.push(file);
+                        }
+                    }
+                }
+            }
         }
+        stems
     }
-}
-
-/// Whether `inner` lies inside `outer`.
-const fn within(inner: Span, outer: Span) -> bool {
-    outer.start <= inner.start && inner.end <= outer.end
 }
 
 /// Tokens of a line placed at `offset` in the session's text, so every
@@ -541,29 +517,6 @@ fn shifted(mut lexed: Lexed, offset: usize) -> Lexed {
         shift(&mut error.span);
     }
     lexed
-}
-
-/// A span of the combined text moved into the line's text; one that
-/// starts before the line, which only the line can have caused, is
-/// placed at its start.
-const fn local(span: Span, offset: usize) -> Span {
-    Span {
-        start: span.start.saturating_sub(offset),
-        end: span.end.saturating_sub(offset),
-    }
-}
-
-fn strict_error(check: &crate::typed::Check, offset: usize) -> infer::Error {
-    infer::Error {
-        span: local(check.place, offset),
-        reason: infer::Reason::Limit {
-            message: alloc::format!(
-                "open entry against {} in strict session: {}",
-                check.name,
-                check.reason
-            ),
-        },
-    }
 }
 
 fn report_warnings(

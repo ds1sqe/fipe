@@ -1,4 +1,4 @@
-use super::{affixed, int, name, negative, string, text, tokens};
+use super::{affixed, form, int, name, negative, string, text, tokens};
 use fipe::{
     lex::{lex, Reason},
     token::{Kind, Magnitude, Written},
@@ -8,6 +8,8 @@ fn big(digits: &str, negative: bool) -> Kind {
     Kind::Int {
         negative,
         magnitude: Magnitude::parse(digits, 10).unwrap(),
+        radix: 10,
+        digits: digits.len(),
     }
 }
 
@@ -17,28 +19,31 @@ fn integer_radices_separators_and_limits() {
         ("0", int(0)), ("-0", negative(0)),
         ("18446744073709551615", int(u64::MAX)),
         ("-18446744073709551615", negative(u64::MAX)),
-        ("0xffff_ffff_ffff_ffff", int(u64::MAX)),
-        ("0o1777777777777777777777", int(u64::MAX)),
+        ("0xffff_ffff_ffff_ffff", form(int(u64::MAX),16,16)),
+        ("0o1777777777777777777777", form(int(u64::MAX),8,22)),
         ("0b1111111111111111111111111111111111111111111111111111111111111111",
-         int(u64::MAX)),
-        ("-0xA_f", negative(175)), ("0b1_0", int(2)),
+         form(int(u64::MAX),2,64)),
+        ("-0xA_f", form(negative(175),16,2)), ("0b1_0", form(int(2),2,2)),
     ] {
         tokens(input, vec![expected]);
     }
     // The lexer has no bound: one past `u64` is one exact integer.
     let past = "18446744073709551616";
-    for input in [
-        past,
-        "0x10000000000000000",
-        "0o2000000000000000000000",
-        "0b10000000000000000000000000000000000000000000000000000000000000000",
+    for (input, radix, digits) in [
+        (past,10,20),
+        ("0x10000000000000000",16,17),
+        ("0o2000000000000000000000",8,22),
+        ("0b10000000000000000000000000000000000000000000000000000000000000000",2,65),
     ] {
-        tokens(input, vec![big(past, false)]);
+        tokens(input, vec![form(big(past, false),radix,digits)]);
     }
     tokens(&format!("-{past}"), vec![big(past, true)]);
     let huge = "340282366920938463463374607431768211457";
     tokens(huge, vec![big(huge, false)]);
-    tokens(&format!("0x1{}1", "0".repeat(31)), vec![big(huge, false)]);
+    tokens(
+        &format!("0x1{}1", "0".repeat(31)),
+        vec![form(big(huge, false), 16, 33)],
+    );
     assert_eq!(Magnitude::parse(past, 10).unwrap().to_string(), past);
     assert_eq!(Magnitude::parse(huge, 10).unwrap().to_u64(), None);
     assert_eq!(Magnitude::parse("1_000", 10).unwrap().to_u64(), Some(1000));
@@ -76,6 +81,8 @@ fn a_number_suffix_begins_where_the_longest_number_ends() {
     let int = |negative, value: u64| Written::Int {
         negative,
         magnitude: Magnitude::from(value),
+        radix: 10,
+        digits: value.to_string().len(),
     };
     let float = |spelling: &str| Written::Float(spelling.into());
     for (input, form, suffix) in [
@@ -90,8 +97,26 @@ fn a_number_suffix_begins_where_the_longest_number_ends() {
         ("1_000ms", int(false, 1000), "ms"),
         ("0i", int(false, 0), "i"),
         ("0r_7", int(false, 0), "r_7"),
-        ("0x1Fg", int(false, 31), "g"),
-        ("0b10z", int(false, 2), "z"),
+        (
+            "0x1Fg",
+            Written::Int {
+                negative: false,
+                magnitude: 31.into(),
+                radix: 16,
+                digits: 2,
+            },
+            "g",
+        ),
+        (
+            "0b10z",
+            Written::Int {
+                negative: false,
+                magnitude: 2.into(),
+                radix: 2,
+                digits: 2,
+            },
+            "z",
+        ),
         ("2.5ms", float("2.5"), "ms"),
         ("1e2e3", float("1e2"), "e3"),
         ("-1.5e3kg", float("-1.5e3"), "kg"),
@@ -100,11 +125,13 @@ fn a_number_suffix_begins_where_the_longest_number_ends() {
     }
     // The longest number wins: an exponent, hex digits, a plain float.
     tokens("1e5", vec![Kind::Float("1e5".into())]);
-    tokens("0x1Fe", vec![super::int(0x1fe)]);
+    tokens("0x1Fe", vec![form(super::int(0x1fe), 16, 3)]);
     tokens("0e5", vec![Kind::Float("0e5".into())]);
     let past = Written::Int {
         negative: false,
         magnitude: Magnitude::parse("18446744073709551616", 10).unwrap(),
+        radix: 10,
+        digits: 20,
     };
     tokens("18446744073709551616x", vec![affixed("", past, "x")]);
 }

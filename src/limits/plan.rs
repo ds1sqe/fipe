@@ -39,6 +39,11 @@ pub enum Place {
 /// One open entry, with source identity for each span.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Check {
+    /// Expression producing the checked value; separate from its diagnostic place.
+    pub value: Option<crate::ast::ExprId>,
+    pub path: alloc::vec::Vec<crate::ir::Projection>,
+    /// Checked destination of this entry; None denotes the nonzero guard.
+    pub target: Option<crate::types::Type>,
     pub place: Span,
     pub place_kind: Place,
     pub limit: Span,

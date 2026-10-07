@@ -14,13 +14,16 @@ impl Pass<'_> {
     fn enter_part(
         &mut self,
         kind: Place,
+        projection: crate::ir::Projection,
         ty: &Type,
         known: &Known,
         place: Span,
         frequency: Frequency,
     ) {
         let previous = core::mem::replace(&mut self.place_kind, kind);
+        self.path.push(projection);
         self.enter(ty, known, place, frequency);
+        self.path.pop();
         self.place_kind = previous;
     }
 
@@ -31,6 +34,7 @@ impl Pass<'_> {
         place: Span,
         frequency: Frequency,
     ) {
+        let start = self.typed.checks.len();
         match ty {
             Type::Limited { name, .. } => {
                 self.enter(name, known, place, frequency);
@@ -95,6 +99,11 @@ impl Pass<'_> {
             }
             _ => (),
         }
+        for check in &mut self.typed.checks[start..] {
+            if check.target.is_none() {
+                check.target = Some(ty.clone());
+            }
+        }
     }
     fn named_parts(
         &mut self,
@@ -116,7 +125,12 @@ impl Pass<'_> {
         let crate::ast::Entry::Item(item) = &module.entries[*index] else {
             return;
         };
-        let crate::ast::ItemKind::Type { parameters, .. } = &item.kind else {
+        let crate::ast::ItemKind::Type {
+            parameters,
+            members,
+            ..
+        } = &item.kind
+        else {
             return;
         };
         let bindings: Vec<_> = parameters
@@ -133,8 +147,21 @@ impl Pass<'_> {
         let fields =
             super::construction_fields(module, &name.name, constructor);
         if fields.is_empty() && known.constructor.is_none() {
-            for argument in arguments {
-                self.enter(argument, &Known::default(), place, frequency);
+            let parts = self.sum_parts(
+                module,
+                name,
+                members.as_deref().unwrap_or(&[]),
+                &bindings,
+            );
+            for (constructor, field, ty) in parts {
+                self.enter_part(
+                    Place::Payload,
+                    crate::ir::Projection::CaseField { constructor, field },
+                    &ty,
+                    &Known::default(),
+                    place,
+                    frequency,
+                );
             }
             return;
         }
@@ -153,18 +180,54 @@ impl Pass<'_> {
                 (label, ty, fact)
             })
             .collect();
-        for (label, ty, fact) in parts {
+        for (index, (label, ty, fact)) in parts.into_iter().enumerate() {
             self.enter_part(
                 Place::Field {
                     owner: name.name.clone(),
                     name: label,
                 },
+                crate::ir::Projection::Field(index),
                 &ty,
                 &fact,
                 place,
                 frequency,
             );
         }
+    }
+    fn sum_parts(
+        &self,
+        module: &Module,
+        name: &TypeName,
+        members: &[crate::ast::Member],
+        bindings: &[(String, Type)],
+    ) -> Vec<(usize, usize, Type)> {
+        let constructors: Vec<_> = members
+            .iter()
+            .filter_map(|member| {
+                if let crate::ast::Member::Constructor { fields, .. } = member {
+                    Some(fields)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        constructors
+            .iter()
+            .enumerate()
+            .flat_map(|(constructor, fields)| {
+                fields
+                    .iter()
+                    .enumerate()
+                    .map(move |(field, value)| (constructor, field, value))
+            })
+            .map(|(constructor, field, value)| {
+                (
+                    constructor,
+                    field,
+                    self.syntax_bound(module, &name.origin, value.ty, bindings),
+                )
+            })
+            .collect()
     }
     fn element_entries(&mut self, element: &Type, known: &Known, place: Span) {
         let parts: Vec<_> = known
@@ -176,6 +239,7 @@ impl Pass<'_> {
             for (_, part) in parts {
                 self.enter_part(
                     Place::Element,
+                    crate::ir::Projection::Element,
                     element,
                     part,
                     place,
@@ -187,6 +251,7 @@ impl Pass<'_> {
         }) {
             self.enter_part(
                 Place::Element,
+                crate::ir::Projection::Element,
                 element,
                 &Known {
                     narrowing: known.narrowing,
@@ -214,7 +279,14 @@ impl Pass<'_> {
                 },
                 |k| (*k).clone(),
             );
-            self.enter_part(Place::Part(index), ty, &fact, place, frequency);
+            self.enter_part(
+                Place::Part(index),
+                crate::ir::Projection::Part(index),
+                ty,
+                &fact,
+                place,
+                frequency,
+            );
         }
     }
     fn payloads(
@@ -236,6 +308,7 @@ impl Pass<'_> {
                         .map_or_else(Known::default, |(_, part)| part.clone());
                     self.enter_part(
                         Place::Payload,
+                        crate::ir::Projection::Payload(index),
                         argument,
                         &payload,
                         place,
@@ -257,6 +330,7 @@ impl Pass<'_> {
                         .map_or(&payload, |(_, part)| part);
                     self.enter_part(
                         Place::Payload,
+                        crate::ir::Projection::Payload(index),
                         argument,
                         part,
                         place,
@@ -504,10 +578,14 @@ impl Pass<'_> {
                     self.place_kind.clone(),
                     limit,
                     origin.clone(),
+                    self.path.clone(),
                 )) {
                     return;
                 }
                 self.typed.checks.push(Check {
+                    value: None,
+                    path: self.path.clone(),
+                    target: None,
                     place,
                     place_kind: self.place_kind.clone(),
                     limit,

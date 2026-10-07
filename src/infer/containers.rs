@@ -79,12 +79,14 @@ impl Infer<'_> {
                     if member == Some(super::last(name).as_str()) {
                         let (slots, result, receiver) =
                             self.signature(&scope, *ty, &mut vars);
-                        return (
-                            claims,
-                            Some(self.finish_callee(
-                                slots, result, receiver, vars, span,
-                            )),
-                        );
+                        let mut callee = self
+                            .finish_callee(slots, result, receiver, vars, span);
+                        callee.selected =
+                            Some(crate::typed::Selected::Declared {
+                                origin: Origin::Prelude,
+                                site: name.span,
+                            });
+                        return (claims, Some(callee));
                     }
                 }
             }
@@ -122,6 +124,7 @@ impl Infer<'_> {
             .into_iter()
             .next()
         })?;
+        self.record_callee(&callee, span);
         let Type::Function { parameter, result } = callee.whole() else {
             return None;
         };

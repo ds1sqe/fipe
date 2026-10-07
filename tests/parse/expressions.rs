@@ -249,7 +249,9 @@ fn flags_retain_attached_values_and_separate_operands() {
         node(&parsed, value),
         &ExprKind::Literal(Literal::Int {
             negative: true,
-            magnitude: 5.into()
+            magnitude: 5.into(),
+            radix: 10,
+            digits: 1
         })
     );
     let ArgumentKind::Positional(value) = arguments[4].kind else {
@@ -662,7 +664,9 @@ fn pattern_bindings_and_scoped_values_preserve_structure() {
         parsed.pattern(*zero).unwrap().kind,
         PatternKind::Literal(Literal::Int {
             negative: false,
-            magnitude: 0.into()
+            magnitude: 0.into(),
+            radix: 10,
+            digits: 1
         })
     );
     let (parsed, id) = only("with cwd /tmp { ls }");
@@ -693,7 +697,9 @@ fn literals_retain_payloads_without_type_checking() {
             ExprKind::Literal(Literal::Unit),
             ExprKind::Literal(Literal::Int {
                 negative: true,
-                magnitude: 5.into()
+                magnitude: 5.into(),
+                radix: 10,
+                digits: 1
             }),
             ExprKind::Literal(Literal::Float("1e999".into())),
             ExprKind::Literal(Literal::Str {
@@ -793,4 +799,26 @@ fn migrated_function_body_returns_its_last_line() {
         parsed.pattern(arms[0].patterns[0]).unwrap().kind,
         PatternKind::Literal(Literal::Unit)
     );
+}
+
+#[test]
+fn integer_forms_keep_radix_and_written_digit_count() {
+    for (text, radix, digits, negative, value) in [
+        ("7", 10, 1, false, 7_u64),
+        ("0b0111", 2, 4, false, 7),
+        ("0x00FF", 16, 4, false, 255),
+        ("1_000", 10, 4, false, 1000),
+        ("-007", 10, 3, true, 7),
+    ] {
+        let (module, id) = only(text);
+        assert_eq!(
+            node(&module, id),
+            &ExprKind::Literal(Literal::Int {
+                negative,
+                magnitude: value.into(),
+                radix,
+                digits,
+            })
+        );
+    }
 }

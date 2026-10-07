@@ -293,6 +293,7 @@ fn large_literals_and_deep_delimiters_do_not_need_recursion() {
         let Kind::Int {
             negative: sign,
             magnitude,
+            ..
         } = &token.kind
         else {
             panic!("expected an integer: {:?}", token.kind);

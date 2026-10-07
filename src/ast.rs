@@ -159,6 +159,8 @@ pub enum Literal {
     Int {
         negative: bool,
         magnitude: Magnitude,
+        radix: u8,
+        digits: usize,
     },
     Float(String),
     Str {

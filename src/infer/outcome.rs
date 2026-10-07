@@ -197,13 +197,28 @@ impl Infer<'_> {
 
             ty => super::outcome::family(ty).is_some_and(|(f, _)| f == family),
         };
-        if same {
+        self.state.rebuilds.insert(
+            (span.start, span.end),
+            if same {
+                crate::typed::Rebuild::Direct
+            } else if family == Family::Maybe && !good {
+                crate::typed::Rebuild::Discard
+            } else {
+                crate::typed::Rebuild::Wrap
+            },
+        );
+        let rebuilt = if same {
             let fresh = self.fresh();
             let shape = with_side(family, arguments, good, fresh);
             self.unify(&shape, &result, span, other);
-            return shape;
-        }
-        with_side(family, arguments, good, result)
+            shape
+        } else {
+            with_side(family, arguments, good, result)
+        };
+        self.state
+            .rebuild_types
+            .insert((span.start, span.end), rebuilt.clone());
+        rebuilt
     }
 
     /// `left || right`: `Bool`, or the fallback of a `Maybe` or
@@ -218,6 +233,10 @@ impl Infer<'_> {
         let left_span = self.span(left);
         let applied = self.apply(&left_ty);
         if super::is_prelude(&applied, "Bool") {
+            self.state.modes.insert(
+                (operator.start, operator.end),
+                crate::typed::Mode::Bool,
+            );
             self.expr(right, Some(&Expected::new(applied.clone(), left_span)));
             return applied;
         }
@@ -233,9 +252,17 @@ impl Infer<'_> {
         self.expr(right, Some(&Expected::new(applied.clone(), left_span)));
         self.dots();
         if self.state.errors.len() == before.errors.len() {
+            self.state.modes.insert(
+                (operator.start, operator.end),
+                crate::typed::Mode::Family,
+            );
             return applied;
         }
         self.state = before;
+        self.state.modes.insert(
+            (operator.start, operator.end),
+            crate::typed::Mode::Payload,
+        );
         self.expr(
             right,
             Some(
@@ -257,6 +284,10 @@ impl Infer<'_> {
         let left_span = self.span(left);
         let applied = self.apply(&left_ty);
         if super::is_prelude(&applied, "Bool") {
+            self.state.modes.insert(
+                (operator.start, operator.end),
+                crate::typed::Mode::Bool,
+            );
             self.expr(right, Some(&Expected::new(applied.clone(), left_span)));
             return applied;
         }
@@ -269,6 +300,9 @@ impl Infer<'_> {
             return self.fresh();
         }
         let result = self.expr(right, None);
+        self.state
+            .modes
+            .insert((operator.start, operator.end), crate::typed::Mode::Family);
         self.rebuild(&applied, true, result, self.span(right), left_span)
     }
 }

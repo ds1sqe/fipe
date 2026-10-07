@@ -1,0 +1,385 @@
+use super::{
+    home_origin, ir, owner, Index, Origin, Scope, Source, String, Type,
+    TypeName, Vec,
+};
+
+impl Index {
+    pub(super) fn call(
+        &mut self,
+        source: &Source<'_>,
+        scope: &Scope,
+        span: crate::token::Span,
+        callee: usize,
+        bound: &crate::typed::Bound,
+        receiver: Option<usize>,
+    ) -> ir::Kind {
+        let callee = self.constructor_call(source, span, callee, bound);
+        let slots: Vec<_> = bound
+            .spots
+            .iter()
+            .map(|(_, ty)| {
+                let ty = self.ty(&source.home, ty);
+                let index = self.tables.borrow().slots.len();
+                self.tables.borrow_mut().slots.push(ir::Slot {
+                    ty,
+                    parameters: Vec::new(),
+                    hidden: Vec::new(),
+                    definition: None,
+                });
+                index
+            })
+            .collect();
+        let supplies = bound
+            .supplies
+            .iter()
+            .map(|(spot, supply)| {
+                let value = match supply {
+                    crate::typed::Supply::Expression(id)
+                    | crate::typed::Supply::Element(id) => {
+                        scope.expression(*id)
+                    }
+                    crate::typed::Supply::Head(site) => receiver
+                        .or_else(|| scope.receivers.borrow().get(site).copied())
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "receiver {site:?} at {span:?} in {:?}",
+                                source.home
+                            )
+                        }),
+                    crate::typed::Supply::Pipe(site) => {
+                        let id = source
+                            .module
+                            .expressions
+                            .iter()
+                            .position(|expr| expr.span == *site)
+                            .expect("pipe source");
+                        scope.expression(crate::ast::ExprId(id))
+                    }
+                    crate::typed::Supply::Flag(site) => {
+                        let meaning = self.meaning(
+                            &source.home,
+                            &TypeName {
+                                origin: Origin::Prelude,
+                                name: String::from("Bool"),
+                            },
+                        );
+                        let constructor =
+                            self.constructor_index(meaning, "True");
+                        self.node(
+                            &source.home,
+                            *site,
+                            &Type::named(Origin::Prelude, "Bool", Vec::new()),
+                            ir::Kind::Construct {
+                                meaning,
+                                constructor,
+                                fields: Vec::new(),
+                            },
+                        )
+                    }
+                };
+                ir::Supply {
+                    spot: *spot,
+                    value,
+                    element: matches!(supply, crate::typed::Supply::Element(_)),
+                }
+            })
+            .collect();
+        let defaults = self.defaults(source, bound, &slots, span);
+        ir::Kind::Call {
+            callee,
+            slots,
+            supplies,
+            defaults,
+            open: bound.open.clone(),
+        }
+    }
+
+    fn constructor_call(
+        &mut self,
+        source: &Source<'_>,
+        span: crate::token::Span,
+        callee: usize,
+        bound: &crate::typed::Bound,
+    ) -> usize {
+        let Some(fields) =
+            source.typed.constructor_fields.get(&(span.start, span.end))
+        else {
+            return callee;
+        };
+        let original = self.tables.borrow().nodes[callee].clone();
+        let ir::Kind::Constructor {
+            meaning,
+            constructor,
+            ..
+        } = original.kind
+        else {
+            return callee;
+        };
+        let mut result = original.ty;
+        while let ir::Type::Function { result: next, .. } = result {
+            result = *next;
+        }
+        let signature =
+            bound
+                .spots
+                .iter()
+                .rev()
+                .fold(result, |result, (_, parameter)| ir::Type::Function {
+                    parameter: alloc::boxed::Box::new(
+                        self.ty(&source.home, parameter),
+                    ),
+                    result: alloc::boxed::Box::new(result),
+                });
+        let node = ir::Node {
+            ty: signature,
+            kind: ir::Kind::Constructor {
+                meaning,
+                constructor,
+                fields: fields.clone(),
+            },
+            ..original
+        };
+        let index = self.tables.borrow().nodes.len();
+        self.tables.borrow_mut().nodes.push(node);
+        index
+    }
+
+    pub(super) fn selected(
+        &mut self,
+        source: &Source<'_>,
+        span: crate::token::Span,
+        selected: &crate::typed::Selected,
+        arguments: &[Type],
+        ty: &Type,
+        receiver: Option<usize>,
+    ) -> usize {
+        use crate::typed::Selected;
+        let kind = match selected {
+            Selected::Value { origin, site } => {
+                let origin = home_origin(&source.home, origin);
+                let index = self.definitions[&(origin, *site)];
+                let definition =
+                    self.tables.borrow().definitions[index].clone();
+                let meanings = definition
+                    .hidden
+                    .iter()
+                    .map(|hidden| {
+                        let position = definition
+                            .parameters
+                            .iter()
+                            .position(|parameter| parameter == hidden)
+                            .expect("hidden parameter belongs to definition");
+                        self.ty(&source.home, &arguments[position])
+                    })
+                    .collect();
+                ir::Kind::Definition { index, meanings }
+            }
+            Selected::Declared { origin, site } => {
+                let origin = home_origin(&source.home, origin);
+                let key = (origin.clone(), *site);
+                let index = if let Some(index) = self.declarations.get(&key) {
+                    *index
+                } else {
+                    let (ordinal, label) = declaration(source, &origin, *site);
+                    let namespace = self.namespace(&origin);
+                    let ty = self.ty(&source.home, ty);
+                    let index = self.tables.borrow().declarations.len();
+                    self.tables.borrow_mut().declarations.push(
+                        ir::Declaration {
+                            namespace,
+                            index: ordinal,
+                            label,
+                            ty,
+                        },
+                    );
+                    self.declarations.insert(key, index);
+                    index
+                };
+                ir::Kind::Declared(index)
+            }
+            Selected::Derived { ty, kind } => ir::Kind::Derived {
+                kind: *kind,
+                ty: self.ty(&source.home, ty),
+            },
+            Selected::Constructor { ty, name } => {
+                let mut result = ty;
+                while let Type::Function { result: next, .. } = result {
+                    result = next;
+                }
+                let ir::Type::Meaning { index: meaning, .. } =
+                    self.ty(&source.home, result)
+                else {
+                    unreachable!("constructor result is nominal")
+                };
+                let constructor = self.constructor_index(meaning, name);
+                let count = self.tables.borrow().meanings[meaning].constructors
+                    [constructor]
+                    .fields
+                    .len();
+                ir::Kind::Constructor {
+                    meaning,
+                    constructor,
+                    fields: (0..count).collect(),
+                }
+            }
+            Selected::Field { index, .. } => ir::Kind::Field {
+                value: receiver.expect("field has a receiver"),
+                index: *index,
+            },
+            Selected::Member { name, .. } => ir::Kind::Dispatch {
+                receiver: ir::Receiver::Value(
+                    receiver.expect("member has a receiver"),
+                ),
+                member: self.dispatch[&(name.clone(), false)],
+            },
+            Selected::Static { head, name } => ir::Kind::Dispatch {
+                receiver: ir::Receiver::Meaning(self.ty(&source.home, head)),
+                member: self.dispatch[&(name.clone(), true)],
+            },
+        };
+        self.node(&source.home, span, ty, kind)
+    }
+
+    pub(super) fn dispatch_rows(&mut self, source: &Source<'_>) {
+        for dispatch in &source.typed.dispatch {
+            let index =
+                self.dispatch[&(dispatch.name.clone(), dispatch.receiverless)];
+            for row in &dispatch.rows {
+                let target =
+                    if let crate::typed::Selected::Field { index, .. } =
+                        row.selected
+                    {
+                        ir::Implementation::Field(index)
+                    } else {
+                        let node = self.selected(
+                            source,
+                            source.module.span,
+                            &row.selected,
+                            &row.meanings,
+                            &row.ty,
+                            None,
+                        );
+                        match self.tables.borrow().nodes[node].kind.clone() {
+                            ir::Kind::Definition { index, meanings } => {
+                                ir::Implementation::Definition {
+                                    index,
+                                    meanings,
+                                }
+                            }
+                            ir::Kind::Declared(index) => {
+                                ir::Implementation::Declared(index)
+                            }
+                            ir::Kind::Derived { kind, ty } => {
+                                ir::Implementation::Derived { kind, ty }
+                            }
+                            _ => unreachable!(
+                                "dispatch rows have direct targets"
+                            ),
+                        }
+                    };
+                let row = ir::DispatchRow {
+                    receiver: self.ty(&source.home, &row.receiver),
+                    receiver_spot: row.receiver_spot,
+                    argument: row
+                        .argument
+                        .as_ref()
+                        .map(|ty| self.ty(&source.home, ty)),
+                    target,
+                };
+                let mut tables = self.tables.borrow_mut();
+                if !tables.dispatch[index].rows.contains(&row) {
+                    tables.dispatch[index].rows.push(row);
+                }
+            }
+        }
+    }
+    pub(super) fn constant_default(&mut self, node: usize) -> usize {
+        let tables = self.tables.borrow();
+        let value = &tables.nodes[node];
+        if matches!(value.ty, ir::Type::Function { .. }) {
+            return node;
+        }
+        let same = |index: &usize| {
+            let previous = &tables.nodes[*index];
+            if previous.ty != value.ty {
+                return false;
+            }
+            match (&previous.kind, &value.kind) {
+                (
+                    ir::Kind::Literal {
+                        form: a,
+                        reader: ar,
+                    },
+                    ir::Kind::Literal {
+                        form: b,
+                        reader: br,
+                    },
+                ) => {
+                    a == b
+                        && match (ar, br) {
+                            (None, None) => true,
+                            (Some(a), Some(b)) => {
+                                tables.nodes[*a].kind == tables.nodes[*b].kind
+                                    && tables.nodes[*a].ty
+                                        == tables.nodes[*b].ty
+                            }
+                            _ => false,
+                        }
+                }
+                (ir::Kind::Definition { .. }, ir::Kind::Definition { .. })
+                | (ir::Kind::Declared(_), ir::Kind::Declared(_)) => {
+                    previous.kind == value.kind
+                }
+                _ => false,
+            }
+        };
+        if let Some(existing) =
+            self.constant_defaults.iter().find(|index| same(index))
+        {
+            return *existing;
+        }
+        if matches!(
+            value.kind,
+            ir::Kind::Literal { .. }
+                | ir::Kind::Definition { .. }
+                | ir::Kind::Declared(_)
+        ) {
+            self.constant_defaults.push(node);
+        }
+        node
+    }
+}
+
+// Primitive ordinals follow source order, independent of use order.
+fn declaration(
+    source: &Source<'_>,
+    origin: &Origin,
+    site: crate::token::Span,
+) -> (usize, String) {
+    use crate::ast::{Entry, ImplMember, ItemKind};
+    let module = owner(source.declarations, source.files, origin);
+    let mut names = Vec::new();
+    for entry in &module.entries {
+        let Entry::Item(item) = entry else { continue };
+        match &item.kind {
+            ItemKind::Declare { name, .. } => names.push(name),
+            ItemKind::Impl { members, .. } => {
+                for member in members {
+                    if let ImplMember::Named {
+                        name, value: None, ..
+                    } = member
+                    {
+                        names.push(name);
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+    let (index, name) = names
+        .iter()
+        .enumerate()
+        .find(|(_, name)| name.span == site)
+        .expect("primitive declaration");
+    (index, name.segments.join("."))
+}
