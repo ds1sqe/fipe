@@ -38,13 +38,25 @@ impl Pass<'_> {
                 if let ItemKind::Type {
                     name,
                     base: Some(base),
+                    parameters,
                     ..
                 } = &item.kind
                 {
                     let ty = Type::named(
                         Origin::This,
                         name.segments.last().map_or("", String::as_str),
-                        Vec::new(),
+                        parameters
+                            .iter()
+                            .map(|p| {
+                                Type::Rigid(
+                                    p.name
+                                        .segments
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_default(),
+                                )
+                            })
+                            .collect(),
                     );
                     self.check_holding(&ty, self.module, *base);
                 }
@@ -71,10 +83,15 @@ impl Pass<'_> {
         let needed = self.needed(ty, &mut Vec::new());
         let mut first = None;
         for part in parts {
-            let ty = self.syntax_type(module, &Origin::This, part);
+            let part_ty = self.syntax_bound(
+                module,
+                &Origin::This,
+                part,
+                &self.holding_bindings(ty),
+            );
             let mut widths = Vec::new();
             self.widths(
-                &ty,
+                &part_ty,
                 module.types[part.0].span,
                 &mut Vec::new(),
                 &mut widths,
@@ -83,7 +100,8 @@ impl Pass<'_> {
                 let message =
                     if first.as_ref().is_some_and(|first| first != &bits) {
                         Some("the holdings disagree")
-                    } else if super::modifier(&ty)
+                    } else if super::modifier(&part_ty)
+                        && !has_parameters(ty)
                         && needed.as_ref().is_none_or(|n| n > &bits)
                     {
                         Some("does not fit its holding")
@@ -142,44 +160,17 @@ impl Pass<'_> {
                 }
                 visited.push(name.clone());
                 if let Some((module, Some(base), _)) = self.declaration(name) {
-                    self.syntax_widths(
+                    let base = self.syntax_bound(
                         module,
                         &name.origin,
                         base,
-                        visited,
-                        out,
+                        &self.holding_bindings(ty),
                     );
+                    self.widths(&base, span, visited, out);
                 }
                 visited.pop();
             }
             _ => (),
-        }
-    }
-    fn syntax_widths(
-        &self,
-        module: &Module,
-        origin: &Origin,
-        id: TypeId,
-        visited: &mut Vec<TypeName>,
-        out: &mut Vec<(Magnitude, Span, Origin)>,
-    ) {
-        if let TypeKind::Both(parts) = &module.types[id.0].kind {
-            for part in parts {
-                self.syntax_widths(module, origin, *part, visited, out);
-            }
-        } else {
-            let start = out.len();
-            self.widths(
-                &self.syntax_type(module, origin, id),
-                module.types[id.0].span,
-                visited,
-                out,
-            );
-            for (_, _, source) in &mut out[start..] {
-                if *source == Origin::This {
-                    *source = origin.clone();
-                }
-            }
         }
     }
     pub(super) fn holding(
@@ -196,12 +187,24 @@ impl Pass<'_> {
             });
         }
         match ty {
+            Type::Tuple(parts) => {
+                let bits = parts.iter().try_fold(
+                    Magnitude::default(),
+                    |sum, part| {
+                        Some(sum.add(&self.holding(part, visited)?.bits))
+                    },
+                )?;
+                Some(Holding {
+                    needed: bits.clone(),
+                    bits,
+                })
+            }
             Type::Array { element, length } => {
                 let element = self.holding(element, visited)?;
-                let n = Magnitude::from(*length);
+                let n = length.number()?;
                 Some(Holding {
-                    bits: element.bits.multiply(&n),
-                    needed: element.bits.multiply(&n),
+                    bits: element.bits.multiply(n),
+                    needed: element.bits.multiply(n),
                 })
             }
             Type::Named { name, .. }
@@ -246,6 +249,11 @@ impl Pass<'_> {
             return Some(Magnitude::from(bits as u64));
         }
         match ty {
+            Type::Tuple(parts) => {
+                parts.iter().try_fold(Magnitude::default(), |sum, part| {
+                    Some(sum.add(&self.holding(part, visited)?.bits))
+                })
+            }
             Type::Unit => Some(Magnitude::default()),
             Type::Limited { name, .. } => self.needed(name, visited),
             Type::Both(parts) => parts
@@ -255,7 +263,7 @@ impl Pass<'_> {
             Type::Array { element, length } => Some(
                 self.holding(element, visited)?
                     .bits
-                    .multiply(&Magnitude::from(*length)),
+                    .multiply(length.number()?),
             ),
             Type::Named { name, .. } => {
                 if name.origin == Origin::Prelude {
@@ -283,11 +291,16 @@ impl Pass<'_> {
                     Entry::Line(_) => None,
                 });
                 let result = if let Some(members) = members {
-                    self.parts_needed(module, &name.origin, members, visited)
+                    self.parts_needed(module, ty, members, visited)
                 } else {
                     base.and_then(|base| {
                         self.needed(
-                            &self.syntax_type(module, &name.origin, base),
+                            &self.syntax_bound(
+                                module,
+                                &name.origin,
+                                base,
+                                &self.holding_bindings(ty),
+                            ),
                             visited,
                         )
                     })
@@ -298,13 +311,82 @@ impl Pass<'_> {
             _ => None,
         }
     }
+    fn holding_bindings(&self, ty: &Type) -> Vec<(String, Type)> {
+        let Type::Named { name, arguments } = ty else {
+            return Vec::new();
+        };
+        let Some((module, _, _)) = self.declaration(name) else {
+            return Vec::new();
+        };
+        module
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Item(item) => match &item.kind {
+                    ItemKind::Type {
+                        name: n,
+                        parameters,
+                        ..
+                    } if n.segments.last() == Some(&name.name) => Some(
+                        parameters
+                            .iter()
+                            .zip(arguments)
+                            .map(|(p, a)| {
+                                (
+                                    p.name
+                                        .segments
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_default(),
+                                    a.clone(),
+                                )
+                            })
+                            .collect(),
+                    ),
+                    _ => None,
+                },
+                Entry::Line(_) => None,
+            })
+            .unwrap_or_default()
+    }
+
+    pub(super) fn instantiated_holding(&mut self, ty: &Type, span: Span) {
+        let Type::Named { name, arguments } = ty else {
+            return;
+        };
+        if arguments.is_empty() || has_parameters(ty) {
+            return;
+        }
+        let mut widths = Vec::new();
+        self.widths(ty, span, &mut Vec::new(), &mut widths);
+        let needed = self.needed(ty, &mut Vec::new());
+        if widths.first().is_some_and(|(bits, _, _)| {
+            needed.as_ref().is_none_or(|n| n > bits)
+                || widths.iter().any(|(other, _, _)| other != bits)
+        }) {
+            self.errors.push(Error {
+                span,
+                reason: TypeReason::Limit {
+                    message: alloc::format!(
+                        "{} does not fit its holding",
+                        name.name
+                    ),
+                },
+            });
+        }
+    }
+
     fn parts_needed(
         &self,
         module: &Module,
-        origin: &Origin,
+        head: &Type,
         members: &[Member],
         visited: &mut Vec<TypeName>,
     ) -> Option<Magnitude> {
+        let Type::Named { name, .. } = head else {
+            return None;
+        };
+        let bindings = self.holding_bindings(head);
         let constructors: Vec<_> = members
             .iter()
             .filter_map(|m| {
@@ -320,7 +402,12 @@ impl Pass<'_> {
                 .iter()
                 .try_fold(Magnitude::default(), |sum, member| {
                     if let Member::Field(field) = member {
-                        let ty = self.syntax_type(module, origin, field.ty);
+                        let ty = self.syntax_bound(
+                            module,
+                            &name.origin,
+                            field.ty,
+                            &bindings,
+                        );
                         let bits = self
                             .holding(&ty, visited)
                             .map(|h| h.bits)
@@ -348,5 +435,27 @@ fn holding_parts(module: &Module, id: TypeId, parts: &mut Vec<TypeId>) {
         }
     } else {
         parts.push(id);
+    }
+}
+
+fn has_parameters(ty: &Type) -> bool {
+    match ty {
+        Type::Var(_) | Type::Rigid(_) => true,
+        Type::Named { arguments, .. }
+        | Type::Sum(arguments)
+        | Type::Tuple(arguments)
+        | Type::Both(arguments)
+        | Type::Either(arguments) => arguments.iter().any(has_parameters),
+        Type::Array { element, length } => {
+            has_parameters(element) || has_parameters(length)
+        }
+        Type::Limited { name, meaning } => {
+            has_parameters(name) || has_parameters(meaning)
+        }
+        Type::Function { parameter, result } => {
+            has_parameters(parameter) || has_parameters(result)
+        }
+        Type::Not(inner) => has_parameters(inner),
+        Type::Unit | Type::Number(_) => false,
     }
 }

@@ -374,8 +374,27 @@ impl Infer<'_> {
             .collect()
     }
 
+    fn finish_lengths(&mut self, site: Span) {
+        match self.state.subst.settle_lengths() {
+            Ok(false) => (),
+            Ok(true) => self.error(
+                site,
+                Reason::Ambiguous {
+                    class: String::from("length"),
+                },
+            ),
+            Err(_) => self.error(
+                site,
+                Reason::Limit {
+                    message: String::from("length mismatch"),
+                },
+            ),
+        }
+    }
+
     /// An escaping obligation is ambiguous once per member name.
     fn left(&mut self, left: Vec<Obligation>, site: Span) {
+        self.finish_lengths(site);
         let mut errors: Vec<Error> = Vec::new();
         for obligation in left {
             let (name, dot) = match obligation {
@@ -425,7 +444,11 @@ impl Infer<'_> {
             .map(|name| (name, self.state.subst.fresh()))
             .collect();
         Scheme {
-            variables: fresh.iter().map(|(_, var)| *var).collect(),
+            variables: variables
+                .into_iter()
+                .filter(|v| !env.contains(v))
+                .chain(fresh.iter().map(|(_, var)| *var))
+                .collect(),
             literals: literals
                 .iter()
                 .map(|(ty, form, span)| {
@@ -687,13 +710,19 @@ fn rigids(ty: &Type, out: &mut Vec<String>) {
             }
         }
         Type::Not(inner) => rigids(inner, out),
-        Type::Either(parts) | Type::Both(parts) => {
+        Type::Sum(parts)
+        | Type::Tuple(parts)
+        | Type::Either(parts)
+        | Type::Both(parts) => {
             for p in parts {
                 rigids(p, out);
             }
         }
         Type::Limited { name, .. } => rigids(name, out),
-        Type::Array { element, .. } => rigids(element, out),
+        Type::Array { element, length } => {
+            rigids(element, out);
+            rigids(length, out);
+        }
         Type::Function { parameter, result } => {
             rigids(parameter, out);
             rigids(result, out);
@@ -712,6 +741,12 @@ fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
             name: name.clone(),
             arguments: arguments.iter().map(|a| unrigid(a, fresh)).collect(),
         },
+        Type::Sum(parts) => {
+            Type::sum(parts.iter().map(|p| unrigid(p, fresh)).collect())
+        }
+        Type::Tuple(parts) => {
+            Type::Tuple(parts.iter().map(|p| unrigid(p, fresh)).collect())
+        }
         Type::Either(parts) => {
             Type::Either(parts.iter().map(|p| unrigid(p, fresh)).collect())
         }
@@ -725,7 +760,7 @@ fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
         },
         Type::Array { element, length } => Type::Array {
             element: Box::new(unrigid(element, fresh)),
-            length: *length,
+            length: Box::new(unrigid(length, fresh)),
         },
         Type::Function { parameter, result } => {
             Type::function(unrigid(parameter, fresh), unrigid(result, fresh))

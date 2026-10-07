@@ -63,7 +63,7 @@ fn prelude_declares_the_language_names() {
     let sort = &prelude.value("sort").unwrap().kind;
     assert_eq!(spot_names(sort), [Some("by"), Some("desc"), None]);
     let Kind::Function {
-        constraints: 1,
+        constraints: 2,
         spots,
         result,
     } = sort
@@ -171,19 +171,13 @@ fn declaration_files_reject_lines_and_duplicates() {
     assert!(matches!(errors[0].reason, Reason::Syntax(_)));
 }
 
-/// 06.1: a declaration file's form the checker cannot check yet is one
+/// A declaration file's form the checker cannot check yet is one
 /// error that names it.
 #[test]
 fn declaration_files_report_each_unchecked_form_once() {
     use Unchecked as U;
-    for (input, form, spelling) in [
-        ("pub f: A * B -> C", U::Tuple, "A * B"),
-        ("pub f: Bits<n> -> C", U::Number, "n"),
-        ("pub f: [A; n] -> C", U::Number, "n"),
-        ("pub f: Bits<n>", U::Number, "n"),
-        ("x = (1, 2)", U::Tuple, "(1, 2)"),
-        ("x = 10ms", U::Affix, "10ms"),
-    ] {
+    {
+        let (input, form, spelling) = ("x = 10ms", U::Affix, "10ms");
         let errors = Namespace::parse("x", input).unwrap_err();
         let found: Vec<_> = errors
             .iter()
@@ -196,6 +190,11 @@ fn declaration_files_report_each_unchecked_form_once() {
         );
     }
     for input in [
+        "pub f: Bits<n> -> C",
+        "pub f: [A; n] -> C",
+        "pub f: Bits<n>",
+        "pub f: A * B -> C",
+        "x = (1, 2)",
         "pub f: A & B -> C",
         "pub f: !A -> C",
         "pub f: !A -> A",

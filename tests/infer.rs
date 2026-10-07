@@ -86,6 +86,7 @@ const fn kind(reason: &Reason) -> &'static str {
     match reason {
         Reason::Mismatch { .. } => "Mismatch",
         Reason::Occurs => "Occurs",
+        Reason::CallReading { .. } => "CallReading",
         Reason::TypeDepth => "TypeDepth",
         Reason::UnknownFamily => "UnknownFamily",
         Reason::ClaimBlock { .. } => "ClaimBlock",

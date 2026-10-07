@@ -206,7 +206,7 @@ pub to: a -> b
 ## Try to enter the requested type.
 pub try: a -> Result<b, e>
 ## Apply a function to each element.
-pub map: (a -> b) -> Vec<a> -> Vec<b>
+pub map: c.map: (a -> b) -> d => (a -> b) -> c -> d
 ## Concatenate two values.
 pub concat: a.concat: b -> c => b -> a -> c
 
@@ -224,7 +224,7 @@ pub words: String -> Vec<String>
 pub split: (at: String) -> String -> Vec<String>
 ## Join text elements with a separator.
 ## - sep: the separator
-pub join: (sep: String) -> Vec<String> -> String
+pub join: Items<String> c => (sep: String) -> c -> String
 ## Convert text to lowercase.
 pub lower: String -> String
 ## Convert text to uppercase.
@@ -256,32 +256,48 @@ pub hypot: (x: F64) -> (y: F64) -> F64
 
 # Collections.
 ## Keep elements satisfying a predicate.
-pub filter: (a -> Bool) -> Vec<a> -> Vec<a>
+pub filter: Items<a> c => (a -> Bool) -> c -> Vec<a>
 ## Accumulate elements from an initial value.
-pub fold: b -> (b -> a -> b) -> Vec<a> -> b
+pub fold: Items<a> c => b -> (b -> a -> b) -> c -> b
 ## Return the first element, if present.
-pub first: Vec<a> -> Maybe<a>
+pub first: Items<a> c => c -> Maybe<a>
 ## Return the first element.
-pub head: Vec<a> -> a
+pub head: Items<a> c => c -> a
 ## Keep the first elements.
 ## - n: the maximum number to keep
-pub take: (n: Natural) -> Vec<a> -> Vec<a>
+pub take: Items<a> c => (n: Natural) -> c -> Vec<a>
 ## Join nested sequences into one sequence.
-pub flatten: Vec<Vec<a>> -> Vec<a>
+pub flatten: Items<Vec<a>> c => c -> Vec<a>
 ## Collect successes or return an error.
-pub collect: Vec<Result<a, e>> -> Result<Vec<a>, e>
+pub collect: Items<Result<a, e>> c => c -> Result<Vec<a>, e>
 ## Sum the elements.
-pub sum: Number a => Vec<a> -> a
+pub sum: Add a, Zero a, Items<a> c => c -> a
 ## Count occurrences of each distinct item.
-pub count: Eq a => Vec<a> -> Vec<Count<a>>
+pub count: Eq a, Items<a> c => c -> Vec<Count<a>>
 ## Order elements by a key.
 ## - by: the key function
 ## - desc: whether to reverse the order
-pub sort: Ord k => (by: a -> k = (x => x)) -> (desc: Bool = False) ->
-    Vec<a> -> Vec<a>
+pub sort: Ord k, Items<a> c => (by: a -> k = (x => x)) -> (desc: Bool = False) ->
+    c -> Vec<a>
 
 # Effects the language owns.
 ## End execution with a Fault.
 pub fault: String -> a
 ## Log a value and return it.
 pub log: a -> a
+
+## A bracket constructor.
+pub type Sequence<T> where Self.sequence: [T; n] -> Self
+## A front-to-back walk with an accumulator.
+pub type Items<T> where self.fold: b -> (b -> T -> b) -> b
+impl Vec<T>: Sequence<T> { sequence: [T; n] -> Self }
+impl Deque<T>: Sequence<T> { sequence: [T; n] -> Self }
+impl Vec<T>: Items<T> { fold: b -> (b -> T -> b) -> (self: Self) -> b }
+impl Deque<T>: Items<T> { fold: b -> (b -> T -> b) -> (self: Self) -> b }
+impl Vec<T>: From<[T; n]> { from: [T; n] -> Self }
+impl [T; n] {
+    concat: [T; m] -> (self: Self) -> [T; n + m],
+    map: (T -> b) -> (self: Self) -> [b; n],
+}
+impl [T; n]: Items<T> { fold: b -> (b -> T -> b) -> (self: Self) -> b }
+impl [T; n]: Len { len: (self: Self) -> Natural }

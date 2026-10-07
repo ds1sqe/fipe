@@ -82,7 +82,7 @@ fn annotations_are_rigid_and_pub_may_be_open() {
 #[test]
 fn literals_default_and_the_rest_is_ambiguous() {
     assert_eq!(ty("x = 1"), "Integer");
-    assert_eq!(ty("xs = [1, 2]"), "Vec<Integer>");
+    assert_eq!(ty("xs = [1, 2]"), "[Integer; 2]");
     // A literal with other obligations stays polymorphic at its binding.
     let inc = "inc = x => x + 1";
     assert_eq!(ty(inc), "Add a, Literal a => a -> a");

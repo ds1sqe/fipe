@@ -60,9 +60,9 @@ type Key: Eq & Show
 type NonPrime: Integer & !Prime
 type Handy: U8 | Prime
 type Sorted<T: Ord>: Vec<T> where is_sorted self
-type Ring<T, n> { slots: [T; n], at: Natural }
+type Ring<T, n>: Sequence<T> { slots: [T; n], at: Natural }
 impl Integer { add: Self -> (self: Self) -> Self }
-impl Ring<T, n> { sequence = slots => Self slots 0 }
+impl Ring<T, n>: Sequence<T> { sequence = slots => Self slots 0 }
 id: Integer | String = 3
 id | { Integer n => n.show, String s => s }
 older: b.age: a, Ord a => a -> b -> Bool = d e => e.age > d

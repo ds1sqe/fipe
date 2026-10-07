@@ -30,6 +30,9 @@ pub enum Type {
         name: TypeName,
         arguments: Vec<Self>,
     },
+    /// Canonical sum: sorted variables followed by a nonzero constant.
+    Sum(Vec<Self>),
+    Tuple(Vec<Self>),
     Either(Vec<Self>),
     Both(Vec<Self>),
     Not(Box<Self>),
@@ -39,7 +42,7 @@ pub enum Type {
     },
     Array {
         element: Box<Self>,
-        length: u64,
+        length: Box<Self>,
     },
     Function {
         parameter: Box<Self>,
@@ -48,6 +51,39 @@ pub enum Type {
 }
 
 impl Type {
+    /// Normalize addition without evaluating a program.
+    #[must_use]
+    pub fn sum(parts: Vec<Self>) -> Self {
+        let mut terms = Vec::new();
+        let mut constant = crate::token::Magnitude::default();
+        let mut pending = parts;
+        while let Some(part) = pending.pop() {
+            match part {
+                Self::Sum(parts) => pending.extend(parts),
+                Self::Number(n) => constant = constant.add(&n),
+                other => terms.push(other),
+            }
+        }
+        terms.sort_by(number_order);
+        if constant != crate::token::Magnitude::default() || terms.is_empty() {
+            terms.push(Self::Number(constant));
+        }
+        if terms.len() == 1 {
+            terms.remove(0)
+        } else {
+            Self::Sum(terms)
+        }
+    }
+
+    /// A constant number argument, when this number has no variables.
+    #[must_use]
+    pub const fn number(&self) -> Option<&crate::token::Magnitude> {
+        if let Self::Number(n) = self {
+            Some(n)
+        } else {
+            None
+        }
+    }
     #[must_use]
     pub fn named(origin: Origin, name: &str, arguments: Vec<Self>) -> Self {
         Self::Named {
@@ -77,6 +113,12 @@ impl Type {
                 name: name.clone(),
                 arguments: arguments.iter().map(Self::without_limits).collect(),
             },
+            Self::Sum(parts) => {
+                Self::sum(parts.iter().map(Self::without_limits).collect())
+            }
+            Self::Tuple(parts) => {
+                Self::Tuple(parts.iter().map(Self::without_limits).collect())
+            }
             Self::Either(parts) => {
                 Self::Either(parts.iter().map(Self::without_limits).collect())
             }
@@ -86,7 +128,7 @@ impl Type {
             Self::Not(inner) => Self::Not(Box::new(inner.without_limits())),
             Self::Array { element, length } => Self::Array {
                 element: Box::new(element.without_limits()),
-                length: *length,
+                length: Box::new(length.without_limits()),
             },
             Self::Function { parameter, result } => Self::function(
                 parameter.without_limits(),
@@ -113,13 +155,19 @@ impl Type {
                 }
             }
             Self::Not(inner) => inner.variables(out),
-            Self::Either(parts) | Self::Both(parts) => {
+            Self::Sum(parts)
+            | Self::Tuple(parts)
+            | Self::Either(parts)
+            | Self::Both(parts) => {
                 for p in parts {
                     p.variables(out);
                 }
             }
             Self::Limited { name, .. } => name.variables(out),
-            Self::Array { element, .. } => element.variables(out),
+            Self::Array { element, length } => {
+                element.variables(out);
+                length.variables(out);
+            }
             Self::Function { parameter, result } => {
                 parameter.variables(out);
                 result.variables(out);
@@ -144,6 +192,12 @@ impl Type {
                 },
                 arguments: arguments.iter().map(|a| a.rehome(origin)).collect(),
             },
+            Self::Sum(parts) => {
+                Self::sum(parts.iter().map(|p| p.rehome(origin)).collect())
+            }
+            Self::Tuple(parts) => {
+                Self::Tuple(parts.iter().map(|p| p.rehome(origin)).collect())
+            }
             Self::Either(parts) => {
                 Self::Either(parts.iter().map(|p| p.rehome(origin)).collect())
             }
@@ -157,7 +211,7 @@ impl Type {
             },
             Self::Array { element, length } => Self::Array {
                 element: Box::new(element.rehome(origin)),
-                length: *length,
+                length: Box::new(length.rehome(origin)),
             },
             Self::Function { parameter, result } => {
                 Self::function(parameter.rehome(origin), result.rehome(origin))
@@ -355,6 +409,12 @@ pub(crate) fn replace(ty: &Type, fresh: &[(Var, Type)]) -> Type {
             name: name.clone(),
             arguments: arguments.iter().map(|a| replace(a, fresh)).collect(),
         },
+        Type::Sum(parts) => {
+            Type::sum(parts.iter().map(|p| replace(p, fresh)).collect())
+        }
+        Type::Tuple(parts) => {
+            Type::Tuple(parts.iter().map(|p| replace(p, fresh)).collect())
+        }
         Type::Either(parts) => {
             Type::Either(parts.iter().map(|p| replace(p, fresh)).collect())
         }
@@ -368,7 +428,7 @@ pub(crate) fn replace(ty: &Type, fresh: &[(Var, Type)]) -> Type {
         },
         Type::Array { element, length } => Type::Array {
             element: Box::new(replace(element, fresh)),
-            length: *length,
+            length: Box::new(replace(length, fresh)),
         },
         Type::Function { parameter, result } => {
             Type::function(replace(parameter, fresh), replace(result, fresh))
@@ -395,13 +455,17 @@ pub enum Mismatch {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Subst {
     bindings: Vec<Option<Type>>,
+    lengths: Vec<(Type, Type)>,
 }
 
 impl Subst {
     /// A substitution over `bindings`, one per variable from `Var(0)`.
     #[must_use]
     pub(crate) const fn from_bindings(bindings: Vec<Option<Type>>) -> Self {
-        Self { bindings }
+        Self {
+            bindings,
+            lengths: Vec::new(),
+        }
     }
 
     /// Each variable's solution, from `Var(0)`.
@@ -433,6 +497,12 @@ impl Subst {
                 name: name.clone(),
                 arguments: arguments.iter().map(|a| self.apply(a)).collect(),
             },
+            Type::Sum(parts) => {
+                Type::sum(parts.iter().map(|p| self.apply(p)).collect())
+            }
+            Type::Tuple(parts) => {
+                Type::Tuple(parts.iter().map(|p| self.apply(p)).collect())
+            }
             Type::Either(parts) => {
                 Type::Either(parts.iter().map(|p| self.apply(p)).collect())
             }
@@ -446,10 +516,103 @@ impl Subst {
             },
             Type::Array { element, length } => Type::Array {
                 element: Box::new(self.apply(element)),
-                length: *length,
+                length: Box::new(self.apply(length)),
             },
             Type::Function { parameter, result } => {
                 Type::function(self.apply(parameter), self.apply(result))
+            }
+        }
+    }
+
+    fn unify_sum(
+        &mut self,
+        expected: &Type,
+        actual: &Type,
+    ) -> Result<(), Box<Mismatch>> {
+        fn terms(ty: &Type) -> (Vec<Type>, crate::token::Magnitude) {
+            let parts = match ty {
+                Type::Sum(parts) => parts.clone(),
+                other => alloc::vec![other.clone()],
+            };
+            let mut names = Vec::new();
+            let mut constant = crate::token::Magnitude::default();
+            for part in parts {
+                if let Type::Number(n) = part {
+                    constant = constant.add(&n);
+                } else {
+                    names.push(part);
+                }
+            }
+            (names, constant)
+        }
+        let (left_terms, a) = terms(expected);
+        let (right_terms, b) = terms(actual);
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        let (mut l, mut r) = (
+            left_terms.into_iter().peekable(),
+            right_terms.into_iter().peekable(),
+        );
+        while let (Some(a), Some(b)) = (l.peek(), r.peek()) {
+            match number_order(a, b) {
+                core::cmp::Ordering::Equal => {
+                    l.next();
+                    r.next();
+                }
+                core::cmp::Ordering::Less => left.extend(l.next()),
+                core::cmp::Ordering::Greater => right.extend(r.next()),
+            }
+        }
+        left.extend(l);
+        right.extend(r);
+        for (names, others, constant, other_constant) in
+            [(&left, &right, &a, &b), (&right, &left, &b, &a)]
+        {
+            if let [Type::Var(var)] = names.as_slice() {
+                if let Some(difference) = other_constant.checked_sub(constant) {
+                    let mut parts = others.clone();
+                    parts.push(Type::Number(difference));
+                    return self.unify(&Type::Var(*var), &Type::sum(parts));
+                }
+                if others.is_empty() {
+                    return Err(Box::new(Mismatch::Different {
+                        expected: expected.clone(),
+                        actual: actual.clone(),
+                    }));
+                }
+            }
+        }
+        let unknown =
+            left.iter().chain(&right).any(|t| matches!(t, Type::Var(_)));
+        if unknown {
+            let pair = (expected.clone(), actual.clone());
+            if !self.lengths.contains(&pair) {
+                self.lengths.push(pair);
+            }
+            Ok(())
+        } else if left.is_empty() && right.is_empty() && a == b {
+            Ok(())
+        } else {
+            Err(Box::new(Mismatch::Different {
+                expected: expected.clone(),
+                actual: actual.clone(),
+            }))
+        }
+    }
+
+    /// Retry delayed length equations after their operands have been fixed.
+    /// Returns whether any length is still ambiguous.
+    ///
+    /// # Errors
+    /// A now-known equation has no nonnegative solution.
+    pub fn settle_lengths(&mut self) -> Result<bool, Box<Mismatch>> {
+        loop {
+            let before = self.bindings.clone();
+            let pending = core::mem::take(&mut self.lengths);
+            for (a, b) in pending {
+                self.unify(&a, &b)?;
+            }
+            if self.bindings == before {
+                return Ok(!self.lengths.is_empty());
             }
         }
     }
@@ -474,6 +637,12 @@ impl Subst {
         }
         let expected = self.apply(expected);
         let actual = self.apply(actual);
+        if expected == actual {
+            return Ok(());
+        }
+        if matches!(expected, Type::Sum(_)) || matches!(actual, Type::Sum(_)) {
+            return self.unify_sum(&expected, &actual);
+        }
         match (&expected, &actual) {
             (Type::Var(a), Type::Var(b)) if a == b => Ok(()),
             (Type::Var(a), Type::Var(b)) => {
@@ -497,7 +666,10 @@ impl Subst {
             | (other, Type::Limited { meaning, .. }) => {
                 self.unify(meaning, other)
             }
-            (Type::Either(a), Type::Either(b)) if a.len() == b.len() => {
+            (Type::Tuple(a), Type::Tuple(b))
+            | (Type::Either(a), Type::Either(b))
+                if a.len() == b.len() =>
+            {
                 for (a, b) in a.iter().zip(b) {
                     self.unify(a, b)?;
                 }
@@ -530,7 +702,10 @@ impl Subst {
                     element: b,
                     length: m,
                 },
-            ) if n == m => self.unify(a, b),
+            ) => {
+                self.unify(n, m)?;
+                self.unify(a, b)
+            }
             (
                 Type::Function {
                     parameter: a,
@@ -647,13 +822,19 @@ impl Type {
                 }
             }
             Self::Not(inner) => inner.declared(out),
-            Self::Either(parts) | Self::Both(parts) => {
+            Self::Sum(parts)
+            | Self::Tuple(parts)
+            | Self::Either(parts)
+            | Self::Both(parts) => {
                 for p in parts {
                     p.declared(out);
                 }
             }
             Self::Limited { name, .. } => name.declared(out),
-            Self::Array { element, .. } => element.declared(out),
+            Self::Array { element, length } => {
+                element.declared(out);
+                length.declared(out);
+            }
             Self::Function { parameter, result } => {
                 parameter.declared(out);
                 result.declared(out);
@@ -716,6 +897,15 @@ fn write(
     match ty {
         Type::Unit => f.write_str("()"),
         Type::Number(n) => write!(f, "{n}"),
+        Type::Sum(parts) => {
+            for (i, part) in parts.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(" + ")?;
+                }
+                write(part, f, names, clashes)?;
+            }
+            Ok(())
+        }
         Type::Var(var) => match names.iter().find(|(v, _)| v == var) {
             Some((_, name)) => f.write_str(name),
             // Every variable is named before writing.
@@ -753,6 +943,23 @@ fn write(
             f.write_str("!")?;
             write(inner, f, names, clashes)
         }
+        Type::Tuple(parts) => {
+            for (index, part) in parts.iter().enumerate() {
+                if index > 0 {
+                    f.write_str(" * ")?;
+                }
+                let grouped =
+                    matches!(part, Type::Tuple(_) | Type::Function { .. });
+                if grouped {
+                    f.write_str("(")?;
+                }
+                write(part, f, names, clashes)?;
+                if grouped {
+                    f.write_str(")")?;
+                }
+            }
+            Ok(())
+        }
         Type::Either(parts) | Type::Both(parts) => {
             for (i, p) in parts.iter().enumerate() {
                 if i > 0 {
@@ -770,7 +977,9 @@ fn write(
         Type::Array { element, length } => {
             f.write_str("[")?;
             write(element, f, names, clashes)?;
-            write!(f, "; {length}]")
+            f.write_str("; ")?;
+            write(length, f, names, clashes)?;
+            f.write_str("]")
         }
         Type::Function { parameter, result } => {
             let grouped = matches!(**parameter, Type::Function { .. });
@@ -801,6 +1010,8 @@ impl Subst {
                     }
                 }
                 Type::Named { arguments, .. }
+                | Type::Sum(arguments)
+                | Type::Tuple(arguments)
                 | Type::Either(arguments)
                 | Type::Both(arguments) => {
                     stack.extend(arguments.iter().map(|ty| (ty, depth + 1)));
@@ -814,10 +1025,23 @@ impl Subst {
                     stack.push((name, depth + 1));
                     stack.push((meaning, depth + 1));
                 }
-                Type::Array { element, .. } => stack.push((element, depth + 1)),
+                Type::Array { element, length } => {
+                    stack.push((element, depth + 1));
+                    stack.push((length, depth + 1));
+                }
                 Type::Unit | Type::Number(_) | Type::Rigid(_) => {}
             }
         }
         false
+    }
+}
+
+fn number_order(a: &Type, b: &Type) -> core::cmp::Ordering {
+    match (a, b) {
+        (Type::Var(a), Type::Var(b)) => a.cmp(b),
+        (Type::Rigid(a), Type::Rigid(b)) => a.cmp(b),
+        (Type::Var(_), _) => core::cmp::Ordering::Less,
+        (_, Type::Var(_)) => core::cmp::Ordering::Greater,
+        _ => core::cmp::Ordering::Equal,
     }
 }

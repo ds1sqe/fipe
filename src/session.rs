@@ -57,6 +57,8 @@ struct Pending {
 /// What one line produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
+    /// Non-fatal diagnostics in the submitted line's source coordinates.
+    pub warnings: Vec<crate::typed::Warning>,
     /// The line, parsed; `None` when it does not parse. Its spans are in
     /// the session's source followed by the line.
     pub module: Option<Module>,
@@ -284,6 +286,7 @@ impl Session {
                     })
                     .collect();
                 return Outcome::Done(Report {
+                    warnings: Vec::new(),
                     module: None,
                     offset,
                     diagnostics,
@@ -356,6 +359,7 @@ impl Session {
             }
         }
         Outcome::Done(Report {
+            warnings: report_warnings(typed.as_ref(), offset),
             module: Some(module),
             offset,
             diagnostics,
@@ -514,4 +518,20 @@ fn strict_error(check: &crate::typed::Check, offset: usize) -> infer::Error {
             ),
         },
     }
+}
+
+fn report_warnings(
+    typed: Option<&Typed>,
+    offset: usize,
+) -> Vec<crate::typed::Warning> {
+    typed.map_or_else(Vec::new, |typed| {
+        typed
+            .warnings
+            .iter()
+            .map(|warning| crate::typed::Warning {
+                span: local(warning.span, offset),
+                style: warning.style,
+            })
+            .collect()
+    })
 }

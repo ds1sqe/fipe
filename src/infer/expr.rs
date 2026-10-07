@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     ast::{BinaryOp, ExprId, ExprKind, FieldValue, Literal, PipeOp},
-    resolve::{bytes, Origin, Target},
+    resolve::{bytes, Target},
     token::Span,
     types::{Obligation, Type},
 };
@@ -125,19 +125,34 @@ impl Infer<'_> {
                 self.block(lines, expected)
             }
             ExprKind::List(items) => self.list(items, expected, span),
-            // Not yet checked, which resolve reports: its parts are typed.
             ExprKind::Tuple(parts) => {
-                for part in parts {
-                    self.expr(*part, None);
-                }
-                self.fresh()
+                let target = expected.map(|e| self.apply(&e.ty));
+                let types = parts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, part)| {
+                        let place = match &target {
+                            Some(Type::Tuple(types)) => {
+                                types.get(index).map(|ty| {
+                                    Expected::new(ty.clone(), span)
+                                        .at(crate::typed::Place::Part(index))
+                                })
+                            }
+                            _ => None,
+                        };
+                        self.expr(*part, place.as_ref())
+                    })
+                    .collect();
+                Type::Tuple(types)
             }
             ExprKind::Outcome { good, payload } => {
                 self.bracket(*good, *payload, expected, span)
             }
             ExprKind::Record { fields, .. } => self.record(id, fields, span),
             ExprKind::Call {
-                callee, arguments, ..
+                callee,
+                arguments,
+                style,
             } => {
                 if crate::resolve::timing(self.resolved.expr(*callee)).is_some()
                 {
@@ -151,9 +166,10 @@ impl Infer<'_> {
                 }
                 let callee = self.callee(*callee);
                 let expected = expected.map(|e| e.ty.clone());
-                self.apply_callee(
+                self.written_call(
                     callee,
                     arguments,
+                    *style,
                     None,
                     span,
                     expected.as_ref(),
@@ -425,7 +441,7 @@ impl Infer<'_> {
             ExprKind::Literal(_)
         );
         let right_ty = self.expr(right, None);
-        if !arithmetic || literal_tie {
+        if (!arithmetic && op != BinaryOp::Concat) || literal_tie {
             let left_meaning = super::meaning(&self.apply(&left_ty)).clone();
             let right_meaning = super::meaning(&self.apply(&right_ty)).clone();
             self.unify(
@@ -436,15 +452,6 @@ impl Infer<'_> {
             );
         }
         let head = super::meaning(&self.apply(&left_ty)).clone();
-        if op == BinaryOp::Concat && matches!(head, Type::Array { .. }) {
-            self.error(
-                operator,
-                Reason::NotYetChecked {
-                    form: crate::resolve::Unchecked::Concat,
-                },
-            );
-            return self.fresh();
-        }
         let known = !matches!(head, Type::Var(_) | Type::Rigid(_));
         if known && literal_tie {
             let errors = self.state.errors.len();
@@ -462,7 +469,7 @@ impl Infer<'_> {
                 self.fresh()
             }
         } else if op == BinaryOp::Concat {
-            head
+            self.fresh()
         } else {
             prelude("Bool")
         };
@@ -478,9 +485,9 @@ impl Infer<'_> {
         };
         if name == "concat" {
             self.require_member(
-                left_ty.clone(),
+                left_ty,
                 name,
-                Type::function(left_ty, result.clone()),
+                Type::function(right_ty, result.clone()),
                 operator,
             );
         } else {
@@ -535,13 +542,29 @@ impl Infer<'_> {
         expected: Option<&Expected>,
         span: Span,
     ) -> Type {
-        let element = match expected.map(|e| self.apply(&e.ty)) {
-            Some(Type::Named { name, arguments })
-                if name.origin == Origin::Prelude
-                    && name.name == "Vec"
-                    && arguments.len() == 1 =>
-            {
-                arguments[0].clone()
+        let target = expected.map(|e| self.apply(&e.ty));
+        let mut length = Type::Number((items.len() as u64).into());
+        let element = match target.as_ref().map(super::meaning) {
+            Some(Type::Array { element, length: n }) => {
+                self.unify(n, &length, span, expected.unwrap().span);
+                (**element).clone()
+            }
+            Some(head) if !matches!(head, Type::Var(_) | Type::Rigid(_)) => {
+                let element = self.fresh();
+                let claim =
+                    prelude_of("Sequence", alloc::vec![element.clone()]);
+                self.require_claim(head.clone(), claim, span);
+                self.dots();
+                if let Some(Type::Array {
+                    element: e,
+                    length: n,
+                }) = self.sequence_source(head, span)
+                {
+                    self.unify(&e, &element, span, span);
+                    self.unify(&n, &length, span, span);
+                    length = *n;
+                }
+                element
             }
             _ => self.fresh(),
         };
@@ -554,7 +577,18 @@ impl Infer<'_> {
                     .at(crate::typed::Place::Element);
             }
         }
-        prelude_of("Vec", alloc::vec![element])
+        if let Some(target) = target {
+            if !matches!(
+                super::meaning(&target),
+                Type::Var(_) | Type::Rigid(_) | Type::Array { .. }
+            ) {
+                return target;
+            }
+        }
+        Type::Array {
+            element: alloc::boxed::Box::new(element),
+            length: alloc::boxed::Box::new(length),
+        }
     }
 
     /// A line whose value nothing uses: `()`, else an error.

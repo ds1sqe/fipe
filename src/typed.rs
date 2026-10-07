@@ -16,6 +16,8 @@ use alloc::vec::Vec;
 /// a variable left in them is unsolved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Typed {
+    /// Non-fatal call-spacing diagnostics, in module source coordinates.
+    pub warnings: Vec<Warning>,
     pub(crate) expressions: Vec<Option<Type>>,
     pub(crate) bindings: Vec<Option<Scheme>>,
     /// Obligations left on variables, such as `Ord a`.
@@ -64,4 +66,11 @@ impl Typed {
                 Some((ExprId(index), scheme.as_ref()?))
             })
     }
+}
+
+/// Both tuple and argument-list readings bind this call's spots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Warning {
+    pub span: crate::token::Span,
+    pub style: crate::ast::CallStyle,
 }

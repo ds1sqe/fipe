@@ -76,7 +76,7 @@ fn packed_places_check_members_and_keep_only_receiver_operations() {
 #[test]
 fn member_words_dispatch_without_a_higher_kind() {
     assert_eq!(ty("(Just 1).map (x => x + 1)"), "Maybe<Integer>");
-    assert_eq!(ty("[1, 2] | map (x => x + 1)"), "Vec<Integer>");
+    assert_eq!(ty("[1, 2] | map (x => x + 1)"), "[Integer; 2]");
     assert_eq!(ty("\"a\" | concat \"b\""), "String");
 }
 
@@ -93,10 +93,10 @@ fn derived_members_follow_parts_and_recursive_shapes() {
 }
 
 #[test]
-fn array_concat_remains_unchecked_and_same_meaning_unions_check() {
+fn array_concat_and_same_meaning_unions_check() {
     assert_eq!(
-        kinds("f: [Integer; 1] -> [Integer; 2] = a => a ++ a"),
-        [("NotYetChecked", "++")]
+        ty("f: [Integer; 1] -> [Integer; 2] = a => a ++ a"),
+        "[Integer; 1] -> [Integer; 2]"
     );
     assert_eq!(ty("x: I8 | U8 = 1"), "I8 | U8");
 }

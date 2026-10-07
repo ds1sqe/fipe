@@ -12,6 +12,7 @@
 mod arms;
 mod bind;
 mod claims;
+mod containers;
 mod conversions;
 mod dot;
 mod expr;
@@ -44,6 +45,9 @@ pub struct Error {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
     TypeDepth,
+    CallReading {
+        style: crate::ast::CallStyle,
+    },
     /// `actual` at `span` against `expected`, which `other` required.
     Mismatch {
         expected: Type,
@@ -271,6 +275,7 @@ struct State {
     claims: Vec<(Type, bool, Vec<Type>)>,
     lowering: Vec<crate::types::TypeName>,
     errors: Vec<Error>,
+    warnings: Vec<crate::typed::Warning>,
     /// Monomorphic types in scope: parameters and destructured values.
     env: Vec<Type>,
     /// Per item, how far its typing is.
@@ -300,6 +305,7 @@ impl State {
             claims: Vec::new(),
             lowering: Vec::new(),
             errors: Vec::new(),
+            warnings: Vec::new(),
             env: Vec::new(),
             status: Vec::new(),
             uses: Vec::new(),
@@ -821,6 +827,31 @@ impl Infer<'_> {
             })
     }
 
+    fn assume_type_parameters(
+        &mut self,
+        name: &Name,
+        parameters: &[crate::ast::TypeParameter],
+    ) -> (Type, usize) {
+        let named = Type::named(
+            Origin::This,
+            &last(name),
+            parameters
+                .iter()
+                .map(|p| Type::Rigid(last(&p.name)))
+                .collect(),
+        );
+        let mut vars = lower::Vars::new(lower::SelfKind::Type(named.clone()));
+        self.parameter_claims(&named, &mut vars, name.span);
+        let mark = self.state.obligations.len();
+        for obligation in vars.obligations {
+            let mut owed = Owed::new(obligation, name.span);
+            owed.solved = true;
+            owed.assumed = true;
+            self.state.obligations.push(owed);
+        }
+        (named, mark)
+    }
+
     fn check_tests(&mut self) {
         let module = self.module;
         let resolved = self.resolved;
@@ -831,14 +862,12 @@ impl Infer<'_> {
                     base,
                     members,
                     limits,
-                    ..
+                    parameters,
                 } = &item.kind
                 {
-                    let ty = self.limited(Type::named(
-                        Origin::This,
-                        &last(name),
-                        Vec::new(),
-                    ));
+                    let (named, mark) =
+                        self.assume_type_parameters(name, parameters);
+                    let ty = self.limited(named);
                     let ty = meaning(&ty).clone();
                     self.bind_local(
                         &Name {
@@ -909,6 +938,10 @@ impl Infer<'_> {
                             );
                         }
                     }
+                    self.dots();
+                    for owed in &mut self.state.obligations[mark..] {
+                        owed.assumed = false;
+                    }
                     self.self_type = None;
                 }
             }
@@ -925,6 +958,7 @@ impl Infer<'_> {
         let (frozen, weak) = self.frozen();
         let subst = &self.state.subst;
         let mut typed = Typed {
+            warnings: self.state.warnings,
             expressions: self
                 .state
                 .types

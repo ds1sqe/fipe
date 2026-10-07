@@ -40,32 +40,7 @@ impl Pass<'_> {
                     && matches!(name.name.as_str(), "Vec" | "Deque")
                     && arguments.len() == 1 =>
             {
-                let parts: Vec<_> = known
-                    .parts
-                    .iter()
-                    .filter(|(name, _)| name != "len")
-                    .collect();
-                if !parts.is_empty() {
-                    for (_, part) in parts {
-                        self.enter_part(
-                            Place::Element,
-                            &arguments[0],
-                            part,
-                            place,
-                            Frequency::PerElement,
-                        );
-                    }
-                } else if !known.parts.iter().any(|(name, k)| {
-                    name == "len" && k.range == Some(Range::exact(0.into()))
-                }) {
-                    self.enter_part(
-                        Place::Element,
-                        &arguments[0],
-                        &Known::default(),
-                        place,
-                        Frequency::PerElement,
-                    );
-                }
+                self.element_entries(&arguments[0], known, place);
             }
             Type::Named { name, arguments }
                 if name.origin == Origin::Prelude
@@ -74,13 +49,12 @@ impl Pass<'_> {
             {
                 self.payloads(arguments, known, place, frequency);
             }
-            Type::Array { element, .. } => self.enter_part(
-                Place::Element,
-                element,
-                &Known::default(),
-                place,
-                Frequency::PerElement,
-            ),
+            Type::Tuple(parts) => {
+                self.tuple_entries(parts, known, place, frequency);
+            }
+            Type::Array { element, .. } => {
+                self.element_entries(element, known, place);
+            }
             Type::Named { name, .. } => {
                 self.named_entry(
                     name,
@@ -119,6 +93,50 @@ impl Pass<'_> {
                 );
             }
             _ => (),
+        }
+    }
+    fn element_entries(&mut self, element: &Type, known: &Known, place: Span) {
+        let parts: Vec<_> = known
+            .parts
+            .iter()
+            .filter(|(name, _)| name != "len")
+            .collect();
+        if !parts.is_empty() {
+            for (_, part) in parts {
+                self.enter_part(
+                    Place::Element,
+                    element,
+                    part,
+                    place,
+                    Frequency::PerElement,
+                );
+            }
+        } else if !known.parts.iter().any(|(name, k)| {
+            name == "len" && k.range == Some(Range::exact(0.into()))
+        }) {
+            self.enter_part(
+                Place::Element,
+                element,
+                &Known::default(),
+                place,
+                Frequency::PerElement,
+            );
+        }
+    }
+    fn tuple_entries(
+        &mut self,
+        parts: &[Type],
+        known: &Known,
+        place: Span,
+        frequency: Frequency,
+    ) {
+        for (index, ty) in parts.iter().enumerate() {
+            let fact = known
+                .parts
+                .iter()
+                .find(|(n, _)| *n == index.to_string())
+                .map_or_else(Known::default, |(_, k)| k.clone());
+            self.enter_part(Place::Part(index), ty, &fact, place, frequency);
         }
     }
     fn payloads(
@@ -250,37 +268,71 @@ impl Pass<'_> {
         origin: &Origin,
         id: TypeId,
     ) -> Type {
+        self.syntax_bound(module, origin, id, &[])
+    }
+    pub(super) fn syntax_bound(
+        &self,
+        module: &Module,
+        origin: &Origin,
+        id: TypeId,
+        bindings: &[(String, Type)],
+    ) -> Type {
+        if let TypeKind::Named { name, arguments } = &module.types[id.0].kind {
+            if arguments.is_empty() {
+                if let Some((_, ty)) = bindings
+                    .iter()
+                    .find(|(n, _)| name.segments.last() == Some(n))
+                {
+                    return ty.clone();
+                }
+            }
+        }
         match &module.types[id.0].kind {
+            TypeKind::Named { name, arguments }
+                if arguments.is_empty()
+                    && self.type_name(module, origin, id).is_none() =>
+            {
+                Type::Rigid(name.segments.last().cloned().unwrap_or_default())
+            }
+            TypeKind::Tuple(parts) => Type::Tuple(
+                parts
+                    .iter()
+                    .map(|p| self.syntax_bound(module, origin, *p, bindings))
+                    .collect(),
+            ),
             TypeKind::Both(parts) => Type::Both(
                 parts
                     .iter()
-                    .map(|p| self.syntax_type(module, origin, *p))
+                    .map(|p| self.syntax_bound(module, origin, *p, bindings))
                     .collect(),
             ),
             TypeKind::Either(parts) => Type::Either(
                 parts
                     .iter()
-                    .map(|p| self.syntax_type(module, origin, *p))
+                    .map(|p| self.syntax_bound(module, origin, *p, bindings))
                     .collect(),
             ),
             TypeKind::Not(inner) => Type::Not(alloc::boxed::Box::new(
-                self.syntax_type(module, origin, *inner),
+                self.syntax_bound(module, origin, *inner, bindings),
             )),
             TypeKind::Number(n) => Type::Number(n.clone()),
-            TypeKind::Array { element, length } => {
-                let TypeKind::Number(n) = &module.types[length.0].kind else {
-                    return Type::Unit;
-                };
-                Type::Array {
-                    element: alloc::boxed::Box::new(
-                        self.syntax_type(module, origin, *element),
-                    ),
-                    length: n.to_u64().unwrap_or(0),
-                }
-            }
+            TypeKind::Sum(parts) => Type::sum(
+                parts
+                    .iter()
+                    .map(|p| self.syntax_bound(module, origin, *p, bindings))
+                    .collect(),
+            ),
+            TypeKind::Array { element, length } => Type::Array {
+                element: alloc::boxed::Box::new(
+                    self.syntax_bound(module, origin, *element, bindings),
+                ),
+                length: alloc::boxed::Box::new(
+                    self.syntax_bound(module, origin, *length, bindings),
+                ),
+            },
             TypeKind::Function { parameter, result } => Type::function(
-                self.syntax_type(module, origin, *parameter),
-                self.syntax_type(module, origin, *result),
+                self.syntax_bound(module, origin, *parameter, bindings),
+                self.syntax_bound(module, origin, *result, bindings),
             ),
             _ => {
                 self.type_name(module, origin, id)
@@ -292,7 +344,11 @@ impl Pass<'_> {
                         {
                             arguments
                                 .iter()
-                                .map(|id| self.syntax_type(module, origin, *id))
+                                .map(|id| {
+                                    self.syntax_bound(
+                                        module, origin, *id, bindings,
+                                    )
+                                })
                                 .collect()
                         } else {
                             Vec::new()

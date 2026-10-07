@@ -21,24 +21,30 @@ when parts need names. Each part is a place of its own: `U8 * U8` tests
 both. A mismatch between `f(a, b)` and `f (a, b)` ([syntax](02-syntax.md)
 §Arguments and calls) is a check error that says which was written. Where
 both readings check, as with a default, the checker warns; `f ((a, b))` is
-the form no spacing can change.
+the form no spacing can change. The two readings compare spot counts and
+trial unification only; a warning does not reject the call.
 
 ## Brackets
 
-A bracket is a written form: `[a, b, c]` means the array `[T; n]`, and
-with no place it is one. A place that expects another type hands the array
-to that type's `sequence` member. The place gives the element type; each
-element enters it as a place of its own ([checks](07-checks.md) §Entry and
-outcome), then the array goes to `sequence`. A limited type uses its
-base's member, then tests its limits. A bracket of exact elements is
-handled at compile time, and a `sequence` that Faults on it is a check
-error. An array already bound enters a `Vec` place by a gate only.
+A bracket is a written form: `[a, b, c]` means the array `[T; n]`, and with
+no place it is one. A place that expects another type hands the array to
+that type's claimed `Sequence<T>.sequence` member. The place gives the
+element type; each element enters it as a place of its own
+([checks](07-checks.md) §Entry and outcome), then the array goes to
+`sequence`. A limited type uses its base's member, then tests its limits. A
+bracket of exact elements is handled at compile time, and a `sequence` that
+Faults on it is a check error. An array already bound enters a `Vec` place
+by `to<Vec<T>>`; the prelude supplies the `From<[T; n]>` claim.
 
 `Items<T>` is the member type the prelude's list functions are written
 over, held by the array, `Vec` and `Deque`; its one member is `fold`, a
 walk from the front carrying a value. How a walk stops early or runs from
 either end is T5's. `map` on an array keeps its length; `filter` returns
-a `Vec`.
+a `Vec`. An unknown bracket pattern is an array of its written count;
+a `Vec` pattern tests its length. The prelude's `impl [T; n]` supplies
+`concat`, `map`, exact `len` and `Items<T>`; `Eq`, `Ord`, `Show` and
+`Default` derive from the element. `sum` asks `Add a, Zero a, Items<a> c`
+and has type `c -> a`.
 
 ## Parameters
 
@@ -56,8 +62,17 @@ meets the limit ([limits](06-limits.md) §Self), so `Add a` is `Add<a, a> a`
 and the printer leaves out an argument equal to its default.
 
 A number argument may be a sum of numbers and number parameters, and no
-other arithmetic. Two are equal when their sums are, in any order. An
-array's `concat` is `[T; m] -> (self: [T; n]) -> [T; n + m]`.
+other arithmetic. Two are equal when their sums are, in any order.
+Unification cancels shared terms and solves a lone variable; a negative
+solution is a mismatch, and remaining unknown sums are an ambiguous
+length at generalization. In an annotation a lowercase name in a number
+position is a rigid number variable, otherwise a rigid type variable,
+never both. An array's `concat` is `[T; m] -> (self: [T; n]) -> [T; n + m]`.
+
+In `impl Ring<T, n>` bare names bind the head's parameters, and `Self`
+is that head; a bare impl head is also allowed. `fold`'s `b` and
+`sequence`'s `n` are quantified at the member. A claimed number variable
+is met by every length or by the head's own parameter.
 
 ```fipe
 pair: Integer * String = (1, "one")

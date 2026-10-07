@@ -139,14 +139,15 @@ impl Infer<'_> {
         let mut sources = Vec::new();
         for (member, ty) in candidates {
             if let Type::Function { parameter, result } = self.apply(&ty) {
-                let claimed = self.claims(&target, true).iter().any(|class| matches!(class, Type::Named { name, arguments } if name.origin == Origin::Prelude && name.name == (if member == "from" { "From" } else { "TryFrom" }) && arguments.first().is_some_and(|a| super::meaning(a) == super::meaning(&parameter))));
+                let claimed = self.claims(&target, true).iter().any(|class| matches!(class, Type::Named { name, arguments } if name.origin == Origin::Prelude && name.name == (if member == "from" { "From" } else { "TryFrom" }) && arguments.first().is_some_and(|a| self.same_source(a, &parameter))));
                 if !claimed {
                     continue;
                 }
                 sources.push((*parameter).clone());
                 if !matches!(source, Type::Var(_) | Type::Rigid(_))
-                    && super::meaning(&parameter) == super::meaning(&source)
+                    && self.same_source(&parameter, &source)
                 {
+                    self.unify(&parameter, &source, span, span);
                     selected.push((member, *result));
                 }
             }
@@ -187,6 +188,14 @@ impl Infer<'_> {
 }
 
 impl Infer<'_> {
+    fn same_source(&self, a: &Type, b: &Type) -> bool {
+        self.state
+            .subst
+            .clone()
+            .unify(super::meaning(a), super::meaning(b))
+            .is_ok()
+    }
+
     fn conversion_source(&mut self, source: &Type) -> Type {
         let source = self.apply(source);
         if matches!(source, Type::Var(_)) {
@@ -216,7 +225,7 @@ impl Infer<'_> {
             .enumerate()
             .filter_map(|(i, c)| {
                 (!matches!(source, Type::Var(_) | Type::Rigid(_))
-                    && super::meaning(c) == super::meaning(&source))
+                    && self.same_source(c, &source))
                 .then_some(i)
             })
             .collect();

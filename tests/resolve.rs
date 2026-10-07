@@ -396,18 +396,10 @@ fn the_case_rule_duplicates_and_declaration_forms_are_located() {
         assert_eq!(errors(text)[0].0, Reason::DeclarationForm, "{text}");
     }
     ok("f: Show a => a -> a = x => x");
-    // A program's type takes parameters from 06.5; until then each is
-    // not yet checked, and one with no body is still opaque.
-    let parameter = Reason::NotYetChecked {
-        form: Unchecked::TypeParameter,
-    };
-    assert_eq!(errors("type T<A> {}"), [(parameter.clone(), Some("T"))]);
+    ok("type T<A> {}");
     assert_eq!(
         errors("type Rd<Api>"),
-        [
-            (parameter, Some("Rd")),
-            (Reason::DeclarationForm, Some("Rd"))
-        ]
+        [(Reason::DeclarationForm, Some("Rd"))]
     );
     assert_eq!(errors("Self 1"), [(Reason::SelfOutsideBody, Some("Self"))]);
     let (parsed, resolved) = ok("pub type P { pub x: I64, y: I64 = x }\nimpl P { f = Self 1, g = self => self.x }\nP 1 | .g");
@@ -771,25 +763,22 @@ fn a_module_s_type_names_its_members_through_the_module() {
     );
 }
 
-/// 06.1: a form the parser accepts and the checker cannot check yet is
+/// A form the parser accepts and the checker cannot check yet is
 /// one error that names it, never a panic and never silence.
 #[test]
 fn each_unchecked_form_is_reported_once() {
     use Unchecked as U;
+    for text in [
+        "pair = (1, 2)",
+        "f = (a, b) => a",
+        "f: I64 * I64 -> I64 = p => 1",
+    ] {
+        ok(text);
+    }
     for (text, form, spelling) in [
-        (
-            "type Pair<A, B> { first: A, second: B }",
-            U::TypeParameter,
-            "Pair",
-        ),
-        ("pair = (1, 2)", U::Tuple, "(1, 2)"),
-        ("f = (a, b) => a", U::Tuple, "(a, b)"),
-        ("f: I64 * I64 -> I64 = p => 1", U::Tuple, "I64 * I64"),
         ("n = 10ms", U::Affix, "10ms"),
         ("r = re\"a+b\"i", U::Affix, "re\"a+b\"i"),
         ("f = n => n | { 0r7 => 1, _ => 0 }", U::Affix, "0r7"),
-        ("f: Vec<8> -> I64 = n => 1", U::Number, "8"),
-        ("f: [I64; n] -> I64 = a => 1", U::Number, "n"),
     ] {
         let reason = Reason::NotYetChecked { form };
         assert_eq!(errors(text), [(reason, Some(spelling))], "{text}");
@@ -804,14 +793,14 @@ fn each_unchecked_form_is_reported_once() {
     ] {
         ok(text);
     }
-    // Two forms, each once.
-    assert_eq!(
-        errors("f: (I64 & U8) * !I64 -> I64 = p => 1")
-            .into_iter()
-            .map(|(reason, _)| reason)
-            .collect::<Vec<_>>(),
-        [U::Tuple].map(|form| Reason::NotYetChecked { form })
-    );
+    for text in [
+        "type Pair<A, B> { first: A, second: B }",
+        "f: Vec<8> -> I64 = n => 1",
+        "f: [I64; n] -> I64 = a => 1",
+        "f: (I64 & U8) * !I64 -> I64 = p => 1",
+    ] {
+        ok(text);
+    }
     // `b"…"` stays bytes until the prelude claims its prefix.
     ok("b = b\"\\xFF\"");
 }

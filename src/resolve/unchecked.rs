@@ -2,7 +2,7 @@
 //! one check error that names it, until its stage of the type model.
 
 use crate::{
-    ast::{ExprKind, Literal, Module, PatternKind, TypeKind},
+    ast::{ExprKind, Literal, Module, PatternKind},
     token::{Affixed, Span, Written},
 };
 use alloc::vec::Vec;
@@ -11,27 +11,15 @@ use core::fmt;
 /// A form that is parsed and not yet checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unchecked {
-    /// A type parameter on a program's own type, `type Pair<A, B>`.
-    TypeParameter,
-    /// `(a, b)` or `A * B`.
-    Tuple,
     /// A program's prefix or suffix on a number or quote; `b"…"` is
     /// checked as bytes.
     Affix,
-    /// A number parameter, `[T; n]`, or a holding on a type variable (06.7).
-    Number,
-    /// `a ++ b` on arrays.
-    Concat,
 }
 
 impl fmt::Display for Unchecked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::TypeParameter => "a type parameter of a program's type",
-            Self::Tuple => "a tuple",
             Self::Affix => "a prefix or suffix",
-            Self::Number => "a number in a type",
-            Self::Concat => "`++`",
         })
     }
 }
@@ -56,7 +44,6 @@ pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
     let mut found = Vec::new();
     for expr in &module.expressions {
         match &expr.kind {
-            ExprKind::Tuple(_) => found.push((expr.span, Unchecked::Tuple)),
             ExprKind::Literal(Literal::Affixed(affixed))
                 if bytes(affixed).is_none() =>
             {
@@ -67,9 +54,6 @@ pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
     }
     for pattern in &module.patterns {
         match &pattern.kind {
-            PatternKind::Tuple(_) => {
-                found.push((pattern.span, Unchecked::Tuple));
-            }
             PatternKind::Literal(Literal::Affixed(affixed))
                 if bytes(affixed).is_none() =>
             {
@@ -77,46 +61,6 @@ pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
             }
             _ => {}
         }
-    }
-    let holdings: Vec<usize> = module
-        .types
-        .iter()
-        .filter_map(|ty| match &ty.kind {
-            TypeKind::Named { name, arguments }
-                if name.segments.len() == 1
-                    && matches!(name.segments[0].as_str(), "Bits" | "Size") =>
-            {
-                Some(arguments)
-            }
-            _ => None,
-        })
-        .flatten()
-        .map(|id| id.0)
-        .collect();
-    let lengths: Vec<usize> = module
-        .types
-        .iter()
-        .filter_map(|ty| match ty.kind {
-            TypeKind::Array { length, .. } => Some(length.0),
-            _ => None,
-        })
-        .collect();
-    for (index, ty) in module.types.iter().enumerate() {
-        let form = match &ty.kind {
-            TypeKind::Tuple(_) => Unchecked::Tuple,
-            TypeKind::Number(_)
-                if !lengths.contains(&index) && !holdings.contains(&index) =>
-            {
-                Unchecked::Number
-            }
-            TypeKind::Named { .. }
-                if lengths.contains(&index) || holdings.contains(&index) =>
-            {
-                Unchecked::Number
-            }
-            _ => continue,
-        };
-        found.push((ty.span, form));
     }
     found
 }

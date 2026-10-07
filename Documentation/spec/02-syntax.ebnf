@@ -49,9 +49,10 @@ labeled_type = "(", NAME, ":", type, [ "=", operand ], ")" ;
 named_type = NAME, [ type_arguments ] ;
 type_arguments = "<", newlines, type_argument,
                  { ",", newlines, type_argument }, newlines, ">" ;
-type_argument = type | INTEGER ;
+type_argument = type | number_sum ;
+number_sum = ( NAME | INTEGER ), { "+", ( NAME | INTEGER ) } ;
 unit_type = "(", ")" ;
-array_type = "[", type, ";", ( INTEGER | NAME ), "]" ;
+array_type = "[", type, ";", number_sum, "]" ;
 
 line = binding | scoped | pipeline ;
 binding = [ doc ], pattern, [ ":", annotation ], "=", line ;

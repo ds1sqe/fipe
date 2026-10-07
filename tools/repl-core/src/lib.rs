@@ -506,6 +506,13 @@ impl Repl {
         mode: Mode,
         out: &mut Outs,
     ) {
+        for warning in &report.warnings {
+            let reading = match warning.style {
+                fipe::ast::CallStyle::Space => "one tuple argument",
+                fipe::ast::CallStyle::Parenthesized => "an argument list",
+            };
+            located("", &text, warning.span, &format!("warning: written as {reading}; both readings bind; write double parentheses to keep the tuple"), out);
+        }
         for diagnostic in &report.diagnostics {
             self.diagnostic(diagnostic, &text, out);
         }

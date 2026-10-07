@@ -317,6 +317,9 @@ impl<'a> Infer<'a> {
         ty: &Type,
         span: Span,
     ) -> Option<Callee> {
+        if let Some(member) = self.array_members(ty, Some(name), span).1 {
+            return Some(member);
+        }
         if self.hidden_member(ty, name) {
             return None;
         }
@@ -499,6 +502,12 @@ impl<'a> Infer<'a> {
         });
         if let Type::Array { element, .. } = ty {
             self.require_claim((**element).clone(), class, span);
+            return Some(Self::derived_callee(ty, result, member, span));
+        }
+        if let Type::Tuple(parts) = ty {
+            for part in parts {
+                self.require_claim(part.clone(), class.clone(), span);
+            }
             return Some(Self::derived_callee(ty, result, member, span));
         }
         if *ty == Type::Unit {
@@ -922,12 +931,16 @@ pub(super) fn contains_type(ty: &Type, needle: &Type) -> bool {
             contains_type(parameter, needle) || contains_type(result, needle)
         }
         Type::Named { arguments, .. }
+        | Type::Sum(arguments)
+        | Type::Tuple(arguments)
         | Type::Either(arguments)
         | Type::Both(arguments) => {
             arguments.iter().any(|t| contains_type(t, needle))
         }
         Type::Limited { meaning, .. } => contains_type(meaning, needle),
-        Type::Array { element, .. } => contains_type(element, needle),
+        Type::Array { element, length } => {
+            contains_type(element, needle) || contains_type(length, needle)
+        }
         _ => false,
     }
 }

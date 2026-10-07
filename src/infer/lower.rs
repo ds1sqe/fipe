@@ -60,6 +60,7 @@ pub(super) struct Vars {
     pub self_kind: SelfKind,
     pub obligations: Vec<Obligation>,
     rigid: bool,
+    kinds: Vec<(String, bool)>,
 }
 
 impl Vars {
@@ -69,6 +70,7 @@ impl Vars {
             self_kind,
             obligations: Vec::new(),
             rigid: false,
+            kinds: Vec::new(),
         }
     }
 }
@@ -133,6 +135,25 @@ impl<'a> Infer<'a> {
             .map_or(SelfKind::None, SelfKind::Type);
         let mut vars = Vars::new(self_kind);
         vars.rigid = true;
+        if let Some(Type::Named { name, arguments }) = &self.self_type {
+            if let Some((parameters, _)) = self
+                .owner(&name.origin)
+                .and_then(|m| self.type_item(m, &name.name))
+            {
+                for (index, parameter) in parameters.iter().enumerate() {
+                    let name = super::last(&parameter.name);
+                    vars.kinds
+                        .push((name.clone(), !parameter.name.is_uppercase()));
+                    vars.names.push((
+                        name.clone(),
+                        arguments
+                            .get(index)
+                            .cloned()
+                            .unwrap_or(Type::Rigid(name)),
+                    ));
+                }
+            }
+        }
         let ty = self.lower(&Scope::This, id, &mut vars);
         for obligation in vars.obligations {
             if let Obligation::Claim { head, class, dot } = &obligation {
@@ -147,8 +168,12 @@ impl<'a> Infer<'a> {
             }
             let mut owed =
                 super::Owed::new(obligation, self.module.types[id.0].span);
-            owed.solved = true;
-            owed.assumed = true;
+            let assumed = matches!(
+                owed.obligation.subject(),
+                Type::Rigid(_) | Type::Var(_)
+            );
+            owed.solved = assumed;
+            owed.assumed = assumed;
             self.state.obligations.push(owed);
         }
         ty
@@ -164,32 +189,23 @@ impl<'a> Infer<'a> {
         let Some(node) = module.ty(id) else {
             return self.fresh();
         };
+        Self::impl_parameters(module, node.span, vars);
         match &node.kind {
             TypeKind::Unit => Type::Unit,
             TypeKind::Named { .. } => self.lower_name(scope, id, vars),
-            TypeKind::Array { element, length } => {
-                let element = self.lower(scope, *element, vars);
-                match module.ty(*length).map(|node| &node.kind) {
-                    Some(TypeKind::Number(value)) => {
-                        if let Some(length) = value.to_u64() {
-                            return Type::Array {
-                                element: alloc::boxed::Box::new(element),
-                                length,
-                            };
-                        }
-                        // Another module reports its own.
-                        if matches!(scope, Scope::This) {
-                            let span = module.types[length.0].span;
-                            self.error(span, super::Reason::OutOfRange);
-                        }
-                        self.fresh()
-                    }
-                    // A number parameter, which resolve reports.
-                    _ => self.fresh(),
-                }
-            }
+            TypeKind::Array { element, length } => Type::Array {
+                element: alloc::boxed::Box::new(
+                    self.lower(scope, *element, vars),
+                ),
+                length: alloc::boxed::Box::new(
+                    self.lower_number(scope, *length, vars),
+                ),
+            },
+            TypeKind::Sum(_) => self.lower_number(scope, id, vars),
             TypeKind::Number(n) => Type::Number(n.clone()),
-            TypeKind::Tuple(_) => self.fresh(),
+            TypeKind::Tuple(parts) => Type::Tuple(
+                parts.iter().map(|p| self.lower(scope, *p, vars)).collect(),
+            ),
             TypeKind::Not(inner) => {
                 let inner = self.lower(scope, *inner, vars);
                 if !self
@@ -458,6 +474,44 @@ impl<'a> Infer<'a> {
         }
         visiting.pop();
         result
+    }
+
+    fn impl_parameters(module: &Module, span: Span, vars: &mut Vars) {
+        let SelfKind::Type(Type::Named { arguments, .. }) = &vars.self_kind
+        else {
+            return;
+        };
+        if arguments.is_empty() {
+            return;
+        }
+        for entry in &module.entries {
+            let Entry::Item(item) = entry else { continue };
+            let ItemKind::Impl { target, .. } = &item.kind else {
+                continue;
+            };
+            if item.span.start > span.start || item.span.end < span.end {
+                continue;
+            }
+            let TypeKind::Named {
+                arguments: names, ..
+            } = &module.types[target.0].kind
+            else {
+                continue;
+            };
+            for (id, ty) in names.iter().zip(arguments) {
+                if let TypeKind::Named { name, arguments } =
+                    &module.types[id.0].kind
+                {
+                    let name = super::last(name);
+                    if arguments.is_empty()
+                        && !vars.names.iter().any(|(n, _)| *n == name)
+                    {
+                        vars.names.push((name, ty.clone()));
+                    }
+                }
+            }
+            break;
+        }
     }
 
     fn variable(&mut self, name: &str, vars: &mut Vars) -> Type {
@@ -757,6 +811,10 @@ impl<'a> Infer<'a> {
         };
         let mut slots = Vec::new();
         for field in fields {
+            let field_ty = self.lower(&scope, field.ty, &mut vars);
+            let default = field.default.is_some()
+                || (self.has_claim(&field_ty, &super::prelude("Default"))
+                    && self.default_available(&field_ty));
             slots.push(Slot {
                 place_kind: if sum.is_some() {
                     crate::typed::Place::Payload
@@ -767,11 +825,17 @@ impl<'a> Infer<'a> {
                     }
                 },
                 name: Some(super::last(&field.name)),
-                ty: self.lower(&scope, field.ty, &mut vars),
-                default: field.default.is_some(),
+                ty: field_ty,
+                default,
                 value: field.default,
                 site: field.name.span,
             });
+        }
+        self.parameter_claims(&result, &mut vars, Span::default());
+        for obligation in vars.obligations {
+            self.state
+                .obligations
+                .push(super::Owed::new(obligation, Span::default()));
         }
         let mut callee = Callee::plain(result);
         callee.spots = Some(slots);
@@ -853,15 +917,19 @@ impl<'a> Infer<'a> {
         let mut fields = Vec::new();
         for member in members {
             if let Member::Field(field) = member {
+                let ty = self.lower(&scope, field.ty, &mut vars);
+                let default = field.default.is_some()
+                    || (self.has_claim(&ty, &super::prelude("Default"))
+                        && self.default_available(&ty));
                 fields.push(Field {
                     name: super::last(&field.name),
-                    ty: self.lower(&scope, field.ty, &mut vars),
+                    ty,
                     public: field.public
                         || matches!(
                             name.origin,
                             Origin::This | Origin::Line(_)
                         ),
-                    default: field.default.is_some(),
+                    default,
                 });
             }
         }
@@ -1021,11 +1089,124 @@ impl<'a> Infer<'a> {
         let TypeKind::Named { name, arguments } = &node.kind else {
             unreachable!("named type")
         };
-        let arguments = arguments
+        let head = self.lower_target(scope, id, Vec::new(), vars);
+        let parameters = if let Type::Named { name, .. } = &head {
+            self.owner(&name.origin)
+                .and_then(|m| self.type_item(m, &name.name))
+                .map(|(p, _)| p)
+        } else {
+            None
+        };
+        let variable = vars.names.iter().any(|(n, _)| n == &super::last(name))
+            || matches!(head, Type::Var(_) | Type::Rigid(_));
+        let impl_head = module.entries.iter().any(|entry| matches!(entry, Entry::Item(item) if matches!(item.kind, ItemKind::Impl { target, .. } if target == id)));
+        if !impl_head
+            && !variable
+            && parameters.is_some_and(|ps| {
+                arguments.len()
+                    < ps.iter().filter(|p| p.default.is_none()).count()
+            })
+            && super::last(name) != "Self"
+        {
+            self.error(
+                node.span,
+                super::Reason::Limit {
+                    message: String::from("missing type arguments"),
+                },
+            );
+        }
+        if super::last(name) == "Self" && !arguments.is_empty() {
+            self.error(
+                node.span,
+                super::Reason::Limit {
+                    message: String::from("Self cannot take type arguments"),
+                },
+            );
+        }
+        if variable {
+            self.variable_kind(&super::last(name), false, vars, node.span);
+            if !arguments.is_empty() {
+                self.error(
+                    node.span,
+                    super::Reason::Limit {
+                        message: String::from(
+                            "a parameter cannot take type arguments",
+                        ),
+                    },
+                );
+            }
+        }
+        let mut arguments: Vec<_> = arguments
             .iter()
-            .map(|argument| self.lower(scope, *argument, vars))
+            .enumerate()
+            .map(|(index, argument)| {
+                let number = parameters
+                    .and_then(|p| p.get(index))
+                    .is_some_and(|p| !p.name.is_uppercase());
+                if number {
+                    self.lower_number(scope, *argument, vars)
+                } else {
+                    let ty = self.lower(scope, *argument, vars);
+                    if matches!(ty, Type::Number(_) | Type::Sum(_)) {
+                        self.error(
+                            module.types[argument.0].span,
+                            super::Reason::Limit {
+                                message: String::from(
+                                    "expected a type argument, found a number",
+                                ),
+                            },
+                        );
+                    }
+                    ty
+                }
+            })
             .collect();
-        let ty = match scope {
+        if impl_head && arguments.is_empty() {
+            if let Some(parameters) = parameters {
+                arguments.extend(
+                    parameters
+                        .iter()
+                        .map(|p| self.variable(&super::last(&p.name), vars)),
+                );
+            }
+        }
+        let ty = self.lower_target(scope, id, arguments, vars);
+        self.check_arity(&ty, node.span);
+        self.parameter_claims(&ty, vars, node.span);
+        self.limited(ty)
+    }
+    fn check_arity(&mut self, ty: &Type, span: Span) {
+        if let Type::Named { name, arguments } = ty {
+            if self
+                .owner(&name.origin)
+                .and_then(|m| self.type_item(m, &name.name))
+                .is_some_and(|(parameters, _)| {
+                    arguments.len() > parameters.len()
+                })
+            {
+                self.error(
+                    span,
+                    super::Reason::ClaimBlock {
+                        claim: ty.clone(),
+                        problem: String::from("has too many type arguments"),
+                    },
+                );
+            }
+        }
+    }
+
+    fn lower_target(
+        &mut self,
+        scope: &Scope<'a>,
+        id: TypeId,
+        arguments: Vec<Type>,
+        vars: &mut Vars,
+    ) -> Type {
+        let module = scope.module(self.module);
+        let TypeKind::Named { name, .. } = &module.types[id.0].kind else {
+            unreachable!()
+        };
+        match scope {
             Scope::This => {
                 let resolved = self.resolved;
                 self.name_resolved(resolved, None, id, arguments, vars)
@@ -1054,25 +1235,67 @@ impl<'a> Infer<'a> {
                     self.name_declared(module, origin, name, arguments, vars)
                 }
             }
-        };
-        if let Type::Named { name, arguments } = &ty {
-            if self
-                .owner(&name.origin)
-                .and_then(|m| self.type_item(m, &name.name))
-                .is_some_and(|(parameters, _)| {
-                    arguments.len() > parameters.len()
-                })
+        }
+    }
+
+    fn variable_kind(
+        &mut self,
+        name: &str,
+        number: bool,
+        vars: &mut Vars,
+        span: Span,
+    ) {
+        if vars
+            .kinds
+            .iter()
+            .any(|(n, kind)| n == name && *kind != number)
+        {
+            self.error(
+                span,
+                super::Reason::Limit {
+                    message: alloc::format!(
+                        "{name} cannot be both a type and a number variable"
+                    ),
+                },
+            );
+        } else if !vars.kinds.iter().any(|(n, _)| n == name) {
+            vars.kinds.push((String::from(name), number));
+        }
+    }
+
+    fn lower_number(
+        &mut self,
+        scope: &Scope<'a>,
+        id: TypeId,
+        vars: &mut Vars,
+    ) -> Type {
+        let node = &scope.module(self.module).types[id.0];
+        match &node.kind {
+            TypeKind::Number(n) => Type::Number(n.clone()),
+            TypeKind::Sum(parts) => Type::sum(
+                parts
+                    .iter()
+                    .map(|p| self.lower_number(scope, *p, vars))
+                    .collect(),
+            ),
+            TypeKind::Named { name, arguments }
+                if !name.is_uppercase()
+                    && name.segments.len() == 1
+                    && arguments.is_empty() =>
             {
+                let name = super::last(name);
+                self.variable_kind(&name, true, vars, node.span);
+                self.variable(&name, vars)
+            }
+            _ => {
                 self.error(
                     node.span,
-                    super::Reason::ClaimBlock {
-                        claim: ty.clone(),
-                        problem: String::from("has too many type arguments"),
+                    super::Reason::Limit {
+                        message: String::from("expected a number argument"),
                     },
                 );
+                Type::Number(0.into())
             }
         }
-        self.parameter_claims(&ty, vars, node.span);
-        self.limited(ty)
     }
 }

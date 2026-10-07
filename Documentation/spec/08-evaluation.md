@@ -26,7 +26,8 @@ arguments are kept in order until the signature is known, then bound:
    flag expands only to unambiguous Bool first letters, case-sensitive.
 2. Positional operands fill unfilled non-Bool spots in declaration order.
    A trailing `Vec<T>` collects the remaining operands, default empty; a
-   named Vec argument supplies one list.
+   named Vec argument supplies one list. A word over `Items<T>` does not
+   collect trailing operands; commands retain their `Vec` spots.
 3. A pipe supplies the last spot still open, whatever its type: `x | f 1 2`
    is `f 1 2 x`; to place the input elsewhere, name it, `x | v => f v 2 3`.
    A previously filled spot is a check error. Collections and tuples are

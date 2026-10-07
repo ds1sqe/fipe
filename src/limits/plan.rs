@@ -33,6 +33,7 @@ pub enum Place {
     Result,
     Field { owner: String, name: String },
     Element,
+    Part(usize),
     Payload,
 }
 /// One open entry, with source identity for each span.

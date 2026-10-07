@@ -39,7 +39,7 @@ Docs do not participate in lookup or checking except declaration spot lists.
 | `f a -l -c=80`, `f(a, b)` | call with callee, argument sequence and written style; `-c 80` is a flag then an operand |
 | `e.name`, `.name`, `(e).name` | qualified name kept in segments; selector; postfix field |
 | operators, pipes | distinct binary and pipe nodes with operator spans |
-| `read<I64>`, `Bits<8>`, `[T; n]` | instance or named type: name and type arguments, each a type or a number node; an array's length is a number or a name |
+| `read<I64>`, `Bits<8>`, `[T; n]` | instance or named type: name and type arguments, each a type or a number node; an array's length is a number, a name or a flat `TypeKind::Sum` of them |
 | `10ms`, `re"a"i`, `b"…"` | literal holding the token's `Affixed` |
 | `[:e]`, `[!]` | outcome node with side and optional payload, in values and patterns |
 | `Point { x, y: 2 }` | record: uppercase head and fields, a punned field holding a name |

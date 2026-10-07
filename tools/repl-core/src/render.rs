@@ -108,12 +108,29 @@ pub fn infer(reason: &infer::Reason) -> String {
     use infer::Reason as R;
     match reason {
         R::Mismatch {
+            expected,
+            actual: fipe::types::Type::Array { .. },
+            ..
+        } if matches!(expected, fipe::types::Type::Named { name, .. } if name.origin == fipe::resolve::Origin::Prelude && name.name == "Vec") =>
+        {
+            format!("a bound array cannot enter {expected}; use to<{expected}>")
+        }
+        R::Mismatch {
             expected, actual, ..
         } => format!(
             "expected {}, found {}",
             expected.beside(actual),
             actual.beside(expected)
         ),
+        R::CallReading { style } => match style {
+            fipe::ast::CallStyle::Space => {
+                "written as one tuple argument; the argument-list reading binds"
+                    .into()
+            }
+            fipe::ast::CallStyle::Parenthesized => {
+                "written as an argument list; the tuple reading binds".into()
+            }
+        },
         R::TypeDepth => "inferred type nesting limit exceeded".into(),
         R::Occurs => "a type that would contain itself".into(),
         R::UnknownFamily => "no outcome family is known here".into(),
@@ -240,6 +257,7 @@ pub fn check(
         Place::Parameter(None) => String::from("a parameter"),
         Place::Result => String::from("the result"),
         Place::Field { owner, name } => format!("field {owner}.{name}"),
+        Place::Part(index) => format!("tuple part {}", index + 1),
         Place::Element => String::from("an element"),
         Place::Payload => String::from("a payload"),
     };

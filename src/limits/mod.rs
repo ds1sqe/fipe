@@ -56,18 +56,7 @@ pub(crate) fn check(
         purity: core::cell::RefCell::new(Vec::new()),
     };
     pass.typed.known = vec![Known::default(); module.expressions.len()];
-    for (site, local) in &pass.typed.frozen {
-        let mut known = Known::default();
-        pass.place_facts(&local.scheme.ty, &mut known);
-        pass.locals.insert(*site, known);
-    }
-    pass.coverage();
-    // Parameters are places: seed their written limits before reading bodies.
-    for entry in &module.entries {
-        if let Entry::Line(id) = entry {
-            pass.seed(*id);
-        }
-    }
+    pass.seed_places();
     for index in 0..module.expressions.len() {
         let id = ExprId(index);
         if pass.typed.expr(id).is_none() {
@@ -80,6 +69,9 @@ pub(crate) fn check(
             .and_then(|callee| crate::resolve::timing(resolved.expr(callee)))
             == Some(Phase::Compile);
         if let Some(ty) = pass.typed.expr(id) {
+            if matches!(ty, Type::Array { .. }) {
+                pass.place_facts(ty, &mut known);
+            }
             known.holding = pass.holding(ty, &mut Vec::new()).or(known.holding);
         }
         if matches!(
@@ -116,6 +108,7 @@ pub(crate) fn check(
                 }
             }
         }
+        pass.expression_holding(id, entries);
         pass.typed.known[index] = known.clone();
         pass.binding_facts(id);
     }
@@ -159,6 +152,36 @@ struct Pass<'a> {
     purity: core::cell::RefCell<Vec<(Target, bool)>>,
 }
 impl Pass<'_> {
+    fn expression_holding(
+        &mut self,
+        id: ExprId,
+        entries: &[(ExprId, Type, Span, Place)],
+    ) {
+        let place_type = entries
+            .iter()
+            .find(|(at, _, _, _)| *at == id)
+            .map(|(_, ty, _, _)| ty.clone())
+            .or_else(|| self.typed.expr(id).cloned());
+        if let Some(ty) = place_type {
+            self.instantiated_holding(&ty, self.module.expressions[id.0].span);
+        }
+    }
+
+    fn seed_places(&mut self) {
+        for (site, local) in &self.typed.frozen {
+            let mut known = Known::default();
+            self.place_facts(&local.scheme.ty, &mut known);
+            self.locals.insert(*site, known);
+        }
+        self.coverage();
+        // Parameters are places: seed their written limits before reading bodies.
+        for entry in &self.module.entries {
+            if let Entry::Line(id) = entry {
+                self.seed(*id);
+            }
+        }
+    }
+
     fn binding_facts(&mut self, id: ExprId) {
         if let ExprKind::Bind {
             pattern,
@@ -186,11 +209,28 @@ impl Pass<'_> {
                     self.typed.known[value.0].holding.clone_from(&fact.holding);
                 }
             }
-            if let PatternKind::Name(name) =
-                &self.module.patterns[pattern.0].kind
-            {
-                self.locals.insert((name.span.start, name.span.end), fact);
+            self.pattern_facts(pattern, &fact);
+        }
+    }
+
+    fn pattern_facts(&mut self, pattern: crate::ast::PatternId, fact: &Known) {
+        match &self.module.patterns[pattern.0].kind {
+            PatternKind::Name(name) => {
+                self.locals
+                    .insert((name.span.start, name.span.end), fact.clone());
             }
+            PatternKind::Tuple(parts) | PatternKind::List(parts) => {
+                for (index, part) in parts.iter().enumerate() {
+                    let known = fact
+                        .parts
+                        .iter()
+                        .find(|(name, _)| *name == index.to_string())
+                        .map_or_else(Known::default, |(_, k)| k.clone());
+                    self.pattern_facts(*part, &known);
+                }
+            }
+            PatternKind::Group(inner) => self.pattern_facts(*inner, fact),
+            _ => (),
         }
     }
 
@@ -224,7 +264,7 @@ impl Pass<'_> {
                 expr.kind,
                 ExprKind::Group(_)
                     | ExprKind::Block(_)
-                    | ExprKind::List(_)
+                    | ExprKind::Tuple(_)
                     | ExprKind::With { .. }
             ) {
                 continue;
@@ -241,7 +281,15 @@ impl Pass<'_> {
                 continue;
             }
             if matches!(expr.kind, ExprKind::Arms(_)) && module.expressions.iter().any(|e| matches!(e.kind, ExprKind::Bind { value, annotation: Some(_), .. } if value == *id)) { continue; }
-            let fact = self.typed.known[id.0].clone();
+            if matches!(expr.kind, ExprKind::List(_))
+                && !matches!(ty, Type::Limited { .. })
+            {
+                continue;
+            }
+            let mut fact = self.typed.known[id.0].clone();
+            if matches!(expr.kind, ExprKind::List(_)) {
+                fact.demanded = true;
+            }
             self.place_kind = place_kind.clone();
             self.entry_phase =
                 (fact.demanded || fact.is_exact()).then_some(Phase::Compile);
@@ -474,6 +522,14 @@ impl Pass<'_> {
                     ..Known::default()
                 }
             }
+            ExprKind::Tuple(parts) => Known {
+                parts: parts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, id)| (i.to_string(), get(*id)))
+                    .collect(),
+                ..Known::default()
+            },
             ExprKind::Outcome { good, payload } => Known {
                 constructor: Some(String::from(if *good {
                     "Ok"
@@ -540,6 +596,18 @@ impl Pass<'_> {
             }) if matches!(name.as_str(), "to" | "try" | "read") => {
                 self.convert_value(id)
             }
+            Some(Target::Value {
+                origin: Origin::Prelude,
+                name,
+            }) if name == "len" => first_input(self.module, id)
+                .and_then(|input| {
+                    self.typed.known[input.0]
+                        .parts
+                        .iter()
+                        .find(|(n, _)| n == "len")
+                        .map(|(_, k)| k.clone())
+                })
+                .unwrap_or_default(),
             Some(Target::Constructor { .. }) => self.construct_value(id),
             Some(Target::Type { .. }) => self.gate_value(id),
             _ => Known {
@@ -877,6 +945,18 @@ impl Pass<'_> {
         }
     }
     fn place_facts(&self, ty: &Type, known: &mut Known) {
+        if let Type::Array { length, .. } = ty {
+            if let Some(n) = length.number() {
+                known.parts.retain(|(name, _)| name != "len");
+                known.parts.push((
+                    String::from("len"),
+                    exact(Integer {
+                        negative: false,
+                        magnitude: n.clone(),
+                    }),
+                ));
+            }
+        }
         if let Type::Limited { name, .. } = ty {
             self.limit_facts(name, known);
         }

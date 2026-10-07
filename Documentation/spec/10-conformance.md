@@ -213,18 +213,19 @@ Also every keyword and non-keyword name, every operator beside its neighbor, byt
 | `x: Init & Integer = cli.port` / a parameter with `Init & Integer` | known at init / check error |
 | `Init (cli.port)` in a module binding / inside an arm | demand met / check error |
 | `Init (test)` open at a module binding / inside an arm | tested at init / must be proved |
-| `rgb: [U8; 3] = [255, 128, 0]` | array literal enters its annotated place *06.7* |
+| `rgb: [U8; 3] = [255, 128, 0]` | array literal enters its annotated place |
 | `Bits<8> & Bits<16>` / `type Odd8: Integer & Bits<8>` | check error, each: the holdings disagree / does not fit its holding |
 | `type Flag: Bool & Bits<1>` / `type Mode: Size<1> { … }` / `rgb: [U8; 3]` supplied by the host | one bit / 3 of 8 bits / `Size<3>` |
-| `pair: Integer * String = (1, "one")` / `(n, name) = pair` | tuple / both bound *06.7* |
-| `swap = (a, b) => (b, a)` / `divmod` / `ends: U8 * U8 = (0, 255)` | `a * b -> b * a` / two results / each part a place: proved *06.7* |
-| `f(a, b)` / `f (a, b)` / `f ((a, b))` / the wrong one / both readings check | two arguments / one tuple / one tuple, whatever the spacing / check error saying which was written / warning *06.7* |
-| `type Pair<A, B> { … }`, `type Ring<T, n> { slots: [T; n], … }`, `type Sorted<T: Ord>: Vec<T> where …` in a program | type parameters, a number parameter, a member limit *06.7* |
-| `shapes: Vec<Shape> = [Circle 1.0, Square 2.0]` | each element packed before unification, then `sequence` *06.7* |
-| `xs = [1, 2, 3]` / `zs = xs ++ [4, 5]` / `v = [1, 2.5]` | `[Integer; 3]` / `[Integer; 5]`: `concat` adds the lengths / `[F64; 2]` *06.7* |
-| `s: Sorted<Integer> = [1, 2, 3]` / `impl Ring<T, n> { sequence = … }` / a `sequence` that Faults on exact elements | `Vec`'s `sequence`, then the limit / a program's own `sequence` / check error *06.7* |
-| `total xs` with `total` taking a `Vec` / `total (xs | to<Vec<Integer>>)` | check error: a bound array enters by a gate only / accepted *06.7* |
-| `map` / `filter` on an array | keeps its length / a `Vec` *06.7* |
+| `pair: Integer * String = (1, "one")` / `(n, name) = pair` | tuple / both bound |
+| `swap = (a, b) => (b, a)` / `divmod` / `ends: U8 * U8 = (0, 255)` | `a * b -> b * a` / two results / each part a place: proved |
+| `f(a, b)` / `f (a, b)` / `f ((a, b))` / the wrong one / both readings check | two arguments / one tuple / one tuple, whatever the spacing / check error saying which was written / warning |
+| `type Pair<A, B> { … }`, `type Ring<T, n> { slots: [T; n], … }`, `type Sorted<T: Ord>: Vec<T> where …` in a program | type parameters, a number parameter, a member limit |
+| `shapes: Vec<Shape> = [Circle 1.0, Square 2.0]` | each element packed before unification, then `sequence` |
+| `xs = [1, 2, 3]` / `zs = xs ++ [4, 5]` / `v = [1, 2.5]` | `[Integer; 3]` / `[Integer; 5]`: `concat` adds the lengths / `[F64; 2]` |
+| `impl Ring<T, n>: Sequence<T> { sequence = … }` | a program's claimed `sequence` |
+| `s: Sorted<Integer> = [1, 2, 3]` / a `sequence` that Faults on exact elements | open here: compile-time evaluation / check error *08* |
+| `total xs` with `total` taking a `Vec` / `total (xs | to<Vec<Integer>>)` | check error: a bound array enters by `to<Vec<T>>` / accepted |
+| `map` / `filter` on an array | keeps its length / a `Vec` |
 | plain `impl V { add = … }` / `impl V: Add { add = … }` with `Add` listed | dot works, `+` rejected / `+` accepted |
 | plain `area` / a `Shape` claim at `Vec<Shape>` | rejected / packed |
 | `Mul<F64>` and `Mul<V>` on one meaning | argument meaning selects for operator, instance dot, type dot and selector; unknown names the candidates |
@@ -232,8 +233,8 @@ Also every keyword and non-keyword name, every operator beside its neighbor, byt
 | supplied claim block with an unknown limit, extra or missing member, duplicate block, or plain-member conflict | declaration error at load |
 | `type V: Zero { x: F64 }` with no `zero` / with `impl V: Zero { zero = Self 0.0 }` / `impl V: Show { … }` unlisted, or a member `Zero` does not ask | check error at the claim / accepted / check error at the block |
 | `type V: Default { x: F64 = 0.0 }` / `type V: a.Zero & b.Zero` whose `zero` differ in type | met by the fields, no block / check error: one member per name |
-| `[] | sum` at `Vec2` claiming `Zero` / a field `n: Integer` with no value / `impl Vec2: Default { default = Self.zero }` | `Vec2.zero` / a spot: a zero is not a default / the default is the zero *06.7* |
-| `[T; n + m]` / `[T; m + n]` | one type: sums are equal in any order *06.7* |
+| `[] | sum` at `Vec2` claiming `Zero` / a field `n: Integer` with no value / `impl Vec2: Default { default = Self.zero }` | checks by `Add & Zero` (value awaits compile-time evaluation) / a spot: a zero is not a default / the default is the zero |
+| `[T; n + m]` / `[T; m + n]` | one type: sums are equal in any order |
 
 The [corpus](02-syntax.fipe) follows the grammar; check AST shape, inferred types and diagnostics, not only successful parses.
 

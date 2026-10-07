@@ -169,6 +169,12 @@ fn key(module: &Module, id: TypeId) -> String {
             }
             text
         }
+        TypeKind::Array { element, length } => alloc::format!(
+            "[{};{}]",
+            key(module, *element),
+            key(module, *length)
+        ),
+        TypeKind::Number(n) => alloc::format!("{n}"),
         _ => String::new(),
     }
 }
@@ -400,6 +406,9 @@ fn target_shape(
     target: TypeId,
     others: &[(&str, &Module)],
 ) -> Option<bool> {
+    if matches!(module.types[target.0].kind, TypeKind::Array { .. }) {
+        return Some(false);
+    }
     let TypeKind::Named { name, .. } = &module.types[target.0].kind else {
         return None;
     };

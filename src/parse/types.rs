@@ -200,14 +200,7 @@ impl Parser {
                 self.bump();
                 let element = self.type_syntax()?;
                 self.expect(Symbol::Semicolon)?;
-                let length = if matches!(self.peek(), Kind::Name(_)) {
-                    let name = self.name(true)?;
-                    let span = name.span;
-                    let arguments = Vec::new();
-                    self.add_type(TypeKind::Named { name, arguments }, span)
-                } else {
-                    self.number()?
-                };
+                let length = self.number_sum()?;
                 self.expect(Symbol::RBracket)?;
                 TypeKind::Array { element, length }
             }
@@ -233,14 +226,49 @@ impl Parser {
         Ok(self.add_type(TypeKind::Number(value), span))
     }
 
+    fn number_sum(&mut self) -> Result<TypeId, Error> {
+        let first = self.number_term()?;
+        self.sum_after(first)
+    }
+
+    fn number_term(&mut self) -> Result<TypeId, Error> {
+        if matches!(self.peek(), Kind::Name(_)) {
+            let name = self.name(true)?;
+            let span = name.span;
+            Ok(self.add_type(
+                TypeKind::Named {
+                    name,
+                    arguments: Vec::new(),
+                },
+                span,
+            ))
+        } else {
+            self.number()
+        }
+    }
+
+    fn sum_after(&mut self, first: TypeId) -> Result<TypeId, Error> {
+        if !self.at(Symbol::Plus) {
+            return Ok(first);
+        }
+        let start = self.module.types[first.0].span.start;
+        let mut parts = vec![first];
+        while self.eat(Symbol::Plus) {
+            self.skip_newline();
+            parts.push(self.number_term()?);
+        }
+        Ok(self.add_type(TypeKind::Sum(parts), self.since(start)))
+    }
+
     /// The list after an opening `<`; at least one type or number,
     /// closed by `>`.
     pub(super) fn type_arguments(&mut self) -> Result<Vec<TypeId>, Error> {
         let arguments = self.list(Symbol::Greater, |parser| {
             if matches!(parser.peek(), Kind::Int { .. }) {
-                parser.number()
+                parser.number_sum()
             } else {
-                parser.type_syntax()
+                let first = parser.type_syntax()?;
+                parser.sum_after(first)
             }
         })?;
         if arguments.is_empty() {

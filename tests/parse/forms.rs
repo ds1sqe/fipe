@@ -1,4 +1,4 @@
-//! The forms 06.1 adds: type signs, numbers in types, the `type` item's
+//! The type model's surface forms: type signs, numbers in types, the `type` item's
 //! base and limits, tuples, gate patterns, members with no value,
 //! member constraints, `++`, and `trait` and `where` as names.
 

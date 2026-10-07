@@ -65,7 +65,8 @@ per checked unit; every use in that unit shares the result.
 ~~~text
 Report { module: Option<ast::Module>, offset: usize,
          diagnostics: Vec<Diagnostic>, resolved: Option<resolve::Resolved>,
-         typed: Option<typed::Typed>, checks: Vec<typed::Check> }
+         typed: Option<typed::Typed>, checks: Vec<typed::Check>,
+         warnings: Vec<typed::Warning> }
 Diagnostic = Syntax(parse::Error) | Resolve(resolve::Error)
            | Type(infer::Error) | File { stem: String, error: parse::Error }
            | FileResolve { stem: String, error: resolve::Error }
@@ -80,6 +81,17 @@ which are empty exactly when it checks, spanned in the line's text, one
 before the line clamped to its start. The three `File` forms carry a span
 of the replied file; a reason's span stays in the text it was found in.
 Resolve and type diagnostics within a file follow source order.
+
+`warnings` never reject a line. `Warning { span, style: ast::CallStyle }`
+marks a call whose argument-list and tuple readings both bind its spots;
+double parentheses around a tuple suppress this warning. `Typed::warnings`
+uses module spans; `Report::warnings` uses line spans. A failed written
+reading whose alternative binds adds `Reason::CallReading { style }`.
+
+`Type::Tuple` keeps its parts, including nested tuples. Array lengths are
+boxed number types: `Number`, variables and canonical `Sum` nodes.
+`Subst::settle_lengths` retries delayed sums; an unresolved equation is an
+ambiguous length at generalization. A tuple part is `Place::Part(index)`.
 
 Supplied claim member types are validated when declarations load. Inference
 reports private fields with `PrivateField { field }`; a `Conversion` reason
@@ -101,7 +113,7 @@ loaded module. It reads syntax only and returns `None` without an owner.
 typed::Check { place: Span, place_kind: typed::Place, limit: Span,
                phase, reason, frequency, test_count }
 typed::Place = Binding(String) | Parameter(Option<String>) | Result
-             | Field { owner: String, name: String } | Element | Payload
+             | Field { owner: String, name: String } | Part(usize) | Element | Payload
 ~~~
 
 The phase is compile, init or eval. `test_count` counts the owning type's

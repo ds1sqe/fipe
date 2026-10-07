@@ -521,12 +521,11 @@ fn a_lowercase_numeric_type_earns_its_hint() {
 }
 
 #[test]
-fn ast_shows_a_parsed_line_the_checker_rejects() {
+fn ast_shows_a_checked_tuple() {
     let text = written(Repl::new().feed(b"pair = (1, 2)\n:ast\n"));
     assert_eq!(
         text,
-        "1:8: a tuple is not yet checked\npair = (1, 2)\n       ^^^^^^\n\
-         Bind\n  Name pair\n  Tuple\n    Int 1\n    Int 2\nfipe> "
+        "Bind\n  Name pair\n  Tuple\n    Int 1\n    Int 2\nfipe> "
     );
 }
 
@@ -932,4 +931,15 @@ fn written_tests_keep_sources_and_include_proved_siblings() {
         ));
     assert!(text.contains("against HostBand: self < 10"), "{text}");
     assert!(!text.contains("the result at "), "{text}");
+}
+
+#[test]
+fn container_types_warnings_and_conversion_hint_are_visible() {
+    let text = written(Repl::new().feed(b"xs = [1, 2, 3]\n:t xs ++ [4, 5]\ng = x (y = 0) => x\ng (1, 2)\ntotal: Vec<Integer> -> Integer = xs => xs | sum\ntotal xs\n"));
+    assert!(text.contains("[Integer; 5]"), "{text}");
+    assert!(
+        text.contains("warning: written as one tuple argument"),
+        "{text}"
+    );
+    assert!(text.contains("to<Vec<Integer>>"), "{text}");
 }

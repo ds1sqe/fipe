@@ -499,15 +499,12 @@ impl<'a> Resolver<'a> {
                     ItemKind::Impl { .. } | ItemKind::Use { .. } => {}
                     ItemKind::Type {
                         name,
-                        parameters,
                         base,
                         members,
                         limits,
+                        ..
                     } => {
                         self.case(name, true);
-                        if !parameters.is_empty() {
-                            self.unchecked(name.span, Unchecked::TypeParameter);
-                        }
                         let limited = base.is_some() || !limits.is_empty();
                         if !limited && members.is_none() {
                             self.error(name.span, Reason::DeclarationForm);
@@ -1164,6 +1161,14 @@ impl<'a> Resolver<'a> {
                         self.self_type = Some(last(name));
                         self.parameters =
                             parameters.iter().map(|p| last(&p.name)).collect();
+                        for parameter in parameters {
+                            if let Some(bound) = parameter.bound {
+                                self.ty(bound);
+                            }
+                            if let Some(default) = parameter.default {
+                                self.ty(default);
+                            }
+                        }
                         if let Some(base) = base {
                             match &self.module.types[base.0].kind {
                                 TypeKind::Both(parts) => {
@@ -1236,6 +1241,21 @@ impl<'a> Resolver<'a> {
         claim: Option<TypeId>,
         members: &[ImplMember],
     ) {
+        if let TypeKind::Named { arguments, .. } =
+            &self.module.types[target.0].kind
+        {
+            self.parameters = arguments
+                .iter()
+                .filter_map(|id| match &self.module.types[id.0].kind {
+                    TypeKind::Named { name, arguments }
+                        if arguments.is_empty() && name.segments.len() == 1 =>
+                    {
+                        Some(last(name))
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
         self.ty(target);
         self.self_type = named(self.module, target);
         if let Some(claim) = claim {
@@ -1265,6 +1285,7 @@ impl<'a> Resolver<'a> {
             }
         }
         self.self_type = None;
+        self.parameters.clear();
     }
 
     /// A line of a file, block or group: a binding is visible after it.
@@ -1358,13 +1379,7 @@ impl<'a> Resolver<'a> {
                 }
                 self.scopes.pop();
             }
-            ExprKind::Tuple(items) => {
-                self.unchecked(expr.span, Unchecked::Tuple);
-                for item in items {
-                    self.expr(*item, Position::Other);
-                }
-            }
-            ExprKind::List(items) => {
+            ExprKind::Tuple(items) | ExprKind::List(items) => {
                 for item in items {
                     self.expr(*item, Position::Other);
                 }
@@ -1648,13 +1663,7 @@ impl<'a> Resolver<'a> {
                 self.local(name);
             }
             PatternKind::Group(inner) => self.bind(*inner),
-            PatternKind::Tuple(items) => {
-                self.unchecked(pattern.span, Unchecked::Tuple);
-                for item in items {
-                    self.bind(*item);
-                }
-            }
-            PatternKind::List(items) => {
+            PatternKind::Tuple(items) | PatternKind::List(items) => {
                 for item in items {
                     self.bind(*item);
                 }
@@ -1897,50 +1906,26 @@ impl<'a> Resolver<'a> {
             TypeKind::Unit => {}
             TypeKind::Named { name, arguments } => {
                 let target = self.type_name(name);
-                let holding = matches!(&target, Some(Target::Type { origin: Origin::Prelude, name }) if matches!(name.as_str(), "Bits" | "Size"));
                 self.resolved.types[id.0] = target;
-                if holding
-                    && !matches!(arguments.as_slice(), [width] if matches!(self.module.types[width.0].kind, TypeKind::Number(_)))
-                {
-                    self.unchecked(ty.span, Unchecked::Number);
-                }
                 for argument in arguments {
-                    if !(holding
-                        && matches!(
-                            self.module.types[argument.0].kind,
-                            TypeKind::Number(_)
-                        ))
-                    {
-                        self.ty(*argument);
-                    }
+                    self.ty(*argument);
                 }
             }
             TypeKind::Array { element, length } => {
                 self.ty(*element);
-                if !matches!(
-                    self.module.types[length.0].kind,
-                    TypeKind::Number(_)
-                ) {
-                    let span = self.module.types[length.0].span;
-                    self.unchecked(span, Unchecked::Number);
-                }
+                self.ty(*length);
             }
-            TypeKind::Number(_) => self.unchecked(ty.span, Unchecked::Number),
+            TypeKind::Number(_) => (),
             TypeKind::Function { parameter, result } => {
                 self.ty(*parameter);
                 self.ty(*result);
             }
-            TypeKind::Tuple(parts)
+            TypeKind::Sum(parts)
+            | TypeKind::Tuple(parts)
             | TypeKind::Both(parts)
             | TypeKind::Either(parts) => {
-                if matches!(ty.kind, TypeKind::Tuple(_)) {
-                    self.unchecked(ty.span, Unchecked::Tuple);
-                }
                 for part in parts {
                     self.ty(*part);
-                }
-                if matches!(ty.kind, TypeKind::Both(_)) && parts.iter().any(|id| matches!(self.resolved.ty(*id), Some(Target::Variable(_)))) && parts.iter().any(|id| matches!(self.resolved.ty(*id), Some(Target::Type { origin: Origin::Prelude, name }) if matches!(name.as_str(), "Bits" | "Size"))) {
-                    self.unchecked(ty.span, Unchecked::Number);
                 }
             }
             TypeKind::Not(inner) => {

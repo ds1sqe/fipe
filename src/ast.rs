@@ -295,6 +295,8 @@ pub enum TypeKind {
     },
     /// A number as a type argument, `Bits<8>`, or an array's length.
     Number(Magnitude),
+    /// A sum of number arguments.
+    Sum(Vec<TypeId>),
     /// `A * B * C`, flat, two parts or more.
     Tuple(Vec<TypeId>),
     /// `A & B`, flat: holds both.

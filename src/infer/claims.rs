@@ -146,6 +146,9 @@ impl Infer<'_> {
         ready_only: bool,
     ) -> Vec<Type> {
         let head = super::meaning(head);
+        if matches!(head, Type::Array { .. }) {
+            return self.array_members(head, None, Span::default()).0;
+        }
         if let Some((_, _, claims)) = self
             .state
             .claims
@@ -357,7 +360,9 @@ impl Infer<'_> {
 
     pub(super) fn has_claim(&mut self, head: &Type, class: &Type) -> bool {
         let class = self.claim_type(class, head, false);
-        (matches!(head, Type::Array { .. } | Type::Unit)
+        ((matches!(head, Type::Array { .. } | Type::Unit)
+            || matches!(head, Type::Tuple(_))
+                && !super::is_prelude(&class, "Default"))
             && derived(&class).is_some())
             || self.claims(head, true).contains(&class)
     }
@@ -401,9 +406,18 @@ impl Infer<'_> {
                     self.require_claim((**element).clone(), class, dot);
                     return;
                 }
+                Type::Tuple(parts) if !super::is_prelude(&class, "Default") => {
+                    for part in parts {
+                        self.require_claim(part.clone(), class.clone(), dot);
+                    }
+                    return;
+                }
                 Type::Unit => return,
                 _ => {}
             }
+        }
+        if self.array_claim(&head, &class, dot) {
+            return;
         }
         let mut candidates = self.claim_candidates(&head);
         candidates.retain(|candidate| matches!((&class,candidate), (Type::Named { name: a, .. },Type::Named { name: b, .. }) if a == b));
@@ -756,6 +770,7 @@ impl Infer<'_> {
                 } else {
                     callee.whole()
                 };
+                let ty = self.universal_member(&class, &head, &ty, &actual);
                 self.check_member_type(&ty, &actual, site, span);
             }
         }
@@ -815,6 +830,11 @@ impl Infer<'_> {
 
 impl Infer<'_> {
     pub(super) fn default_available(&mut self, ty: &Type) -> bool {
+        if self.claim_member_count(ty, &super::prelude("Default"), "default")
+            > 0
+        {
+            return true;
+        }
         match super::meaning(ty) {
             Type::Unit => true,
             Type::Named { name, .. }
@@ -1045,7 +1065,9 @@ impl Infer<'_> {
                     let actual = self.supplied_claim_type(
                         module, &scope, head, *ty, name.span, receiver,
                     );
-                    self.check_member_type(expected, &actual, span, span);
+                    let expected =
+                        self.universal_member(class, head, expected, &actual);
+                    self.check_member_type(&expected, &actual, span, span);
                 }
             }
         }
@@ -1098,6 +1120,65 @@ impl<'a> Infer<'a> {
 }
 
 impl Infer<'_> {
+    /// Member-local variables are promises, not choices for the impl.
+    fn universal_member(
+        &self,
+        class: &Type,
+        head: &Type,
+        expected: &Type,
+        actual: &Type,
+    ) -> Type {
+        let mut fixed = Vec::new();
+        head.variables(&mut fixed);
+        class.variables(&mut fixed);
+        let mut variables = Vec::new();
+        expected.variables(&mut variables);
+        let mut replacements: Vec<_> = variables
+            .into_iter()
+            .filter(|v| !fixed.contains(v))
+            .map(|v| (v, Type::Rigid(alloc::format!("member{}", v.0))))
+            .collect();
+        // Sequence also admits the head's own number parameter.
+        if super::is_prelude(class, "Sequence") {
+            if let (
+                Type::Function { parameter, .. },
+                Type::Function {
+                    parameter: source,
+                    result,
+                },
+            ) = (expected, actual)
+            {
+                let mut trial = self.state.subst.clone();
+                if trial.unify(result, head).is_ok() {
+                    if let (
+                        Type::Array { length, .. },
+                        Type::Array {
+                            length: supplied, ..
+                        },
+                        Type::Named { name, arguments },
+                    ) = (&**parameter, trial.apply(source), head)
+                    {
+                        let own = self
+                            .owner(&name.origin)
+                            .and_then(|m| self.type_item(m, &name.name))
+                            .is_some_and(|(ps, _)| {
+                                ps.iter().zip(arguments).any(|(p, a)| {
+                                    !p.name.is_uppercase() && *a == *supplied
+                                })
+                            });
+                        if own {
+                            if let Type::Var(var) = &**length {
+                                replacements.retain(|(v, _)| v != var);
+                                replacements.push((*var, *supplied));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        crate::types::replace(expected, &replacements)
+    }
+
     pub(super) fn check_member_type(
         &mut self,
         expected: &Type,
@@ -1304,6 +1385,7 @@ fn limits_fit(actual: &Type, expected: &Type) -> bool {
             Type::Named { arguments: a, .. },
             Type::Named { arguments: e, .. },
         )
+        | (Type::Tuple(a), Type::Tuple(e))
         | (Type::Either(a), Type::Either(e)) => {
             a.iter().zip(e).all(|(a, e)| limits_fit(a, e))
         }

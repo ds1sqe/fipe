@@ -207,6 +207,9 @@ fn ty(kind: &TypeKind) -> (String, Vec<Node>) {
         TypeKind::Array { element, length } => {
             ("Array".into(), vec![Node::T(*element), Node::T(*length)])
         }
+        TypeKind::Sum(parts) => {
+            ("Sum".into(), parts.iter().map(|p| Node::T(*p)).collect())
+        }
         TypeKind::Number(value) => leaf(format!("Number {value}")),
         TypeKind::Tuple(parts) => ("Tuple".into(), ts(parts)),
         TypeKind::Both(parts) => ("Both &".into(), ts(parts)),

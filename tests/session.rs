@@ -250,7 +250,7 @@ fn a_query_reports_a_scheme() {
     assert_eq!(query(&mut session, "add"), "Add<b> a => a -> b -> a");
     assert_eq!(query(&mut session, ".name"), "a.name: b => a -> b");
     assert_eq!(query(&mut session, "(x => x)"), "a -> a");
-    assert_eq!(query(&mut session, "[]"), "Vec<a>");
+    assert_eq!(query(&mut session, "[]"), "[a; 0]");
     assert_eq!(query(&mut session, "rr"), "Result<Integer, a>");
     assert_eq!(
         query(&mut session, "add 2"),

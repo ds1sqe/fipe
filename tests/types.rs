@@ -50,11 +50,11 @@ fn unification_binds_solves_and_rejects_with_the_first_difference() {
         .unify(
             &Type::Array {
                 element: Box::new(i64()),
-                length: 4
+                length: Box::new(Type::Number(4.into()))
             },
             &Type::Array {
                 element: Box::new(i64()),
-                length: 3
+                length: Box::new(Type::Number(3.into()))
             }
         )
         .is_err());

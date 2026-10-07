@@ -204,6 +204,117 @@ impl Infer<'_> {
         self.bind_spots(callee, arguments, pipe, stage, expected)
     }
 
+    pub(super) fn written_call(
+        &mut self,
+        callee: Callee,
+        arguments: &[Argument],
+        style: crate::ast::CallStyle,
+        pipe: Option<(Type, Span)>,
+        stage: Span,
+        expected: Option<&Type>,
+    ) -> Type {
+        use crate::ast::CallStyle;
+        let alternative = match (style, arguments) {
+            (
+                CallStyle::Space,
+                [Argument {
+                    kind: ArgumentKind::Positional(id),
+                    ..
+                }],
+            ) => match &self.module.expressions[id.0].kind {
+                ExprKind::Tuple(parts) => Some((parts.clone(), false)),
+                _ => None,
+            },
+            (CallStyle::Parenthesized, args) if args.len() >= 2 => args
+                .iter()
+                .map(|a| match a.kind {
+                    ArgumentKind::Positional(id) => Some(id),
+                    ArgumentKind::Flag { .. } => None,
+                })
+                .collect::<Option<Vec<_>>>()
+                .map(|ids| (ids, true)),
+            _ => None,
+        };
+        let snapshot = alternative
+            .as_ref()
+            .and_then(|_| callee.spots.clone())
+            .map(|slots| {
+                (slots, self.state.subst.clone(), callee.supplied.clone())
+            });
+        let error_start = self.state.errors.len();
+        let result =
+            self.apply_callee(callee, arguments, pipe.clone(), stage, expected);
+        if let (Some((ids, tuple)), Some((slots, mut trial, supplied))) =
+            (alternative, snapshot)
+        {
+            while trial.count() < self.state.subst.count() {
+                trial.fresh();
+            }
+            let mut types: Vec<_> = ids
+                .iter()
+                .filter_map(|id| {
+                    self.state.types[id.0].as_ref().map(|t| self.apply(t))
+                })
+                .collect();
+            if types.len() != ids.len() {
+                return result;
+            }
+            // Argument inference may have joined its variables to the written
+            // spots. Freshen them together before trying different spots.
+            let mut variables = Vec::new();
+            for ty in &types {
+                ty.variables(&mut variables);
+            }
+            let fresh: Vec<_> = variables
+                .into_iter()
+                .map(|v| (v, Type::Var(trial.fresh())))
+                .collect();
+            types = types
+                .iter()
+                .map(|t| crate::types::replace(t, &fresh))
+                .collect();
+            if tuple {
+                types = vec![Type::Tuple(types)];
+            }
+            let mut filled = vec![false; slots.len()];
+            let mut binds = true;
+            if let Some((index, ty, _)) = supplied {
+                filled[index] = true;
+                binds &= trial.unify(&slots[index].ty, &ty).is_ok();
+            }
+            for ty in types {
+                if let Some(index) =
+                    slots.iter().enumerate().position(|(i, slot)| {
+                        !filled[i]
+                            && !is_prelude(&trial.apply(&slot.ty), "Bool")
+                    })
+                {
+                    filled[index] = true;
+                    binds &= trial.unify(&slots[index].ty, &ty).is_ok();
+                } else {
+                    binds = false;
+                }
+            }
+            if let Some((ty, _)) = pipe {
+                if let Some(index) = filled.iter().rposition(|v| !v) {
+                    binds &= trial.unify(&slots[index].ty, &ty).is_ok();
+                } else {
+                    binds = false;
+                }
+            }
+            if binds {
+                if self.state.errors.len() == error_start {
+                    self.state
+                        .warnings
+                        .push(crate::typed::Warning { span: stage, style });
+                } else {
+                    self.error(stage, Reason::CallReading { style });
+                }
+            }
+        }
+        result
+    }
+
     fn bind_spots(
         &mut self,
         callee: Callee,
@@ -540,10 +651,14 @@ impl Infer<'_> {
         let pipe = Some((input.clone(), input_span));
         let result = match &module.expressions[id.0].kind {
             ExprKind::Call {
-                callee, arguments, ..
+                callee,
+                arguments,
+                style,
             } => {
                 let callee = self.callee(*callee);
-                self.apply_callee(callee, arguments, pipe, span, expected)
+                self.written_call(
+                    callee, arguments, *style, pipe, span, expected,
+                )
             }
             ExprKind::Name(_)
             | ExprKind::Instance { .. }
