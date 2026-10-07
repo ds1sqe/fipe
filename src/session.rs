@@ -40,6 +40,10 @@ pub struct Session {
     pending: Option<Pending>,
     strict: bool,
     index: Option<crate::check::lower::Index>,
+    /// The declared expressions and values typed so far, shared by
+    /// every later line: a declaration module, an accepted line or a
+    /// loaded file never changes within a session.
+    declared: infer::files::FileCache,
 }
 
 impl Clone for Session {
@@ -55,6 +59,7 @@ impl Clone for Session {
             pending: self.pending.clone(),
             strict: self.strict,
             index,
+            declared: self.declared.inherit(),
         }
     }
 }
@@ -162,6 +167,7 @@ impl Session {
             pending: None,
             strict: false,
             index: None,
+            declared: infer::files::FileCache::new(),
         }
     }
 
@@ -333,14 +339,15 @@ impl Session {
             self.pending = Some(pending);
             return Outcome::Request(Request::File { stem });
         }
-        let cache = infer::files::FileCache::default();
+        self.declared.end_unit();
+        let cache = &self.declared;
         let mut diagnostics = pending.errors;
         for stem in &pending.loaded {
             diagnostics.extend(crate::check::file_errors(
                 stem,
                 &self.declarations,
                 &self.files,
-                &cache,
+                cache,
             ));
         }
         let files = diagnostics.len();
@@ -349,7 +356,7 @@ impl Session {
             &self.declarations,
             &self.files,
             Some(&self.frame),
-            &cache,
+            cache,
             crate::check::Options {
                 strict: self.strict,
             },
@@ -381,7 +388,7 @@ impl Session {
                     typed.clone(),
                     &self.declarations,
                     &self.files,
-                    &cache,
+                    cache,
                 ))
             } else {
                 None
@@ -394,6 +401,7 @@ impl Session {
                 self.accept(&pending.text, &module, resolved, typed);
             }
         }
+        self.declared.end_unit();
         Outcome::Done(Report {
             warnings: report_warnings(typed.as_ref(), offset),
             module: Some(module),

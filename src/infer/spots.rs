@@ -1276,6 +1276,18 @@ impl Infer<'_> {
         let (Some(module), Some(value)) = (self.owner(home), slot.value) else {
             return (Scheme::mono(slot.ty.clone()), false);
         };
+        // A limited type's test is closed over its owner and shares no
+        // state with the line, so a test recorded earlier, in this
+        // session or this unit, is read back rather than typed again.
+        if *home != Origin::This
+            && owner.is_some()
+            && self
+                .file_cache
+                .expression(&(home.clone(), value.0))
+                .is_some()
+        {
+            return (Scheme::mono(slot.ty.clone()), true);
+        }
         let earlier: Vec<_> = earlier
             .iter()
             .filter_map(|slot| Some((slot.name.clone()?, slot.site, &slot.ty)))
@@ -1433,7 +1445,7 @@ impl Infer<'_> {
         recorded: Option<crate::typed::Typed>,
     ) {
         if let Some(typed) = recorded {
-            self.file_cache.expressions.borrow_mut().insert(
+            self.file_cache.record(
                 (home.clone(), value.0),
                 crate::typed::DeclaredExpression {
                     origin: home.clone(),

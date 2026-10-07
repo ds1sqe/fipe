@@ -184,12 +184,8 @@ impl Infer<'_> {
                 Some(&owner_type),
             );
             if valid {
-                if let Some(expression) = self
-                    .file_cache
-                    .expressions
-                    .borrow()
-                    .get(&(owner.origin.clone(), value.0))
-                    .cloned()
+                if let Some(expression) =
+                    self.file_cache.expression(&(owner.origin.clone(), value.0))
                 {
                     self.state.tests.push(typed::Test {
                         origin: owner.origin.clone(),

@@ -1064,13 +1064,7 @@ impl Infer<'_> {
         let mut typed = Typed {
             dispatch,
             shapes,
-            declared: self
-                .file_cache
-                .expressions
-                .borrow()
-                .values()
-                .cloned()
-                .collect(),
+            declared: self.file_cache.used(),
             main: Some(subst.apply(&main)),
             rebuilds: self.state.rebuilds,
             modes: self.state.modes,
