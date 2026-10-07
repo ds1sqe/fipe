@@ -86,9 +86,11 @@ fn invalid_host_default_is_reported_when_needed() {
         .unwrap();
     let (_, _, errors) = check("f", &declarations);
     assert!(
-        errors.iter().any(
-            |e| matches!(&e.reason, Reason::Default { name } if name == "depth")
-        ),
+        errors.iter().any(|e| matches!(
+            &e.reason,
+            Reason::Default { name, cause: Some(cause) }
+                if name == "depth" && matches!(**cause, Reason::Mismatch { .. })
+        )),
         "{errors:?}"
     );
     assert_eq!(check("f 2", &declarations).2, []);
@@ -180,7 +182,7 @@ fn host_defaults_use_the_declaring_module_and_earlier_spots() {
         .module("config", "pub f: (width: Integer = missing) -> Integer")
         .unwrap();
     assert!(check("use config\nconfig.f", &declarations).2.iter().any(
-        |e| matches!(&e.reason, Reason::Default { name } if name == "width")
+        |e| matches!(&e.reason, Reason::Default { name, .. } if name == "width")
     ));
 }
 
@@ -499,7 +501,7 @@ fn host_written_values_are_typed_once_in_their_home_module() {
     let (_, _, errors) = check("use config\nconfig.f", &declarations);
     assert!(
         errors.iter().any(
-            |e| matches!(&e.reason, Reason::Default { name } if name == "n")
+            |e| matches!(&e.reason, Reason::Default { name, .. } if name == "n")
         ),
         "{errors:?}"
     );
@@ -933,4 +935,73 @@ fn a_limited_container_type_defaults_when_the_empty_value_is_proved() {
         ty("type V9: Vec<U8> where self.len > 0\ntype R8 { v: V9 }\nR8"),
         "V9 -> R8"
     );
+}
+
+#[test]
+fn a_file_default_names_the_file_s_own_bindings() {
+    use fipe::{
+        ast::Entry, infer::infer, lex::lex, parse::parse, resolve::resolve,
+    };
+    let declarations = Declarations::new();
+    let source = "limit = 5\n\
+        pub f = (n = limit) => n\n\
+        pub g = (a = 1) (b = (a + limit)) => b\n\
+        pub type Rec { pub a: Integer, pub b: Integer = (limit + a) }";
+    let files = vec![("m".to_string(), parse(lex(source)).unwrap())];
+    for (text, expected) in [
+        ("use m\nm.f", "Integer"),
+        ("use m\nm.g", "Integer"),
+        ("use m\nm.g 2", "Integer"),
+        ("use m\nm.Rec 1", "Rec"),
+    ] {
+        let module = parse(lex(text)).unwrap();
+        let resolved = resolve(&module, &declarations, &files).unwrap();
+        let typed = infer(&module, &resolved, &declarations, &files)
+            .unwrap_or_else(|errors| panic!("{text}: {errors:?}"));
+        let Some(Entry::Line(id)) = module.entries.last() else {
+            panic!()
+        };
+        assert_eq!(typed.expr(*id).unwrap().to_string(), expected, "{text}");
+    }
+}
+
+#[test]
+fn a_file_default_names_the_file_s_own_type() {
+    use fipe::{
+        ast::Entry, infer::infer, lex::lex, parse::parse, resolve::resolve,
+    };
+    let declarations = Declarations::new();
+    let source = "limit = 5\n\
+        pub type Point { pub x: Integer, pub y: Integer = 0 }\n\
+        pub f = (p = (Point 1)) => p.x\n\
+        pub g = (p = (Point 1 limit)) => p.y\n\
+        pub same = (p = (Point 1)) => p\n\
+        pub type R { pub a: Point = (Point 1), pub b: Integer = (a.x + 1) }";
+    let files = vec![("m".to_string(), parse(lex(source)).unwrap())];
+    for (text, expected) in [
+        ("use m\nm.f", "Integer"),
+        ("use m\nm.g", "Integer"),
+        ("use m\nm.same", "Point"),
+        ("use m\n(m.same).x", "Integer"),
+        ("use m\nm.R", "R"),
+        ("use m\n(m.R).a", "Point"),
+        ("use m\n(m.R).b", "Integer"),
+    ] {
+        let module = parse(lex(text)).unwrap();
+        let resolved = resolve(&module, &declarations, &files).unwrap();
+        let typed = infer(&module, &resolved, &declarations, &files)
+            .unwrap_or_else(|errors| panic!("{text}: {errors:?}"));
+        let Some(Entry::Line(id)) = module.entries.last() else {
+            panic!()
+        };
+        let ty = typed.expr(*id).unwrap();
+        assert_eq!(ty.to_string(), expected, "{text}");
+        // The file's type keeps its identity outside the file.
+        if expected == "Point" {
+            assert!(
+                format!("{ty:?}").contains("File(\"m\")"),
+                "{text}: {ty:?}"
+            );
+        }
+    }
 }

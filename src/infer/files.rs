@@ -186,4 +186,63 @@ impl Infer<'_> {
     pub(super) fn cached_file(&self, stem: &str) -> Option<CheckedFile> {
         self.file_cache.files.borrow().get(stem).cloned()
     }
+
+    /// A file checked in this unit, or checked now; none inside its
+    /// own import cycle.
+    pub(super) fn checked_file(&self, stem: &str) -> Option<CheckedFile> {
+        if self.visiting.iter().any(|s| s == stem) {
+            return None;
+        }
+        check_file(
+            stem,
+            self.declarations,
+            self.files,
+            self.file_cache,
+            &self.visiting,
+        )
+    }
+
+    /// A checked file's top-level bindings as locals, by site, for an
+    /// expression of the file typed on its own.
+    pub(super) fn file_locals(
+        &self,
+        stem: &str,
+    ) -> Vec<((usize, usize), super::Local)> {
+        let Some((checked, (_, module))) = self
+            .checked_file(stem)
+            .zip(self.files.iter().find(|(name, _)| name == stem))
+        else {
+            return Vec::new();
+        };
+        module
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let crate::ast::Entry::Line(id) = entry else {
+                    return None;
+                };
+                let crate::ast::ExprKind::Bind { pattern, value, .. } =
+                    &module.expressions[id.0].kind
+                else {
+                    return None;
+                };
+                let crate::ast::PatternKind::Name(name) =
+                    &module.patterns[pattern.0].kind
+                else {
+                    return None;
+                };
+                let scheme = checked.typed.binding(*id)?.clone();
+                let heads = match &module.expressions[value.0].kind {
+                    crate::ast::ExprKind::Arms(arms) => {
+                        Some(super::arms::heads_in(module, arms))
+                    }
+                    _ => None,
+                };
+                Some((
+                    (name.span.start, name.span.end),
+                    super::Local { scheme, heads },
+                ))
+            })
+            .collect()
+    }
 }

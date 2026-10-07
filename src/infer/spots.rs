@@ -16,7 +16,7 @@ use crate::{
     types::{Scheme, Type},
 };
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{rc::Rc, string::String, vec, vec::Vec};
 
 /// What fills a spot.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -415,35 +415,17 @@ impl Infer<'_> {
         }
         self.supply(&slots, &mut filled, stage);
         if let Some((target, kind)) = &callee.conversion {
-            let member =
-                !matches!(kind.as_str(), "from" | "try_from" | "to" | "try");
-            let source_slot =
-                usize::from(member && callee.self_slot == Some(0));
-            if let Some(Some(supply)) = filled.get(source_slot) {
-                self.read_literal_at_meaning(
-                    target,
-                    kind,
-                    supply,
-                    &slots[source_slot].ty,
-                );
-                self.default_literals(mark, &[], &[]);
-                let source = self.apply(&slots[source_slot].ty);
-                let converted = self.convert(target, kind, &source, stage);
-                self.unify(&result, &converted, stage, stage);
-            } else if member {
-                self.state.obligations.push(super::Owed::new(
-                    crate::types::Obligation::Member {
-                        head: target.clone(),
-                        name: kind.clone(),
-                        ty: Type::function(
-                            slots[source_slot].ty.clone(),
-                            result.clone(),
-                        ),
-                        dot: stage,
-                    },
-                    stage,
-                ));
-            }
+            let source_slot = usize::from(
+                !conversion_word(kind) && callee.self_slot == Some(0),
+            );
+            self.convert_supply(
+                (target, kind),
+                &slots[source_slot].ty,
+                filled.get(source_slot).and_then(Option::as_ref),
+                &result,
+                mark,
+                stage,
+            );
         }
         let home = callee.home.as_ref().unwrap_or(&Origin::This);
         for (index, supply) in filled.iter().enumerate() {
@@ -492,6 +474,37 @@ impl Infer<'_> {
             .filter(|(slot, supply)| supply.is_none() && !slot.default)
             .fold(result, |ty, (slot, _)| Type::function(slot.ty.clone(), ty));
         self.apply_extra(result, extra, open, stage)
+    }
+
+    /// A conversion's source spot: a supplied value is converted to the
+    /// target, with a literal read at the meaning it reaches; an unsupplied
+    /// member conversion owes the member on the target.
+    fn convert_supply(
+        &mut self,
+        (target, kind): (&Type, &str),
+        slot: &Type,
+        supply: Option<&Supply>,
+        result: &Type,
+        mark: usize,
+        stage: Span,
+    ) {
+        if let Some(supply) = supply {
+            self.read_literal_at_meaning(target, kind, supply, slot);
+            self.default_literals(mark, &[], &[]);
+            let source = self.apply(slot);
+            let converted = self.convert(target, kind, &source, stage);
+            self.unify(result, &converted, stage, stage);
+        } else if !conversion_word(kind) {
+            self.state.obligations.push(super::Owed::new(
+                crate::types::Obligation::Member {
+                    head: target.clone(),
+                    name: kind.into(),
+                    ty: Type::function(slot.clone(), result.clone()),
+                    dot: stage,
+                },
+                stage,
+            ));
+        }
     }
 
     pub(super) fn record_constructors(&mut self) {
@@ -1300,7 +1313,7 @@ impl Infer<'_> {
             stage,
             true,
         );
-        if valid {
+        if valid.is_ok() {
             if let Some(value) = slots[index].value {
                 if let Some(recorded) = self
                     .file_cache
@@ -1315,11 +1328,12 @@ impl Infer<'_> {
                 }
             }
         }
-        if !valid {
+        if let Err(cause) = valid {
             self.error(
                 stage,
                 Reason::Default {
                     name: slots[index].name.clone().unwrap_or_default(),
+                    cause,
                 },
             );
         }
@@ -1332,7 +1346,7 @@ impl Infer<'_> {
         earlier: &[Slot],
         stage: Span,
         is_default: bool,
-    ) -> (Scheme, bool) {
+    ) -> (Scheme, Result<(), Option<alloc::boxed::Box<Reason>>>) {
         self.declared_context(home, slot, earlier, stage, is_default, None)
     }
 
@@ -1367,6 +1381,9 @@ impl Infer<'_> {
         }
     }
 
+    /// A declared expression typed in its own module against its slot.
+    /// `Err` carries the first error of that typing, none when a name
+    /// of the expression did not resolve.
     pub(super) fn declared_context(
         &mut self,
         home: &Origin,
@@ -1375,14 +1392,14 @@ impl Infer<'_> {
         stage: Span,
         is_default: bool,
         owner: Option<&Type>,
-    ) -> (Scheme, bool) {
+    ) -> (Scheme, Result<(), Option<alloc::boxed::Box<Reason>>>) {
         // Recursive defaults use their signatures. Evaluation decides termination.
         let key = (home.clone(), slot.site);
         if self.state.defaults.contains(&key) {
-            return (Scheme::mono(slot.ty.clone()), true);
+            return (Scheme::mono(slot.ty.clone()), Ok(()));
         }
         let (Some(module), Some(value)) = (self.owner(home), slot.value) else {
-            return (Scheme::mono(slot.ty.clone()), false);
+            return (Scheme::mono(slot.ty.clone()), Err(None));
         };
         // A limited type's test is closed over its owner and shares no
         // state with the line, so a test recorded earlier, in this
@@ -1394,11 +1411,25 @@ impl Infer<'_> {
                 .expression(&(home.clone(), value.0))
                 .is_some()
         {
-            return (Scheme::mono(slot.ty.clone()), true);
+            return (Scheme::mono(slot.ty.clone()), Ok(()));
         }
+        // A file's default is typed as the file types it, naming the
+        // file's own declarations as the file does; what the outside
+        // supplies is renamed in, what it solves and owes renamed out.
+        let foreign = (owner.is_none() && matches!(home, Origin::File(_)))
+            .then(|| self.state.subst.solved());
+        let supplied = |ty: &Type| {
+            if foreign.is_some() {
+                ty.unhome(home)
+            } else {
+                ty.clone()
+            }
+        };
         let earlier: Vec<_> = earlier
             .iter()
-            .filter_map(|slot| Some((slot.name.clone()?, slot.site, &slot.ty)))
+            .filter_map(|slot| {
+                Some((slot.name.clone()?, slot.site, supplied(&slot.ty)))
+            })
             .collect();
         let names: Vec<_> = earlier
             .iter()
@@ -1406,10 +1437,121 @@ impl Infer<'_> {
             .collect();
         let (resolved, resolve_errors) =
             self.default_resolution(home, module, value, &names, owner);
+        let slot = &Slot {
+            ty: supplied(&slot.ty),
+            ..slot.clone()
+        };
+        let mut inner = self.inner(module, &resolved, home, key, earlier);
+        if let Some(owner) = owner {
+            inner.assume_test_owner(owner, slot.site);
+        }
+        let (scheme, mut typed, errors) =
+            inner.check_declared_body(value, slot, stage, is_default);
+        if !is_default {
+            typed
+                .schemes
+                .insert((slot.site.start, slot.site.end), scheme.clone());
+            typed.hidden = inner.record_hidden(&typed.schemes);
+        }
+        let valid =
+            if resolve_errors.is_empty() {
+                inner.state.errors.iter().chain(&errors).next().map_or(
+                    Ok(()),
+                    |error| {
+                        Err(Some(alloc::boxed::Box::new(error.reason.clone())))
+                    },
+                )
+            } else {
+                Err(None)
+            };
+        let recorded = valid.is_ok().then(|| typed.clone());
+        if owner.is_none() {
+            self.adopt_checks(typed.checks, home, stage);
+        }
+        let owed = inner
+            .state
+            .obligations
+            .into_iter()
+            .filter(|_| owner.is_none())
+            .collect();
+        self.adopt_solutions(
+            inner.state.subst,
+            owed,
+            foreign.as_deref(),
+            home,
+            stage,
+        );
+        self.record_declared(home, value, resolved, recorded);
+        let scheme = if foreign.is_some() {
+            scheme.rehome(home)
+        } else {
+            scheme
+        };
+        (scheme, valid)
+    }
+
+    /// The inner typing's solutions and a default's obligations become
+    /// this unit's; a file's are renamed to the file's home.
+    fn adopt_solutions(
+        &mut self,
+        subst: crate::types::Subst,
+        owed: Vec<super::Owed>,
+        foreign: Option<&[bool]>,
+        home: &Origin,
+        stage: Span,
+    ) {
+        self.state.subst = subst;
+        if let Some(solved) = foreign {
+            self.state.subst.rehome_since(solved, home);
+        }
+        for mut owed in owed {
+            owed.span = stage;
+            if foreign.is_some() {
+                owed.obligation = owed.obligation.map(|ty| ty.rehome(home));
+            }
+            self.state.obligations.push(owed);
+        }
+    }
+
+    /// What an expression of `home` sees besides its own module: this
+    /// unit's locals and items, a file's bindings typed with the file;
+    /// a line's bindings are the frame's, found by the lookup.
+    fn scope_inner(&self, inner: &mut Infer<'_>, home: &Origin) {
+        match home {
+            Origin::This => {
+                inner.state.locals.clone_from(&self.state.locals);
+                inner.state.status.clone_from(&self.state.status);
+                inner.items.clone_from(&self.items);
+                inner.groups.clone_from(&self.groups);
+                inner.self_type.clone_from(&self.self_type);
+            }
+            Origin::File(stem) => {
+                inner.state.locals.extend(self.file_locals(stem));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl<'a> Infer<'a> {
+    /// An inference over `module` for one declared expression of `home`,
+    /// continuing this unit's substitution, with the earlier spots as
+    /// locals and `key` among the defaults being typed.
+    fn inner<'r>(
+        &mut self,
+        module: &'r crate::ast::Module,
+        resolved: &'r crate::resolve::Resolved,
+        home: &Origin,
+        key: (Origin, Span),
+        earlier: Vec<(String, Span, Type)>,
+    ) -> Infer<'r>
+    where
+        'a: 'r,
+    {
         let subst = core::mem::take(&mut self.state.subst);
         let mut inner = Infer {
             module,
-            resolved: &resolved,
+            resolved,
             declarations: self.declarations,
             files: self.files,
             frame: self.frame,
@@ -1423,38 +1565,28 @@ impl Infer<'_> {
             groups: Vec::new(),
             self_type: None,
         };
-        if *home == Origin::This {
-            inner.state.locals.clone_from(&self.state.locals);
-            inner.state.status.clone_from(&self.state.status);
-            inner.items.clone_from(&self.items);
-            inner.groups.clone_from(&self.groups);
-            inner.self_type.clone_from(&self.self_type);
-        }
-        if let Some(owner) = owner {
-            inner.assume_test_owner(owner, slot.site);
-        }
+        self.scope_inner(&mut inner, home);
         inner.state.defaults.clone_from(&self.state.defaults);
         inner.state.defaults.push(key);
         for (_, site, ty) in earlier {
             let local = Local {
-                scheme: Scheme::mono(ty.clone()),
+                scheme: Scheme::mono(ty),
                 heads: None,
             };
             inner.state.locals.insert((site.start, site.end), local);
         }
-        let (scheme, mut typed, errors) =
-            inner.check_declared_body(value, slot, stage, is_default);
-        if !is_default {
-            typed
-                .schemes
-                .insert((slot.site.start, slot.site.end), scheme.clone());
-            typed.hidden = inner.record_hidden(&typed.schemes);
-        }
-        let valid = inner.state.errors.is_empty()
-            && resolve_errors.is_empty()
-            && errors.is_empty();
-        let recorded = valid.then(|| typed.clone());
-        for mut check in typed.checks.into_iter().filter(|_| owner.is_none()) {
+        inner
+    }
+
+    /// A default's limit checks, listed at this call with their limits
+    /// kept in the declaring module.
+    fn adopt_checks(
+        &mut self,
+        checks: Vec<crate::limits::Check>,
+        home: &Origin,
+        stage: Span,
+    ) {
+        for mut check in checks {
             check.place = stage;
             check.frequency = crate::limits::frequency(self.module, stage);
             check.place_origin = Origin::This;
@@ -1465,19 +1597,10 @@ impl Infer<'_> {
             check.known.rehome(home);
             self.state.checks.push(check);
         }
-        self.state.subst = inner.state.subst;
-        for mut owed in inner
-            .state
-            .obligations
-            .into_iter()
-            .filter(|_| owner.is_none())
-        {
-            owed.span = stage;
-            self.state.obligations.push(owed);
-        }
-        self.record_declared(home, value, resolved, recorded);
-        (scheme, valid)
     }
+    /// The resolution a declared expression is typed under: its own
+    /// module's for this unit, an accepted line or a file, which saw the
+    /// frame and the module's bindings; a declaration's is built here.
     fn default_resolution(
         &self,
         home: &Origin,
@@ -1485,7 +1608,7 @@ impl Infer<'_> {
         value: ExprId,
         names: &[(String, Span)],
         owner: Option<&Type>,
-    ) -> (crate::resolve::Resolved, Vec<crate::resolve::Error>) {
+    ) -> (Rc<crate::resolve::Resolved>, Vec<crate::resolve::Error>) {
         let owner_name = owner.and_then(|ty| {
             if let Type::Named { name, .. } = ty {
                 Some(name.name.as_str())
@@ -1493,18 +1616,29 @@ impl Infer<'_> {
                 None
             }
         });
-        if *home == Origin::This {
-            (self.resolved.clone(), Vec::new())
-        } else {
-            crate::resolve::resolve_declared_expression(
-                module,
-                self.declarations,
-                home,
-                value,
-                names,
-                owner_name,
-            )
+        let own = match home {
+            Origin::This => Some(Rc::new(self.resolved.clone())),
+            Origin::Line(line) => self
+                .frame
+                .and_then(|frame| frame.lines.get(*line))
+                .map(|line| Rc::new(line.resolved.clone())),
+            Origin::File(stem) => {
+                self.checked_file(stem).map(|file| file.resolved)
+            }
+            _ => None,
+        };
+        if let Some(resolved) = own {
+            return (resolved, Vec::new());
         }
+        let (resolved, errors) = crate::resolve::resolve_declared_expression(
+            module,
+            self.declarations,
+            home,
+            value,
+            names,
+            owner_name,
+        );
+        (Rc::new(resolved), errors)
     }
 
     fn check_declared_body(
@@ -1525,7 +1659,11 @@ impl Infer<'_> {
         self.expr(value, Some(&expected));
         self.dots();
         let scheme = if is_default {
-            self.default_literals(0, &[], &[]);
+            // A literal default at a spot still open chooses with the
+            // call's other literals, not alone.
+            if !matches!(self.apply(&slot.ty), Type::Var(_)) {
+                self.default_literals(0, &[], &[]);
+            }
             Scheme::mono(self.apply(&slot.ty))
         } else {
             self.generalize(
@@ -1549,7 +1687,7 @@ impl Infer<'_> {
         &self,
         home: &Origin,
         value: ExprId,
-        resolved: crate::resolve::Resolved,
+        resolved: Rc<crate::resolve::Resolved>,
         recorded: Option<crate::typed::Typed>,
     ) {
         if let Some(typed) = recorded {
@@ -1558,8 +1696,8 @@ impl Infer<'_> {
                 crate::typed::DeclaredExpression {
                     origin: home.clone(),
                     value,
-                    resolved: alloc::rc::Rc::new(resolved),
-                    typed: alloc::rc::Rc::new(typed),
+                    resolved,
+                    typed: Rc::new(typed),
                 },
             );
         }
@@ -1711,4 +1849,9 @@ impl Infer<'_> {
         self.record_callee(&callee, span);
         self.state.bound.insert((span.start, span.end), bound);
     }
+}
+
+/// Whether a conversion is one of the words rather than a member.
+fn conversion_word(kind: &str) -> bool {
+    matches!(kind, "from" | "try_from" | "to" | "try")
 }

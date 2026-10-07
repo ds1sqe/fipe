@@ -102,8 +102,12 @@ pub enum Reason {
     ConflictingConversion,
     ExtraArgument,
     NonBoolChaining,
+    /// A spot's declared default does not meet its spot; `cause` is the
+    /// first error of the default's own typing, none when its names did
+    /// not resolve.
     Default {
         name: String,
+        cause: Option<alloc::boxed::Box<Self>>,
     },
     DeclarationValue {
         name: String,

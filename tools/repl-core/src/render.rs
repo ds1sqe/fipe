@@ -181,9 +181,15 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::DeclarationValue { name, .. } => {
             format!("declared value `{name}` does not type check")
         }
-        R::Default { name } => {
-            format!("default for spot `{name}` does not meet its type")
-        }
+        R::Default { name, cause } => match cause {
+            Some(cause) => format!(
+                "default for spot `{name}` does not meet its type: {}",
+                infer(cause)
+            ),
+            None => format!(
+                "default for spot `{name}` does not meet its type: a name does not resolve"
+            ),
+        },
         R::NonBoolChaining => {
             "a chained flag needs only Bool spots and no value".into()
         }

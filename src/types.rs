@@ -180,41 +180,51 @@ impl Type {
     /// accepted line's types keep their identity outside it.
     #[must_use]
     pub fn rehome(&self, origin: &Origin) -> Self {
+        self.renamed(&Origin::This, origin)
+    }
+
+    /// The inverse of [`Self::rehome`]: `origin`'s declarations named
+    /// as its own module names them, for an expression typed in it.
+    #[must_use]
+    pub fn unhome(&self, origin: &Origin) -> Self {
+        self.renamed(origin, &Origin::This)
+    }
+
+    fn renamed(&self, from: &Origin, to: &Origin) -> Self {
+        let renamed = |ty: &Self| ty.renamed(from, to);
         match self {
             Self::Named { name, arguments } => Self::Named {
                 name: TypeName {
-                    origin: if name.origin == Origin::This {
-                        origin.clone()
+                    origin: if name.origin == *from {
+                        to.clone()
                     } else {
                         name.origin.clone()
                     },
                     name: name.name.clone(),
                 },
-                arguments: arguments.iter().map(|a| a.rehome(origin)).collect(),
+                arguments: arguments.iter().map(renamed).collect(),
             },
-            Self::Sum(parts) => {
-                Self::sum(parts.iter().map(|p| p.rehome(origin)).collect())
-            }
+            Self::Sum(parts) => Self::sum(parts.iter().map(renamed).collect()),
             Self::Tuple(parts) => {
-                Self::Tuple(parts.iter().map(|p| p.rehome(origin)).collect())
+                Self::Tuple(parts.iter().map(renamed).collect())
             }
             Self::Either(parts) => {
-                Self::Either(parts.iter().map(|p| p.rehome(origin)).collect())
+                Self::Either(parts.iter().map(renamed).collect())
             }
             Self::Both(parts) => {
-                Self::Both(parts.iter().map(|p| p.rehome(origin)).collect())
+                Self::Both(parts.iter().map(renamed).collect())
             }
-            Self::Not(inner) => Self::Not(Box::new(inner.rehome(origin))),
+            Self::Not(inner) => Self::Not(Box::new(renamed(inner))),
             Self::Limited { name, meaning } => Self::Limited {
-                name: Box::new(name.rehome(origin)),
-                meaning: Box::new(meaning.rehome(origin)),
+                name: Box::new(renamed(name)),
+                meaning: Box::new(renamed(meaning)),
             },
             Self::Array { element, length } => Self::Array {
-                element: Box::new(element.rehome(origin)),
-                length: Box::new(length.rehome(origin)),
+                element: Box::new(renamed(element)),
+                length: Box::new(renamed(length)),
             },
             Self::Function { parameter, result } => {
-                Self::function(parameter.rehome(origin), result.rehome(origin))
+                Self::function(renamed(parameter), renamed(result))
             }
             Self::Unit | Self::Number(_) | Self::Var(_) | Self::Rigid(_) => {
                 self.clone()
@@ -507,6 +517,26 @@ impl Subst {
     #[must_use]
     pub(crate) fn count(&self) -> u32 {
         u32::try_from(self.bindings.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Which variables are solved, from `Var(0)`.
+    #[must_use]
+    pub(crate) fn solved(&self) -> Vec<bool> {
+        self.bindings.iter().map(Option::is_some).collect()
+    }
+
+    /// The solutions made since `solved` was taken, with the module's
+    /// own declarations named by `origin` ([`Type::rehome`]): what an
+    /// expression typed inside that module solved for its user.
+    pub(crate) fn rehome_since(&mut self, solved: &[bool], origin: &Origin) {
+        for (index, binding) in self.bindings.iter_mut().enumerate() {
+            if solved.get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            if let Some(ty) = binding {
+                *ty = ty.rehome(origin);
+            }
+        }
     }
 
     pub fn fresh(&mut self) -> Var {

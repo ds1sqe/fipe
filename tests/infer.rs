@@ -623,3 +623,14 @@ fn a_limited_type_over_a_claimed_base_is_a_place_of_that_meaning() {
     // Without a test the base names a combination the type claims.
     assert_eq!(ty("type RS: Read & Show\nu: RS = 5"), "RS");
 }
+
+#[test]
+fn a_declared_default_s_literal_chooses_with_the_body() {
+    assert_eq!(ty("g = (n = 1) => n + 1.5\ng"), "F64");
+    assert_eq!(ty("g = (n = 1) => n + 1.5\ng 2"), "F64");
+    assert_eq!(ty("f = (a = 1) (b = 2.5) => a + b\nf"), "F64");
+    assert_eq!(ty("f = (a = 1) (b = 2.5) => a + b\nf -b 2"), "F64");
+    assert_eq!(ty("h = (n = 1) => n + 1.5 + n\nh"), "F64");
+    assert_eq!(ty("k = (n = 1) => n\nk"), "Integer");
+    assert_eq!(ty("w = (n = 1) => n + 2\nw"), "Integer");
+}

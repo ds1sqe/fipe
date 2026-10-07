@@ -183,7 +183,7 @@ impl Infer<'_> {
                 true,
                 Some(&owner_type),
             );
-            if valid {
+            if valid.is_ok() {
                 if let Some(expression) =
                     self.file_cache.expression(&(owner.origin.clone(), value.0))
                 {

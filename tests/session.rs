@@ -1120,3 +1120,19 @@ fn indexed_dispatch_rows_follow_accepted_lines_not_queries() {
         before
     );
 }
+
+#[test]
+fn a_default_names_an_earlier_line() {
+    let mut session = Session::new(host());
+    ok(&mut session, "k = 5");
+    ok(&mut session, "f = (m = k) => m");
+    assert_eq!(query(&mut session, "x = f"), "Integer");
+    ok(
+        &mut session,
+        "type R { a: Integer = k, b: Integer = (a + k) }",
+    );
+    assert_eq!(query(&mut session, "r = R"), "R");
+    ok(&mut session, "id = v => v");
+    ok(&mut session, "g = (n = (id 1)) => n");
+    assert_eq!(query(&mut session, "y = g"), "Integer");
+}

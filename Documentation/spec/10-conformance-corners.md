@@ -50,6 +50,8 @@ each once a defect: a row stays so the defect cannot return.
 | `n: I64 = 2.0`; `n: Integer = 1e3`; `n: I64 = 2.5`; `n: I64 = (2.5)` | exact `2` and `1000`, no cast; a fraction that is no integer is a check error, grouped or not, never a run-time cast |
 | `to<U8> 300.0`; `to<U8> 2.5` | refuted as `U8 300` is; check error: not an integer |
 | `type V8: Vec<U8> where self.len < 5`, field `v: V8` | `v` defaults to `[]`, proved by the static checks; with `self.len > 0` it stays a spot |
+| `k = 5` LF `f = (m = k) => m` LF `f`; `type R { a: Integer = k }` LF `R`; a file's `limit = 5` in its `pub f = (n = limit) => n` | accepted: a default sees the session's earlier lines and its module's own bindings |
+| `g = (n = 1) => n + 1.5` LF `g`; `f = (a = 1) (b = 2.5) => a + b` LF `f` | `F64`: a declared default's literal chooses with the body's, not alone |
 | `big = s => s.area > 10.0`; `big 1` | missing `area` at the argument |
 | plain member repeated in a later session impl | duplicate-member error |
 | repeated literal/member requirement; duplicate claim block; missing host members | one error per cause; missing members named |

@@ -811,6 +811,7 @@ impl<'a> Infer<'a> {
         };
         let (scheme, valid) =
             self.declared_expression(home, &slot, &[], span, false);
+        let valid = valid.is_ok();
         let cached = if valid {
             DeclaredValue::Typed(scheme.clone())
         } else {
