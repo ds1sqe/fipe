@@ -319,7 +319,7 @@ impl Infer<'_> {
         if self.state.errors.len() == before.errors.len()
             || self.state.errors[before.errors.len()..]
                 .iter()
-                .any(|e| matches!(e.reason, Reason::OutOfRange))
+                .any(|e| super::bind::decided_literal(&e.reason))
         {
             return ty;
         }

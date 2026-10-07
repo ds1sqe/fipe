@@ -69,8 +69,7 @@ impl Infer<'_> {
     pub(super) fn bracket_side(
         &mut self,
         applied: &Type,
-        good: bool,
-        has_payload: bool,
+        (good, has_payload, pattern): (bool, bool, bool),
         span: Span,
         other: Span,
     ) -> Option<Type> {
@@ -81,6 +80,7 @@ impl Infer<'_> {
                 side: side.clone(),
                 good,
                 has_payload,
+                pattern,
                 span,
                 other,
             });
@@ -88,7 +88,8 @@ impl Infer<'_> {
         }
         match family(applied) {
             None | Some((Family::Either, _)) => {
-                self.error(span, Reason::NeedsMaybeOrResult);
+                let ty = applied.clone();
+                self.error(span, Reason::NoBracketForm { ty });
                 None
             }
             Some((Family::Maybe, _)) if !good && has_payload => {
@@ -110,8 +111,12 @@ impl Infer<'_> {
         let ty = expected.map_or_else(|| self.fresh(), |e| e.ty.clone());
         let head = self.apply(&ty);
         let other = expected.map_or(span, |e| e.span);
-        let side =
-            self.bracket_side(&head, good, payload.is_some(), span, other);
+        let side = self.bracket_side(
+            &head,
+            (good, payload.is_some(), false),
+            span,
+            other,
+        );
         match (payload, &side) {
             (Some(payload), Some(ty)) => {
                 self.expr(
@@ -125,10 +130,22 @@ impl Infer<'_> {
             (Some(payload), None) => {
                 self.expr(payload, None);
             }
-            (None, Some(ty)) => self.unify(ty, &Type::Unit, span, span),
-            (None, None) => {}
+            // A deferred family is checked when it is known.
+            (None, Some(ty)) if !matches!(head, Type::Var(_)) => {
+                self.payload_present(good, ty, span);
+            }
+            (None, _) => {}
         }
         head
+    }
+
+    /// A bracket without a payload where the side's payload is not `()`.
+    fn payload_present(&mut self, good: bool, side: &Type, span: Span) {
+        match self.apply(side) {
+            Type::Unit => {}
+            Type::Var(_) => self.unify(side, &Type::Unit, span, span),
+            ty => self.error(span, Reason::MissingPayload { good, ty }),
+        }
     }
 
     /// `left |: right` and `left |! right`, the left already typed.
@@ -167,12 +184,15 @@ impl Infer<'_> {
         self.rebuild(left, false, result, span, left_span)
     }
 
+    /// A left that is no outcome: unknown while it is a variable, unless
+    /// the variable is a literal's, which no outcome type is.
     fn not_outcome(&mut self, applied: &Type, operator: Span) {
-        let reason = if matches!(applied, Type::Var(_)) {
-            Reason::UnknownFamily
-        } else {
-            Reason::NeedsMaybeOrResult
-        };
+        let reason =
+            if matches!(applied, Type::Var(_)) && !self.numeric_var(applied) {
+                Reason::UnknownFamily
+            } else {
+                Reason::NeedsMaybeOrResult
+            };
         self.error(operator, reason);
     }
 
@@ -258,11 +278,12 @@ impl Infer<'_> {
             );
             return applied;
         }
-        self.state = before;
+        self.state = before.clone();
         self.state.modes.insert(
             (operator.start, operator.end),
             crate::typed::Mode::Payload,
         );
+        let errors = self.state.errors.len();
         self.expr(
             right,
             Some(
@@ -270,6 +291,29 @@ impl Infer<'_> {
                     .at(crate::typed::Place::Payload),
             ),
         );
+        if self.state.errors.len() == errors {
+            return good;
+        }
+        // A right of another family is a clash of families, not a
+        // mismatch inside the payload.
+        let right_ty =
+            self.state.types[right.0].clone().map(|t| self.apply(&t));
+        let other = right_ty
+            .as_ref()
+            .and_then(|t| self::family(t).map(|(f, _)| f));
+        if other.is_some_and(|other| other != family) {
+            self.state = before;
+            let right_ty = self.expr(right, None);
+            let right_ty = self.apply(&right_ty);
+            self.error(
+                operator,
+                Reason::FamilyClash {
+                    left: applied.clone(),
+                    right: right_ty,
+                },
+            );
+            return self.fresh();
+        }
         good
     }
 
@@ -313,6 +357,9 @@ pub(super) struct Pending {
     side: Type,
     good: bool,
     has_payload: bool,
+    /// A pattern's bracket matches its side whole; a value's bracket
+    /// without a payload needs the side to be `()`.
+    pattern: bool,
     span: Span,
     other: Span,
 }
@@ -330,12 +377,15 @@ impl Infer<'_> {
                 }
             } else if let Some(side) = self.bracket_side(
                 &ty,
-                owed.good,
-                owed.has_payload,
+                (owed.good, owed.has_payload, owed.pattern),
                 owed.span,
                 owed.other,
             ) {
-                self.unify(&side, &owed.side, owed.span, owed.other);
+                if owed.has_payload || owed.pattern {
+                    self.unify(&side, &owed.side, owed.span, owed.other);
+                } else {
+                    self.payload_present(owed.good, &side, owed.span);
+                }
             }
         }
     }

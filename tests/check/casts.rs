@@ -182,7 +182,9 @@ fn a_fraction_literal_at_an_integer_place_is_exact_or_refused() {
     ] {
         let (_, _, errors) = check(text, &Declarations::new());
         assert!(
-            errors.iter().any(|e| e.reason == Reason::NotExact),
+            errors
+                .iter()
+                .any(|e| matches!(e.reason, Reason::NotExact { .. })),
             "{text}: {errors:?}"
         );
     }

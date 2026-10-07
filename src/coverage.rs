@@ -137,6 +137,16 @@ impl Pass<'_> {
         if arms.iter().any(|a| a.patterns.len() != types.len()) {
             return;
         }
+        // An outcome bracket whose family is unknown has its own error;
+        // coverage is silent while it stands.
+        if arms.iter().any(|a| {
+            a.patterns
+                .iter()
+                .zip(types)
+                .any(|(p, t)| self.bracket_without_family(*p, t))
+        }) {
+            return;
+        }
         let rows: Vec<_> = arms
             .iter()
             .filter(|a| a.guard.is_none())
@@ -158,6 +168,20 @@ impl Pass<'_> {
                     ),
                 },
             });
+        }
+    }
+
+    fn bracket_without_family(&self, id: PatternId, ty: &Type) -> bool {
+        let node = &self.module.patterns[id.0];
+        match &node.kind {
+            PatternKind::Group(p) => self.bracket_without_family(*p, ty),
+            PatternKind::Outcome { .. } => {
+                let cases = self.cover_cases(ty);
+                !cases.iter().any(|c| {
+                    matches!(c.name.as_str(), "Just" | "Nothing" | "Ok" | "Err")
+                })
+            }
+            _ => false,
         }
     }
 
@@ -427,6 +451,15 @@ impl Pass<'_> {
                 })
                 .collect()
         } else {
+            // A record pattern over a private field cannot be written
+            // outside its module, so a witness stops at the record.
+            let hidden = !matches!(name.origin, Origin::This | Origin::Line(_))
+                && members
+                    .iter()
+                    .any(|m| matches!(m, Member::Field(f) if !f.public));
+            if hidden {
+                return Vec::new();
+            }
             vec![Case {
                 name: name.name.clone(),
                 fields: members

@@ -158,14 +158,19 @@ pub fn infer(reason: &infer::Reason) -> String {
             ) {
                 return "conversion needs a known target meaning".into();
             }
-            let choices = candidates
-                .iter()
-                .map(ToString::to_string)
-                .collect::<alloc::vec::Vec<_>>()
-                .join(", ");
+            let choices = if candidates.is_empty() {
+                String::new()
+            } else {
+                let choices = candidates
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<alloc::vec::Vec<_>>()
+                    .join(", ");
+                format!("; candidates: {choices}")
+            };
             match source {
-                Some(source) if !matches!(source, fipe::types::Type::Var(_) | fipe::types::Type::Rigid(_)) => format!("no conversion or member of {target} accepts {source}; candidates: {choices}"),
-                _ => format!("{target} needs a known argument meaning; candidates: {choices}"),
+                Some(source) if !matches!(source, fipe::types::Type::Var(_) | fipe::types::Type::Rigid(_)) => format!("no conversion or member of {target} accepts {source}{choices}"),
+                _ => format!("{target} needs a known argument meaning{choices}"),
             }
         }
         R::ConflictingConversion => {
@@ -177,6 +182,12 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::NotAFunction => "not a function".into(),
         R::ExtraArgument => "one argument too many".into(),
         R::UnknownSpot { name } => format!("no spot named `{name}`"),
+        R::FlagOperand { name } => {
+            format!("flag `{name}` needs an operand: `-{name} value`")
+        }
+        R::DuplicateSupply { name } => {
+            format!("duplicate supply: spot `{name}` is already filled")
+        }
         R::Spots { problem } => spot_problem(problem),
         R::DeclarationValue { name, .. } => {
             format!("declared value `{name}` does not type check")
@@ -201,9 +212,23 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::MissingField { name } => format!("missing field `{name}`"),
         R::Limit { message } => message.clone(),
         R::OutOfRange => "integer out of range for its type".into(),
-        R::NotExact => {
+        R::NotExact { ty } if integer_meaning(ty) => {
             "not an integer: a literal at an integer place must be exact".into()
         }
+        R::NotExact { ty } => {
+            format!("not exact: {ty} cannot hold this literal exactly")
+        }
+        R::NoBracketForm { ty } => format!(
+            "`[:…]` and `[!…]` need a Maybe or Result place; {ty} has no bracket form"
+        ),
+        R::FamilyClash { left, right } => {
+            format!("`||` mixes two outcome families: {left} and {right}")
+        }
+        R::NoPayload { name } => format!("`{name}` takes no payload"),
+        R::MissingPayload { good, ty } => format!(
+            "`[{}]` needs a payload of {ty}",
+            if *good { ':' } else { '!' }
+        ),
         R::Ambiguous { class } => {
             format!("ambiguous: `{class}` on an unknown type")
         }
@@ -213,6 +238,18 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::NoConstructor { field } => format!(
             "no constructor outside the module: private field `{field}` has no default"
         ),
+    }
+}
+
+/// Whether a type's meaning is `Integer`, through its limits.
+fn integer_meaning(ty: &fipe::types::Type) -> bool {
+    match ty {
+        fipe::types::Type::Limited { meaning, .. } => integer_meaning(meaning),
+        fipe::types::Type::Named { name, .. } => {
+            name.origin == fipe::resolve::Origin::Prelude
+                && name.name == "Integer"
+        }
+        _ => false,
     }
 }
 

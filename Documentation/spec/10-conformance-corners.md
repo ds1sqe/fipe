@@ -96,6 +96,7 @@ each once a defect: a row stays so the defect cannot return.
 | length occurs check: `t: [Integer; n] -> [Integer; n + 1] = a => a ++ [0]` LF `u = xs => t (t xs)` LF `:t u` | length sums solve without recursion; an occurs check rejects a cyclic length |
 | gate complement limits: `type Small: Integer where self < 10` LF `type Other: U8 & !Small` LF `kind = n => n \| { Small p => 1, Other q => 2 }` | not exhaustive; the complement has extra limits |
 | nested gate coverage: `type Small: Integer where self < 10` LF `k = (Small p, y) => 1` | not exhaustive; every pattern position is read |
+| `g = { [:e] => e, [!] => 0 }` with no family supplied | the family errors only; coverage is silent while a bracket's family is unknown |
 | postfix phase: `type V { x: Integer }` LF `impl V { get = self => cli.port + self.x }` LF `y: Compile & Integer = (V 1).get` | timing error from the called member |
 | claimed operation phase: `type V: Zero & Add { x: Integer }` LF `impl V: Add { add = o self => V (self.x + o.x + cli.port) }` LF `impl V: Zero { zero = V 0 }` LF `y: Compile & V = sum [V 1, V 2]` | timing follows the selected Add member |
 | destructured phase: `(a, b) = (log 1, 5)` LF `z: Compile & Integer = b` | timing error; b belongs to the impure binding |

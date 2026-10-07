@@ -1066,3 +1066,12 @@ fn ast_shows_visibility_versions_and_member_annotations() {
     assert!(!text.is_empty());
     assert!(written(repl.feed(b":ast\n")).contains("Use text version 2"));
 }
+
+#[test]
+fn a_conversion_without_candidates_ends_its_message() {
+    let text = written(Repl::new().feed(b":t to<F64> 3\n"));
+    assert!(
+        text.contains("no conversion or member of F64 accepts Integer\n"),
+        "{text}"
+    );
+}

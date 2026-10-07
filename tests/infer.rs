@@ -105,6 +105,8 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::NonBoolChaining => "NonBoolChaining",
         Reason::ExtraArgument => "ExtraArgument",
         Reason::UnknownSpot { .. } => "UnknownSpot",
+        Reason::FlagOperand { .. } => "FlagOperand",
+        Reason::DuplicateSupply { .. } => "DuplicateSupply",
         Reason::FilledSpot => "FilledSpot",
         Reason::OpenSpot => "OpenSpot",
         Reason::NeedsMaybeOrResult => "NeedsMaybeOrResult",
@@ -113,7 +115,11 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::MissingField { .. } => "MissingField",
         Reason::Limit { .. } => "Limit",
         Reason::OutOfRange => "OutOfRange",
-        Reason::NotExact => "NotExact",
+        Reason::NotExact { .. } => "NotExact",
+        Reason::NoBracketForm { .. } => "NoBracketForm",
+        Reason::FamilyClash { .. } => "FamilyClash",
+        Reason::NoPayload { .. } => "NoPayload",
+        Reason::MissingPayload { .. } => "MissingPayload",
         Reason::Ambiguous { .. } => "Ambiguous",
         Reason::ImportCycle => "ImportCycle",
         Reason::PrivateMember { .. } => "PrivateMember",
@@ -633,4 +639,61 @@ fn a_declared_default_s_literal_chooses_with_the_body() {
     assert_eq!(ty("h = (n = 1) => n + 1.5 + n\nh"), "F64");
     assert_eq!(ty("k = (n = 1) => n\nk"), "Integer");
     assert_eq!(ty("w = (n = 1) => n + 2\nw"), "Integer");
+}
+
+#[test]
+fn a_flag_without_its_operand_and_a_duplicate_flag_are_named() {
+    assert_eq!(kinds("ls -depth"), [("FlagOperand", "-depth")]);
+    assert_eq!(kinds("ls -depth -l"), [("FlagOperand", "-depth")]);
+    assert_eq!(kinds("ls -l -l"), [("DuplicateSupply", "-l")]);
+    assert_eq!(kinds("ls -ll"), [("DuplicateSupply", "-ll")]);
+    assert_eq!(kinds("ls -nope"), [("UnknownSpot", "-nope")]);
+    assert_eq!(ty("ls -depth 2"), "Vec<Entry>");
+}
+
+#[test]
+fn an_outcome_form_at_the_wrong_place_names_its_own_form() {
+    assert_eq!(kinds("v: String = [:1]"), [("NoBracketForm", "[:1]")]);
+    assert_eq!(
+        kinds("r: Either<Integer, String> = [:\"x\"]"),
+        [("NoBracketForm", "[:\"x\"]")]
+    );
+    // The left of the second `||` is a literal's variable: no outcome.
+    assert_eq!(kinds("Just 3 || 4 || 5"), [("NeedsMaybeOrResult", "||")]);
+    assert_eq!(kinds("m = [:1]"), [("UnknownFamily", "[:1]")]);
+    assert_eq!(kinds("Just 1 || Ok 1"), [("FamilyClash", "||")]);
+    assert_eq!(ty("Just 1 || Just 2"), "Maybe<Integer>");
+    assert_eq!(
+        kinds("ok: Result<Integer, String> = [!]"),
+        [("MissingPayload", "[!]")]
+    );
+    assert_eq!(ty("ok: Result<Integer, ()> = [!]"), "Result<Integer, ()>");
+    assert_eq!(ty("m: Maybe<Integer> = [!]"), "Maybe<Integer>");
+    assert_eq!(
+        ty("f: Result<Integer, String> -> Integer = { [:x] => x, [!] => 0 }"),
+        "Result<Integer, String> -> Integer"
+    );
+}
+
+#[test]
+fn a_payload_on_a_constructor_without_fields_is_named() {
+    assert_eq!(
+        kinds("c = { True True => 1, _ => 0 }"),
+        [("NoPayload", "True")]
+    );
+    assert_eq!(
+        ty("c = { Just x => x, Nothing => 0 }"),
+        "Literal a => Maybe<a> -> a"
+    );
+}
+
+#[test]
+fn an_integer_a_float_cannot_hold_is_not_exact_or_out_of_range() {
+    assert_eq!(
+        kinds("n: F64 = 9007199254740993"),
+        [("NotExact", "9007199254740993")]
+    );
+    assert_eq!(ty("n: F64 = 9007199254740992"), "F64");
+    let huge = "340282366920938463463374607431768211456";
+    assert_eq!(kinds(&format!("n: F32 = {huge}")), [("OutOfRange", huge)]);
 }

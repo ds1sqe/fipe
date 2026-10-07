@@ -114,11 +114,19 @@ pub enum Reason {
         origin: Origin,
         declaration: Span,
     },
-    /// A flag naming no spot, or a valued flag with no operand.
+    /// A flag naming no spot.
     UnknownSpot {
         name: String,
     },
-    /// A pipe into a stage with no open spot, or a spot supplied twice.
+    /// A valued flag with no operand after it.
+    FlagOperand {
+        name: String,
+    },
+    /// A spot supplied twice, by name.
+    DuplicateSupply {
+        name: String,
+    },
+    /// A pipe into a stage with no open spot.
     FilledSpot,
     /// A stage on `Maybe`'s miss side with an open spot: `|!` on a
     /// `Maybe` supplies nothing, so its stage must be a value.
@@ -137,8 +145,29 @@ pub enum Reason {
     },
     /// An integer literal outside its type's range.
     OutOfRange,
-    /// A fraction literal at an integer place that is not an integer.
-    NotExact,
+    /// A literal `ty` cannot hold exactly: a fraction at an integer
+    /// place that is no integer, or an integer past a float's precision.
+    NotExact {
+        ty: Type,
+    },
+    /// An outcome bracket at a place whose type has no bracket form.
+    NoBracketForm {
+        ty: Type,
+    },
+    /// `||` with a right side of another outcome family than the left.
+    FamilyClash {
+        left: Type,
+        right: Type,
+    },
+    /// A payload pattern on a constructor without fields.
+    NoPayload {
+        name: String,
+    },
+    /// `[:]` or `[!]` with no payload where the side carries one.
+    MissingPayload {
+        good: bool,
+        ty: Type,
+    },
     /// A refuted limit, or an open entry in a strict session.
     Limit {
         message: String,

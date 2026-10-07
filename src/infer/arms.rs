@@ -231,10 +231,15 @@ impl Infer<'_> {
         if let PatternKind::Constructor { payload, .. } =
             &module.patterns[id.0].kind
         {
-            let payload_ty = match fields.as_slice() {
-                [field, ..] => field.ty.clone(),
-                [] => Type::Unit,
-            };
+            let payload_ty = fields.first().map(|field| field.ty.clone());
+            let payload_ty = payload_ty.unwrap_or_else(|| {
+                // A constructor without fields takes no payload; the
+                // payload's names are still bound, at nothing known.
+                let payload_span = module.patterns[payload.0].span;
+                let name = name.clone();
+                self.error(payload_span, Reason::NoPayload { name });
+                self.fresh()
+            });
             self.pattern(*payload, &payload_ty, span);
         }
     }
@@ -249,8 +254,12 @@ impl Infer<'_> {
         input: Span,
     ) {
         let applied = self.apply(ty);
-        let side =
-            self.bracket_side(&applied, good, payload.is_some(), span, input);
+        let side = self.bracket_side(
+            &applied,
+            (good, payload.is_some(), true),
+            span,
+            input,
+        );
         if let Some(payload) = payload {
             let payload_ty = side.unwrap_or_else(|| self.fresh());
             self.pattern(payload, &payload_ty, span);

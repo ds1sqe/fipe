@@ -820,7 +820,7 @@ impl Infer<'_> {
                 } else {
                     for slot in chain.unwrap_or_default() {
                         if filled[slot].is_some() {
-                            self.error(argument.span, Reason::FilledSpot);
+                            self.duplicate_supply(&slots[slot], argument.span);
                         } else {
                             filled[slot] = Some(Supply::True(argument.span));
                         }
@@ -847,19 +847,29 @@ impl Infer<'_> {
             };
             let (Some(slot), Some(supply)) = (slot, supply) else {
                 let name = name.clone();
-                self.error(argument.span, Reason::UnknownSpot { name });
+                let reason = if slot.is_some() {
+                    Reason::FlagOperand { name }
+                } else {
+                    Reason::UnknownSpot { name }
+                };
+                self.error(argument.span, reason);
                 if let Some(value) = value {
                     self.expr(*value, None);
                 }
                 continue;
             };
             if filled[slot].is_some() {
-                self.error(argument.span, Reason::FilledSpot);
+                self.duplicate_supply(&slots[slot], argument.span);
             } else {
                 filled[slot] = Some(supply);
             }
         }
         consumed
+    }
+
+    fn duplicate_supply(&mut self, slot: &Slot, span: Span) {
+        let name = slot.name.clone().unwrap_or_default();
+        self.error(span, Reason::DuplicateSupply { name });
     }
 
     /// A flag's spot: its name, or the one Bool spot whose name starts
@@ -1034,7 +1044,7 @@ impl Infer<'_> {
         }
         if self.state.errors[errors..]
             .iter()
-            .any(|e| matches!(e.reason, Reason::OutOfRange))
+            .any(|e| super::bind::decided_literal(&e.reason))
         {
             return;
         }

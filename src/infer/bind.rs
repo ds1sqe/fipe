@@ -683,8 +683,13 @@ impl Infer<'_> {
                 } else {
                     (53, 1024)
                 };
-                if !magnitude.fits_binary_float(precision, exponent) {
+                // Past the exponent the float has no value; within it
+                // but past the precision it has no exact one.
+                if !magnitude.fits_binary_float(usize::MAX, exponent) {
                     self.error(span, Reason::OutOfRange);
+                } else if !magnitude.fits_binary_float(precision, exponent) {
+                    let ty = ty.clone();
+                    self.error(span, Reason::NotExact { ty });
                 }
                 return;
             }
@@ -696,7 +701,8 @@ impl Infer<'_> {
                 return;
             }
             Lit::Float { whole: None } if is_prelude(ty, "Integer") => {
-                self.error(span, Reason::NotExact);
+                let ty = ty.clone();
+                self.error(span, Reason::NotExact { ty });
                 return;
             }
             Lit::Int { .. } => prelude("Integer"),
@@ -851,5 +857,19 @@ impl Infer<'_> {
             env.extend(variables.into_iter().filter(|v| !own.contains(v)));
         }
         self.default_literals(0, &env, &[]);
+    }
+}
+
+/// Whether a literal error settles the reading: an integer past its
+/// type's range, or one a float cannot hold exactly, which no cast
+/// mends. A fraction at an integer meaning is read again without the
+/// place's expectation, since the meaning may have been the place's.
+pub(super) fn decided_literal(reason: &Reason) -> bool {
+    match reason {
+        Reason::OutOfRange => true,
+        Reason::NotExact { ty } => {
+            is_prelude(ty, "F32") || is_prelude(ty, "F64")
+        }
+        _ => false,
     }
 }

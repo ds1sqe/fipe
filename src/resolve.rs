@@ -1413,7 +1413,15 @@ impl<'a> Resolver<'a> {
         }
         self.arms_of(recursive, *value);
         match &self.module.patterns[pattern.0].kind {
-            PatternKind::Name(name) if name.is_uppercase() => {
+            // `Nothing = e` is a binding pattern on a constructor;
+            // another uppercase name is a binding against the case rule.
+            PatternKind::Name(name)
+                if name.is_uppercase()
+                    && !matches!(
+                        self.lookup_value(&name.segments[0]),
+                        Some(Target::Constructor { .. })
+                    ) =>
+            {
                 self.error(name.span, Reason::CaseRule { uppercase: false });
             }
             _ if recursive.is_some() => {}

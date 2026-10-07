@@ -30,7 +30,12 @@ fn flags_collect_and_preserve_supplied_order() {
     for (text, reason) in [
         ("f -lr=True", Reason::NonBoolChaining),
         ("f -lp", Reason::NonBoolChaining),
-        ("f -ll", Reason::FilledSpot),
+        (
+            "f -ll",
+            Reason::DuplicateSupply {
+                name: String::from("long"),
+            },
+        ),
     ] {
         let (_, _, errors) = check(text, &declarations);
         assert!(
@@ -101,7 +106,9 @@ fn generic_whole_literal_is_checked_at_its_use() {
     let text = "big = _ => 9007199254740993\nx: F64 = big ()";
     let (_, _, errors) = check(text, &Declarations::new());
     assert!(
-        errors.iter().any(|e| e.reason == Reason::OutOfRange),
+        errors
+            .iter()
+            .any(|e| matches!(e.reason, Reason::NotExact { .. })),
         "{errors:?}"
     );
 }

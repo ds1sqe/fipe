@@ -860,3 +860,12 @@ fn a_default_may_not_name_the_binding_it_belongs_to() {
     ok("k = 5\nf = (m = k) => m");
     ok("f = x => { g = (m = f) => m\n  g 1 }");
 }
+
+#[test]
+fn a_constructor_as_a_binding_pattern_is_not_a_case_rule_error() {
+    assert!(resolve(&module("Nothing = Just 1"), &host(), &[]).is_ok());
+    assert_eq!(
+        errors("Point = 1"),
+        [(Reason::CaseRule { uppercase: false }, Some("Point"))]
+    );
+}

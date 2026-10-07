@@ -94,3 +94,48 @@ fn written_constructors_require_total_arms() {
         }
     }
 }
+
+#[test]
+fn coverage_is_silent_while_a_bracket_s_family_is_unknown() {
+    let text = "g = m => m | { [:e] => e, [!] => 0 }";
+    let (_, _, errors) = check(text, &Declarations::new());
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.reason == fipe::infer::Reason::UnknownFamily),
+        "{errors:?}"
+    );
+    assert!(
+        errors.iter().all(|e| !matches!(&e.reason,
+            fipe::infer::Reason::Limit { message } if message.contains("uncovered"))),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_witness_stops_at_a_record_with_a_private_field() {
+    for (text, missing) in [
+        (
+            "type S { A(n: Integer), B, C(s: String) }\nc = { A n => n, B => 0 }",
+            "uncovered C (_)",
+        ),
+        (
+            "id: Integer | String = 3\nid | { Integer n => n.show }",
+            "uncovered String (_)",
+        ),
+    ] {
+        let (_, _, errors) = check(text, &Declarations::new());
+        assert!(errors.iter().any(|e| matches!(&e.reason,
+            fipe::infer::Reason::Limit { message } if message.ends_with(missing))), "{text}: {errors:?}");
+    }
+}
+
+#[test]
+fn a_constructor_binding_pattern_is_checked_for_totality() {
+    let (_, _, errors) = check("Nothing = Just 1", &Declarations::new());
+    assert!(errors.iter().any(|e| matches!(&e.reason,
+        fipe::infer::Reason::Limit { message } if message.contains("binding pattern is not total"))), "{errors:?}");
+    let (_, _, errors) =
+        check("type U { Only }\nOnly = Only", &Declarations::new());
+    assert_eq!(errors, []);
+}
