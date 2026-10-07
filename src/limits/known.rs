@@ -168,6 +168,12 @@ impl Range {
     }
     #[must_use]
     pub fn arithmetic(&self, op: BinaryOp, rhs: &Self) -> Self {
+        if self.lo > self.hi {
+            return self.clone();
+        }
+        if rhs.lo > rhs.hi {
+            return rhs.clone();
+        }
         if op == BinaryOp::Remainder && self.lo == self.hi && rhs.lo == rhs.hi {
             if let (End::Finite(a), End::Finite(b)) = (&self.lo, &rhs.lo) {
                 if let Some((_, remainder)) = a.magnitude.div_rem(&b.magnitude)
@@ -246,6 +252,9 @@ impl Range {
     }
     #[must_use]
     pub fn compare(&self, op: BinaryOp, rhs: &Self) -> Option<bool> {
+        if self.lo > self.hi || rhs.lo > rhs.hi {
+            return Some(true);
+        }
         let (yes, no) = match op {
             B::Less => (self.hi < rhs.lo, self.lo >= rhs.hi),
             B::LessEqual => (self.hi <= rhs.lo, self.lo > rhs.hi),
@@ -268,9 +277,17 @@ impl Range {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Failure {
+    Fault,
+    Dependency,
+}
+
 /// Facts held of a value, independent of its type.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Known {
+    pub(crate) failure: Option<Failure>,
+    pub(crate) meaning: Option<crate::types::TypeName>,
     pub phase: super::Phase,
     pub(crate) pure: bool,
     /// A compile demand awaits preparation by the evaluator.
@@ -293,11 +310,17 @@ impl fmt::Display for Known {
         if let Some(exact) = &self.exact {
             writeln!(f, "exact {exact}")?;
         }
-        if let Some(range) = &self.range {
-            if range.lo == range.hi {
-                writeln!(f, "exact {}", range.lo)?;
-            } else {
-                writeln!(f, "range {}..{}", range.lo, range.hi)?;
+        if let Some(range) =
+            self.range.as_ref().filter(|r| **r != Range::unknown())
+        {
+            match range.lo.cmp(&range.hi) {
+                core::cmp::Ordering::Greater => writeln!(f, "range empty")?,
+                core::cmp::Ordering::Equal => {
+                    writeln!(f, "exact {}", range.lo)?;
+                }
+                core::cmp::Ordering::Less => {
+                    writeln!(f, "range {}..{}", range.lo, range.hi)?;
+                }
             }
         }
         if !self.names.is_empty() {
@@ -319,6 +342,8 @@ impl fmt::Display for Known {
                 write!(f, "{name}: ")?;
                 if let Some(boolean) = value.boolean {
                     f.write_str(if boolean { "True" } else { "False" })?;
+                } else if let Some(exact) = &value.exact {
+                    f.write_str(exact)?;
                 } else if let Some(range) = &value.range {
                     if range.lo == range.hi {
                         write!(f, "{}", range.lo)?;
@@ -336,14 +361,32 @@ impl fmt::Display for Known {
 }
 
 impl Known {
+    pub(crate) fn part(&self, name: &str) -> Self {
+        if self.failure.is_some() {
+            return self.clone();
+        }
+        self.parts.iter().find(|(n, _)| n == name).map_or_else(
+            || Self {
+                narrowing: self.narrowing,
+                ..Self::default()
+            },
+            |(_, part)| part.clone(),
+        )
+    }
     pub(crate) fn is_exact(&self) -> bool {
         self.exact.is_some()
             || self.boolean.is_some()
             || self.range.as_ref().is_some_and(|r| r.lo == r.hi)
             || (!self.parts.is_empty()
+                && self.parts.iter().any(|(name, _)| name != "len")
                 && self.parts.iter().all(|(_, k)| k.is_exact()))
     }
     pub(crate) fn rehome(&mut self, origin: &crate::resolve::Origin) {
+        if let Some(name) = &mut self.meaning {
+            if name.origin == crate::resolve::Origin::This {
+                name.origin = origin.clone();
+            }
+        }
         for name in &mut self.names {
             if name.origin == crate::resolve::Origin::This {
                 name.origin = origin.clone();

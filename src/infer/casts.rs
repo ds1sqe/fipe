@@ -114,6 +114,25 @@ impl Infer<'_> {
         self.state.casts[id.0] = Some(Cast { row, from, to });
     }
 
+    fn same_local_meaning(&self, id: ExprId, target: &Type) -> bool {
+        let Some(crate::resolve::Target::Local { site }) =
+            self.resolved.expr(id)
+        else {
+            return false;
+        };
+        self.state
+            .locals
+            .get(&(site.start, site.end))
+            .or_else(|| {
+                self.frame
+                    .and_then(|f| f.locals.get(&(site.start, site.end)))
+            })
+            .is_some_and(|local| {
+                local.scheme.variables.is_empty()
+                    && meaning(&self.apply(&local.scheme.ty)) == meaning(target)
+            })
+    }
+
     pub(super) fn expr(
         &mut self,
         id: ExprId,
@@ -123,7 +142,16 @@ impl Infer<'_> {
             return self.check_expr(id, expected);
         };
         let target = self.apply(&expected.ty);
-        if !self.cast_target(&target) {
+        if self.same_local_meaning(id, &target)
+            || !self.cast_target(&target)
+            || (matches!(
+                self.module.expressions[id.0].kind,
+                crate::ast::ExprKind::Literal(
+                    crate::ast::Literal::Int { .. }
+                        | crate::ast::Literal::Float(_)
+                )
+            ) && self.cast_meaning(&target, Meaning::Number))
+        {
             return self.check_expr(id, Some(expected));
         }
         if self.packed(&target) {
@@ -134,6 +162,12 @@ impl Infer<'_> {
                 self.cast_pair(&target, &source, self.span(id), expected.span)
             {
                 self.record_cast(id, row, source, target.clone());
+                self.state.entries.push((
+                    id,
+                    target.clone(),
+                    expected.span,
+                    expected.place_kind.clone(),
+                ));
             }
             return target;
         }

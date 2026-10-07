@@ -27,7 +27,7 @@ each once a defect: a row stays so the defect cannot return.
 | REPL `##! module` alone then `:ast` | accepted empty module; its doc is printed once |
 | REPL `:{`, types with mutual claims, `:}` | one compilation unit; commands inside are text; EOF also submits |
 | unannotated `From<Polar>.from = p => Self p.r p.t` | `p` is `Polar`; conversion is callable |
-| a claim member with missing/extra receiver, or a narrower parameter | check error; every member is held to the required full type |
+| a claim member with missing/extra receiver | check error; every member has the required receiver |
 | overloaded `Mul` through `scale v k` or `(v \| .mul) k` | select after the argument meaning is known |
 | `type Key: Eq & Show`, passing `1` at `Key` | accepted by meeting both parts |
 | `Eq -> Eq -> Bool = a b => a == b`; `Vec<Show> \| map show` | packed equality; `Vec<String>` |
@@ -52,7 +52,7 @@ each once a defect: a row stays so the defect cannot return.
 | missing claim on `Integer`; `1 ++ 2` | no promise of a future block; missing `concat` named |
 | `:r x`, bare `:load`, top-level `Self` | readable resolution; path usage; uppercase `Self` diagnostic |
 | opaque supplied type claiming `Eq`, `Ord`, `Show` or `Default` without members | declaration error; no derivation without a body |
-| claimed `Vec<Integer>`, `Maybe<Integer>` or function member narrowed to `U8`; `Len.len = self => -1` | structural member-type error; result limits checked too |
+| claimed `Vec<Integer>`, `Maybe<Integer>` or function member narrowed to `U8`; `Len.len = self => -1` | meaning checked; unimplemented function-limit proof stays open as narrowing |
 | `kf: Key a => a -> Bool = p => p == p`, `Key: Eq & Show`, `kf 1` | written combination met by its parts |
 | session `type S: Show { f: Integer -> Integer }`, then its `Show` block | type line accepted; claim pending until block |
 | `g: Show -> String = s => s.show`; `h = n => g (n + 1)`; `h 2.5` | accepted; packing does not fix the outer parameter to `Integer` |
@@ -66,3 +66,59 @@ each once a defect: a row stays so the defect cannot return.
 | repeated uses of nested file modules; field typed by another imported module | resolve and type once per unit; field retains its imported type |
 | inferred type deeper than the parser nesting limit | type-depth check error, no stack overflow |
 | `k: Number a => a -> a = p => p + 1`; `f = k` | prints `Number a => a -> a`, no redundant `Literal` |
+
+## Limit, phase and container corners
+
+| Case | Expected distinction |
+| --- | --- |
+| written constructor phase: `type C { n: Integer }` LF `impl C { n => Self { n: log n } }` LF `x: Compile & C = C 1` | timing error; written constructor bodies, guards and defaults must be pure |
+| brackets at Sequence places: `xs: Vec<U8> = [1, 2, 300]` | refuted at 300; likewise Deque and nested elements |
+| parameterized record fields: `type Pair<A, B> { first: A, second: B }` LF `p: Pair<U8, U8> = Pair 300 400` | both fields enter their limits |
+| bound tuple parts: `t = (1, 300)` LF `ends: U8 * U8 = t` | refuted at the second part |
+| union meaning: `id: U8 \| String = 300` | refuted; String cannot prove an Integer value |
+| function limit narrowing: `f: U8 -> U8 = n => n` LF `apply = g x => g x` LF `y = apply f 300` LF `:checks y` | open narrowing; strict refuses the implicit entry |
+| fault in a test: `type Q: Integer where 10 / self < 5` LF `z: Q = 0` | refuted test; no separate divisor entry |
+| float ranges: `type A: F64 where self < 5` LF `type B: F64 where self <= 4` LF `a: A = 4.5` LF `b: B = a` LF `:checks b` | no integer interval proves the entry |
+| written conversion facts: `type A { n: Integer }` LF `type B: From<A> { n: Integer }` LF `impl B: From<A> { from = a => B (a.n + 1000) }` LF `b = to<B> (A 5)` LF `x: U8 = b.n` LF `:checks x` | source field facts are dropped; x remains open |
+| written sequence facts: `type Buf<T>: Sequence<T> { len: Integer }` LF `impl Buf<T>: Sequence<T> { sequence = slots => Self 1000 }` LF `b: Buf<Integer> = [1, 2, 3]` LF `x: U8 = b.len` LF `:checks x` | bracket length is not the result length; x remains open |
+| Self entry: `type R { lo: Integer, hi: Integer } where self.lo <= self.hi` LF `impl R { bad = Self 5 0 }` | refuted construction |
+| signed base cycle: `type S: !S` | cyclic-base check error, no stack overflow |
+| length occurs check: `t: [Integer; n] -> [Integer; n + 1] = a => a ++ [0]` LF `u = xs => t (t xs)` LF `:t u` | length sums solve without recursion; an occurs check rejects a cyclic length |
+| gate complement limits: `type Small: Integer where self < 10` LF `type Other: U8 & !Small` LF `kind = n => n \| { Small p => 1, Other q => 2 }` | not exhaustive; the complement has extra limits |
+| nested gate coverage: `type Small: Integer where self < 10` LF `k = (Small p, y) => 1` | not exhaustive; every pattern position is read |
+| postfix phase: `type V { x: Integer }` LF `impl V { get = self => cli.port + self.x }` LF `y: Compile & Integer = (V 1).get` | timing error from the called member |
+| claimed operation phase: `type V: Zero & Add { x: Integer }` LF `impl V: Add { add = o self => V (self.x + o.x + cli.port) }` LF `impl V: Zero { zero = V 0 }` LF `y: Compile & V = sum [V 1, V 2]` | timing follows the selected Add member |
+| destructured phase: `(a, b) = (log 1, 5)` LF `z: Compile & Integer = b` | timing error; b belongs to the impure binding |
+| array length is not exactness: `is_sorted = v => True` LF `type Sorted3: [Integer; 3] where Compile (is_sorted self)` LF `f: [Integer; 3] -> Sorted3 = xs => xs` | Compile test fails on unknown elements |
+| empty interval: `type Empty: Integer where self > 10, self < 5` LF `f: Empty -> U8 = x => x` LF `:checks f` | empty interval proves the result entry |
+| strict division: `q: Integer = 10 / cli.port` LF `:checks q` | nonconfigurable zero check remains planned under strict |
+| holding order: `type Flag2: Show & Bool & Bits<1>` | accepted regardless of member-limit order |
+| nested holding fit: `type Packed<T>: Bits<8> { v: T }` LF `f: Packed<U16> -> Integer = _ => 1` | unfit instantiation is a check error |
+| binding gate entry: `U8 n = 300` | refuted before adding passed-limit facts |
+| written constructor facts: `type P { n: Integer }` LF `impl P { n => Self (n + 1000) }` LF `p = P 1` LF `x: U8 = p.n` LF `:checks x` | argument facts do not describe the result; x stays open |
+| pipe replaces default: `type P { x: Integer = 300 }` LF `p = 1 \| P` LF `x: U8 = p.x` | accepted; the piped value fills x |
+| record pattern field type: `type P2 { a: Integer, b: String }` LF `f = (P2 x) => x` LF `:t f` | the payload binds at the first field type, Integer |
+| limit purity: `type T: Integer where self > (ls \| len)` | impure limit is a check error |
+| generic divisor: `dv = a b => a / b` LF `:checks dv` | one conditional zero check per call when Integer |
+| claim result limit: `type L1: Len { n: Natural }` LF `impl L1: Len { len = self => self.n }` LF `:checks` | accepted with narrowing open, no meaning mismatch |
+| operator bracket place: `xs: Vec<Integer> = [1]` LF `ys = xs ++ [4]` LF `:t ys` | bracket fills the known Vec place; result is Vec<Integer> |
+| continued holding type: `type N: Integer & Bits<8>` LF `where 0 <= self, self < 256` LF `n: N = 255` | where continues the preceding type in the REPL |
+| unit holding: `type P: Bits<8> { a: (), b: U8 }` | unit holds zero bits; type fits |
+| timed holding: `x: Compile & F64 = 2.0` LF `:t x` | F64 retains Size<8> |
+| field place facts: `type R { n: U8 }` LF `f: R -> U8 = r => r.n` LF `:checks f` | field read retains its declared limits |
+| element location: `a: [U8; 3] = [1, 2, 300]` | refutation points at 300 |
+| grouped printed type: `cf: Compile & (Integer -> Integer) = n => n` LF `:t cf` | printer retains function parentheses |
+| timing input location: `:t Compile (sin 1.0)` | names sin as impure and points at sin |
+| single unknown conversion error: `probe = input => input \| try` | one diagnostic asks for the target meaning |
+| member arm results: `n = 1` LF `type P { x: Integer }` LF `impl P { f = { True => n, False => 2.5 } }` | incompatible member arm meanings are a mismatch |
+| constructor arm result: `n = 1` LF `type P { x: Integer }` LF `impl P { f = True => n, False => 2.5 }` | bare second arm is a constructor and must return P |
+| unknown sum payload: `type Choice<A> { Pick(value: A), Empty }` LF `f: Choice<Integer> -> Choice<U8> = x => x` LF `:checks f` | unknown payload limits remain open |
+| single array length error: `z: [Integer; 2] = [1, 2, 3]` | one length diagnostic |
+| single holding conflict: `hb: Bits<8> & Bits<16> = 1` | one holdings-disagree diagnostic |
+| no-test gate diagnostic: `type Flag: Bool & Bits<1>` LF `Flag True` | no gate; suggest a typed place or to<Flag> |
+| gate constructor conflict: `:{` LF `type Gate: Integer where self > 0` LF `type Sum { Gate }` LF `:}` | duplicate diagnostic points at the first declaration |
+| failed imported binding; imported limit reading a host constant | failed binding carries no proof; host constant is read in its module |
+| unannotated supplied constant; supplied `bad: U8 = 300` | infer the written constant; reject bad when read |
+| repeated module uses; `:checks module.member`; global `:checks` | entries unique, source identities preserved, owning function named |
+| exact String record field; limited F64 literal; unknown range | keep String and float spelling; omit unknown range; names list tested limits only |
+| private named constructor field and positional inputs | one private-field diagnostic, no repeated positional report |

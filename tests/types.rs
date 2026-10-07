@@ -185,3 +185,17 @@ fn variables_bind_meanings_without_carrying_place_limits() {
         assert_eq!(subst.apply(&variable), meaning);
     }
 }
+
+#[test]
+fn length_variable_binds_to_a_sum_without_recursing() {
+    use fipe::types::{Subst, Type};
+    let mut subst = Subst::default();
+    let a = Type::Var(subst.fresh());
+    let b = Type::Var(subst.fresh());
+    let sum = Type::sum(vec![b.clone(), Type::Number(1.into())]);
+    assert_eq!(subst.unify(&a, &sum), Ok(()));
+    assert_eq!(subst.apply(&a), sum);
+    assert!(subst
+        .unify(&b, &Type::sum(vec![a, Type::Number(1.into())]))
+        .is_err());
+}

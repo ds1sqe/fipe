@@ -827,3 +827,10 @@ fn a_lowercase_numeric_type_earns_its_hint() {
     );
     ok("f: a -> a = x => x\nn: I64 = 1");
 }
+
+#[test]
+fn gate_constructor_conflict_points_at_the_first_definition() {
+    let parsed = module("type Gate: Integer where self > 0\ntype Sum { Gate }");
+    let errors = resolve(&parsed, &host(), &[]).unwrap_err();
+    assert!(errors.iter().any(|error| matches!(error.reason, Reason::Duplicate { first } if first.start == 5 && first != error.span)), "{errors:?}");
+}

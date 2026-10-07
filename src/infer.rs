@@ -304,6 +304,8 @@ struct State {
     dots_start: usize,
     claims: Vec<(Type, bool, Vec<Type>)>,
     lowering: Vec<crate::types::TypeName>,
+    lowered: BTreeMap<crate::types::TypeName, Type>,
+    acyclic_types: alloc::collections::BTreeSet<String>,
     errors: Vec<Error>,
     warnings: Vec<crate::typed::Warning>,
     /// Monomorphic types in scope: parameters and destructured values.
@@ -338,6 +340,8 @@ impl State {
             dots_start: 0,
             claims: Vec::new(),
             lowering: Vec::new(),
+            lowered: BTreeMap::new(),
+            acyclic_types: alloc::collections::BTreeSet::new(),
             errors: Vec::new(),
             warnings: Vec::new(),
             env: Vec::new(),
@@ -559,6 +563,7 @@ struct Infer<'a> {
     visiting: Vec<String>,
     file_cache: &'a files::FileCache,
     indexes: Vec<(&'a Module, index::Index)>,
+    expression_ids: BTreeMap<Span, usize>,
     /// The session's weak variables, `Var(0)` up to this: free in every
     /// line after the one that left them.
     weak: u32,
@@ -1181,7 +1186,7 @@ fn count(index: usize) -> u32 {
     u32::try_from(index).unwrap_or(u32::MAX)
 }
 
-fn meaning(ty: &Type) -> &Type {
+pub(crate) fn meaning(ty: &Type) -> &Type {
     match ty {
         Type::Limited { meaning, .. } => meaning,
         _ => ty,
@@ -1236,6 +1241,7 @@ impl<'a> Infer<'a> {
             visiting: visiting.to_vec(),
             file_cache: cache,
             indexes,
+            expression_ids: expression_ids(module),
             weak: subst.count(),
             state: State::new(subst, module.expressions.len()),
             items: Vec::new(),
@@ -1243,6 +1249,14 @@ impl<'a> Infer<'a> {
             self_type: None,
         }
     }
+}
+
+fn expression_ids(module: &Module) -> BTreeMap<Span, usize> {
+    let mut ids = BTreeMap::new();
+    for (i, expression) in module.expressions.iter().enumerate() {
+        ids.entry(expression.span).or_insert(i);
+    }
+    ids
 }
 
 pub(crate) fn check_declarations(

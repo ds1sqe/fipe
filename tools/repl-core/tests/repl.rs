@@ -865,8 +865,8 @@ fn checks_name_places_and_disambiguate_identical_results() {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
     assert_eq!(text.matches("the result at ").count(), 2, "{text}");
-    assert!(text.contains("the result at 7:10,"), "{text}");
-    assert!(text.contains("the result at 9:10,"), "{text}");
+    assert!(text.contains("the result at 1:10,"), "{text}");
+    assert!(text.contains("the result at 1:10,"), "{text}");
     assert!(!text.contains("entry at"), "{text}");
     let named =
         written(Repl::new().feed(b"f: U8 -> U8 = x => x + 1\n:checks f\n"));
@@ -954,4 +954,45 @@ fn outcome_errors_explain_the_family_and_exit() {
     );
     assert!(text.contains("Nothing has no payload"), "{text}");
     assert!(text.contains("no outcome family is known here"), "{text}");
+}
+
+#[test]
+fn holding_type_continues_with_where() {
+    let text = written(Repl::new().feed(b"type I8b: Integer & Bits<8>\nwhere -128 <= self, self <= 127\nx: I8b = 1\n:t x\n"));
+    assert!(!text.contains("does not fit"), "{text}");
+    assert!(text.contains("x: I8b"), "{text}");
+}
+
+#[test]
+fn global_checks_name_their_functions_with_local_positions() {
+    let text = written(Repl::new().feed(
+        b"x = 1\nf: U8 -> U8 = x => x + 1\ng: U8 -> U8 = x => x + 1\n:checks\n",
+    ));
+    assert!(text.contains("f: eval, per call:"), "{text}");
+    assert!(text.contains("g: eval, per call:"), "{text}");
+    assert!(text.contains("at 1:10"), "{text}");
+    assert!(!text.contains("at 3:10"), "{text}");
+    let text = written(Repl::new().feed(b"type L: Len { n: Natural }\nimpl L: Len { len = self => self.n }\n:checks\n"));
+    assert!(text.contains("L.len: eval, per call:"), "{text}");
+}
+
+#[test]
+fn timing_diagnostic_names_the_impure_input() {
+    let text = written(Repl::new().feed(b":t Compile (sin 1.0)\n"));
+    assert!(
+        text.contains("1:10: timing requires compile; input `sin` is not pure"),
+        "{text}"
+    );
+    assert!(text.contains("         ^^^"), "{text}");
+}
+
+#[test]
+fn a_type_without_a_test_explains_how_to_enter_it() {
+    let text =
+        written(Repl::new().feed(b"type Flag: Bool & Bits<1>\nFlag True\n"));
+    assert!(
+        text.contains("`Flag` has no test, so it is no gate"),
+        "{text}"
+    );
+    assert!(text.contains("to<Flag>"), "{text}");
 }

@@ -12,7 +12,7 @@ use core::fmt;
 pub struct Var(pub u32);
 
 /// A declared type's identity: where it was declared and its name.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeName {
     pub origin: Origin,
     pub name: String,
@@ -571,7 +571,15 @@ impl Subst {
                 if let Some(difference) = other_constant.checked_sub(constant) {
                     let mut parts = others.clone();
                     parts.push(Type::Number(difference));
-                    return self.unify(&Type::Var(*var), &Type::sum(parts));
+                    let ty = Type::sum(parts);
+                    if ty.contains(*var) {
+                        return Err(Box::new(Mismatch::Occurs {
+                            variable: *var,
+                            ty,
+                        }));
+                    }
+                    self.bindings[var.0 as usize] = Some(ty);
+                    return Ok(());
                 }
                 if others.is_empty() {
                     return Err(Box::new(Mismatch::Different {
@@ -605,6 +613,9 @@ impl Subst {
     /// # Errors
     /// A now-known equation has no nonnegative solution.
     pub fn settle_lengths(&mut self) -> Result<bool, Box<Mismatch>> {
+        if self.lengths.is_empty() {
+            return Ok(false);
+        }
         loop {
             let before = self.bindings.clone();
             let pending = core::mem::take(&mut self.lengths);
@@ -895,6 +906,18 @@ fn write_number(out: &mut String, number: usize) {
 
 /// Write `ty`; a declared name among `clashes` is written with its
 /// module when that is another module.
+fn precedence(ty: &Type) -> u8 {
+    match ty {
+        Type::Limited { name, .. } => precedence(name),
+        Type::Function { .. } => 0,
+        Type::Either(_) => 1,
+        Type::Both(_) => 2,
+        Type::Tuple(_) => 3,
+        Type::Not(_) => 4,
+        _ => 5,
+    }
+}
+
 fn write(
     ty: &Type,
     f: &mut fmt::Formatter<'_>,
@@ -948,22 +971,14 @@ fn write(
         }
         Type::Not(inner) => {
             f.write_str("!")?;
-            write(inner, f, names, clashes)
+            write_grouped(inner, precedence(inner) < 4, f, names, clashes)
         }
         Type::Tuple(parts) => {
             for (index, part) in parts.iter().enumerate() {
                 if index > 0 {
                     f.write_str(" * ")?;
                 }
-                let grouped =
-                    matches!(part, Type::Tuple(_) | Type::Function { .. });
-                if grouped {
-                    f.write_str("(")?;
-                }
-                write(part, f, names, clashes)?;
-                if grouped {
-                    f.write_str(")")?;
-                }
+                write_grouped(part, precedence(part) <= 3, f, names, clashes)?;
             }
             Ok(())
         }
@@ -976,7 +991,13 @@ fn write(
                         " | "
                     })?;
                 }
-                write(p, f, names, clashes)?;
+                write_grouped(
+                    p,
+                    precedence(p) < precedence(ty),
+                    f,
+                    names,
+                    clashes,
+                )?;
             }
             Ok(())
         }
@@ -989,14 +1010,13 @@ fn write(
             f.write_str("]")
         }
         Type::Function { parameter, result } => {
-            let grouped = matches!(**parameter, Type::Function { .. });
-            if grouped {
-                f.write_str("(")?;
-            }
-            write(parameter, f, names, clashes)?;
-            if grouped {
-                f.write_str(")")?;
-            }
+            write_grouped(
+                parameter,
+                precedence(parameter) == 0,
+                f,
+                names,
+                clashes,
+            )?;
             f.write_str(" -> ")?;
             write(result, f, names, clashes)
         }
@@ -1051,4 +1071,21 @@ fn number_order(a: &Type, b: &Type) -> core::cmp::Ordering {
         (_, Type::Var(_)) => core::cmp::Ordering::Greater,
         _ => core::cmp::Ordering::Equal,
     }
+}
+
+fn write_grouped(
+    ty: &Type,
+    grouped: bool,
+    f: &mut fmt::Formatter<'_>,
+    names: &[(Var, String)],
+    clashes: &[String],
+) -> fmt::Result {
+    if grouped {
+        f.write_str("(")?;
+    }
+    write(ty, f, names, clashes)?;
+    if grouped {
+        f.write_str(")")?;
+    }
+    Ok(())
 }

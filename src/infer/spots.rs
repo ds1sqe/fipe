@@ -687,10 +687,22 @@ impl Infer<'_> {
         place_kind: crate::typed::Place,
     ) {
         let target = self.apply(target);
-        if crate::limits::has_limits(&target) {
-            if let Some(index) =
-                self.module.expressions.iter().position(|e| e.span == span)
+        if let Some(index) = self.expression_ids.get(&span).copied() {
+            if matches!(self.module.expressions[index].kind, ExprKind::List(_))
+                && !matches!(
+                    super::meaning(&target),
+                    Type::Array { .. } | Type::Var(_) | Type::Rigid(_)
+                )
             {
+                let expected = Expected::new(target, span).at(place_kind);
+                self.expr(ExprId(index), Some(&expected));
+                return;
+            }
+        }
+        if crate::limits::has_limits(&target)
+            || crate::limits::has_limits(&self.apply(actual))
+        {
+            if let Some(index) = self.expression_ids.get(&span).copied() {
                 self.state.entries.push((
                     ExprId(index),
                     target.clone(),
@@ -723,9 +735,7 @@ impl Infer<'_> {
             self.default_entering(actual);
             let source = self.apply(actual);
             if let Some(row) = self.cast_pair(&target, &source, span, other) {
-                if let Some(index) =
-                    self.module.expressions.iter().position(|e| e.span == span)
-                {
+                if let Some(index) = self.expression_ids.get(&span).copied() {
                     self.record_cast(ExprId(index), row, source, target);
                 }
             } else if !self.state.errors[errors..]
@@ -1034,6 +1044,7 @@ impl Infer<'_> {
             visiting: self.visiting.clone(),
             file_cache: self.file_cache,
             indexes: self.indexes.clone(),
+            expression_ids: super::expression_ids(module),
             weak: self.weak,
             state: State::new(subst, module.expressions.len()),
             items: Vec::new(),

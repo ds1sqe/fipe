@@ -40,7 +40,7 @@ pub enum Origin {
 }
 
 /// What a name means.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Target {
     /// A lexical binding: the span of the pattern name that bound it.
     Local {
@@ -146,6 +146,10 @@ pub struct Error {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
     UnknownName,
+    /// A type without a test cannot be called as a gate.
+    NoGate {
+        name: String,
+    },
     /// A timing name used outside its one-operand form.
     TimingForm,
     UnknownType,
@@ -577,13 +581,16 @@ impl<'a> Resolver<'a> {
                         );
                         if let Some(members) = members {
                             self.constructors(name, members, item.public);
-                        } else if test_chain(
-                            self.module,
-                            &self.declarations.prelude.module,
-                            &last(name),
-                            0,
-                        ) || base.is_some_and(|id| self.base_gate(id))
-                        {
+                        } else if limits.iter().any(|limit| {
+                            matches!(limit, crate::ast::Limit::Test(_))
+                        }) || base.is_some_and(|id| {
+                            test_base(
+                                self.module,
+                                &self.declarations.prelude.module,
+                                id,
+                                0,
+                            ) || self.base_gate(id)
+                        }) {
                             self.define(
                                 name,
                                 Space::Value,
@@ -1105,6 +1112,11 @@ impl<'a> Resolver<'a> {
         public: bool,
     ) {
         let text = last(name);
+        if let Some(first) = self.defined(&text, space) {
+            let first = first.site;
+            self.error(name.span, Reason::Duplicate { first });
+            return;
+        }
         if matches!(
             (&target, self.lookup_value(&text)),
             (Target::Constructor { .. }, Some(Target::Type { .. }))
@@ -1112,11 +1124,6 @@ impl<'a> Resolver<'a> {
         ) && matches!(space, Space::Value)
         {
             self.error(name.span, Reason::Duplicate { first: name.span });
-            return;
-        }
-        if let Some(first) = self.defined(&text, space) {
-            let first = first.site;
-            self.error(name.span, Reason::Duplicate { first });
             return;
         }
         if public {
@@ -1529,12 +1536,13 @@ impl<'a> Resolver<'a> {
         let public = shape
             .as_ref()
             .map_or(usize::MAX, |s| s.fields.iter().filter(|f| f.1).count());
+        let private_flag = arguments.iter().any(|argument| matches!(&argument.kind, crate::ast::ArgumentKind::Flag { name, .. } if shape.as_ref().is_some_and(|s| s.fields.iter().any(|f| f.0 == *name && !f.1))));
         let mut positional = 0;
         for argument in arguments {
             match &argument.kind {
                 crate::ast::ArgumentKind::Positional(value) => {
                     self.expr(*value, Position::Argument);
-                    if positional == public {
+                    if positional == public && !private_flag {
                         let field = shape.as_ref().and_then(|s| {
                             s.fields.iter().find(|f| !f.1).map(|f| f.0.clone())
                         });
@@ -1787,6 +1795,14 @@ impl<'a> Resolver<'a> {
     }
 
     /// A name in value position, with its qualified tail as members.
+    fn missing_value(&self, name: &str, qualified: bool) -> Reason {
+        if !qualified && self.lookup_type(name).is_some() {
+            Reason::NoGate { name: name.into() }
+        } else {
+            Reason::UnknownName
+        }
+    }
+
     fn value_name(
         &mut self,
         name: &Name,
@@ -1846,7 +1862,8 @@ impl<'a> Resolver<'a> {
             if !qualified && position == Position::Argument {
                 return Some(Target::Word);
             }
-            self.error(name.span, Reason::UnknownName);
+            let reason = self.missing_value(first, qualified);
+            self.error(name.span, reason);
             return None;
         };
         if !qualified {

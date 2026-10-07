@@ -397,6 +397,23 @@ impl Infer<'_> {
         self.apply(&ty)
     }
 
+    fn concat_list(
+        &mut self,
+        left_type: Type,
+        operator: Span,
+        right: ExprId,
+    ) -> Type {
+        let callee = self.members(
+            left_type,
+            &[alloc::string::String::from("concat")],
+            operator,
+        );
+        let argument = crate::ast::Argument {
+            kind: crate::ast::ArgumentKind::Positional(right),
+            span: self.span(right),
+        };
+        self.apply_callee(callee, &[argument], None, operator, None)
+    }
     fn binary(
         &mut self,
         op: BinaryOp,
@@ -405,14 +422,30 @@ impl Infer<'_> {
         right: ExprId,
     ) -> Type {
         let arithmetic = is_arithmetic(op);
-        let literal_tie = matches!(
-            self.module.expressions[left.0].kind,
-            ExprKind::Literal(_)
-        ) || matches!(
-            self.module.expressions[right.0].kind,
-            ExprKind::Literal(_)
-        );
-        let right_ty = self.expr(right, None);
+        let literal_tie = [left, right].iter().any(|id| {
+            matches!(self.module.expressions[id.0].kind, ExprKind::Literal(_))
+        });
+        let left_type = self.apply(&left_ty);
+        if op == BinaryOp::Concat
+            && matches!(
+                self.module.expressions[right.0].kind,
+                ExprKind::List(_)
+            )
+            && !matches!(
+                super::meaning(&left_type),
+                Type::Var(_) | Type::Rigid(_)
+            )
+        {
+            return self.concat_list(left_type, operator, right);
+        }
+        let expected = (!arithmetic
+            && op != BinaryOp::Concat
+            && matches!(
+                self.module.expressions[right.0].kind,
+                ExprKind::List(_)
+            ))
+        .then(|| Expected::new(left_type, self.span(right)));
+        let right_ty = self.expr(right, expected.as_ref());
         if (!arithmetic && op != BinaryOp::Concat) || literal_tie {
             let left_meaning = super::meaning(&self.apply(&left_ty)).clone();
             let right_meaning = super::meaning(&self.apply(&right_ty)).clone();
@@ -519,10 +552,24 @@ impl Infer<'_> {
         let element = match target.as_ref().map(super::meaning) {
             Some(Type::Array { element, length: n }) => {
                 self.unify(n, &length, span, expected.unwrap().span);
+                length = (**n).clone();
                 (**element).clone()
             }
             Some(head) if !matches!(head, Type::Var(_) | Type::Rigid(_)) => {
-                let element = self.fresh();
+                let element = self
+                    .claims(head, true)
+                    .into_iter()
+                    .find_map(|claim| {
+                        if let Type::Named { name, arguments } = claim {
+                            if name.origin == crate::resolve::Origin::Prelude
+                                && name.name == "Sequence"
+                            {
+                                return arguments.into_iter().next();
+                            }
+                        }
+                        None
+                    })
+                    .unwrap_or_else(|| self.fresh());
                 let claim =
                     prelude_of("Sequence", alloc::vec![element.clone()]);
                 self.require_claim(head.clone(), claim, span);
@@ -544,6 +591,7 @@ impl Infer<'_> {
             .at(crate::typed::Place::Element);
         sibling.cast = expected.is_some_and(|e| e.cast);
         for (index, item) in items.iter().enumerate() {
+            sibling.span = self.span(*item);
             let ty = self.expr(*item, Some(&sibling));
             if index == 0 {
                 let cast = sibling.cast;

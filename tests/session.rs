@@ -942,3 +942,78 @@ fn imported_field_in_session_keeps_its_type() {
     assert_eq!(report.diagnostics, []);
     assert_eq!(query(&mut session, "shape.b.p"), "Pt");
 }
+
+#[test]
+fn failed_module_bindings_carry_no_proven_facts() {
+    let mut session = Session::new(Declarations::new());
+    assert!(matches!(session.line("use badnet"), Outcome::Request(_)));
+    let report = done(session.reply(Reply::File(Some(
+        "pub type Port: Integer where self > 0\npub type Box { pub p: Port }\npub zero: Port = 0\npub boxed = Box 0".into(),
+    ))));
+    assert_ne!(report.diagnostics, []);
+    for source in [
+        "y: badnet.Port = badnet.zero",
+        "z: badnet.Port = badnet.boxed.p",
+    ] {
+        let report = done(session.line(source));
+        assert!(!report.checks.is_empty(), "{report:?}");
+    }
+}
+
+#[test]
+fn imported_limits_read_host_constants() {
+    let mut declarations = Declarations::new();
+    declarations
+        .module("config", "pub max_port = 65535")
+        .unwrap();
+    let mut session = Session::new(declarations);
+    assert!(matches!(session.line("use net"), Outcome::Request(_)));
+    let report = done(session.reply(Reply::File(Some("pub type Port: Integer where self > 0, self <= config.max_port\npub type Conn { pub host: String, pub port: Port = 80 }".into()))));
+    assert_eq!(report.diagnostics, []);
+    assert_eq!(done(session.line("c = net.Conn \"web\"")).diagnostics, []);
+    assert_ne!(done(session.line("p: net.Port = 70000")).diagnostics, []);
+}
+
+#[test]
+fn module_checks_are_unique_and_owned_by_their_binding() {
+    let mut session = Session::new(host());
+    assert!(matches!(session.line("use net"), Outcome::Request(_)));
+    let report =
+        done(session.reply(Reply::File(Some("pub p: U8 = cli.port".into()))));
+    assert_eq!(report.diagnostics, []);
+    let count = session.checks(None).len();
+    assert!(count > 0);
+    ok(&mut session, "x = net.p");
+    assert_eq!(session.checks(None).len(), count);
+    assert_eq!(session.checks(Some("x")), []);
+    assert_eq!(session.checks(Some("net.p")).len(), count);
+}
+
+#[test]
+fn supplied_constants_infer_and_enter_their_declared_type() {
+    let mut declarations = Declarations::new();
+    declarations
+        .module("config", "pub answer = 42\npub bad: U8 = 300")
+        .unwrap();
+    let mut session = Session::new(declarations);
+    assert_eq!(query(&mut session, "config.answer"), "Integer");
+    assert_ne!(
+        done(session.line("x: Bool = config.answer")).diagnostics,
+        []
+    );
+    assert_ne!(done(session.line("config.bad")).diagnostics, []);
+}
+
+#[test]
+fn private_named_constructor_field_has_one_diagnostic() {
+    let mut session = Session::new(host());
+    assert!(matches!(session.line("use gen"), Outcome::Request(_)));
+    assert_eq!(
+        done(session.reply(Reply::File(Some(
+            "pub type P { pub x: I64, len: I64 = 0 }".into()
+        ))))
+        .diagnostics,
+        []
+    );
+    assert_eq!(done(session.line("gen.P -len 5 3")).diagnostics.len(), 1);
+}

@@ -280,6 +280,11 @@ impl<'a> Infer<'a> {
         let Type::Named { name, arguments } = &ty else {
             return ty;
         };
+        if arguments.is_empty() {
+            if let Some(lowered) = self.state.lowered.get(name) {
+                return lowered.clone();
+            }
+        }
         if self.state.lowering.contains(name) {
             return ty;
         }
@@ -342,10 +347,14 @@ impl<'a> Infer<'a> {
                 other => other,
             };
             self.state.lowering.pop();
-            return Type::Limited {
-                name: alloc::boxed::Box::new(ty),
+            let result = Type::Limited {
+                name: alloc::boxed::Box::new(ty.clone()),
                 meaning: alloc::boxed::Box::new(meaning),
             };
+            if arguments.is_empty() {
+                self.state.lowered.insert(name.clone(), result.clone());
+            }
+            return result;
         }
         self.state.lowering.pop();
         ty
@@ -409,7 +418,7 @@ impl<'a> Infer<'a> {
         let Type::Named { name, arguments } = class else {
             return Vec::new();
         };
-        if visiting.contains(name) {
+        if visiting.contains(name) || self.state.lowering.contains(name) {
             return Vec::new();
         }
         let (Some(module), Some(scope)) =

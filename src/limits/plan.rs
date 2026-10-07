@@ -26,7 +26,7 @@ pub enum Frequency {
     PerElement,
 }
 /// The destination of a checked value, independent of its source span.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Place {
     Binding(String),
     Parameter(Option<String>),
@@ -53,6 +53,10 @@ pub struct Check {
     pub test_count: usize,
     pub known: Known,
     pub gate: bool,
+    /// A generic divisor check runs only for an Integer instance.
+    pub when_integer: bool,
+    /// The binding that owns this entry, when one exists.
+    pub owner: Option<String>,
 }
 
 impl core::fmt::Display for Frequency {

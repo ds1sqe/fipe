@@ -29,16 +29,26 @@ fn opaque_claims_supply_every_member() {
 }
 
 #[test]
-fn member_limits_are_checked_structurally() {
+fn member_limits_keep_unimplemented_narrowing_open() {
     for annotation in ["Vec<U8>", "Maybe<U8>", "(Integer -> U8)"] {
         let required = annotation.replace("U8", "Integer");
         let source = format!("type C: Add<{required}> {{ x: Integer }}\nimpl C: Add<{required}> {{ add: {annotation} -> Self -> Self = k self => self }}");
-        assert_ne!(errors(&source), [], "{source}");
+        let typed = super::run(&source).1.unwrap();
+        assert!(
+            typed.checks.iter().any(
+                |check| check.reason == fipe::typed::CheckReason::Narrowing
+            ),
+            "{source}"
+        );
     }
-    assert_ne!(
-        errors("type A: Len { x: F64 }\nimpl A: Len { len = self => -1 }"),
-        []
-    );
+    let typed =
+        super::run("type A: Len { x: F64 }\nimpl A: Len { len = self => -1 }")
+            .1
+            .unwrap();
+    assert!(typed
+        .checks
+        .iter()
+        .any(|check| check.reason == fipe::typed::CheckReason::Narrowing));
 }
 
 #[test]

@@ -110,7 +110,7 @@ fn combinations_and_duplicate_blocks_are_checked() {
 }
 
 #[test]
-fn arrays_derive_from_parts_and_claims_reject_narrow_parameters() {
+fn arrays_derive_from_parts_and_claims_plan_narrow_parameters() {
     assert_eq!(
         ty("f: [Integer; 2] -> Bool = a => a == a"),
         "[Integer; 2] -> Bool"
@@ -119,7 +119,11 @@ fn arrays_derive_from_parts_and_claims_reject_narrow_parameters() {
         ty("f: [Integer; 2] -> String = a => a.show"),
         "[Integer; 2] -> String"
     );
-    assert!(errors("type Limit where self.take: Integer -> Integer\ntype V: Limit {}\nimpl V: Limit { take: U8 -> Self -> Integer = n self => n }").iter().any(|e| matches!(e.reason,Reason::Mismatch { .. })));
+    let typed = super::run("type Limit where self.take: Integer -> Integer\ntype V: Limit {}\nimpl V: Limit { take: U8 -> Self -> Integer = n self => n }").1.unwrap();
+    assert!(typed
+        .checks
+        .iter()
+        .any(|check| check.reason == fipe::typed::CheckReason::Narrowing));
 }
 
 #[test]

@@ -230,9 +230,8 @@ impl Infer<'_> {
             &module.patterns[id.0].kind
         {
             let payload_ty = match fields.as_slice() {
-                [field] => field.ty.clone(),
+                [field, ..] => field.ty.clone(),
                 [] => Type::Unit,
-                _ => self.fresh(),
             };
             self.pattern(*payload, &payload_ty, span);
         }

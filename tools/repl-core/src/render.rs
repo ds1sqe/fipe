@@ -72,6 +72,7 @@ pub fn resolve(reason: &resolve::Reason, at: &Context) -> String {
     use resolve::Reason as R;
     match reason {
         R::UnknownName => "unknown name".into(),
+        R::NoGate { name } => format!("`{name}` has no test, so it is no gate: annotate the place, `x: {name} = …`, or write `to<{name}>`"),
         R::UnknownType => "unknown type".into(),
         R::ImportCycle => "import cycle".into(),
         R::NoMain => "a used module has no main".into(),
@@ -287,6 +288,12 @@ pub fn check(
         || check.name.clone(),
         |test| format!("{}: {}", check.name, test.trim()),
     );
+    if check.when_integer {
+        return format!(
+            "{}, {}: {place}, {limit} when Integer ({})\n",
+            check.phase, check.frequency, check.reason
+        );
+    }
     format!(
         "{}, {}: {place}, against {limit} ({})\n",
         check.phase, check.frequency, check.reason

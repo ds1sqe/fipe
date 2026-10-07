@@ -55,7 +55,8 @@ impl Pass<'_> {
             Type::Array { element, .. } => {
                 self.element_entries(element, known, place);
             }
-            Type::Named { name, .. } => {
+            Type::Named { name, arguments } => {
+                self.named_parts(name, arguments, known, place, frequency);
                 self.named_entry(
                     name,
                     known,
@@ -95,6 +96,76 @@ impl Pass<'_> {
             _ => (),
         }
     }
+    fn named_parts(
+        &mut self,
+        name: &TypeName,
+        arguments: &[Type],
+        known: &Known,
+        place: Span,
+        frequency: Frequency,
+    ) {
+        if !arguments.iter().any(super::has_limits) {
+            return;
+        }
+        let Some(module) = self.owner(&name.origin) else {
+            return;
+        };
+        let Some(index) = self.declarations_by_name.get(name) else {
+            return;
+        };
+        let crate::ast::Entry::Item(item) = &module.entries[*index] else {
+            return;
+        };
+        let crate::ast::ItemKind::Type { parameters, .. } = &item.kind else {
+            return;
+        };
+        let bindings: Vec<_> = parameters
+            .iter()
+            .zip(arguments)
+            .map(|(p, ty)| {
+                (
+                    p.name.segments.last().cloned().unwrap_or_default(),
+                    ty.clone(),
+                )
+            })
+            .collect();
+        let constructor = known.constructor.as_deref().unwrap_or(&name.name);
+        let fields =
+            super::construction_fields(module, &name.name, constructor);
+        if fields.is_empty() && known.constructor.is_none() {
+            for argument in arguments {
+                self.enter(argument, &Known::default(), place, frequency);
+            }
+            return;
+        }
+        let parts: Vec<_> = fields
+            .iter()
+            .map(|field| {
+                let label =
+                    field.name.segments.last().cloned().unwrap_or_default();
+                let ty = self.syntax_bound(
+                    module,
+                    &name.origin,
+                    field.ty,
+                    &bindings,
+                );
+                let fact = known.part(&label);
+                (label, ty, fact)
+            })
+            .collect();
+        for (label, ty, fact) in parts {
+            self.enter_part(
+                Place::Field {
+                    owner: name.name.clone(),
+                    name: label,
+                },
+                &ty,
+                &fact,
+                place,
+                frequency,
+            );
+        }
+    }
     fn element_entries(&mut self, element: &Type, known: &Known, place: Span) {
         let parts: Vec<_> = known
             .parts
@@ -117,7 +188,10 @@ impl Pass<'_> {
             self.enter_part(
                 Place::Element,
                 element,
-                &Known::default(),
+                &Known {
+                    narrowing: known.narrowing,
+                    ..Known::default()
+                },
                 place,
                 Frequency::PerElement,
             );
@@ -130,12 +204,16 @@ impl Pass<'_> {
         place: Span,
         frequency: Frequency,
     ) {
+        let facts: alloc::collections::BTreeMap<_, _> =
+            known.parts.iter().map(|(n, k)| (n.as_str(), k)).collect();
         for (index, ty) in parts.iter().enumerate() {
-            let fact = known
-                .parts
-                .iter()
-                .find(|(n, _)| *n == index.to_string())
-                .map_or_else(Known::default, |(_, k)| k.clone());
+            let fact = facts.get(index.to_string().as_str()).map_or_else(
+                || Known {
+                    narrowing: known.narrowing,
+                    ..Known::default()
+                },
+                |k| (*k).clone(),
+            );
             self.enter_part(Place::Part(index), ty, &fact, place, frequency);
         }
     }
@@ -237,9 +315,37 @@ impl Pass<'_> {
                 else {
                     return Known::default();
                 };
-                let mut result = base.map_or_else(
+                let meaning = module.entries.iter().any(|entry| {
+                    matches!(entry,
+                    crate::ast::Entry::Item(item) if matches!(&item.kind,
+                    crate::ast::ItemKind::Type { name: n, members: Some(_), .. }
+                    if n.segments.last() == Some(&name.name)))
+                });
+                let mut result = base.filter(|_| !meaning).map_or_else(
                     || Known {
-                        boolean: Some(true),
+                        boolean: if super::modifier(ty) {
+                            Some(true)
+                        } else {
+                            known
+                                .meaning
+                                .as_ref()
+                                .map(|actual| actual == name)
+                                .or_else(|| {
+                                    if known.boolean.is_some() {
+                                        Some(
+                                            name.origin == Origin::Prelude
+                                                && name.name == "Bool",
+                                        )
+                                    } else if known.range.is_some() {
+                                        Some(
+                                            name.origin == Origin::Prelude
+                                                && name.name == "Integer",
+                                        )
+                                    } else {
+                                        None
+                                    }
+                                })
+                        },
                         ..Known::default()
                     },
                     |base| {
@@ -370,21 +476,35 @@ impl Pass<'_> {
         known: &Known,
         result: &Known,
     ) {
-        match result.boolean {
+        match if result.failure == Some(super::known::Failure::Fault) {
+            Some(false)
+        } else {
+            result.boolean
+        } {
             Some(true) => (),
             Some(false) => self.errors.push(Error {
                 span: place,
                 reason: TypeReason::Limit {
-                    message: format!("refuted entry against {name}: {known}"),
+                    message: {
+                        let facts = known.to_string();
+                        if facts.trim().is_empty() {
+                            format!("refuted entry against {name}")
+                        } else {
+                            format!(
+                                "refuted entry against {name}: {}",
+                                facts.trim_end()
+                            )
+                        }
+                    },
                 },
             }),
             None => {
-                if self.typed.checks.iter().any(|c| {
-                    c.place == place
-                        && c.place_kind == self.place_kind
-                        && c.limit == limit
-                        && c.limit_origin == origin
-                }) {
+                if !self.checks_seen.insert((
+                    place,
+                    self.place_kind.clone(),
+                    limit,
+                    origin.clone(),
+                )) {
                     return;
                 }
                 self.typed.checks.push(Check {
@@ -418,6 +538,8 @@ impl Pass<'_> {
                     test_count: 1,
                     known: known.clone(),
                     gate: false,
+                    when_integer: false,
+                    owner: self.entry_owner(place),
                 });
             }
         }
@@ -510,6 +632,11 @@ impl Pass<'_> {
             );
             for check in &mut self.typed.checks[start..] {
                 check.test_count = test_count;
+            }
+            if result.boolean == Some(false)
+                || result.failure == Some(super::known::Failure::Fault)
+            {
+                break;
             }
         }
         self.active.pop();

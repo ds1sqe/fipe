@@ -96,7 +96,7 @@ impl Infer<'_> {
                     candidates: Vec::new(),
                 },
             );
-            return target;
+            return self.fresh();
         };
         if !matches!(kind, "from" | "try_from" | "to" | "try") {
             return match self.select_member(&target, kind, &source, span) {

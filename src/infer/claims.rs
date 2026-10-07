@@ -1279,18 +1279,31 @@ impl Infer<'_> {
     ) {
         let expected = self.apply(expected);
         let actual = self.apply(actual);
-        if !limits_fit(&actual, &expected) {
-            self.error(
-                span,
-                super::Reason::Mismatch {
-                    expected,
-                    actual,
-                    other,
-                },
-            );
-            return;
-        }
+        let errors = self.state.errors.len();
         self.unify(&expected, &actual, span, other);
+        if self.state.errors.len() == errors && !limits_fit(&actual, &expected)
+        {
+            let known = crate::limits::known::Known {
+                narrowing: true,
+                ..Default::default()
+            };
+            self.state.checks.push(crate::typed::Check {
+                place: span,
+                place_kind: crate::typed::Place::Result,
+                limit: other,
+                phase: crate::typed::Phase::Eval,
+                reason: crate::typed::CheckReason::Narrowing,
+                frequency: crate::typed::Frequency::PerCall,
+                place_origin: crate::resolve::Origin::This,
+                limit_origin: crate::resolve::Origin::This,
+                name: alloc::format!("{expected}"),
+                test_count: 1,
+                known,
+                gate: false,
+                when_integer: false,
+                owner: None,
+            });
+        }
     }
 }
 
@@ -1445,7 +1458,7 @@ impl Infer<'_> {
                 self.block_error(
                     self.module.types[base.0].span,
                     &class,
-                    "a single base without limits is not a type alias",
+                    "a single base with no limit is not a type",
                 );
             }
         }
@@ -1529,14 +1542,23 @@ impl Infer<'_> {
 }
 
 impl Infer<'_> {
-    fn base_cycle(&self, root: &str) -> bool {
-        let mut pending = alloc::vec![alloc::string::String::from(root)];
-        let mut seen = Vec::new();
-        while let Some(name) = pending.pop() {
-            if seen.contains(&name) {
+    fn base_cycle(&mut self, root: &str) -> bool {
+        let mut pending =
+            alloc::vec![(alloc::string::String::from(root), false)];
+        let mut visiting = alloc::collections::BTreeSet::new();
+        while let Some((name, complete)) = pending.pop() {
+            if complete {
+                visiting.remove(&name);
+                self.state.acyclic_types.insert(name);
                 continue;
             }
-            seen.push(name.clone());
+            if self.state.acyclic_types.contains(&name) {
+                continue;
+            }
+            if !visiting.insert(name.clone()) {
+                return true;
+            }
+            pending.push((name.clone(), true));
             for entry in self.type_entries(self.module, &name) {
                 let Entry::Item(item) = entry else { continue };
                 let ItemKind::Type {
@@ -1548,16 +1570,16 @@ impl Infer<'_> {
                 let mut parts = alloc::vec![base];
                 while let Some(part) = parts.pop() {
                     match &self.module.types[part.0].kind {
-                        TypeKind::Both(types) => parts.extend(types),
+                        TypeKind::Both(types) | TypeKind::Either(types) => {
+                            parts.extend(types);
+                        }
+                        TypeKind::Not(inner) => parts.push(*inner),
                         TypeKind::Named { name, .. }
                             if name.segments.len() == 1 =>
                         {
-                            if super::last(name) == root {
-                                return true;
-                            }
-                            pending.push(super::last(name));
+                            pending.push((super::last(name), false));
                         }
-                        _ => {}
+                        _ => (),
                     }
                 }
             }

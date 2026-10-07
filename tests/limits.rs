@@ -634,3 +634,722 @@ fn demands_reach_grouped_entries_and_host_constants_bound_holdings() {
         }
     }
 }
+
+#[test]
+fn sequence_literals_enter_limited_elements() {
+    for text in [
+        "xs: Vec<U8> = [1, 2, 300]",
+        "xs: Deque<U8> = [300]",
+        "xs: Vec<Vec<U8>> = [[300]]",
+    ] {
+        let mut session =
+            fipe::session::Session::new(fipe::decl::Declarations::new());
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn bound_tuples_enter_each_limited_part() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(line(&mut session, "t = (1, 300)").diagnostics, []);
+    assert_ne!(line(&mut session, "ends: U8 * U8 = t").diagnostics, []);
+}
+
+#[test]
+fn parameterized_records_enter_each_limited_field() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type Pair<A, B> { first: A, second: B }")
+            .diagnostics,
+        []
+    );
+    assert_ne!(
+        line(&mut session, "p: Pair<U8, U8> = Pair 300 400").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn union_proof_requires_the_values_meaning() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    let report = line(&mut session, "id: U8 | String = 300");
+    assert_ne!(report.diagnostics, []);
+}
+
+#[test]
+fn function_arguments_with_limits_require_narrowing_proof() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in ["f: U8 -> U8 = n => n", "apply = g x => g x"] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    let report = line(&mut session, "y = apply f 300");
+    assert_eq!(report.diagnostics, []);
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.reason == fipe::typed::CheckReason::Narrowing),
+        "{:?}",
+        report.checks
+    );
+}
+
+#[test]
+fn division_faults_fail_limit_tests() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type Q: Integer where 10 / self < 5").diagnostics,
+        []
+    );
+    assert_ne!(line(&mut session, "z: Q = 0").diagnostics, []);
+}
+
+#[test]
+fn float_limits_do_not_create_integer_ranges() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type A: F64 where self < 5",
+        "type B: F64 where self <= 4",
+        "a: A = 4.5",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    let report = line(&mut session, "b: B = a");
+    assert!(report.diagnostics.len() + report.checks.len() > 0);
+}
+
+#[test]
+fn written_conversions_drop_source_parts() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type A { n: Integer }",
+        "type B: From<A> { n: Integer }",
+        "impl B: From<A> { from = a => B (a.n + 1000) }",
+        "b = to<B> (A 5)",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    let report = line(&mut session, "x: U8 = b.n");
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.reason == fipe::typed::CheckReason::Narrowing),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn written_sequences_drop_bracket_parts() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type Buf<T>: Sequence<T> { len: Integer }",
+        "impl Buf<T>: Sequence<T> { sequence = slots => Self 1000 }",
+        "b: Buf<Integer> = [1, 2, 3]",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    let report = line(&mut session, "x: U8 = b.len");
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.reason == fipe::typed::CheckReason::Narrowing),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn self_construction_enters_declared_tests() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(
+            &mut session,
+            "type R { lo: Integer, hi: Integer } where self.lo <= self.hi"
+        )
+        .diagnostics,
+        []
+    );
+    let report = line(&mut session, "impl R { bad = Self 5 0 }");
+    assert_ne!(report.diagnostics, []);
+}
+
+#[test]
+fn signed_type_cycles_are_check_errors() {
+    for text in [
+        "type S: !S",
+        "type S: Integer | !S",
+        "type A: !B\ntype B: !A",
+    ] {
+        let mut session =
+            fipe::session::Session::new(fipe::decl::Declarations::new());
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn complementary_gates_cannot_have_extra_limits() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type Small: Integer where self < 10",
+        "type Other: U8 & !Small",
+        "type Large: Integer & !Small where self > 100",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    for text in [
+        "kind = n => n | { Small p => 1, Other q => 2 }",
+        "kind = n => n | { Small p => 1, Large q => 2 }",
+    ] {
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn gate_coverage_reads_nested_and_multiple_patterns() {
+    for text in [
+        "k = Small p y => 1",
+        "k = (Small p, y) => 1",
+        "k = m => m | { Just (Small p) => 1, Nothing => 0 }",
+    ] {
+        let mut session =
+            fipe::session::Session::new(fipe::decl::Declarations::new());
+        assert_eq!(
+            line(&mut session, "type Small: Integer where self < 10")
+                .diagnostics,
+            []
+        );
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn postfix_members_keep_called_phase() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in [
+        "use cli",
+        "type V { x: Integer }",
+        "impl V { get = self => cli.port + self.x }",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    assert_ne!(
+        line(&mut session, "y: Compile & Integer = (V 1).get").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn destructured_names_keep_binding_phase() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(line(&mut session, "(a, b) = (log 1, 5)").diagnostics, []);
+    assert_ne!(
+        line(&mut session, "z: Compile & Integer = b").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn known_array_length_does_not_make_elements_exact() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "is_sorted = v => True",
+        "type Sorted3: [Integer; 3] where Compile (is_sorted self)",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    assert_ne!(
+        line(&mut session, "f: [Integer; 3] -> Sorted3 = xs => xs").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn empty_ranges_stay_empty_and_prove_entries() {
+    use fipe::{
+        ast::BinaryOp as B,
+        limits::known::{End, Range},
+    };
+    let empty = Range {
+        lo: End::Finite(10.into()),
+        hi: End::Finite(5.into()),
+    };
+    let scaled = empty.arithmetic(B::Multiply, &Range::exact(1_000_000.into()));
+    assert!(scaled.lo > scaled.hi);
+    assert_eq!(empty.compare(B::Less, &Range::exact(0.into())), Some(true));
+}
+
+#[test]
+fn strict_division_is_planned_and_allowed() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    assert_eq!(line(&mut session, "use cli").diagnostics, []);
+    session.strict(true);
+    let report = line(&mut session, "x = 10 / cli.port");
+    assert_eq!(report.diagnostics, []);
+    assert_eq!(report.checks.len(), 1);
+    let report = line(&mut session, "type Q: Integer where 100 / self <= 10");
+    assert_eq!(report.diagnostics, []);
+    assert_eq!(report.checks, []);
+}
+
+#[test]
+fn holding_fit_ignores_member_limit_order() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type Flag2: Show & Bool & Bits<1>").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn nested_instantiations_must_fit_their_holdings() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type Packed<T>: Bits<8> { v: T }").diagnostics,
+        []
+    );
+    for text in [
+        "f: Packed<U16> -> Integer = _ => 1",
+        "xs: Vec<Packed<U16>> = []",
+    ] {
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn prelude_calls_follow_claim_member_purity() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in [
+        "use cli",
+        "type V: Zero & Add { x: Integer }",
+        "impl V: Add { add = o self => V (self.x + o.x + cli.port) }",
+        "impl V: Zero { zero = V 0 }",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    assert_ne!(
+        line(&mut session, "y: Compile & V = sum [V 1, V 2]").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn impl_arms_share_the_same_result_meaning() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in ["n = 1", "type P { x: Integer }"] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    let report =
+        line(&mut session, "impl P { f = { True => n, False => 2.5 } }");
+    assert_ne!(report.diagnostics, []);
+}
+
+#[test]
+fn untyped_try_reports_one_diagnostic() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "probe = input => input | try")
+            .diagnostics
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn element_errors_point_at_the_failed_element() {
+    use fipe::session::Diagnostic;
+    for text in ["xs: [U8; 3] = [1, 2, 300]", "xs: Vec<U8> = [1, 2, 300]"] {
+        let mut session =
+            fipe::session::Session::new(fipe::decl::Declarations::new());
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics.len(), 1, "{report:?}");
+        assert!(report.diagnostics.iter().any(|d| matches!(d, Diagnostic::Type(e) if &text[e.span.start..e.span.end] == "300")), "{:?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn limited_float_literals_keep_exact_values() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type PF: F64 where self > 0.5").diagnostics,
+        []
+    );
+    let report = line(&mut session, "a: PF = 4.5");
+    assert_eq!(report.diagnostics, []);
+    assert_eq!(
+        report.checks[0].reason,
+        fipe::typed::CheckReason::CompileTimeEvaluation
+    );
+}
+
+#[test]
+fn fact_names_contain_only_passed_tests() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    assert_eq!(line(&mut session, "use cli").diagnostics, []);
+    assert_eq!(
+        line(&mut session, "x: Init & Integer = cli.port").diagnostics,
+        []
+    );
+    let report = line(&mut session, "x");
+    let fipe::ast::Entry::Line(id) = report.module.unwrap().entries[0] else {
+        panic!()
+    };
+    assert_eq!(report.typed.unwrap().known(id).unwrap().names, []);
+}
+
+#[test]
+fn fact_printer_distinguishes_unknown_empty_and_exact_parts() {
+    use fipe::limits::known::{End, Known, Range};
+    let mut unknown = Known::default();
+    unknown.range = Some(Range::unknown());
+    assert_eq!(unknown.to_string(), "");
+    let mut empty = Known::default();
+    empty.range = Some(Range {
+        lo: End::Finite(1.into()),
+        hi: End::Finite(0.into()),
+    });
+    assert_eq!(empty.to_string(), "range empty\n");
+    let mut text = Known::default();
+    let mut part = Known::default();
+    part.exact = Some("\"fipe\"".into());
+    text.parts.push(("name".into(), part));
+    assert_eq!(text.to_string(), "parts name: \"fipe\"\n");
+}
+
+#[test]
+fn written_constructor_arms_return_the_enclosing_type() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in ["n = 1", "type P { x: Integer }"] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    assert_ne!(
+        line(&mut session, "impl P { f = True => n, False => 2.5 }")
+            .diagnostics,
+        []
+    );
+}
+
+#[test]
+fn gate_bindings_test_before_narrowing() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type Small: Integer where self <= 9").diagnostics,
+        []
+    );
+    assert_ne!(line(&mut session, "Small z = 50").diagnostics, []);
+}
+
+#[test]
+fn written_constructors_do_not_keep_argument_parts() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type C { n: Integer }",
+        "impl C { n => Self { n: n + 300 } }",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    let report = line(&mut session, "k: U8 = (C 5).n");
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|check| check.reason == fipe::typed::CheckReason::Narrowing),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn piped_constructor_spots_replace_default_facts() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type Point { x: I64, y: I64 = 0 }").diagnostics,
+        []
+    );
+    assert_eq!(
+        line(&mut session, "z = 1 / (7 | Point 5).y").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn record_constructor_patterns_bind_field_types() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type P2 { x: Integer, y: String }",
+        "p = r => r | { P2 a => a }",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    let report = line(&mut session, "p");
+    let fipe::ast::Entry::Line(id) = report.module.unwrap().entries[0] else {
+        panic!()
+    };
+    assert_eq!(
+        report.typed.unwrap().expr(id).unwrap().to_string(),
+        "P2 -> Integer"
+    );
+}
+
+#[test]
+fn impure_limit_tests_are_check_errors() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    assert_eq!(line(&mut session, "use cli").diagnostics, []);
+    for text in [
+        "type T: Integer where (log self) > 0",
+        "type T: Integer where self > cli.port",
+    ] {
+        assert_ne!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn generic_integer_division_has_a_zero_check() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("cli", "pub port: Integer").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in ["use cli", "dv = a b => a / b"] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    let report = line(&mut session, "q: Integer = dv 10 cli.port");
+    assert_eq!(report.diagnostics, []);
+    assert_ne!(session.checks(None), []);
+}
+
+#[test]
+fn claimed_members_accept_their_result_meaning() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type L1: Len { n: Natural }").diagnostics,
+        []
+    );
+    assert_eq!(
+        line(&mut session, "impl L1: Len { len = self => self.n }").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn unit_and_timed_types_keep_holdings() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in ["t: U8 * () = (1, ())", "f: Compile & F64 = 1.5"] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, []);
+        let fipe::ast::Entry::Line(id) = report.module.unwrap().entries[0]
+        else {
+            panic!()
+        };
+        assert!(
+            report.typed.unwrap().known(id).unwrap().holding.is_some(),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn field_reads_keep_place_limits() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(line(&mut session, "type R { n: Natural }").diagnostics, []);
+    let report = line(&mut session, "g: R -> Natural = r => r.n");
+    assert_eq!(report.diagnostics, []);
+    assert_eq!(report.checks, []);
+}
+
+#[test]
+fn conflicting_limit_clauses_report_one_refutation() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(
+            &mut session,
+            "type Empty: Integer where self < 5, self > 10"
+        )
+        .diagnostics,
+        []
+    );
+    assert_eq!(line(&mut session, "x: Empty = 7").diagnostics.len(), 1);
+}
+
+#[test]
+fn type_printer_preserves_grouping() {
+    use fipe::{resolve::Origin, types::Type};
+    let integer = Type::named(Origin::Prelude, "Integer", vec![]);
+    let function = Type::function(integer.clone(), integer.clone());
+    let both = Type::Both(vec![
+        Type::named(Origin::Prelude, "Compile", vec![]),
+        function,
+    ]);
+    assert_eq!(both.to_string(), "Compile & (Integer -> Integer)");
+    let negated = Type::Not(Box::new(Type::Either(vec![
+        integer,
+        Type::named(Origin::Prelude, "String", vec![]),
+    ])));
+    assert_eq!(negated.to_string(), "!(Integer | String)");
+}
+
+#[test]
+fn brackets_receive_places_through_operators_pipes_and_payloads() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "v: Vec<Integer> = [1, 2, 3]",
+        "fv: Vec<Integer> -> Integer = xs => 1",
+        "v ++ [4]",
+        "v == [1, 2, 3]",
+        "[4] | fv",
+        "m: Maybe<Vec<Integer>> = Just [1]",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+}
+
+#[test]
+fn arbitrary_sequence_places_enter_elements_before_calling_sequence() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type Buf<T>: Sequence<T> { len: Integer }",
+        "impl Buf<T>: Sequence<T> { sequence = slots => Self 1000 }",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, []);
+    }
+    assert_ne!(line(&mut session, "b: Buf<U8> = [300]").diagnostics, []);
+}
+
+#[test]
+fn array_length_and_holding_conflicts_report_one_cause() {
+    for text in ["z: [Integer; 2] = [1, 2, 3]", "hb: Bits<8> & Bits<16> = 1"] {
+        let mut session =
+            fipe::session::Session::new(fipe::decl::Declarations::new());
+        assert_eq!(line(&mut session, text).diagnostics.len(), 1, "{text}");
+    }
+}
+
+#[test]
+fn holding_only_types_have_no_implicit_gate() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type Flag: Bool & Bits<1>").diagnostics,
+        []
+    );
+    assert!(
+        matches!(&line(&mut session, "Flag True").diagnostics[..], [fipe::session::Diagnostic::Resolve(fipe::resolve::Error { reason: fipe::resolve::Reason::NoGate { name }, .. })] if name == "Flag")
+    );
+}
+
+#[test]
+fn unknown_sum_payload_limits_remain_open() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(
+        line(&mut session, "type Choice<A> { Pick(value: A), Empty }")
+            .diagnostics,
+        []
+    );
+    let report =
+        line(&mut session, "f: Choice<Integer> -> Choice<U8> = x => x");
+    assert_eq!(report.diagnostics, []);
+    assert_ne!(report.checks, []);
+}
+
+#[test]
+fn conversion_and_strict_entries_report_one_cause() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    assert_eq!(line(&mut session, "xs = [300]").diagnostics, []);
+    let report = line(&mut session, "vy: Vec<U8> = xs | to<Vec<U8>>");
+    assert_eq!(report.diagnostics, []);
+    assert_ne!(report.checks, []);
+    assert!(report.checks.iter().all(|check| check.gate));
+    session.strict(true);
+    assert_eq!(
+        line(&mut session, "f: Integer -> I8 = x => x")
+            .diagnostics
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn called_functions_keep_written_form_purity() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type Buf<T>: Sequence<T> { len: Integer }",
+        "impl Buf<T>: Sequence<T> { sequence = slots => Self (log 1000) }",
+        "make: Integer -> Buf<Integer> = x => [x]",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    assert_ne!(
+        line(&mut session, "b: Compile & Buf<Integer> = make 1").diagnostics,
+        []
+    );
+}
+
+#[test]
+fn written_constructors_follow_body_guard_and_default_purity() {
+    for definition in [
+        "impl C { n => Self { n: log n } }",
+        "impl C { n if (log n) > 0 => Self n, _ => Self 0 }",
+        "impl C { (n = (log 1)) => Self n }",
+    ] {
+        let mut session =
+            fipe::session::Session::new(fipe::decl::Declarations::new());
+        assert_eq!(line(&mut session, "type C { n: Integer }").diagnostics, []);
+        assert_eq!(
+            line(&mut session, definition).diagnostics,
+            [],
+            "{definition}"
+        );
+        assert_ne!(
+            line(&mut session, "x: Compile & C = C 1").diagnostics,
+            [],
+            "{definition}"
+        );
+    }
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for source in [
+        "type C { n: Integer }",
+        "impl C { n => Self n }",
+        "x: Compile & C = C 1",
+    ] {
+        assert_eq!(line(&mut session, source).diagnostics, [], "{source}");
+    }
+}

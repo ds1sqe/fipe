@@ -290,7 +290,16 @@ impl Repl {
             } else if !self.entry.is_empty() {
                 self.entry.push('\n');
                 self.entry.push_str(line);
-                if self.continuation.quote != Some('\'') || line.contains('\'')
+                if self.continuation.depth > 0
+                    && self.continuation.quote.is_none()
+                    && !self.continuation.doc
+                {
+                    let depth = self.continuation.depth;
+                    self.continuation = continuation(line, lex(line));
+                    self.continuation.depth += depth;
+                    self.continuation.open |= self.continuation.depth > 0;
+                } else if self.continuation.quote != Some('\'')
+                    || line.contains('\'')
                 {
                     self.continuation =
                         continuation(code(&self.entry), lex(code(&self.entry)));
@@ -397,17 +406,42 @@ impl Repl {
             .iter()
             .map(|check| render::check(check, None, self.check_test(check)))
             .collect();
+        let mut counts = alloc::collections::BTreeMap::new();
+        for line in &lines {
+            *counts.entry(line).or_insert(0) += 1;
+        }
+        let mut offset = 0;
+        let sources: alloc::collections::BTreeMap<_, _> = self
+            .session
+            .lines()
+            .map(|text| {
+                let start = offset;
+                offset += text.len() + 2;
+                (start, text)
+            })
+            .collect();
         for (check, line) in checks.iter().zip(&lines) {
-            if lines.iter().filter(|other| *other == line).count() > 1 {
-                let (source, prefix) = match &check.place_origin {
+            if name.is_none() {
+                if let Some(owner) = &check.owner {
+                    out.write(format!("{owner}: ").as_bytes());
+                }
+            }
+            if counts.get(line).is_some_and(|count| *count > 1) {
+                let (source, prefix, offset) = match &check.place_origin {
                     fipe::resolve::Origin::File(stem) => (
                         self.cached(stem).unwrap_or_default(),
                         format!("{stem}:"),
+                        0,
                     ),
-                    _ => (self.session.source(), String::new()),
+                    _ => {
+                        sources.range(..=check.place.start).next_back().map_or(
+                            (self.session.source(), String::new(), 0),
+                            |(offset, text)| (*text, String::new(), *offset),
+                        )
+                    }
                 };
                 let (line, column) =
-                    Source::new(source).line_col(check.place.start);
+                    Source::new(source).line_col(check.place.start - offset);
                 out.write(
                     render::check(
                         check,
@@ -838,6 +872,7 @@ fn continuable(line: &str) -> bool {
 #[derive(Default)]
 struct Continuation {
     open: bool,
+    depth: isize,
     quote: Option<char>,
     doc: bool,
     next: Option<NextLine>,
@@ -867,6 +902,7 @@ fn continuation(code: &str, lexed: Lexed) -> Continuation {
         quote,
         doc,
         next: None,
+        depth: 0,
     };
     if result.open || !lexed.errors.is_empty() {
         return result;
@@ -911,8 +947,10 @@ fn continuation(code: &str, lexed: Lexed) -> Continuation {
         .unwrap_or(0);
     let joined = code[end..].contains('\\');
     let bare_type = limited
+        && (!tokens.iter().any(|t| t.kind == Kind::Symbol(Symbol::Ampersand))
+            || tokens.iter().any(|t| matches!(&t.kind, Kind::Name(n) if n.last().is_some_and(|n| matches!(n.as_str(), "Bits" | "Size")))))
         && !tokens.iter().any(|t| {
-            matches!(t.kind, Kind::Symbol(Symbol::LBrace | Symbol::Ampersand))
+            matches!(t.kind, Kind::Symbol(Symbol::LBrace))
                 || where_word(&t.kind)
         });
     if depth == 0 && !trailing && !joined {
@@ -924,6 +962,7 @@ fn continuation(code: &str, lexed: Lexed) -> Continuation {
             None
         };
     }
+    result.depth = depth;
     result.open = depth > 0 || trailing || joined || result.next.is_some();
     result
 }

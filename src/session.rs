@@ -155,24 +155,47 @@ impl Session {
     /// Open checks of accepted lines, or of the latest binding named `name`.
     #[must_use]
     pub fn checks(&self, name: Option<&str>) -> Vec<crate::typed::Check> {
-        let site = name.and_then(|name| self.frame.values.get(name)).and_then(
-            |target| {
+        let local_site = name
+            .and_then(|name| self.frame.values.get(name))
+            .and_then(|target| {
                 if let resolve::Target::Local { site } = target {
                     Some(*site)
                 } else {
                     None
                 }
-            },
-        );
+            });
+        let file_binding = name.and_then(|name| {
+            let (head, member) = name.split_once('.')?;
+            let resolve::Target::Module(origin @ resolve::Origin::File(stem)) =
+                self.frame.values.get(head)?
+            else {
+                return None;
+            };
+            let (_, module) = self.files.iter().find(|(n, _)| n == stem)?;
+            module.entries.iter().find_map(|entry| {
+                let Entry::Line(id) = entry else { return None };
+                let expr = module.expr(*id)?;
+                let crate::ast::ExprKind::Bind { pattern, .. } = expr.kind
+                else {
+                    return None;
+                };
+                let crate::ast::PatternKind::Name(n) =
+                    &module.pattern(pattern)?.kind
+                else {
+                    return None;
+                };
+                (n.segments.last().is_some_and(|n| n == member))
+                    .then_some((origin, expr.span))
+            })
+        });
+        let mut seen = alloc::collections::BTreeSet::new();
         self.frame
             .lines
             .iter()
             .flat_map(|line| {
-                let span = site.and_then(|site| {
+                let span = local_site.and_then(|site| {
                     line.module.entries.iter().find_map(|entry| {
-                        let Entry::Line(id) = entry else {
-                            return None;
-                        };
+                        let Entry::Line(id) = entry else { return None };
                         let expr = line.module.expr(*id)?;
                         let crate::ast::ExprKind::Bind { pattern, .. } =
                             expr.kind
@@ -183,16 +206,27 @@ impl Session {
                             .then_some(expr.span)
                     })
                 });
-                line.typed
-                    .checks
-                    .iter()
-                    .filter(move |check| {
-                        name.is_none()
-                            || span
-                                .is_some_and(|span| within(check.place, span))
-                    })
-                    .cloned()
+                line.typed.checks.iter().filter(move |check| {
+                    name.is_none()
+                        || (check.place_origin == resolve::Origin::This
+                            && span
+                                .is_some_and(|span| within(check.place, span)))
+                        || file_binding.is_some_and(|(origin, span)| {
+                            &check.place_origin == origin
+                                && within(check.place, span)
+                        })
+                })
             })
+            .filter(|check| {
+                seen.insert((
+                    check.place_origin.clone(),
+                    check.place,
+                    check.place_kind.clone(),
+                    check.limit_origin.clone(),
+                    check.limit,
+                ))
+            })
+            .cloned()
             .collect()
     }
 
@@ -376,15 +410,27 @@ impl Session {
     ) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         if self.strict {
-            diagnostics.extend(checks.iter().filter(|check| !check.gate).map(
-                |check| match &check.place_origin {
-                    resolve::Origin::File(stem) => Diagnostic::FileType {
-                        stem: stem.clone(),
-                        error: strict_error(check, 0),
-                    },
-                    _ => Diagnostic::Type(strict_error(check, offset)),
-                },
-            ));
+            let mut seen = alloc::collections::BTreeSet::new();
+            diagnostics.extend(
+                checks
+                    .iter()
+                    .filter(|check| {
+                        !check.gate
+                            && check.name != "nonzero divisor"
+                            && seen.insert((
+                                check.place_origin.clone(),
+                                check.place,
+                                check.name.clone(),
+                            ))
+                    })
+                    .map(|check| match &check.place_origin {
+                        resolve::Origin::File(stem) => Diagnostic::FileType {
+                            stem: stem.clone(),
+                            error: strict_error(check, 0),
+                        },
+                        _ => Diagnostic::Type(strict_error(check, offset)),
+                    }),
+            );
         }
         diagnostics
     }

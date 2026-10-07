@@ -6,7 +6,7 @@ use crate::{
     ast::{Entry, ItemKind, Member},
     token::Magnitude,
 };
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::BTreeSet, string::String, vec::Vec};
 
 /// A checked storage width, separate from a value's meaning.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +64,12 @@ impl Pass<'_> {
         }
         let module = self.module;
         for (index, syntax) in module.types.iter().enumerate() {
+            if matches!(syntax.kind, TypeKind::Named { .. }) {
+                self.instantiated_holding(
+                    &self.syntax_type(module, &Origin::This, TypeId(index)),
+                    syntax.span,
+                );
+            }
             // A whole intersection supplies the range for each written holding.
             if !matches!(syntax.kind, TypeKind::Both(_)) {
                 continue;
@@ -80,10 +86,9 @@ impl Pass<'_> {
     fn check_holding(&mut self, ty: &Type, module: &Module, syntax: TypeId) {
         let mut parts = Vec::new();
         holding_parts(module, syntax, &mut parts);
-        let needed = self.needed(ty, &mut Vec::new());
-        let mut first = None;
+        let mut entries = Vec::new();
         for part in parts {
-            let part_ty = self.syntax_bound(
+            let ty = self.syntax_bound(
                 module,
                 &Origin::This,
                 part,
@@ -91,35 +96,46 @@ impl Pass<'_> {
             );
             let mut widths = Vec::new();
             self.widths(
-                &part_ty,
+                &ty,
                 module.types[part.0].span,
-                &mut Vec::new(),
+                &mut BTreeSet::new(),
                 &mut widths,
             );
-            for (bits, _, _) in widths {
-                let message =
-                    if first.as_ref().is_some_and(|first| first != &bits) {
-                        Some("the holdings disagree")
-                    } else if super::modifier(&part_ty)
-                        && !has_parameters(ty)
-                        && needed.as_ref().is_none_or(|n| n > &bits)
-                    {
-                        Some("does not fit its holding")
-                    } else {
-                        None
-                    };
-                first.get_or_insert(bits);
-                if let Some(message) = message {
-                    let span = module.types[part.0].span;
-                    if !self.errors.iter().any(|e| e.span == span) {
-                        self.errors.push(Error {
-                            span,
-                            reason: TypeReason::Limit {
-                                message: String::from(message),
-                            },
-                        });
-                    }
-                }
+            entries.extend(
+                widths
+                    .into_iter()
+                    .map(|(bits, span, _)| (bits, span, super::modifier(&ty))),
+            );
+        }
+        if let Some((first, _, _)) = entries.first() {
+            if let Some((_, span, _)) =
+                entries.iter().find(|(bits, _, _)| bits != first)
+            {
+                self.errors.push(Error {
+                    span: *span,
+                    reason: TypeReason::Limit {
+                        message: String::from("the holdings disagree"),
+                    },
+                });
+                return;
+            }
+        }
+        let mut needed = None;
+        for (bits, span, modifier) in entries {
+            if modifier
+                && !has_parameters(ty)
+                && needed
+                    .get_or_insert_with(|| self.needed(ty, &mut Vec::new()))
+                    .as_ref()
+                    .is_none_or(|n| n > &bits)
+                && !self.errors.iter().any(|e| e.span == span)
+            {
+                self.errors.push(Error {
+                    span,
+                    reason: TypeReason::Limit {
+                        message: String::from("does not fit its holding"),
+                    },
+                });
             }
         }
     }
@@ -128,7 +144,7 @@ impl Pass<'_> {
         &self,
         ty: &Type,
         span: Span,
-        visited: &mut Vec<TypeName>,
+        visited: &mut BTreeSet<TypeName>,
         out: &mut Vec<(Magnitude, Span, Origin)>,
     ) {
         match ty {
@@ -158,7 +174,7 @@ impl Pass<'_> {
                 if visited.contains(name) {
                     return;
                 }
-                visited.push(name.clone());
+                visited.insert(name.clone());
                 if let Some((module, Some(base), _)) = self.declaration(name) {
                     let base = self.syntax_bound(
                         module,
@@ -168,7 +184,7 @@ impl Pass<'_> {
                     );
                     self.widths(&base, span, visited, out);
                 }
-                visited.pop();
+                visited.remove(name);
             }
             _ => (),
         }
@@ -179,7 +195,7 @@ impl Pass<'_> {
         visited: &mut Vec<TypeName>,
     ) -> Option<Holding> {
         let mut widths = Vec::new();
-        self.widths(ty, Span::default(), &mut Vec::new(), &mut widths);
+        self.widths(ty, Span::default(), &mut BTreeSet::new(), &mut widths);
         if let Some((bits, _, _)) = widths.first() {
             return Some(Holding {
                 bits: bits.clone(),
@@ -187,6 +203,11 @@ impl Pass<'_> {
             });
         }
         match ty {
+            Type::Unit => Some(Holding {
+                bits: Magnitude::default(),
+                needed: Magnitude::default(),
+            }),
+            Type::Limited { meaning, .. } => self.holding(meaning, visited),
             Type::Tuple(parts) => {
                 let bits = parts.iter().try_fold(
                     Magnitude::default(),
@@ -258,8 +279,8 @@ impl Pass<'_> {
             Type::Limited { name, .. } => self.needed(name, visited),
             Type::Both(parts) => parts
                 .iter()
-                .find(|p| !super::modifier(p))
-                .and_then(|p| self.needed(p, visited)),
+                .filter(|p| !super::modifier(p))
+                .find_map(|p| self.needed(p, visited)),
             Type::Array { element, length } => Some(
                 self.holding(element, visited)?
                     .bits
@@ -318,47 +339,36 @@ impl Pass<'_> {
         let Some((module, _, _)) = self.declaration(name) else {
             return Vec::new();
         };
-        module
-            .entries
+        let Some(index) = self.declarations_by_name.get(name) else {
+            return Vec::new();
+        };
+        let Entry::Item(item) = &module.entries[*index] else {
+            return Vec::new();
+        };
+        let ItemKind::Type { parameters, .. } = &item.kind else {
+            return Vec::new();
+        };
+        parameters
             .iter()
-            .find_map(|entry| match entry {
-                Entry::Item(item) => match &item.kind {
-                    ItemKind::Type {
-                        name: n,
-                        parameters,
-                        ..
-                    } if n.segments.last() == Some(&name.name) => Some(
-                        parameters
-                            .iter()
-                            .zip(arguments)
-                            .map(|(p, a)| {
-                                (
-                                    p.name
-                                        .segments
-                                        .last()
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                    a.clone(),
-                                )
-                            })
-                            .collect(),
-                    ),
-                    _ => None,
-                },
-                Entry::Line(_) => None,
+            .zip(arguments)
+            .map(|(p, a)| {
+                (
+                    p.name.segments.last().cloned().unwrap_or_default(),
+                    a.clone(),
+                )
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     pub(super) fn instantiated_holding(&mut self, ty: &Type, span: Span) {
         let Type::Named { name, arguments } = ty else {
             return;
         };
-        if arguments.is_empty() || has_parameters(ty) {
+        if arguments.is_empty() || has_parameters(ty) || super::modifier(ty) {
             return;
         }
         let mut widths = Vec::new();
-        self.widths(ty, span, &mut Vec::new(), &mut widths);
+        self.widths(ty, span, &mut BTreeSet::new(), &mut widths);
         let needed = self.needed(ty, &mut Vec::new());
         if widths.first().is_some_and(|(bits, _, _)| {
             needed.as_ref().is_none_or(|n| n > bits)

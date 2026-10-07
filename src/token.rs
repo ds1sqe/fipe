@@ -9,7 +9,7 @@ mod magnitude;
 pub use magnitude::Magnitude;
 
 /// Half-open byte offsets into one source.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

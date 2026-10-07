@@ -134,7 +134,17 @@ impl Infer<'_> {
                 self.expr(value, Some(&expected));
             }
             Some(Body::Arms(arms)) => {
-                self.arms(&arms, Some(&expected));
+                let ty = self.arms(&arms, Some(&expected));
+                let mut result = &ty;
+                for _ in &arms[0].patterns {
+                    let Type::Function { result: next, .. } = result else {
+                        break;
+                    };
+                    result = next;
+                }
+                if let Some(head) = self.self_type.clone() {
+                    self.unify(&head, result, arms[0].span, part.site);
+                }
             }
             None => {}
         }

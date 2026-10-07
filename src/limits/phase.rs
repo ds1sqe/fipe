@@ -18,8 +18,14 @@ impl Pass<'_> {
                 .unwrap_or(Phase::Compile)
         };
         match &expression.kind {
-            ExprKind::Literal(_)
-            | ExprKind::Word(_)
+            ExprKind::Literal(_) => {
+                if self.pure_expression(id) {
+                    Phase::Compile
+                } else {
+                    self.site_phase(expression.span)
+                }
+            }
+            ExprKind::Word(_)
             | ExprKind::Path(_)
             | ExprKind::Selector(_)
             | ExprKind::Arms(_) => Phase::Compile,
@@ -28,11 +34,24 @@ impl Pass<'_> {
             }
             ExprKind::Group(ids)
             | ExprKind::Block(ids)
-            | ExprKind::Tuple(ids)
-            | ExprKind::List(ids) => latest(ids),
-            ExprKind::Bind { value, .. }
-            | ExprKind::Not { value, .. }
-            | ExprKind::Field { value, .. } => get(*value),
+            | ExprKind::Tuple(ids) => latest(ids),
+            ExprKind::List(ids) => {
+                latest(ids).max(if self.pure_expression(id) {
+                    Phase::Compile
+                } else {
+                    self.site_phase(expression.span)
+                })
+            }
+            ExprKind::Bind { value, .. } | ExprKind::Not { value, .. } => {
+                get(*value)
+            }
+            ExprKind::Field { value, .. } => {
+                get(*value).max(if self.pure_expression(id) {
+                    Phase::Compile
+                } else {
+                    self.site_phase(expression.span)
+                })
+            }
             ExprKind::Outcome { payload, .. } => {
                 payload.map_or(Phase::Compile, get)
             }
@@ -93,18 +112,9 @@ impl Pass<'_> {
     }
 
     pub(super) fn site_phase(&self, span: Span) -> Phase {
-        if super::frequency(self.module, span) == super::Frequency::PerCall {
-            return Phase::Eval;
-        }
-        if self.module.expressions.iter().any(|e| {
-            matches!(e.kind, ExprKind::Bind { .. })
-                && e.span.start <= span.start
-                && span.end <= e.span.end
-        }) {
-            Phase::Init
-        } else {
-            Phase::Eval
-        }
+        self.contexts
+            .get(&span.start)
+            .map_or(Phase::Eval, |context| context.0)
     }
 
     fn target_phase(&self, target: Option<&Target>, span: Span) -> Phase {
@@ -132,7 +142,7 @@ impl Pass<'_> {
                 } else {
                     self.site_phase(span)
                 }),
-            Some(Target::TypeMember { .. }) => {
+            Some(Target::TypeMember { .. } | Target::Constructor { .. }) => {
                 if self.pure_target(target, &mut Vec::new()) {
                     Phase::Compile
                 } else {
@@ -145,6 +155,9 @@ impl Pass<'_> {
     }
 
     pub(super) fn pure_expression(&self, id: ExprId) -> bool {
+        if !self.form_purity(self.module, self.resolved, id, &mut Vec::new()) {
+            return false;
+        }
         let pure = |id: ExprId| self.typed.known[id.0].pure;
         match &self.module.expressions[id.0].kind {
             ExprKind::Name(_) | ExprKind::Instance { .. } => {
@@ -219,19 +232,75 @@ impl Pass<'_> {
         }
     }
 
-    fn pure_name(&self, target: Option<&Target>) -> bool {
-        let Some(target) = target else {
-            return true;
+    fn form_purity(
+        &self,
+        module: &Module,
+        resolved: &crate::resolve::Resolved,
+        id: ExprId,
+        visited: &mut Vec<Target>,
+    ) -> bool {
+        let output_type = self.expression_type(module, id);
+        let mut output = output_type.as_ref();
+        let input_type = super::first_input(module, id)
+            .and_then(|input| self.expression_type(module, input));
+        let input = input_type.as_ref();
+        let members: &[&str] = match &module.expressions[id.0].kind {
+            ExprKind::Literal(_) => &["literal"],
+            ExprKind::List(_)
+                if !matches!(output, Some(super::Type::Array { .. })) =>
+            {
+                &["sequence"]
+            }
+            ExprKind::Call { .. }
+            | ExprKind::Pipe {
+                op: crate::ast::PipeOp::Plain,
+                ..
+            } => {
+                match super::call_head(module, id)
+                    .and_then(|head| resolved.expr(head))
+                {
+                    Some(Target::Value {
+                        origin: Origin::Prelude,
+                        name,
+                    }) => match name.as_str() {
+                        "sum" => &["add", "zero"],
+                        "show" => {
+                            output = input;
+                            &["show"]
+                        }
+                        "to" => &["from"],
+                        "try" | "read" => {
+                            if let Some(crate::types::Type::Named {
+                                arguments,
+                                ..
+                            }) = output
+                            {
+                                output = arguments.first();
+                            }
+                            if name == "try" {
+                                &["try_from"]
+                            } else {
+                                &["read"]
+                            }
+                        }
+                        _ => &[],
+                    },
+                    _ => &[],
+                }
+            }
+            _ => &[],
         };
-        if let Some((_, pure)) =
-            self.purity.borrow().iter().find(|(t, _)| t == target)
-        {
-            return *pure;
-        }
-        // Cache only a completed reachability walk: a back edge alone is not proof.
-        let pure = self.pure_target(Some(target), &mut Vec::new());
-        self.purity.borrow_mut().push((target.clone(), pure));
-        pure
+        members.iter().all(|member| {
+            self.pure_member_of(member, output.and_then(type_head), visited)
+        })
+    }
+
+    fn pure_name(&self, target: Option<&Target>) -> bool {
+        self.pure_target(target, &mut Vec::new())
+    }
+
+    pub(super) fn pure_test(&self, id: ExprId) -> bool {
+        self.pure_tree(self.module, self.resolved, id, &mut Vec::new())
     }
 
     fn pure_tree(
@@ -241,35 +310,47 @@ impl Pass<'_> {
         id: ExprId,
         visited: &mut Vec<Target>,
     ) -> bool {
-        let span = module.expressions[id.0].span;
-        resolved
-            .expressions()
-            .filter(|(id, _)| {
-                let s = module.expressions[id.0].span;
-                span.start <= s.start && s.end <= span.end
-            })
-            .all(|(_, target)| {
+        self.pure_region(
+            module,
+            resolved,
+            module.expressions[id.0].span,
+            id,
+            visited,
+        )
+    }
+
+    fn pure_region(
+        &self,
+        module: &Module,
+        resolved: &crate::resolve::Resolved,
+        span: Span,
+        id: ExprId,
+        visited: &mut Vec<Target>,
+    ) -> bool {
+        let start = module.expressions[..=id.0]
+            .partition_point(|e| e.span.end <= span.start);
+        (start..=id.0).all(|index| {
+            let expression = &module.expressions[index];
+            if expression.span.start < span.start
+                || expression.span.end > span.end
+            {
+                return true;
+            }
+            let pure = resolved.expr(ExprId(index)).is_none_or(|target| {
                 self.pure_scoped(module, resolved, target, visited)
-            })
-            && module
-                .expressions
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| {
-                    span.start <= e.span.start && e.span.end <= span.end
-                })
-                .all(|(_, e)| {
-                    if let ExprKind::Binary { op, left, .. } = e.kind {
-                        let ty = self.expression_type(module, left);
-                        self.pure_member_of(
-                            operator_member(op),
-                            ty.as_ref().and_then(type_head),
-                            visited,
-                        )
-                    } else {
-                        true
-                    }
-                })
+            });
+            pure && self.form_purity(module, resolved, ExprId(index), visited)
+                && if let ExprKind::Binary { op, left, .. } = expression.kind {
+                    let ty = self.expression_type(module, left);
+                    self.pure_member_of(
+                        operator_member(op),
+                        ty.as_ref().and_then(type_head),
+                        visited,
+                    )
+                } else {
+                    true
+                }
+        })
     }
 
     fn expression_type(
@@ -358,10 +439,38 @@ impl Pass<'_> {
         target: Option<&Target>,
         visited: &mut Vec<Target>,
     ) -> bool {
+        let Some(target) = target else { return true };
+        if let Some(pure) = self.purity.borrow().get(target) {
+            return *pure;
+        }
+        if let Target::Local { site } = target {
+            if let Some(fact) = self
+                .frame
+                .and_then(|f| f.facts.get(&(site.start, site.end)))
+            {
+                return fact.pure;
+            }
+        }
+        let cycles = self.purity_cycles.get();
+        let depth = visited.len();
+        let pure = self.pure_target_uncached(Some(target), visited);
+        visited.truncate(depth);
+        if !pure || self.purity_cycles.get() == cycles {
+            self.purity.borrow_mut().insert(target.clone(), pure);
+        }
+        pure
+    }
+
+    fn pure_target_uncached(
+        &self,
+        target: Option<&Target>,
+        visited: &mut Vec<Target>,
+    ) -> bool {
         let Some(target) = target else {
             return true;
         };
         if visited.contains(target) {
+            self.purity_cycles.set(self.purity_cycles.get() + 1);
             return true;
         }
         visited.push(target.clone());
@@ -421,6 +530,9 @@ impl Pass<'_> {
                 // A supplied written value is a host constant.
                 true
             }
+            Target::Constructor { origin, ty, .. } => {
+                self.pure_constructor(origin, ty, visited)
+            }
             Target::Members { head, members } => {
                 self.pure_target(Some(head), visited)
                     && members
@@ -442,6 +554,75 @@ impl Pass<'_> {
         }
     }
 
+    fn pure_constructor(
+        &self,
+        origin: &Origin,
+        ty: &str,
+        visited: &mut Vec<Target>,
+    ) -> bool {
+        let mut modules =
+            core::iter::once((self.module, Origin::This))
+                .chain(self.frame.into_iter().flat_map(|f| {
+                    f.lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, line)| (&line.module, Origin::Line(i)))
+                }))
+                .chain(self.files.iter().map(|(name, module)| {
+                    (module, Origin::File(name.clone()))
+                }));
+        modules.all(|(module, home)| {
+            let arms: Vec<_> = module
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    let Entry::Item(item) = entry else {
+                        return None;
+                    };
+                    let ItemKind::Impl {
+                        target, members, ..
+                    } = &item.kind
+                    else {
+                        return None;
+                    };
+                    self.type_name(module, &home, *target)
+                        .is_some_and(|name| {
+                            name.origin == *origin && name.name == ty
+                        })
+                        .then_some(members)
+                })
+                .flatten()
+                .filter_map(|member| match member {
+                    ImplMember::Constructor { arm, .. } => Some(arm),
+                    ImplMember::Named { .. } => None,
+                })
+                .collect();
+            if arms.is_empty() {
+                return true;
+            }
+            let mut pure = |resolved| {
+                arms.iter().all(|arm| {
+                    self.pure_region(
+                        module, resolved, arm.span, arm.body, visited,
+                    )
+                })
+            };
+            match &home {
+                Origin::This => pure(self.resolved),
+                Origin::Line(index) => self
+                    .frame
+                    .is_some_and(|frame| pure(&frame.lines[*index].resolved)),
+                Origin::File(stem) => self
+                    .cache
+                    .files
+                    .borrow()
+                    .get(stem)
+                    .is_some_and(|file| pure(&file.resolved)),
+                _ => false,
+            }
+        })
+    }
+
     fn pure_member(&self, name: &str, visited: &mut Vec<Target>) -> bool {
         self.pure_member_of(name, None, visited)
     }
@@ -456,6 +637,11 @@ impl Pass<'_> {
         {
             return false;
         }
+        if owner.is_some_and(|owner| owner.origin == Origin::Prelude)
+            && matches!(name, "literal" | "sequence")
+        {
+            return true;
+        }
         let key = Target::Value {
             origin: owner.map_or(Origin::This, |n| n.origin.clone()),
             name: format!(
@@ -464,6 +650,7 @@ impl Pass<'_> {
             ),
         };
         if visited.contains(&key) {
+            self.purity_cycles.set(self.purity_cycles.get() + 1);
             return true;
         }
         visited.push(key);
@@ -582,7 +769,7 @@ impl Pass<'_> {
         }
     }
 
-    fn demand(&mut self, value: ExprId, demand: Phase, span: Span) {
+    fn demand(&mut self, value: ExprId, demand: Phase, _span: Span) {
         let phase = self.typed.known[value.0].phase;
         if demand == Phase::Compile && phase == Phase::Compile {
             let source = self.module.expressions[value.0].span;
@@ -605,24 +792,63 @@ impl Pass<'_> {
         }
         if phase > demand {
             let source = self.module.expressions[value.0].span;
-            let latest = self
-                .module
-                .expressions
-                .iter()
-                .enumerate()
-                .find_map(|(i, e)| {
-                    if source.start <= e.span.start
-                        && e.span.end <= source.end
-                        && self.typed.known[i].phase == phase
+            let latest = self.module.expressions.iter().enumerate().find_map(
+                |(i, e)| {
+                    if source.start <= e.span.start && e.span.end <= source.end
                     {
                         if let ExprKind::Name(name) = &e.kind {
-                            return Some(name.segments.join("."));
+                            if self.typed.known[i].phase == phase
+                                || !self.typed.known[i].pure
+                            {
+                                return Some((
+                                    name.segments.join("."),
+                                    e.span,
+                                    self.typed.known[i].phase < phase,
+                                ));
+                            }
+                        }
+                    }
+                    if source.start <= e.span.start
+                        && e.span.end <= source.end
+                        && !self.typed.known[i].pure
+                    {
+                        let name = match &e.kind {
+                            ExprKind::Field { field, .. } => Some(field),
+                            _ => super::call_head(self.module, ExprId(i))
+                                .and_then(|callee| {
+                                    match &self.module.expressions[callee.0]
+                                        .kind
+                                    {
+                                        ExprKind::Name(name) => Some(name),
+                                        _ => None,
+                                    }
+                                }),
+                        };
+                        if let Some(name) = name {
+                            return Some((
+                                name.segments.join("."),
+                                name.span,
+                                true,
+                            ));
                         }
                     }
                     None
-                })
-                .unwrap_or_else(|| alloc::string::String::from("expression"));
-            self.errors.push(Error { span, reason: TypeReason::Limit { message: format!("timing requires {demand}; latest input `{latest}` is known at {phase}") } });
+                },
+            );
+            let (latest, at, impure) = latest.unwrap_or_else(|| {
+                (alloc::string::String::from("expression"), source, false)
+            });
+            let message = if impure {
+                format!(
+                    "timing requires {demand}; input `{latest}` is not pure"
+                )
+            } else {
+                format!("timing requires {demand}; latest input `{latest}` is known at {phase}")
+            };
+            self.errors.push(Error {
+                span: at,
+                reason: TypeReason::Limit { message },
+            });
         }
     }
 
@@ -699,7 +925,7 @@ impl Pass<'_> {
         if core::ptr::eq(module, self.module) {
             return self.resolved.expr(id).cloned();
         }
-        match origin {
+        let target = match origin {
             Origin::Line(i) => self
                 .frame
                 .and_then(|f| f.lines[*i].resolved.expr(id))
@@ -711,33 +937,30 @@ impl Pass<'_> {
                 .get(stem)
                 .and_then(|c| c.resolved.expr(id))
                 .cloned(),
-            _ => {
-                if let ExprKind::Name(n) = &module.expressions[id.0].kind {
-                    if n.segments.len() == 1
-                        && matches!(n.segments[0].as_str(), "Compile" | "Init")
-                    {
-                        Some(Target::Type {
-                            origin: Origin::Prelude,
-                            name: n.segments[0].clone(),
-                        })
-                    } else if n.segments.len() == 2
-                        && self
-                            .declarations
-                            .get_module(&n.segments[0])
-                            .is_some()
-                    {
-                        Some(Target::Value {
-                            origin: Origin::Host(n.segments[0].clone()),
-                            name: n.segments[1].clone(),
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+            _ => None,
+        };
+        target.or_else(|| {
+            let ExprKind::Name(n) = &module.expressions[id.0].kind else {
+                return None;
+            };
+            if n.segments.len() == 1
+                && matches!(n.segments[0].as_str(), "Compile" | "Init")
+            {
+                Some(Target::Type {
+                    origin: Origin::Prelude,
+                    name: n.segments[0].clone(),
+                })
+            } else if n.segments.len() == 2
+                && self.declarations.get_module(&n.segments[0]).is_some()
+            {
+                Some(Target::Value {
+                    origin: Origin::Host(n.segments[0].clone()),
+                    name: n.segments[1].clone(),
+                })
+            } else {
+                None
             }
-        }
+        })
     }
     pub(super) fn timed_test(
         &self,
@@ -786,7 +1009,7 @@ impl Pass<'_> {
             }
             ExprKind::Binary {
                 op, left, right, ..
-            } => super::binary(
+            } => super::test_binary(
                 *op,
                 &self.test_value(module, origin, *left, known),
                 &self.test_value(module, origin, *right, known),
@@ -803,6 +1026,11 @@ impl Pass<'_> {
                     &self.test_value(module, origin, *left, known),
                     &self.test_value(module, origin, *right, known),
                 )
+            }
+            ExprKind::Not { value, .. } => {
+                let mut result = self.test_value(module, origin, *value, known);
+                result.boolean = result.boolean.map(|b| !b);
+                result
             }
             ExprKind::Group(ids) => {
                 ids.last().map_or_else(super::Known::default, |id| {

@@ -111,7 +111,8 @@ loaded module. It reads syntax only and returns `None` without an owner.
 
 ~~~text
 typed::Check { place: Span, place_kind: typed::Place, limit: Span,
-               phase, reason, frequency, test_count }
+               phase, reason, frequency, test_count,
+               place_origin, limit_origin, name, known, gate, when_integer, owner }
 typed::Place = Binding(String) | Parameter(Option<String>) | Result
              | Field { owner: String, name: String } | Part(usize) | Element | Payload
 ~~~
@@ -125,6 +126,9 @@ result, field, element or payload. Spans identify the place itself where
 written and belong to the source containing
 the place or limit; imported declarations retain their source identity.
 An entry refuted by the known facts is an error in every session.
+`when_integer` marks a generic divisor check that runs only when its
+instance meaning is `Integer`; it is listed once in the function, per call.
+`owner` names the binding containing an entry, when one exists.
 
 A binding also retains its earliest phase and holding across session
 lines and file modules. `:t` prints `known at compile` or `known at init`

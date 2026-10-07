@@ -21,7 +21,7 @@ use crate::{
     types::{Type, TypeName},
 };
 use alloc::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     format,
     string::{String, ToString},
     vec,
@@ -53,84 +53,70 @@ pub(crate) fn check(
         active: Vec::new(),
         place_kind: Place::Result,
         entry_phase: None,
-        purity: core::cell::RefCell::new(Vec::new()),
+        purity: core::cell::RefCell::new(BTreeMap::new()),
+        purity_cycles: core::cell::Cell::new(0),
+        declarations_by_name: declaration_index(
+            module,
+            declarations,
+            files,
+            frame,
+        ),
+        contexts: contexts(module),
+        checks_seen: BTreeSet::new(),
     };
     pass.typed.known = vec![Known::default(); module.expressions.len()];
     pass.seed_places();
+    pass.check_purity();
+    let mut entry_types = vec![None; module.expressions.len()];
+    for (id, ty, _, _) in entries {
+        entry_types[id.0].get_or_insert(ty);
+    }
     for index in 0..module.expressions.len() {
         let id = ExprId(index);
         if pass.typed.expr(id).is_none() {
             continue;
         }
-        let mut known =
-            if pass.typed.casts.get(id.0).is_some_and(Option::is_some) {
-                Known::default()
-            } else {
-                pass.value(id)
-            };
+        let mut known = if pass
+            .typed
+            .casts
+            .get(id.0)
+            .and_then(Option::as_ref)
+            .is_some_and(|cast| cast.row != crate::typed::CastRow::Pack)
+        {
+            Known::default()
+        } else {
+            pass.value(id)
+        };
         known.pure = pass.pure_expression(id);
         known.phase = pass.expression_phase(id);
         known.demanded |= call_head(module, id)
             .and_then(|callee| crate::resolve::timing(resolved.expr(callee)))
             == Some(Phase::Compile);
         if let Some(ty) = pass.typed.expr(id) {
-            if matches!(ty, Type::Array { .. }) {
+            if let Type::Named { name, .. } = crate::infer::meaning(ty) {
+                known.meaning = Some(name.clone());
+            }
+            if (matches!(ty, Type::Array { .. })
+                || matches!(
+                    module.expressions[id.0].kind,
+                    ExprKind::Field { .. }
+                )
+                || matches!(resolved.expr(id), Some(Target::Members { .. })))
+                && known.failure != Some(known::Failure::Dependency)
+            {
                 pass.place_facts(ty, &mut known);
             }
             known.holding = pass.holding(ty, &mut Vec::new()).or(known.holding);
         }
-        if matches!(
-            module.expressions[index].kind,
-            ExprKind::Record { .. }
-                | ExprKind::Call { .. }
-                | ExprKind::Pipe {
-                    op: PipeOp::Plain,
-                    ..
-                }
-        ) {
-            if let Some(Type::Named { name, .. }) = pass.typed.expr(id).cloned()
-            {
-                if matches!(
-                    module.expressions[index].kind,
-                    ExprKind::Record { .. }
-                ) || matches!(
-                    call_head(module, id)
-                        .and_then(|callee| resolved.expr(callee)),
-                    Some(Target::Constructor { .. })
-                ) {
-                    pass.named_entry(
-                        &name,
-                        &known,
-                        module.expressions[index].span,
-                        frequency(module, module.expressions[index].span),
-                        &mut Vec::new(),
-                    );
-                    if pass.declaration(&name).is_some_and(|(_, _, limits)| {
-                        limits.iter().any(|l| matches!(l, Limit::Test(_)))
-                    }) {
-                        pass.named_facts(&name, &mut known, &mut Vec::new());
-                    }
-                }
-            }
-        }
-        pass.expression_holding(id, entries);
+        pass.construction_entry(id, &mut known);
+        pass.expression_holding(id, entry_types[index]);
         pass.typed.known[index] = known.clone();
         pass.binding_facts(id);
     }
     pass.timing_places();
     pass.holdings();
     pass.demands();
-    for check in &mut pass.typed.checks {
-        if module
-            .expressions
-            .iter()
-            .enumerate()
-            .any(|(i, e)| e.span == check.place && pass.typed.known[i].demanded)
-        {
-            check.phase = Phase::Compile;
-            check.reason = Reason::CompileTimeEvaluation;
-        }
-    }
+    pass.finish_checks();
     pass.entries(entries);
     pass.keep_facts();
     pass.typed.facts = pass
@@ -165,7 +151,16 @@ pub(crate) fn default_proved(
         active: Vec::new(),
         place_kind: Place::Result,
         entry_phase: None,
-        purity: core::cell::RefCell::new(Vec::new()),
+        purity: core::cell::RefCell::new(BTreeMap::new()),
+        purity_cycles: core::cell::Cell::new(0),
+        declarations_by_name: declaration_index(
+            module,
+            declarations,
+            files.0,
+            frame,
+        ),
+        contexts: contexts(module),
+        checks_seen: BTreeSet::new(),
     };
     pass.evaluate_type(ty, known, 0).boolean == Some(true)
 }
@@ -193,7 +188,16 @@ pub(crate) fn flag_entry(
         active: Vec::new(),
         place_kind,
         entry_phase: None,
-        purity: core::cell::RefCell::new(Vec::new()),
+        purity: core::cell::RefCell::new(BTreeMap::new()),
+        purity_cycles: core::cell::Cell::new(0),
+        declarations_by_name: declaration_index(
+            module,
+            declarations,
+            files.0,
+            frame,
+        ),
+        contexts: contexts(module),
+        checks_seen: BTreeSet::new(),
     };
     pass.enter(
         ty,
@@ -202,13 +206,137 @@ pub(crate) fn flag_entry(
             ..Known::default()
         },
         span,
-        frequency(module, span),
+        pass.frequency(span),
     );
     (pass.errors, typed.checks)
 }
 
 pub(crate) fn default_fact(module: &Module, value: ExprId) -> Known {
     test(module, value, &Known::default())
+}
+
+fn declaration_index(
+    module: &Module,
+    declarations: &Declarations,
+    files: &[(String, Module)],
+    frame: Option<&Frame>,
+) -> BTreeMap<TypeName, usize> {
+    let modules = core::iter::once((module, Origin::This))
+        .chain(core::iter::once((
+            &declarations.prelude.module,
+            Origin::Prelude,
+        )))
+        .chain(
+            declarations
+                .commands
+                .iter()
+                .map(|n| (&n.module, Origin::Commands)),
+        )
+        .chain(
+            declarations
+                .modules
+                .iter()
+                .map(|n| (&n.module, Origin::Host(n.name.clone()))),
+        )
+        .chain(files.iter().map(|(n, m)| (m, Origin::File(n.clone()))))
+        .chain(frame.into_iter().flat_map(|f| {
+            f.lines
+                .iter()
+                .enumerate()
+                .map(|(i, l)| (&l.module, Origin::Line(i)))
+        }));
+    let mut index = BTreeMap::new();
+    for (module, origin) in modules {
+        for (i, entry) in module.entries.iter().enumerate() {
+            if let Entry::Item(item) = entry {
+                if let ItemKind::Type { name, .. } = &item.kind {
+                    index.insert(
+                        TypeName {
+                            origin: origin.clone(),
+                            name: name
+                                .segments
+                                .last()
+                                .cloned()
+                                .unwrap_or_default(),
+                        },
+                        i,
+                    );
+                }
+            }
+        }
+    }
+    index
+}
+
+fn contexts(
+    module: &Module,
+) -> BTreeMap<usize, (Phase, Frequency, Option<String>)> {
+    let mut contexts: BTreeMap<_, _> = module
+        .expressions
+        .iter()
+        .map(|e| e.span.start)
+        .chain(module.types.iter().map(|t| t.span.start))
+        .map(|start| (start, (Phase::Eval, Frequency::Once, None)))
+        .collect();
+    for entry in &module.entries {
+        let Entry::Item(item) = entry else {
+            continue;
+        };
+        let ItemKind::Impl {
+            target, members, ..
+        } = &item.kind
+        else {
+            continue;
+        };
+        let TypeKind::Named { name: ty, .. } = &module.types[target.0].kind
+        else {
+            continue;
+        };
+        for member in members {
+            if let crate::ast::ImplMember::Named { name, span, .. } = member {
+                let owner = format!(
+                    "{}.{}",
+                    ty.segments.join("."),
+                    name.segments.join(".")
+                );
+                contexts.entry(name.span.start).or_insert((
+                    Phase::Eval,
+                    Frequency::PerCall,
+                    None,
+                ));
+                for (_, context) in contexts.range_mut(span.start..span.end) {
+                    context.2 = Some(owner.clone());
+                }
+            }
+        }
+    }
+    for expression in &module.expressions {
+        if let ExprKind::Bind { pattern, .. } = expression.kind {
+            let owner = match &module.patterns[pattern.0].kind {
+                PatternKind::Name(name) => Some(name.segments.join(".")),
+                _ => None,
+            };
+            for (_, context) in
+                contexts.range_mut(expression.span.start..expression.span.end)
+            {
+                context.0 = Phase::Init;
+                if context.2.is_none() {
+                    context.2.clone_from(&owner);
+                }
+            }
+        }
+    }
+    for expression in &module.expressions {
+        if matches!(expression.kind, ExprKind::Arms(_)) {
+            for (_, context) in
+                contexts.range_mut(expression.span.start..expression.span.end)
+            {
+                context.0 = Phase::Eval;
+                context.1 = Frequency::PerCall;
+            }
+        }
+    }
+    contexts
 }
 
 struct Pass<'a> {
@@ -224,27 +352,121 @@ struct Pass<'a> {
     active: Vec<TypeName>,
     place_kind: Place,
     entry_phase: Option<Phase>,
-    purity: core::cell::RefCell<Vec<(Target, bool)>>,
+    purity: core::cell::RefCell<BTreeMap<Target, bool>>,
+    purity_cycles: core::cell::Cell<usize>,
+    declarations_by_name: BTreeMap<TypeName, usize>,
+    contexts: BTreeMap<usize, (Phase, Frequency, Option<String>)>,
+    checks_seen: BTreeSet<(Span, Place, Span, Origin)>,
 }
 impl Pass<'_> {
-    fn expression_holding(
-        &mut self,
-        id: ExprId,
-        entries: &[(ExprId, Type, Span, Place)],
-    ) {
-        let place_type = entries
+    fn finish_checks(&mut self) {
+        let demanded: BTreeSet<_> = self
+            .module
+            .expressions
             .iter()
-            .find(|(at, _, _, _)| *at == id)
-            .map(|(_, ty, _, _)| ty.clone())
-            .or_else(|| self.typed.expr(id).cloned());
-        if let Some(ty) = place_type {
+            .zip(&self.typed.known)
+            .filter_map(|(expression, known)| {
+                known.demanded.then_some(expression.span)
+            })
+            .collect();
+        for check in &mut self.typed.checks {
+            if check.owner.is_none() {
+                check.owner = self
+                    .contexts
+                    .get(&check.place.start)
+                    .and_then(|c| c.2.clone());
+            }
+            if demanded.contains(&check.place) {
+                check.phase = Phase::Compile;
+                check.reason = Reason::CompileTimeEvaluation;
+            }
+        }
+    }
+
+    fn construction_entry(&mut self, id: ExprId, known: &mut Known) {
+        if matches!(
+            self.module.expressions[id.0].kind,
+            ExprKind::Record { .. }
+                | ExprKind::Call { .. }
+                | ExprKind::Pipe {
+                    op: PipeOp::Plain,
+                    ..
+                }
+        ) {
+            if let Some(Type::Named { name, .. }) = self.typed.expr(id).cloned()
+            {
+                if matches!(
+                    self.module.expressions[id.0].kind,
+                    ExprKind::Record { .. }
+                ) || matches!(
+                    call_head(self.module, id)
+                        .and_then(|callee| self.resolved.expr(callee)),
+                    Some(Target::Constructor { .. } | Target::SelfType)
+                ) {
+                    self.named_entry(
+                        &name,
+                        known,
+                        self.module.expressions[id.0].span,
+                        self.frequency(self.module.expressions[id.0].span),
+                        &mut Vec::new(),
+                    );
+                    if self.declaration(&name).is_some_and(|(_, _, limits)| {
+                        limits.iter().any(|l| matches!(l, Limit::Test(_)))
+                    }) {
+                        self.named_facts(&name, known, &mut Vec::new());
+                    }
+                }
+            }
+        }
+    }
+
+    fn check_purity(&mut self) {
+        for entry in &self.module.entries {
+            if let Entry::Item(item) = entry {
+                if let ItemKind::Type { limits, .. } = &item.kind {
+                    for limit in limits {
+                        if let Limit::Test(id) = limit {
+                            if self.typed.expr(*id).is_some()
+                                && !self.pure_test(*id)
+                            {
+                                self.errors.push(Error {
+                                    span: self.module.expressions[id.0].span,
+                                    reason: TypeReason::Limit {
+                                        message: String::from(
+                                            "a limit test must be pure",
+                                        ),
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn frequency(&self, span: Span) -> Frequency {
+        self.contexts
+            .get(&span.start)
+            .map_or(Frequency::Once, |context| context.1)
+    }
+    fn entry_owner(&self, span: Span) -> Option<String> {
+        self.contexts
+            .get(&span.start)
+            .and_then(|context| context.2.clone())
+    }
+    fn expression_holding(&mut self, id: ExprId, entry: Option<&Type>) {
+        if let Some(ty) = entry.or_else(|| self.typed.expr(id)).cloned() {
             self.instantiated_holding(&ty, self.module.expressions[id.0].span);
         }
     }
 
     fn seed_places(&mut self) {
         for (site, local) in &self.typed.frozen {
-            let mut known = Known::default();
+            let mut known = Known {
+                pure: true,
+                ..Known::default()
+            };
             self.place_facts(&local.scheme.ty, &mut known);
             self.locals.insert(*site, known);
         }
@@ -266,7 +488,9 @@ impl Pass<'_> {
         } = self.module.expressions[id.0].kind
         {
             let mut fact = self.typed.known[value.0].clone();
-            if annotation.is_some() {
+            if annotation.is_some()
+                && fact.failure != Some(known::Failure::Dependency)
+            {
                 if let Some(scheme) = self.typed.binding(id).cloned() {
                     fact.demanded |= annotation.is_some_and(|annotation| {
                         self.type_timings(
@@ -296,12 +520,38 @@ impl Pass<'_> {
             }
             PatternKind::Tuple(parts) | PatternKind::List(parts) => {
                 for (index, part) in parts.iter().enumerate() {
-                    let known = fact
+                    let mut known = fact
                         .parts
                         .iter()
                         .find(|(name, _)| *name == index.to_string())
                         .map_or_else(Known::default, |(_, k)| k.clone());
+                    known.phase = fact.phase;
+                    known.pure = fact.pure;
                     self.pattern_facts(*part, &known);
+                }
+            }
+            PatternKind::Constructor { payload, .. } => {
+                if let Some(Target::Type { origin, name }) =
+                    self.resolved.pattern(pattern)
+                {
+                    let name = TypeName {
+                        origin: origin.clone(),
+                        name: name.clone(),
+                    };
+                    let start = self.typed.checks.len();
+                    self.named_entry(
+                        &name,
+                        fact,
+                        self.module.patterns[pattern.0].span,
+                        Frequency::Once,
+                        &mut Vec::new(),
+                    );
+                    for check in &mut self.typed.checks[start..] {
+                        check.gate = true;
+                    }
+                    let mut fact = fact.clone();
+                    self.named_facts(&name, &mut fact, &mut Vec::new());
+                    self.pattern_facts(*payload, &fact);
                 }
             }
             PatternKind::Group(inner) => self.pattern_facts(*inner, fact),
@@ -330,11 +580,36 @@ impl Pass<'_> {
 
     fn entries(&mut self, entries: &[(ExprId, Type, Span, Place)]) {
         let module = self.module;
+        let branches: Vec<_> = entries
+            .iter()
+            .filter(|(id, _, _, _)| {
+                matches!(module.expressions[id.0].kind, ExprKind::If { .. })
+            })
+            .collect();
+        let annotated: BTreeSet<_> = module
+            .expressions
+            .iter()
+            .filter_map(|e| {
+                if let ExprKind::Bind {
+                    value,
+                    annotation: Some(_),
+                    ..
+                } = e.kind
+                {
+                    Some(value.0)
+                } else {
+                    None
+                }
+            })
+            .collect();
         for (id, ty, place, place_kind) in entries {
-            if !has_limits(ty) {
+            if !has_limits(ty) && !self.typed.expr(*id).is_some_and(has_limits)
+            {
                 continue;
             }
             let expr = &module.expressions[id.0];
+            if self.typed.expr(*id) == Some(ty) && call_head(module, *id).is_some_and(|callee| matches!(self.resolved.expr(callee), Some(Target::Type { .. })) || matches!(self.resolved.expr(callee), Some(Target::Value { origin: Origin::Prelude, name }) if name == "to")) { continue; }
+
             if matches!(
                 expr.kind,
                 ExprKind::Group(_)
@@ -344,20 +619,27 @@ impl Pass<'_> {
             ) {
                 continue;
             }
-            if entries.iter().any(|(outer, outer_ty, outer_place, _)| {
-                let parent = &module.expressions[outer.0];
-                *outer != *id
-                    && outer_place == place
-                    && outer_ty == ty
-                    && matches!(parent.kind, ExprKind::If { .. })
-                    && parent.span.start <= expr.span.start
-                    && expr.span.end <= parent.span.end
-            }) {
+            if branches.iter().copied().any(
+                |(outer, outer_ty, outer_place, _)| {
+                    let parent = &module.expressions[outer.0];
+                    *outer != *id
+                        && outer_place == place
+                        && outer_ty == ty
+                        && matches!(parent.kind, ExprKind::If { .. })
+                        && parent.span.start <= expr.span.start
+                        && expr.span.end <= parent.span.end
+                },
+            ) {
                 continue;
             }
-            if matches!(expr.kind, ExprKind::Arms(_)) && module.expressions.iter().any(|e| matches!(e.kind, ExprKind::Bind { value, annotation: Some(_), .. } if value == *id)) { continue; }
+            if matches!(expr.kind, ExprKind::Arms(_))
+                && annotated.contains(&id.0)
+            {
+                continue;
+            }
             if matches!(expr.kind, ExprKind::List(_))
-                && !matches!(ty, Type::Limited { .. })
+                && (matches!(ty, Type::Array { .. })
+                    || matches!(ty, Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "Vec" | "Deque")))
             {
                 continue;
             }
@@ -368,7 +650,7 @@ impl Pass<'_> {
             self.place_kind = place_kind.clone();
             self.entry_phase =
                 (fact.demanded || fact.is_exact()).then_some(Phase::Compile);
-            self.enter(ty, &fact, *place, frequency(module, expr.span));
+            self.enter(ty, &fact, *place, self.frequency(expr.span));
         }
     }
 
@@ -393,21 +675,16 @@ impl Pass<'_> {
         name: &TypeName,
     ) -> Option<(&Module, Option<TypeId>, &[Limit])> {
         let module = self.owner(&name.origin)?;
-        module.entries.iter().find_map(|entry| match entry {
-            Entry::Item(item) => match &item.kind {
-                ItemKind::Type {
-                    name: n,
-                    base,
-                    limits,
-                    ..
-                } if n.segments.last() == Some(&name.name) => {
-                    Some((module, *base, limits.as_slice()))
-                }
-                _ => None,
-            },
-            Entry::Line(_) => None,
-        })
+        let index = *self.declarations_by_name.get(name)?;
+        let Entry::Item(item) = &module.entries[index] else {
+            return None;
+        };
+        let ItemKind::Type { base, limits, .. } = &item.kind else {
+            return None;
+        };
+        Some((module, *base, limits.as_slice()))
     }
+
     fn type_name(
         &self,
         module: &Module,
@@ -466,7 +743,10 @@ impl Pass<'_> {
             return None;
         };
         let name = name.segments.last()?.clone();
-        let local = module.entries.iter().any(|e| matches!(e, Entry::Item(item) if matches!(&item.kind, ItemKind::Type { name: n, .. } if n.segments.last() == Some(&name))));
+        let local = self.declarations_by_name.contains_key(&TypeName {
+            origin: origin.clone(),
+            name: name.clone(),
+        });
         Some(TypeName {
             origin: if local {
                 origin.clone()
@@ -476,55 +756,121 @@ impl Pass<'_> {
             name,
         })
     }
+    fn pattern_gates(
+        &self,
+        pattern: crate::ast::PatternId,
+        path: Vec<String>,
+        gates: &mut BTreeMap<Vec<String>, Vec<TypeName>>,
+        fallbacks: &mut Vec<Vec<String>>,
+    ) {
+        if let Some(Target::Type { origin, name }) =
+            self.resolved.pattern(pattern)
+        {
+            let gate = TypeName {
+                origin: origin.clone(),
+                name: name.clone(),
+            };
+            if self
+                .declaration(&gate)
+                .is_some_and(|(_, base, _)| base.is_some())
+            {
+                gates.entry(path).or_default().push(gate);
+                return;
+            }
+        }
+        let child = |label: String| {
+            let mut p = path.clone();
+            p.push(label);
+            p
+        };
+        match &self.module.patterns[pattern.0].kind {
+            PatternKind::Wildcard | PatternKind::Default { .. } => {
+                fallbacks.push(path);
+            }
+            PatternKind::Name(n)
+                if n.segments
+                    .first()
+                    .is_some_and(|s| s.starts_with(char::is_lowercase)) =>
+            {
+                fallbacks.push(path);
+            }
+            PatternKind::Group(inner) => {
+                self.pattern_gates(*inner, path, gates, fallbacks);
+            }
+            PatternKind::Tuple(parts) | PatternKind::List(parts) => {
+                for (i, p) in parts.iter().enumerate() {
+                    self.pattern_gates(
+                        *p,
+                        child(i.to_string()),
+                        gates,
+                        fallbacks,
+                    );
+                }
+            }
+            PatternKind::Constructor { name, payload } => self.pattern_gates(
+                *payload,
+                child(name.segments.join(".")),
+                gates,
+                fallbacks,
+            ),
+            PatternKind::Outcome {
+                good,
+                payload: Some(payload),
+            } => self.pattern_gates(
+                *payload,
+                child(good.to_string()),
+                gates,
+                fallbacks,
+            ),
+            PatternKind::Record { fields, .. } => {
+                for field in fields {
+                    if let Some(p) = field.pattern {
+                        self.pattern_gates(
+                            p,
+                            child(field.name.segments.join(".")),
+                            gates,
+                            fallbacks,
+                        );
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
     fn coverage(&mut self) {
         for expression in &self.module.expressions {
             let ExprKind::Arms(arms) = &expression.kind else {
                 continue;
             };
-            let mut gates = Vec::new();
-            let mut wildcard = false;
+            let mut positions = BTreeMap::new();
+            let mut fallbacks = Vec::new();
             for arm in arms {
                 if arm.guard.is_some() {
                     continue;
                 }
-                let [pattern] = arm.patterns.as_slice() else {
-                    continue;
-                };
-                wildcard |= matches!(&self.module.patterns[pattern.0].kind, PatternKind::Name(crate::ast::Name { segments, .. }) if segments.first().is_some_and(|s| s.starts_with(char::is_lowercase)));
-                if matches!(
-                    self.module.patterns[pattern.0].kind,
-                    PatternKind::Wildcard
-                ) {
-                    wildcard = true;
-                }
-                if let Some(Target::Type { origin, name }) =
-                    self.resolved.pattern(*pattern)
-                {
-                    let gate = TypeName {
-                        origin: origin.clone(),
-                        name: name.clone(),
-                    };
-                    if self
-                        .declaration(&gate)
-                        .is_some_and(|(_, base, _)| base.is_some())
-                    {
-                        gates.push(gate);
-                    }
+                for (i, pattern) in arm.patterns.iter().enumerate() {
+                    self.pattern_gates(
+                        *pattern,
+                        vec![i.to_string()],
+                        &mut positions,
+                        &mut fallbacks,
+                    );
                 }
             }
-            if gates.is_empty() || wildcard {
-                continue;
-            }
-            let covered = gates.iter().any(|gate| {
-                self.declaration(gate)
-                    .and_then(|(module, base, _)| {
-                        base.map(|id| {
-                            self.syntax_type(module, &gate.origin, id)
-                        })
+            let uncovered = positions.iter().any(|(path, gates)| {
+                !fallbacks.iter().any(|fallback| path.starts_with(fallback))
+                    && !gates.iter().any(|gate| {
+                        self.declaration(gate)
+                            .filter(|(_, _, limits)| limits.is_empty())
+                            .and_then(|(module, base, _)| {
+                                base.map(|id| {
+                                    self.syntax_type(module, &gate.origin, id)
+                                })
+                            })
+                            .is_some_and(|base| self.negated_gate(&base, gates))
                     })
-                    .is_some_and(|base| negated_gate(&base, &gates))
             });
-            if !covered {
+            if uncovered {
                 self.errors.push(Error {
                     span: expression.span,
                     reason: TypeReason::Limit {
@@ -534,6 +880,30 @@ impl Pass<'_> {
                     },
                 });
             }
+        }
+    }
+    fn negated_gate(&self, ty: &Type, gates: &[TypeName]) -> bool {
+        match ty {
+            Type::Not(inner) => {
+                matches!(&**inner, Type::Named { name, .. } if gates.contains(name))
+            }
+            Type::Both(parts) => {
+                parts.iter().any(|p| self.negated_gate(p, gates))
+                    && parts.iter().all(|p| {
+                        if matches!(p, Type::Not(_)) {
+                            return true;
+                        }
+                        let Type::Named { name, .. } = p else {
+                            return false;
+                        };
+                        self.declaration(name).is_some_and(
+                            |(_, base, limits)| {
+                                base.is_none() && limits.is_empty()
+                            },
+                        )
+                    })
+            }
+            _ => false,
         }
     }
     fn seed(&mut self, id: ExprId) {
@@ -558,7 +928,10 @@ impl Pass<'_> {
                 if let PatternKind::Name(name) =
                     &self.module.patterns[pattern.0].kind
                 {
-                    let mut known = Known::default();
+                    let mut known = Known {
+                        pure: true,
+                        ..Known::default()
+                    };
                     self.place_facts(parameter, &mut known);
                     self.locals.insert((name.span.start, name.span.end), known);
                 }
@@ -572,17 +945,15 @@ impl Pass<'_> {
         match &expression.kind {
             ExprKind::Literal(_) => self.literal_value(id),
             ExprKind::Name(_) => self.target(self.resolved.expr(id)),
-            ExprKind::Field { value, field } => {
-                let fact = get(*value);
-                fact.parts
-                    .iter()
-                    .find(|(n, _)| Some(n) == field.segments.last())
-                    .map_or_else(Known::default, |(_, k)| k.clone())
-            }
+            ExprKind::Field { value, field } => get(*value)
+                .part(field.segments.last().map_or("", String::as_str)),
             ExprKind::Group(lines) | ExprKind::Block(lines) => {
                 lines.last().map_or_else(Known::default, |id| get(*id))
             }
             ExprKind::List(items) => {
+                if self.typed.expr(id).is_some_and(|ty| !matches!(crate::infer::meaning(ty), Type::Array { .. }) && !matches!(crate::infer::meaning(ty), Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "Vec" | "Deque"))) {
+                    return Known { narrowing: true, ..Known::default() };
+                }
                 let mut parts = vec![(
                     String::from("len"),
                     exact(Integer::from(items.len() as u64)),
@@ -676,15 +1047,11 @@ impl Pass<'_> {
                 origin: Origin::Prelude,
                 name,
             }) if name == "len" => first_input(self.module, id)
-                .and_then(|input| {
-                    self.typed.known[input.0]
-                        .parts
-                        .iter()
-                        .find(|(n, _)| n == "len")
-                        .map(|(_, k)| k.clone())
-                })
+                .map(|input| self.typed.known[input.0].part("len"))
                 .unwrap_or_default(),
-            Some(Target::Constructor { .. }) => self.construct_value(id),
+            Some(Target::Constructor { .. } | Target::SelfType) => {
+                self.construct_value(id)
+            }
             Some(Target::Type { .. }) => self.gate_value(id),
             _ => Known {
                 narrowing: true,
@@ -710,7 +1077,7 @@ impl Pass<'_> {
                 } => Integer::new(*negative, magnitude.clone()).to_string(),
                 _ => String::new(),
             };
-            if !self.typed.expr(id).is_some_and(|ty| matches!(ty, Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "F32" | "F64"))) { return Known::default(); }
+            if !self.typed.expr(id).is_some_and(|ty| matches!(crate::infer::meaning(ty), Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "F32" | "F64"))) { return Known::default(); }
             known.range = None;
             known.exact = text.parse::<f64>().ok().map(|value| {
                 if self
@@ -726,6 +1093,13 @@ impl Pass<'_> {
                     format!("{value}")
                 }
             });
+        }
+        if let Some(exact) = &mut known.exact {
+            if exact.parse::<f64>().is_ok_and(f64::is_finite)
+                && !exact.contains(['.', 'e', 'E'])
+            {
+                exact.push_str(".0");
+            }
         }
         known
     }
@@ -744,11 +1118,18 @@ impl Pass<'_> {
 
         let a = get(*left);
         let b = get(*right);
+        let when_integer = matches!(
+            self.typed.expr(*right),
+            Some(Type::Var(_) | Type::Rigid(_))
+        );
         if matches!(op, BinaryOp::Divide | BinaryOp::Remainder)
-            && integer_type(self.typed.expr(*right))
+            && (integer_type(self.typed.expr(*right)) || when_integer)
+            && !self.module.entries.iter().any(|entry| matches!(entry,
+                Entry::Item(item) if matches!(item.kind, ItemKind::Type { .. })
+                && item.span.start <= expression.span.start && expression.span.end <= item.span.end))
         {
             let range = b.range.clone().unwrap_or_else(Range::unknown);
-            if range == Range::exact(0.into()) {
+            if !when_integer && range == Range::exact(0.into()) {
                 self.errors.push(Error {
                     span: *operator,
                     reason: TypeReason::Limit {
@@ -760,17 +1141,24 @@ impl Pass<'_> {
             } else if range.contains_zero() {
                 self.typed.checks.push(Check {
                     place: self.module.expressions[right.0].span,
-                    place_kind: Place::Parameter(Some(String::from("divisor"))),
+                    place_kind: Place::Parameter(Some(if when_integer {
+                        match &self.module.expressions[right.0].kind {
+                            ExprKind::Name(name) => name.segments.join("."),
+                            _ => String::from("divisor"),
+                        }
+                    } else { String::from("divisor") })),
                     limit: *operator,
                     phase: self.site_phase(expression.span),
                     reason: Reason::UnknownInput,
-                    frequency: frequency(self.module, expression.span),
+                    frequency: self.frequency(expression.span),
                     place_origin: Origin::This,
                     limit_origin: Origin::This,
                     name: String::from("nonzero divisor"),
                     test_count: 1,
                     known: b.clone(),
                     gate: false,
+                    when_integer,
+                    owner: self.entry_owner(expression.span),
                 });
             }
         }
@@ -810,13 +1198,23 @@ impl Pass<'_> {
             ty.as_ref()
         };
         if let Some(target) = target {
+            let source = first_input(self.module, id)
+                .and_then(|input| self.typed.expr(input));
+            if source.is_none_or(|source| {
+                crate::infer::meaning(source) != crate::infer::meaning(target)
+            }) {
+                known = Known {
+                    narrowing: true,
+                    ..Known::default()
+                };
+            }
             let start = self.typed.checks.len();
             let errors = self.errors.len();
             self.enter(
                 target,
                 &known,
                 expression.span,
-                frequency(self.module, expression.span),
+                self.frequency(expression.span),
             );
             for check in &mut self.typed.checks[start..] {
                 check.gate = true;
@@ -848,14 +1246,33 @@ impl Pass<'_> {
         };
         let get = |id: ExprId| self.typed.known[id.0].clone();
 
-        let Some(Target::Constructor { origin, ty, name }) =
-            self.resolved.expr(callee)
-        else {
-            return Known::default();
+        let (origin, ty, name) = match self.resolved.expr(callee) {
+            Some(Target::Constructor { origin, ty, name }) => {
+                (origin, ty, name)
+            }
+            Some(Target::SelfType) => {
+                let Some(Type::Named { name, .. }) = self.typed.expr(id) else {
+                    return Known::default();
+                };
+                (&name.origin, &name.name, &name.name)
+            }
+            _ => return Known::default(),
         };
         let Some(module) = self.owner(origin) else {
             return Known::default();
         };
+        let written = core::iter::once((self.module, Origin::This))
+            .chain(self.frame.into_iter().flat_map(|f| f.lines.iter().enumerate().map(|(i,l)| (&l.module, Origin::Line(i)))))
+            .chain(self.files.iter().map(|(n,m)| (m, Origin::File(n.clone()))))
+            .any(|(m, o)| m.entries.iter().any(|entry| matches!(entry, Entry::Item(item) if matches!(&item.kind, ItemKind::Impl { target, members, .. } if self.type_name(m, &o, *target).as_ref() == Some(&TypeName { origin: origin.clone(), name: ty.clone() }) && members.iter().any(|member| matches!(member, crate::ast::ImplMember::Constructor { .. }))))));
+        if written
+            && !matches!(self.resolved.expr(callee), Some(Target::SelfType))
+        {
+            return Known {
+                narrowing: true,
+                ..Known::default()
+            };
+        }
         let fields = construction_fields(module, ty, name);
         let stage = match expression.kind {
             ExprKind::Pipe {
@@ -935,7 +1352,7 @@ impl Pass<'_> {
                 &name,
                 &known,
                 expression.span,
-                frequency(self.module, expression.span),
+                self.frequency(expression.span),
                 &mut Vec::new(),
             );
             for check in &mut self.typed.checks[start..] {
@@ -944,6 +1361,14 @@ impl Pass<'_> {
             self.named_facts(&name, &mut known, &mut Vec::new());
         }
         known
+    }
+    fn host_fact(&self, origin: &Origin, name: &str) -> Known {
+        self.owner(origin)
+            .and_then(|module| {
+                phase::binding(module, name)
+                    .map(|id| test(module, id, &Known::default()))
+            })
+            .unwrap_or_default()
     }
     fn target(&self, target: Option<&Target>) -> Known {
         match target {
@@ -959,12 +1384,7 @@ impl Pass<'_> {
             Some(Target::Value { origin, name })
                 if matches!(origin, Origin::Host(_) | Origin::Commands) =>
             {
-                self.owner(origin)
-                    .and_then(|module| {
-                        phase::binding(module, name)
-                            .map(|id| test(module, id, &Known::default()))
-                    })
-                    .unwrap_or_default()
+                self.host_fact(origin, name)
             }
             Some(Target::Value {
                 origin: Origin::File(stem),
@@ -979,6 +1399,15 @@ impl Pass<'_> {
                 let Some(checked) = cache.get(stem) else {
                     return Known::default();
                 };
+                if !checked.resolve_errors.is_empty()
+                    || !checked.type_errors.is_empty()
+                {
+                    return Known {
+                        failure: Some(known::Failure::Dependency),
+                        narrowing: true,
+                        ..Known::default()
+                    };
+                }
                 let mut fact = module
                     .entries
                     .iter()
@@ -1016,11 +1445,7 @@ impl Pass<'_> {
             Some(Target::Members { head, members }) => {
                 let mut fact = self.target(Some(head));
                 for member in members {
-                    fact = fact
-                        .parts
-                        .iter()
-                        .find(|(n, _)| n == member)
-                        .map_or_else(Known::default, |(_, k)| k.clone());
+                    fact = fact.part(member);
                 }
                 fact
             }
@@ -1040,6 +1465,23 @@ impl Pass<'_> {
         }
     }
     fn place_facts(&self, ty: &Type, known: &mut Known) {
+        if let Type::Named { name, .. } = crate::infer::meaning(ty) {
+            known.meaning = Some(name.clone());
+        }
+        if let Type::Tuple(parts) = ty {
+            for (i, ty) in parts.iter().enumerate() {
+                let label = i.to_string();
+                let index = known
+                    .parts
+                    .iter()
+                    .position(|(n, _)| *n == label)
+                    .unwrap_or_else(|| {
+                        known.parts.push((label, Known::default()));
+                        known.parts.len() - 1
+                    });
+                self.place_facts(ty, &mut known.parts[index].1);
+            }
+        }
         if let Type::Array { length, .. } = ty {
             if let Some(n) = length.number() {
                 known.parts.retain(|(name, _)| name != "len");
@@ -1082,7 +1524,7 @@ impl Pass<'_> {
         visited.push(name.clone());
         if let Some((module, base, limits)) = self.declaration(name) {
             let has_test = limits.iter().any(|l| matches!(l, Limit::Test(_)));
-            let has_members = module.entries.iter().any(|e| matches!(e, Entry::Item(item) if matches!(&item.kind, ItemKind::Type { name: n, members: Some(_), .. } if n.segments.last() == Some(&name.name))));
+            let has_members = self.declarations_by_name.get(name).is_some_and(|i| matches!(&module.entries[*i], Entry::Item(item) if matches!(item.kind, ItemKind::Type { members: Some(_), .. })));
             if !has_test
                 && (has_members
                     || limits.iter().any(|l| matches!(l, Limit::Member { .. })))
@@ -1099,7 +1541,10 @@ impl Pass<'_> {
                 }
             }
         }
-        if !known.names.contains(name) {
+        if self.declaration(name).is_some_and(|(_, _, limits)| {
+            limits.iter().any(|limit| matches!(limit, Limit::Test(_)))
+        }) && !known.names.contains(name)
+        {
             known.names.push(name.clone());
         }
     }
@@ -1119,6 +1564,14 @@ impl Pass<'_> {
             }
             TypeKind::Named { .. } => {
                 if let Some(name) = self.type_name(module, origin, id) {
+                    if name.origin == Origin::Prelude
+                        && matches!(
+                            name.name.as_str(),
+                            "Integer" | "F32" | "F64"
+                        )
+                    {
+                        known.meaning = Some(name.clone());
+                    }
                     if self.declaration(&name).is_some_and(
                         |(_, base, limits)| {
                             base.is_some() || !limits.is_empty()
@@ -1166,7 +1619,36 @@ fn literal_fact(literal: &Literal) -> Known {
         _ => Known::default(),
     }
 }
+fn test_binary(op: BinaryOp, a: &Known, b: &Known) -> Known {
+    if a.failure == Some(known::Failure::Fault)
+        || b.failure == Some(known::Failure::Fault)
+    {
+        return Known {
+            failure: Some(known::Failure::Fault),
+            ..Known::default()
+        };
+    }
+    if matches!(op, BinaryOp::Divide | BinaryOp::Remainder)
+        && b.range.as_ref().is_none_or(Range::contains_zero)
+    {
+        return Known {
+            failure: (b.range == Some(Range::exact(0.into())))
+                .then_some(known::Failure::Fault),
+            ..Known::default()
+        };
+    }
+    binary(op, a, b)
+}
 fn binary(op: BinaryOp, a: &Known, b: &Known) -> Known {
+    if a.failure == Some(known::Failure::Dependency)
+        || b.failure == Some(known::Failure::Dependency)
+    {
+        return Known {
+            failure: Some(known::Failure::Dependency),
+            narrowing: true,
+            ..Known::default()
+        };
+    }
     let narrowing = a.narrowing || b.narrowing;
     let (a, b) = (
         a.range.clone().unwrap_or_else(Range::unknown),
@@ -1194,6 +1676,18 @@ fn binary(op: BinaryOp, a: &Known, b: &Known) -> Known {
     }
 }
 fn bool_op(op: PipeOp, a: &Known, b: &Known) -> Known {
+    if a.failure == Some(known::Failure::Fault)
+        || (b.failure == Some(known::Failure::Fault)
+            && !matches!(
+                (op, a.boolean),
+                (PipeOp::And, Some(false)) | (PipeOp::Or, Some(true))
+            ))
+    {
+        return Known {
+            failure: Some(known::Failure::Fault),
+            ..Known::default()
+        };
+    }
     let boolean = match (op, a.boolean, b.boolean) {
         (PipeOp::And, Some(false), _) | (PipeOp::And, _, Some(false)) => {
             Some(false)
@@ -1233,7 +1727,7 @@ fn test(module: &Module, id: ExprId, value: &Known) -> Known {
             .map_or_else(Known::default, |(_, k)| k),
         ExprKind::Binary {
             op, left, right, ..
-        } => binary(
+        } => test_binary(
             *op,
             &test(module, *left, value),
             &test(module, *right, value),
@@ -1245,10 +1739,11 @@ fn test(module: &Module, id: ExprId, value: &Known) -> Known {
             &test(module, *left, value),
             &test(module, *right, value),
         ),
-        ExprKind::Not { value: v, .. } => Known {
-            boolean: test(module, *v, value).boolean.map(|b| !b),
-            ..Known::default()
-        },
+        ExprKind::Not { value: v, .. } => {
+            let mut result = test(module, *v, value);
+            result.boolean = result.boolean.map(|b| !b);
+            result
+        }
         ExprKind::Group(ids) => ids
             .last()
             .map_or_else(Known::default, |id| test(module, *id, value)),
@@ -1352,31 +1847,7 @@ impl Pass<'_> {
             BinaryOp::Equal => Range::exact(n),
             _ => return,
         };
-        let mut part = known;
-        for name in path {
-            let index = part
-                .parts
-                .iter()
-                .position(|(n, _)| *n == name)
-                .unwrap_or_else(|| {
-                    part.parts.push((name, Known::default()));
-                    part.parts.len() - 1
-                });
-            part = &mut part.parts[index].1;
-        }
-        part.range
-            .get_or_insert_with(Range::unknown)
-            .intersect(&range);
-    }
-}
-
-fn negated_gate(ty: &Type, gates: &[TypeName]) -> bool {
-    match ty {
-        Type::Not(inner) => {
-            matches!(&**inner, Type::Named { name, .. } if gates.contains(name))
-        }
-        Type::Both(parts) => parts.iter().any(|part| negated_gate(part, gates)),
-        _ => false,
+        narrow_path(known, path, &range);
     }
 }
 
@@ -1385,6 +1856,10 @@ pub(crate) fn has_limits(ty: &Type) -> bool {
         Type::Limited { .. } => true,
         Type::Named { arguments, .. } => arguments.iter().any(has_limits),
         Type::Array { element, .. } => has_limits(element),
+        Type::Tuple(parts) | Type::Both(parts) | Type::Either(parts) => {
+            parts.iter().any(has_limits)
+        }
+        Type::Not(inner) => has_limits(inner),
         Type::Function { parameter, result } => {
             has_limits(parameter) || has_limits(result)
         }
@@ -1493,4 +1968,30 @@ pub(crate) fn frequency(module: &Module, span: Span) -> Frequency {
 /// These limits carry no meaning and never participate in unification.
 pub(crate) fn modifier(ty: &Type) -> bool {
     matches!(ty, Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "Bits" | "Size" | "Compile" | "Init"))
+}
+
+fn narrow_path(known: &mut Known, path: Vec<String>, range: &Range) {
+    let mut part = known;
+    for name in path {
+        let index = part
+            .parts
+            .iter()
+            .position(|(n, _)| *n == name)
+            .unwrap_or_else(|| {
+                part.parts.push((name, Known::default()));
+                part.parts.len() - 1
+            });
+        part = &mut part.parts[index].1;
+    }
+    if !part
+        .meaning
+        .as_ref()
+        .is_some_and(|n| n.origin == Origin::Prelude && n.name == "Integer")
+        && part.range.is_none()
+    {
+        return;
+    }
+    part.range
+        .get_or_insert_with(Range::unknown)
+        .intersect(range);
 }
