@@ -1,14 +1,17 @@
 //! Linux on `x86_64` without `std`: raw syscalls, `_start` with its
 //! arguments, the panic handler and the allocator. The only unsafe code.
 //!
-//! The allocator bumps through a static arena and reuses freed blocks:
+//! The allocator bumps through mapped chunks and reuses freed blocks:
 //! a request of alignment at most 16 is rounded up to a power-of-two size
 //! class of at least 16 bytes; `dealloc` pushes the block onto its class's
 //! free list, threaded through the blocks' first word, and `alloc` pops
 //! from that list before bumping. Other alignments bump and are never
-//! reused; a `realloc` within one class keeps its block. Large allocations
-//! use anonymous mappings and return them to the kernel when freed, so
-//! growing syntax arenas do not strand large blocks in the fixed heap.
+//! reused; a `realloc` within one class keeps its block. When a chunk is
+//! used up the next is mapped, so a session grows as far as the kernel
+//! allows; when a mapping is refused the REPL says so and exits with
+//! status 3. Large allocations use anonymous mappings of their own and
+//! return them to the kernel when freed, so growing syntax arenas do not
+//! strand large blocks in a chunk.
 
 #![allow(unsafe_code)]
 
@@ -34,8 +37,10 @@ const CLOSE: usize = 3;
 const EXIT: usize = 60;
 const CHDIR: usize = 80;
 
-const ARENA: usize = 64 << 20;
+/// A chunk of the heap; a request larger than this maps its own.
+const CHUNK: usize = 64 << 20;
 const MAPPED: usize = 64 << 10;
+const PAGE: usize = 4096;
 
 fn mapped(layout: Layout) -> bool {
     layout.size() >= MAPPED && layout.align() <= 4096
@@ -213,15 +218,22 @@ fn panic(info: &PanicInfo) -> ! {
 /// Size classes `16 << k` for every `k` a `usize` size can need.
 const CLASSES: usize = usize::BITS as usize - 4;
 
-/// The arena lives in `.bss`; see the module documentation.
+/// The heap's state; see the module documentation.
 struct Heap {
-    arena: UnsafeCell<[u8; ARENA]>,
     state: UnsafeCell<State>,
 }
 
 struct State {
+    /// The current chunk's unused part, as addresses; empty at first.
     next: usize,
+    end: usize,
     free: [*mut u8; CLASSES],
+}
+
+/// No memory is left: say so and exit, never panic.
+fn exhausted() -> ! {
+    write_fd(2, b"fipe-repl: out of memory\n");
+    exit(3)
 }
 
 /// A layout's size class, when its block may be reused.
@@ -234,23 +246,32 @@ fn class(layout: Layout) -> Option<usize> {
 }
 
 impl Heap {
-    /// A fresh block from the arena, or null when it is exhausted.
+    /// A fresh block from the current chunk, or from a new one when
+    /// that is used up; the old chunk's tail is left behind.
     ///
     /// # Safety
     /// No other reference to the state is live.
     unsafe fn bump(&self, size: usize, align: usize) -> *mut u8 {
         // SAFETY: the program is single-threaded; the caller vouches.
         let state = unsafe { &mut *self.state.get() };
-        let base = self.arena.get().cast::<u8>();
-        let next = state.next;
-        let start = next + base.wrapping_add(next).align_offset(align);
-        match start.checked_add(size) {
-            Some(end) if end <= ARENA => {
+        let start = state.next.next_multiple_of(align);
+        if let Some(end) = start.checked_add(size) {
+            if end <= state.end {
                 state.next = end;
-                base.wrapping_add(start)
+                return start as *mut u8;
             }
-            _ => ptr::null_mut(),
         }
+        let length =
+            CHUNK.max(size.saturating_add(align)).next_multiple_of(PAGE);
+        // SAFETY: an anonymous mapping of `length` bytes, page-aligned.
+        let chunk = unsafe { map(length) };
+        if chunk.is_null() {
+            exhausted();
+        }
+        let start = (chunk as usize).next_multiple_of(align);
+        state.next = start + size;
+        state.end = chunk as usize + length;
+        start as *mut u8
     }
 }
 
@@ -270,7 +291,11 @@ unsafe impl GlobalAlloc for Heap {
                 return ptr::null_mut();
             };
             // SAFETY: a mapping is page-aligned, enough for this layout.
-            return unsafe { map(size) };
+            let block = unsafe { map(size) };
+            if block.is_null() {
+                exhausted();
+            }
+            return block;
         }
         let Some(k) = class(layout) else {
             // SAFETY: no reference to the state is live.
@@ -348,9 +373,9 @@ unsafe impl GlobalAlloc for Heap {
 
 #[global_allocator]
 static ALLOCATOR: Heap = Heap {
-    arena: UnsafeCell::new([0; ARENA]),
     state: UnsafeCell::new(State {
         next: 0,
+        end: 0,
         free: [ptr::null_mut(); CLASSES],
     }),
 };

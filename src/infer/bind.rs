@@ -218,14 +218,16 @@ impl Infer<'_> {
     /// `group`.
     fn environment(&self, group: &[usize]) -> Vec<Var> {
         let mut vars = Vec::new();
+        let mut seen = alloc::collections::BTreeSet::new();
         for ty in &self.state.env {
-            self.apply(ty).variables(&mut vars);
+            super::gather(&self.apply(ty), &mut seen, &mut vars);
         }
         for used in &self.state.deferred {
-            self.apply(&used.ty).variables(&mut vars);
+            super::gather(&self.apply(&used.ty), &mut seen, &mut vars);
         }
         for var in 0..self.weak {
-            self.apply(&Type::Var(Var(var))).variables(&mut vars);
+            let ty = self.apply(&Type::Var(Var(var)));
+            super::gather(&ty, &mut seen, &mut vars);
         }
         for (index, item) in self.items.iter().enumerate() {
             let live = match self.state.status[index] {
@@ -233,7 +235,7 @@ impl Infer<'_> {
                 Status::Pending | Status::Done(_) => false,
             };
             if live {
-                self.apply(&item.ty).variables(&mut vars);
+                super::gather(&self.apply(&item.ty), &mut seen, &mut vars);
             }
         }
         self.close(&mut vars);

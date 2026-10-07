@@ -17,22 +17,17 @@ impl Index {
             self.tables.borrow_mut().session_meanings.push(None);
             self.weak_slots.push(slot);
         }
+        self.weak_before
+            .insert(home.clone(), typed.weak_before as usize);
         for (variable, weak) in &typed.session_variables {
             self.session_variables
                 .insert((home.clone(), *variable), self.weak_slots[*weak]);
         }
-        // Frozen weak-variable indices differ from inference's raw indices.
+        // Frozen weak-variable indices differ from inference's raw
+        // indices: in the frozen numbering every slot is its number.
         let origin = Origin::This;
-        let saved = self.session_variables.clone();
-        for (variable, slot) in self.weak_slots.iter().enumerate() {
-            self.session_variables.insert(
-                (
-                    origin.clone(),
-                    u32::try_from(variable).expect("weak variable count"),
-                ),
-                *slot,
-            );
-        }
+        self.weak_before
+            .insert(origin.clone(), self.weak_slots.len());
         for (index, binding) in typed.weak.bindings().iter().enumerate() {
             let value = binding.as_ref().map(|ty| {
                 let ty = ty.rehome(&home);
@@ -41,6 +36,6 @@ impl Index {
             self.tables.borrow_mut().session_meanings[self.weak_slots[index]] =
                 value;
         }
-        self.session_variables = saved;
+        self.weak_before.remove(&origin);
     }
 }

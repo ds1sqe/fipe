@@ -1052,7 +1052,12 @@ fn weak_meaning_metadata_keeps_the_session_slot() {
     let second = done(session.line("empty"));
     assert_eq!(second.diagnostics, []);
     let second = second.typed.unwrap();
-    assert!(second.session_variables.values().any(|slot| *slot == 0));
+    // The earlier weak variable keeps its number; only a new one is listed.
+    assert!(second.session_variables.is_empty());
+    let unit = ok(&mut session, "fixed: [Integer; 0] = empty")
+        .unit
+        .unwrap();
+    assert!(unit.tables().session_meanings[0].is_some());
 }
 
 #[test]

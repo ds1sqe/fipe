@@ -35,8 +35,12 @@ pub struct Typed {
     pub dispatch: Vec<Dispatch>,
     /// Member chains in source order, including intermediate applications.
     pub accesses: alloc::collections::BTreeMap<(usize, usize), Vec<Access>>,
-    /// Unfixed variables mapped to the session frame's meaning slots.
+    /// The line's own variables that became weak, by their weak number;
+    /// a variable below `weak_before` is an earlier weak variable with
+    /// that number.
     pub session_variables: alloc::collections::BTreeMap<u32, usize>,
+    /// How many weak variables the session had before this line.
+    pub(crate) weak_before: u32,
     /// Scheme-variable positions needed by receiverless members.
     pub hidden: alloc::collections::BTreeMap<(usize, usize), Vec<usize>>,
     /// Binding schemes before session freezing, keyed by declaration span.

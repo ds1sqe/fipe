@@ -90,6 +90,8 @@ impl Frame {
         for (_, known) in &mut typed.facts {
             known.rehome(&Origin::Line(index));
         }
+        // The weak variables live in the frame, once, not in every line.
+        typed.weak = Subst::default();
         self.lines.push(Line {
             module,
             resolved,

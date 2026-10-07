@@ -1120,6 +1120,7 @@ impl Infer<'_> {
             frozen,
             weak,
             session_variables,
+            weak_before: self.weak,
             ..decisions
         };
         let entries: Vec<_> = self
@@ -1164,12 +1165,15 @@ impl Infer<'_> {
         let subst = &self.state.subst;
         // The earlier lines' weak variables and the file-level
         // monomorphic types: parameters and blocks have left `env`.
+        // Gathered through a set: the weak variables alone number the
+        // session's, and `variables` scans its output for each one.
         let mut env = Vec::new();
+        let mut seen = alloc::collections::BTreeSet::new();
         for var in 0..self.weak {
-            subst.apply(&Type::Var(Var(var))).variables(&mut env);
+            gather(&subst.apply(&Type::Var(Var(var))), &mut seen, &mut env);
         }
         for ty in &self.state.env {
-            subst.apply(ty).variables(&mut env);
+            gather(&subst.apply(ty), &mut seen, &mut env);
         }
         self.close(&mut env);
         // New weak variables follow the earlier ones.
@@ -1238,14 +1242,14 @@ impl Infer<'_> {
             (ty != Type::Var(Var(var))).then(|| replace(&ty, &weak))
         });
         let later = weak.iter().map(|_| None);
-        let session_variables = (0..self.weak)
-            .map(|var| (var, var as usize))
-            .chain(weak.iter().map(|(var, target)| {
+        let session_variables = weak
+            .iter()
+            .map(|(var, target)| {
                 let Type::Var(target) = target else {
                     unreachable!()
                 };
                 (var.0, target.0 as usize)
-            }))
+            })
             .collect();
         (
             frozen,
@@ -1257,6 +1261,22 @@ impl Infer<'_> {
 
 fn count(index: usize) -> u32 {
     u32::try_from(index).unwrap_or(u32::MAX)
+}
+
+/// `ty`'s variables appended to `out` in first-occurrence order, with
+/// `seen` holding what `out` holds, so a long list costs no scan.
+pub(crate) fn gather(
+    ty: &Type,
+    seen: &mut alloc::collections::BTreeSet<Var>,
+    out: &mut Vec<Var>,
+) {
+    let mut found = Vec::new();
+    ty.variables(&mut found);
+    for var in found {
+        if seen.insert(var) {
+            out.push(var);
+        }
+    }
 }
 
 pub(crate) fn meaning(ty: &Type) -> &Type {

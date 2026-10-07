@@ -32,7 +32,11 @@ pub struct Index {
     constant_defaults: Vec<usize>,
     home: Option<Origin>,
     visible: BTreeMap<crate::token::Span, usize>,
+    /// A line's own variables that became weak, by slot.
     session_variables: BTreeMap<(Origin, u32), usize>,
+    /// How many weak variables each line started with: a variable below
+    /// that is the earlier weak variable of that number.
+    weak_before: BTreeMap<Origin, usize>,
     weak_slots: Vec<usize>,
     emitted: Vec<(Origin, Vec<crate::ast::ExprId>)>,
     source_modules: BTreeMap<Origin, Rc<crate::ast::Module>>,
@@ -98,6 +102,11 @@ impl Index {
                 .session_variables
                 .get(&(home.clone(), var.0))
                 .copied()
+                .or_else(|| {
+                    let before = *self.weak_before.get(home)?;
+                    ((var.0 as usize) < before)
+                        .then(|| self.weak_slots[var.0 as usize])
+                })
                 .map_or_else(
                     || {
                         ir::Type::Parameter(
