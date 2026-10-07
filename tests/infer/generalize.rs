@@ -44,7 +44,7 @@ fn groups_are_monomorphic_inside() {
     let annotated = "type P {}\nimpl P {\n    \
         even: I64 -> Bool = n => if n == 0 { True } else { Self.odd (n - 1) },\n    \
         odd = n => if n == 0 { False } else { Self.even (n - 1) },\n}\n";
-    assert_eq!(ty(&format!("{annotated}o = P.odd")), "I64 -> Bool");
+    assert_eq!(ty(&format!("{annotated}o = P.odd")), "Integer -> Bool");
     // Used before its impl: the group is typed first.
     assert_eq!(
         ty("type P {}\ny = P.id 1\nimpl P { id = x => x }\ny"),
@@ -121,10 +121,15 @@ fn bodies_records_and_literal_ranges() {
     assert_eq!(ty(&format!("{point}P {{ x: 1 }}")), "P");
     let missing = format!("{point}P {{ y: 1 }}");
     assert_eq!(kinds(&missing), [("MissingField", "P { y: 1 }")]);
-    assert_eq!(kinds("x: U8 = 300"), [("OutOfRange", "300")]);
-    assert_eq!(kinds("x: I8 = 128"), [("OutOfRange", "128")]);
+    assert_eq!(kinds("x: U8 = 300"), [("Limit", "U8")]);
+    assert_eq!(kinds("x: I8 = 128"), [("Limit", "I8")]);
     assert_eq!(ty("x: I8 = -128"), "I8");
-    assert_eq!(kinds("f = x => x\ny: U8 = f 256"), [("OutOfRange", "256")]);
+    let (_, typed) = run("f = x => x\ny: U8 = f 256");
+    assert!(typed
+        .unwrap()
+        .checks
+        .iter()
+        .all(|c| c.reason == fipe::typed::CheckReason::Narrowing));
 }
 
 #[test]

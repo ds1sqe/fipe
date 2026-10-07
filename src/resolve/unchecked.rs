@@ -2,10 +2,7 @@
 //! one check error that names it, until its stage of the type model.
 
 use crate::{
-    ast::{
-        Entry, ExprKind, ItemKind, Limit, Literal, Module, PatternKind,
-        TypeKind,
-    },
+    ast::{ExprKind, Literal, Module, PatternKind, TypeKind},
     token::{Affixed, Span, Written},
 };
 use alloc::vec::Vec;
@@ -14,23 +11,13 @@ use core::fmt;
 /// A form that is parsed and not yet checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unchecked {
-    /// A test after `where`.
-    Test,
     /// A type parameter on a program's own type, `type Pair<A, B>`.
     TypeParameter,
     /// `(a, b)` or `A * B`.
     Tuple,
-    /// A type's name taking a payload in a pattern: `U8 b`.
-    GatePattern,
     /// A program's prefix or suffix on a number or quote; `b"…"` is
     /// checked as bytes.
     Affix,
-    /// `A & B`.
-    Both,
-    /// `A | B` with limits on one meaning.
-    Either,
-    /// `!A`.
-    Not,
     /// A number argument, `Bits<8>`, or a number parameter, `[T; n]`.
     Number,
     /// `a ++ b` on arrays.
@@ -40,14 +27,9 @@ pub enum Unchecked {
 impl fmt::Display for Unchecked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Test => "a test limit",
             Self::TypeParameter => "a type parameter of a program's type",
             Self::Tuple => "a tuple",
-            Self::GatePattern => "a gate pattern",
             Self::Affix => "a prefix or suffix",
-            Self::Both => "the type sign `&`",
-            Self::Either => "the type sign `|`",
-            Self::Not => "the type sign `!`",
             Self::Number => "a number in a type",
             Self::Concat => "`++`",
         })
@@ -72,14 +54,6 @@ pub fn bytes(affixed: &Affixed) -> Option<&[u8]> {
 /// resolved.
 pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
     let mut found = Vec::new();
-    for entry in &module.entries {
-        let Entry::Item(item) = entry else { continue };
-        if let ItemKind::Type { name, limits, .. } = &item.kind {
-            if limits.iter().any(|limit| matches!(limit, Limit::Test(_))) {
-                found.push((name.span, Unchecked::Test));
-            }
-        }
-    }
     for expr in &module.expressions {
         match &expr.kind {
             ExprKind::Tuple(_) => found.push((expr.span, Unchecked::Tuple)),
@@ -112,25 +86,9 @@ pub fn scan(module: &Module) -> Vec<(Span, Unchecked)> {
             _ => None,
         })
         .collect();
-    let bases: Vec<_> = module
-        .entries
-        .iter()
-        .filter_map(|entry| match entry {
-            Entry::Item(crate::ast::Item {
-                kind:
-                    ItemKind::Type {
-                        base: Some(base), ..
-                    },
-                ..
-            }) => Some(base.0),
-            _ => None,
-        })
-        .collect();
     for (index, ty) in module.types.iter().enumerate() {
         let form = match &ty.kind {
             TypeKind::Tuple(_) => Unchecked::Tuple,
-            TypeKind::Both(_) if !bases.contains(&index) => Unchecked::Both,
-            TypeKind::Not(_) => Unchecked::Not,
             TypeKind::Number(_) if !lengths.contains(&index) => {
                 Unchecked::Number
             }

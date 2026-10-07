@@ -188,31 +188,60 @@ impl<'a> Infer<'a> {
                     _ => self.fresh(),
                 }
             }
-            // Forms resolve reports as not yet checked.
-            TypeKind::Number(_)
-            | TypeKind::Tuple(_)
-            | TypeKind::Both(_)
-            | TypeKind::Not(_) => self.fresh(),
-            TypeKind::Either(parts) => {
+            TypeKind::Number(_) | TypeKind::Tuple(_) => self.fresh(),
+            TypeKind::Not(inner) => {
+                let inner = self.lower(scope, *inner, vars);
+                if !self
+                    .member_limits(&inner, &inner, node.span, &mut Vec::new())
+                    .is_empty()
+                {
+                    self.error(
+                        node.span,
+                        super::Reason::Limit {
+                            message: String::from("negation of a member limit"),
+                        },
+                    );
+                }
+                Type::Limited {
+                    meaning: alloc::boxed::Box::new(
+                        super::meaning(&inner).clone(),
+                    ),
+                    name: alloc::boxed::Box::new(Type::Not(
+                        alloc::boxed::Box::new(inner),
+                    )),
+                }
+            }
+            TypeKind::Both(parts) | TypeKind::Either(parts) => {
                 let parts: Vec<_> =
                     parts.iter().map(|p| self.lower(scope, *p, vars)).collect();
-                let mut meanings = Vec::new();
-                for part in &parts {
-                    let meaning = super::meaning(part);
-                    if !matches!(meaning, Type::Named { .. })
-                        || meanings.contains(&meaning)
-                    {
-                        self.error(
-                            module.types[id.0].span,
-                            super::Reason::NotYetChecked {
-                                form: crate::resolve::Unchecked::Either,
-                            },
-                        );
-                        break;
+                let Some(first) = parts.first() else {
+                    return self.fresh();
+                };
+                let meaning = super::meaning(first).clone();
+                let same = parts.iter().all(|p| super::meaning(p) == &meaning);
+                if same {
+                    let name = if matches!(node.kind, TypeKind::Both(_)) {
+                        Type::Both(parts)
+                    } else {
+                        Type::Either(parts)
+                    };
+                    Type::Limited {
+                        name: alloc::boxed::Box::new(name),
+                        meaning: alloc::boxed::Box::new(meaning),
                     }
-                    meanings.push(meaning);
+                } else if matches!(node.kind, TypeKind::Either(_)) {
+                    Type::Either(parts)
+                } else {
+                    self.error(
+                        node.span,
+                        super::Reason::Limit {
+                            message: String::from(
+                                "intersection requires one meaning",
+                            ),
+                        },
+                    );
+                    self.fresh()
                 }
-                Type::Either(parts)
             }
             TypeKind::Function { parameter, result } => {
                 let parameter = self.lower(scope, *parameter, vars);
@@ -583,6 +612,7 @@ impl<'a> Infer<'a> {
             }
             let ty = self.lower(scope, *parameter, vars);
             slots.push(Slot {
+                place_kind: crate::typed::Place::Parameter(name.clone()),
                 name,
                 ty,
                 default: value.is_some(),
@@ -725,6 +755,14 @@ impl<'a> Infer<'a> {
         let mut slots = Vec::new();
         for field in fields {
             slots.push(Slot {
+                place_kind: if sum.is_some() {
+                    crate::typed::Place::Payload
+                } else {
+                    crate::typed::Place::Field {
+                        owner: ty.into(),
+                        name: super::last(&field.name),
+                    }
+                },
                 name: Some(super::last(&field.name)),
                 ty: self.lower(&scope, field.ty, &mut vars),
                 default: field.default.is_some(),
@@ -775,6 +813,7 @@ impl<'a> Infer<'a> {
         let slots = super::arms::heads_in(module, &arms)
             .into_iter()
             .map(|head| Slot {
+                place_kind: crate::typed::Place::Parameter(head.name.clone()),
                 name: head.name,
                 ty: Type::Var(self.state.subst.fresh()),
                 default: head.default,
@@ -871,7 +910,11 @@ impl<'a> Infer<'a> {
                 let field_ty = self.lower_here(field.ty);
                 if let Some(default) = field.default {
                     let expected =
-                        super::Expected::new(field_ty.clone(), field.name.span);
+                        super::Expected::new(field_ty.clone(), field.name.span)
+                            .at(crate::typed::Place::Field {
+                                owner: super::last(name),
+                                name: super::last(&field.name),
+                            });
                     self.expr(default, Some(&expected));
                 }
                 self.bind_local(&field.name, field_ty);

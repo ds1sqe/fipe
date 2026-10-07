@@ -158,6 +158,7 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::NotYetChecked { form } => format!("not yet checked: {form}"),
         R::Discarded => "a line before the last must be ()".into(),
         R::MissingField { name } => format!("missing field `{name}`"),
+        R::Limit { message } => message.clone(),
         R::OutOfRange => "integer out of range for its type".into(),
         R::Ambiguous { class } => {
             format!("ambiguous: `{class}` on an unknown type")
@@ -223,4 +224,29 @@ fn origin_name(origin: &resolve::Origin) -> String {
         O::File(name) | O::Host(name) => name.clone(),
         O::Line(index) => format!("session unit {}", index + 1),
     }
+}
+
+/// Render a plan entry without exposing byte offsets to the reader.
+pub fn check(check: &fipe::typed::Check, location: Option<&str>) -> String {
+    use fipe::typed::Place;
+    let mut place = match &check.place_kind {
+        Place::Binding(name) => format!("binding {name}"),
+        Place::Parameter(Some(name)) => format!("parameter {name}"),
+        Place::Parameter(None) => String::from("a parameter"),
+        Place::Result => String::from("the result"),
+        Place::Field { owner, name } => format!("field {owner}.{name}"),
+        Place::Element => String::from("an element"),
+        Place::Payload => String::from("a payload"),
+    };
+    if let Some(location) = location {
+        place.push_str(&format!(" at {location}"));
+    }
+    for fact in check.known.to_string().lines() {
+        place.push_str(", ");
+        place.push_str(fact);
+    }
+    format!(
+        "eval, {}: {place}, against {} ({})\n",
+        check.frequency, check.name, check.reason
+    )
 }

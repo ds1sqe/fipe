@@ -1,9 +1,10 @@
 //! The Fipe REPL: one pump over `fipe-repl-core`, with I/O from the
 //! platform chosen by feature.
 //!
-//! `fipe-repl [--cwd <dir>] [--host <dir>]`: the working directory
+//! `fipe-repl [--cwd <dir>] [--host <dir>] [--strict]`: the working directory
 //! changes first, so a relative host directory is found from it; with
-//! `--host` the session starts as after `:host <dir>`.
+//! `--host` the session starts as after `:host <dir>`. `--strict` rejects
+//! open implicit checks; explicit gates remain allowed.
 
 #![cfg_attr(feature = "linux", no_std, no_main)]
 #![deny(unsafe_code)]
@@ -26,7 +27,8 @@ mod platform;
 use alloc::{collections::VecDeque, format, string::String};
 use fipe_repl_core::{Out, Repl};
 
-const USAGE: &str = "usage: fipe-repl [--cwd <dir>] [--host <dir>]\n";
+const USAGE: &str =
+    "usage: fipe-repl [--cwd <dir>] [--host <dir>] [--strict]\n";
 
 #[cfg(feature = "std")]
 fn main() {
@@ -36,14 +38,15 @@ fn main() {
 /// Read, feed, act on every output; stop at `Out::Exit` or end of input.
 /// File paths are relative to the working directory.
 fn run() {
-    let host = match arguments() {
-        Ok(host) => host,
+    let (host, strict) = match arguments() {
+        Ok(options) => options,
         Err(message) => {
             platform::write(message.as_bytes());
             platform::exit(2);
         }
     };
     let mut repl = Repl::new();
+    repl.strict(strict);
     let first = host.map_or_else(String::new, |dir| format!(":host {dir}\n"));
     let mut outs = VecDeque::from(repl.feed(first.as_bytes()));
     let mut buffer = [0; 4096];
@@ -72,11 +75,16 @@ fn run() {
     }
 }
 
-/// The host directory, after acting on `--cwd`.
-fn arguments() -> Result<Option<String>, String> {
+/// The host directory and strict mode, after acting on `--cwd`.
+fn arguments() -> Result<(Option<String>, bool), String> {
     let mut args = platform::args().into_iter();
     let mut host = None;
+    let mut strict = false;
     while let Some(arg) = args.next() {
+        if arg == "--strict" {
+            strict = true;
+            continue;
+        }
         match (arg.as_str(), args.next()) {
             ("--host", Some(dir)) => host = Some(dir),
             ("--cwd", Some(dir)) if platform::chdir(&dir) => {}
@@ -86,5 +94,5 @@ fn arguments() -> Result<Option<String>, String> {
             _ => return Err(USAGE.into()),
         }
     }
-    Ok(host)
+    Ok((host, strict))
 }

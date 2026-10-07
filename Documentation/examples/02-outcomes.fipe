@@ -28,7 +28,7 @@ describe: Maybe<Entry> -> String = {
 find ./x | describe
 
 # Result carries an error on the miss side; `[!err]` binds it.
-# read_port: String -> Result<U16, ParseError>
+# read_port: String -> Result<Integer, ParseError>
 read_port = text => text | read<U16> | {
     [:port] if port > 1024 => Ok port,
     [:_] => Err (ParseError "reserved port"),

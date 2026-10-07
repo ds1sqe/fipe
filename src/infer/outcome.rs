@@ -126,7 +126,13 @@ impl Infer<'_> {
         };
         match (payload, &side) {
             (Some(payload), Some(ty)) => {
-                self.expr(payload, Some(&Expected::new(ty.clone(), span)));
+                self.expr(
+                    payload,
+                    Some(
+                        &Expected::new(ty.clone(), span)
+                            .at(crate::typed::Place::Payload),
+                    ),
+                );
             }
             (Some(payload), None) => {
                 self.expr(payload, None);

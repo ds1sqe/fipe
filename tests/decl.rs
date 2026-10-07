@@ -177,13 +177,9 @@ fn declaration_files_reject_lines_and_duplicates() {
 fn declaration_files_report_each_unchecked_form_once() {
     use Unchecked as U;
     for (input, form, spelling) in [
-        ("pub f: A & B -> C", U::Both, "A & B"),
-        ("pub f: !A -> C", U::Not, "!A"),
         ("pub f: A * B -> C", U::Tuple, "A * B"),
         ("pub f: Bits<8> -> C", U::Number, "8"),
         ("pub f: [A; n] -> C", U::Number, "n"),
-        ("pub f: !A -> A", U::Not, "!A"),
-        ("pub type U8: Natural where self <= 255", U::Test, "U8"),
         ("pub f: Bits<8>", U::Number, "8"),
         ("x = (1, 2)", U::Tuple, "(1, 2)"),
         ("x = 10ms", U::Affix, "10ms"),
@@ -198,6 +194,14 @@ fn declaration_files_report_each_unchecked_form_once() {
             [(Reason::NotYetChecked { form }, Some(spelling))],
             "{input}"
         );
+    }
+    for input in [
+        "pub f: A & B -> C",
+        "pub f: !A -> C",
+        "pub f: !A -> A",
+        "pub type U8: Natural where self <= 255",
+    ] {
+        Namespace::parse("x", input).unwrap();
     }
     Namespace::parse(
         "x",

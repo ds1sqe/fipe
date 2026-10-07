@@ -93,12 +93,12 @@ fn derived_members_follow_parts_and_recursive_shapes() {
 }
 
 #[test]
-fn array_concat_and_same_meaning_unions_remain_unchecked() {
+fn array_concat_remains_unchecked_and_same_meaning_unions_check() {
     assert_eq!(
         kinds("f: [Integer; 1] -> [Integer; 2] = a => a ++ a"),
         [("NotYetChecked", "++")]
     );
-    assert_eq!(kinds("x: I8 | U8 = 1"), [("NotYetChecked", "I8 | U8")]);
+    assert_eq!(ty("x: I8 | U8 = 1"), "I8 | U8");
 }
 
 #[test]

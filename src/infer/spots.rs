@@ -22,8 +22,8 @@ use crate::{
 use alloc::{vec, vec::Vec};
 
 /// What fills a spot.
-#[derive(Clone)]
-enum Supply {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Supply {
     Expr(ExprId),
     /// A bare Bool flag.
     True,
@@ -42,15 +42,26 @@ impl Infer<'_> {
                 None => Callee::plain(self.fresh()),
             },
             ExprKind::Instance { arguments, .. } => {
-                let callee = match self.resolved.expr(id) {
+                let mut callee = match self.resolved.expr(id) {
                     Some(target) => self.target(target, span),
                     None => Callee::plain(self.fresh()),
                 };
+                let mut written = Vec::new();
                 for (parameter, argument) in
                     callee.parameters.iter().zip(arguments)
                 {
                     let ty = self.lower_here(*argument);
+                    if let Type::Var(var) = parameter {
+                        written.push((*var, ty.clone()));
+                    }
                     self.unify(parameter, &ty, span, span);
+                }
+                callee.ty = crate::types::replace(&callee.ty, &written);
+                for slot in callee.spots.iter_mut().flatten() {
+                    slot.ty = crate::types::replace(&slot.ty, &written);
+                }
+                if let Some((target, _)) = &mut callee.conversion {
+                    *target = crate::types::replace(target, &written);
                 }
                 callee
             }
@@ -101,7 +112,15 @@ impl Infer<'_> {
                 self.type_member(ty, member, span)
             }
             Target::Word => Callee::plain(prelude("String")),
-            Target::Type { .. } | Target::Module(_) | Target::Variable(_) => {
+            Target::Type { origin, name } => {
+                let limited =
+                    self.limited(Type::named(origin.clone(), name, Vec::new()));
+                Callee::plain(Type::function(
+                    super::meaning(&limited).clone(),
+                    limited,
+                ))
+            }
+            Target::Module(_) | Target::Variable(_) => {
                 self.error(span, Reason::NotAFunction);
                 Callee::plain(self.fresh())
             }
@@ -124,6 +143,7 @@ impl Infer<'_> {
             .iter()
             .zip(parameters)
             .map(|(head, ty)| Slot {
+                place_kind: crate::typed::Place::Parameter(head.name.clone()),
                 name: head.name.clone(),
                 ty,
                 default: head.default,
@@ -212,6 +232,16 @@ impl Infer<'_> {
                 self.hint(expected, &result);
             }
         }
+        let supplied = slots
+            .iter()
+            .zip(&filled)
+            .filter_map(|(slot, value)| {
+                Some((slot.name.clone()?, value.clone()?))
+            })
+            .collect();
+        self.state
+            .supplied
+            .insert((stage.start, stage.end), supplied);
         self.supply(&slots, &filled, stage);
         if let Some((target, kind)) = &callee.conversion {
             let member =
@@ -362,8 +392,27 @@ impl Infer<'_> {
         }
     }
 
-    fn enter(&mut self, target: &Type, actual: &Type, span: Span, other: Span) {
+    fn enter(
+        &mut self,
+        target: &Type,
+        actual: &Type,
+        span: Span,
+        other: Span,
+        place_kind: crate::typed::Place,
+    ) {
         let target = self.apply(target);
+        if crate::limits::has_limits(&target) {
+            if let Some(index) =
+                self.module.expressions.iter().position(|e| e.span == span)
+            {
+                self.state.entries.push((
+                    ExprId(index),
+                    target.clone(),
+                    span,
+                    place_kind,
+                ));
+            }
+        }
         if self.packed(&target) {
             self.default_entering(actual);
             self.pack(&target, &self.apply(actual), span, other);
@@ -385,7 +434,13 @@ impl Infer<'_> {
             match supply {
                 Some(Supply::Typed(ty, span)) => {
                     self.argument_span(&slot.ty, *span);
-                    self.enter(&slot.ty, ty, *span, stage);
+                    self.enter(
+                        &slot.ty,
+                        ty,
+                        *span,
+                        stage,
+                        slot.place_kind.clone(),
+                    );
                 }
                 Some(Supply::True) => {
                     self.unify(&slot.ty, &prelude("Bool"), stage, stage);
@@ -405,8 +460,9 @@ impl Infer<'_> {
                 if let Some(Supply::Expr(id)) = supply {
                     if late(id) == pass {
                         let expected = Expected {
+                            place_kind: slot.place_kind.clone(),
                             ty: slot.ty.clone(),
-                            span: stage,
+                            span: self.span(*id),
                             spot: true,
                         };
                         self.expr(*id, Some(&expected));
@@ -450,12 +506,19 @@ impl Infer<'_> {
         let solving = core::mem::replace(&mut self.state.solving_dots, true);
         if let Some((ty, span)) = pipe {
             self.argument_span(&parameters[count - 1], span);
-            self.enter(&parameters[count - 1], &ty, span, stage);
+            self.enter(
+                &parameters[count - 1],
+                &ty,
+                span,
+                stage,
+                crate::typed::Place::Parameter(None),
+            );
         }
         for (operand, parameter) in operands.into_iter().zip(parameters) {
             let expected = Expected {
+                place_kind: crate::typed::Place::Parameter(None),
                 ty: parameter,
-                span: stage,
+                span: self.span(operand),
                 spot: true,
             };
             self.expr(operand, Some(&expected));
@@ -552,12 +615,60 @@ impl Infer<'_> {
             inner.state.locals.insert((site.start, site.end), local);
         }
         let expected = Expected {
+            place_kind: slots[index].place_kind.clone(),
             ty: slots[index].ty.clone(),
             span: stage,
             spot: true,
         };
         inner.expr(value, Some(&expected));
         inner.dots();
+        let mut typed = crate::typed::Typed {
+            expressions: inner
+                .state
+                .types
+                .iter()
+                .map(|ty| ty.as_ref().map(|ty| inner.apply(ty)))
+                .collect(),
+            supplied: inner.state.supplied.clone(),
+            checks: inner.state.checks.clone(),
+            frozen: inner
+                .state
+                .locals
+                .iter()
+                .map(|(site, local)| (*site, local.clone()))
+                .collect(),
+            ..crate::typed::Typed::default()
+        };
+        let entries: Vec<_> = inner
+            .state
+            .entries
+            .iter()
+            .map(|(id, ty, span, kind)| {
+                (*id, inner.apply(ty), *span, kind.clone())
+            })
+            .collect();
+        for mut error in crate::limits::check(
+            module,
+            &resolved,
+            self.declarations,
+            (self.files, self.file_cache),
+            self.frame,
+            &entries,
+            &mut typed,
+        ) {
+            error.span = stage;
+            self.state.errors.push(error);
+        }
+        for mut check in typed.checks {
+            check.place = stage;
+            check.frequency = crate::limits::frequency(self.module, stage);
+            check.place_origin = Origin::This;
+            if check.limit_origin == Origin::This {
+                check.limit_origin = home.clone();
+            }
+            check.known.rehome(home);
+            self.state.checks.push(check);
+        }
         self.state.subst = inner.state.subst;
         for mut owed in inner.state.obligations {
             owed.span = stage;

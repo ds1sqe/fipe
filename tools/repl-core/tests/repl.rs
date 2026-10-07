@@ -105,7 +105,7 @@ fn load_takes_a_stem_or_a_path() {
     assert_eq!(text, "fipe> ");
     assert_eq!(
         written(repl.feed(b":t files.k\n")),
-        "files.k: Integer\nfipe> "
+        "files.k: Integer\nexact 1\nfipe> "
     );
     let outs = repl.feed(b":load ./x/y.fipe\n");
     assert_eq!(outs, [Out::File("./x/y.fipe".into())]);
@@ -220,7 +220,7 @@ fn t_shows_the_last_binding_s_scheme() {
 #[test]
 fn t_queries_an_expression_s_type() {
     let text = written(Repl::new().feed(b":t 1 + 2\n"));
-    assert_eq!(text, "1 + 2: Integer\nfipe> ");
+    assert_eq!(text, "1 + 2: Integer\nexact 3\nfipe> ");
 }
 
 #[test]
@@ -316,9 +316,12 @@ fn an_open_bracket_or_trailing_operator_continues_the_entry() {
     assert_eq!(written(repl.feed(b"y = (1 +\n")), "....> ");
     assert_eq!(written(repl.feed(b"2\n")), "....> ");
     assert_eq!(written(repl.feed(b")\n")), "fipe> ");
-    assert_eq!(written(repl.feed(b":t\n")), "y: Integer\nfipe> ");
+    assert_eq!(written(repl.feed(b":t\n")), "y: Integer\nexact 3\nfipe> ");
     assert_eq!(written(repl.feed(b":t 1 +\n")), "....> ");
-    assert_eq!(written(repl.feed(b"  2\n")), "1 + 2: Integer\nfipe> ");
+    assert_eq!(
+        written(repl.feed(b"  2\n")),
+        "1 + 2: Integer\nexact 3\nfipe> "
+    );
     // A trailing `&` in a type continues too.
     assert_eq!(written(repl.feed(b"type K: Integer &\n")), "....> ");
     assert_eq!(written(repl.feed(b"  Natural\n")), "fipe> ");
@@ -327,7 +330,7 @@ fn an_open_bracket_or_trailing_operator_continues_the_entry() {
 #[test]
 fn a_leading_operator_continues_a_line_given_with_it() {
     let text = written(Repl::new().feed(b"z = 1\n  + 2\n:t\n"));
-    assert_eq!(text, "z: Integer\nfipe> ");
+    assert_eq!(text, "z: Integer\nexact 3\nfipe> ");
 }
 
 #[test]
@@ -384,7 +387,7 @@ fn a_rejected_continuation_keeps_the_line_before() {
         ),
         "{text}"
     );
-    assert_eq!(written(repl.feed(b":t y\n")), "y: Integer\nfipe> ");
+    assert_eq!(written(repl.feed(b":t y\n")), "y: Integer\nexact 1\nfipe> ");
 }
 
 /// All written text with the prompts taken out.
@@ -408,7 +411,7 @@ fn a_rejected_join_in_one_read_keeps_the_line_before() {
         ),
         "{whole}"
     );
-    assert!(whole.ends_with("x: Integer\n"), "{whole}");
+    assert!(whole.ends_with("x: Integer\nexact 1\n"), "{whole}");
 }
 
 #[test]
@@ -446,7 +449,7 @@ fn load_of_a_second_file_for_a_loaded_module_changes_nothing() {
     assert_eq!(text, "02-files: already loaded as `files`\nfipe> ");
     assert_eq!(
         written(repl.feed(b":t files.k\n")),
-        "files.k: Integer\nfipe> "
+        "files.k: Integer\nexact 1\nfipe> "
     );
     let outs = repl.feed(b":load 01-files\n");
     assert_eq!(
@@ -519,10 +522,8 @@ fn a_where_line_continues_an_accepted_type_item() {
     );
     assert_eq!(
         text,
-        "1:6: a test limit is not yet checked\n\
-         type P { x: I64 }\n     ^\n\
-         Type P\n  Field x\n    Type I64\n  Where\n    Binary <=\n      Int 0\n      Name self.x\n\
-         P 1: P\nfipe> "
+        "Type P\n  Field x\n    Type I64\n  Where\n    Binary <=\n      Int 0\n      Name self.x\n\
+         P 1: P\nnames P\nparts x: 1\nfipe> "
     );
 }
 
@@ -559,7 +560,7 @@ fn docs_are_displayed_above_types_and_under_tree_owners() {
     assert_eq!(written(repl.feed(b"## A value\n")), "....> ");
     assert_eq!(
         written(repl.feed(b"\nx = 1\n:t x\n")),
-        "A value\nx: Integer\nfipe> "
+        "A value\nx: Integer\nexact 1\nfipe> "
     );
     let text = written(
         repl.feed(b"## A record\ntype P {\n## A field\nx: I64,\n}\n:ast\n"),
@@ -793,4 +794,62 @@ fn commands_use_words() {
         text.contains("<stem or path>") && text.contains("`Self` outside"),
         "{text}"
     );
+}
+
+#[test]
+fn checks_print_the_named_scheme_and_the_same_facts_as_type_queries() {
+    let mut repl = Repl::new();
+    let text = written(repl.feed(b"a: U8 = 200\nb: U16 = 1000\n:t a + b\nsum2: U8 -> U8 -> U8 = x y => x + y\n:checks sum2\n"));
+    assert!(text.contains("a + b: Integer\nexact 1200\n"), "{text}");
+    assert!(text.contains("sum2: U8 -> U8 -> U8\n"), "{text}");
+    assert_eq!(text.matches("eval, per call").count(), 1, "{text}");
+    assert!(
+        text.contains("eval, per call: the result, range 0..510, against U8 (unknown input)\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn strict_mode_rejects_implicit_checks_and_survives_host_reload() {
+    for reload in [false, true] {
+        let mut repl = Repl::new();
+        repl.strict(true);
+        if reload {
+            let outs = repl.feed(b":host\n");
+            host(&mut repl, outs);
+        }
+        let text = written(repl.feed(
+            b"sum2: U8 -> U8 -> U8 = x y => x + y\ng = x => U8 x\n:t g\n",
+        ));
+        assert!(text.contains("open entry"), "{text}");
+        assert!(text.contains("g: Integer -> Integer"), "{text}");
+        repl.strict(false);
+        let text = written(
+            repl.feed(b"sum2: U8 -> U8 -> U8 = x y => x + y\n:t sum2\n"),
+        );
+        assert!(!text.contains("open entry"), "{text}");
+        assert!(text.contains("sum2: U8 -> U8 -> U8"), "{text}");
+    }
+}
+
+#[test]
+fn checks_name_places_and_disambiguate_identical_results() {
+    let text = written(Repl::new().feed(b"is_prime = n => n > 1\ntype Prime: Integer where is_prime self\nn: Prime = 7\nf: U8 -> U8 = x => x + 1\nh: U8 -> U8 = x => x + 1\ntake: U8 -> Integer = amount => amount\nuse_it = x => take x\ntype Box { value: U8 }\nbox_it = x => Box x\nwrap: Integer -> Maybe<U8> = x => Just x\nitems: Vec<Integer> -> Vec<U8> = xs => xs\n:checks\n"));
+    for expected in [
+        "binding n, exact 7, against Prime",
+        "parameter amount",
+        "field Box.value",
+        "a payload",
+        "an element",
+        "the result at ",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    assert_eq!(text.matches("the result at ").count(), 2, "{text}");
+    assert!(text.contains("the result at 7:10,"), "{text}");
+    assert!(text.contains("the result at 9:10,"), "{text}");
+    assert!(!text.contains("entry at"), "{text}");
+    let named =
+        written(Repl::new().feed(b"f: U8 -> U8 = x => x + 1\n:checks f\n"));
+    assert!(!named.contains("the result at "), "{named}");
 }

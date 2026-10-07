@@ -29,6 +29,7 @@ pub struct Frame {
     pub values: BTreeMap<String, Target>,
     pub types: BTreeMap<String, Target>,
     pub locals: BTreeMap<Site, Local>,
+    pub facts: BTreeMap<Site, crate::limits::known::Known>,
     /// The lines holding impls of a type, in order.
     pub impls: BTreeMap<Owner, Vec<usize>>,
     /// An inherent member of a type, by name: its binding's site.
@@ -45,6 +46,7 @@ pub struct Frame {
 pub struct Line {
     pub module: Module,
     pub resolved: Resolved,
+    pub typed: Typed,
     delta: Delta,
 }
 
@@ -53,6 +55,7 @@ struct Delta {
     values: Vec<(String, Target)>,
     types: Vec<(String, Target)>,
     locals: Vec<(Site, Local)>,
+    facts: Vec<(Site, crate::limits::known::Known)>,
     impls: Vec<Owner>,
     members: Vec<((Owner, String), Site)>,
     constructors: Vec<(Owner, Site)>,
@@ -79,10 +82,19 @@ impl Frame {
         let index = self.lines.len();
         let mut delta = delta(index, &module, &resolved, typed);
         delta.weak = rebase_weak(&typed.weak, index);
+        delta.facts.clone_from(&typed.facts);
+        for (_, known) in &mut delta.facts {
+            known.rehome(&Origin::Line(index));
+        }
         self.add(index, &delta);
+        let mut typed = typed.clone();
+        for (_, known) in &mut typed.facts {
+            known.rehome(&Origin::Line(index));
+        }
         self.lines.push(Line {
             module,
             resolved,
+            typed,
             delta,
         });
     }
@@ -103,6 +115,7 @@ impl Frame {
         self.values.extend(delta.values.iter().cloned());
         self.types.extend(delta.types.iter().cloned());
         self.locals.extend(delta.locals.iter().cloned());
+        self.facts.extend(delta.facts.iter().cloned());
         for owner in &delta.impls {
             self.impls.entry(owner.clone()).or_default().push(index);
         }

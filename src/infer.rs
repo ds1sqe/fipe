@@ -21,6 +21,7 @@ mod index;
 mod lower;
 mod outcome;
 mod spots;
+pub(crate) use spots::Supply;
 
 use crate::{
     ast::{Arm, Entry, ExprId, ExprKind, ImplMember, ItemKind, Module, Name},
@@ -106,6 +107,10 @@ pub enum Reason {
     },
     /// An integer literal outside its type's range.
     OutOfRange,
+    /// A refuted limit, or an open entry in a strict session.
+    Limit {
+        message: String,
+    },
     /// An obligation on a variable that left the binding's type.
     Ambiguous {
         class: String,
@@ -209,6 +214,7 @@ fn run(
     );
     infer.declare();
     infer.field_defaults_all();
+    infer.check_tests();
     let mut impls = 0;
     for entry in &module.entries {
         match entry {
@@ -253,6 +259,9 @@ fn run(
 struct State {
     subst: Subst,
     types: Vec<Option<Type>>,
+    entries: Vec<(ExprId, Type, Span, crate::typed::Place)>,
+    checks: Vec<crate::typed::Check>,
+    supplied: BTreeMap<(usize, usize), Vec<(String, Supply)>>,
     bindings: Vec<Option<Scheme>>,
     /// Lexical bindings by the span of the name that bound them.
     locals: BTreeMap<(usize, usize), Local>,
@@ -280,6 +289,9 @@ impl State {
         Self {
             subst,
             types: vec![None; size],
+            entries: Vec::new(),
+            checks: Vec::new(),
+            supplied: BTreeMap::new(),
             bindings: vec![None; size],
             locals: BTreeMap::new(),
             obligations: Vec::new(),
@@ -413,6 +425,7 @@ enum Key {
 /// One spot of a callee.
 #[derive(Clone, Debug)]
 struct Slot {
+    place_kind: crate::typed::Place,
     name: Option<String>,
     ty: Type,
     default: bool,
@@ -466,6 +479,7 @@ impl Callee {
 /// A type an expression is checked against, and where it came from.
 #[derive(Clone)]
 struct Expected {
+    place_kind: crate::typed::Place,
     ty: Type,
     span: Span,
     /// At a spot, where a word takes the spot's type.
@@ -473,8 +487,14 @@ struct Expected {
 }
 
 impl Expected {
+    fn at(mut self, place_kind: crate::typed::Place) -> Self {
+        self.place_kind = place_kind;
+        self
+    }
+
     const fn new(ty: Type, span: Span) -> Self {
         Self {
+            place_kind: crate::typed::Place::Result,
             ty,
             span,
             spot: false,
@@ -770,6 +790,131 @@ impl Infer<'_> {
 
     /// Obligations settle, members resolve or fail, and
     /// every type is applied through the final substitution.
+    fn limit_reads_line(&self, target: &Target, self_site: Span) -> bool {
+        let site = match target {
+            Target::Local { site } => *site,
+            Target::Members { head, .. } => {
+                return self.limit_reads_line(head, self_site)
+            }
+            _ => return false,
+        };
+        if site == self_site {
+            return false;
+        }
+        core::iter::once(self.module)
+            .chain(
+                self.frame
+                    .into_iter()
+                    .flat_map(|f| f.lines.iter().map(|l| &l.module)),
+            )
+            .any(|module| {
+                module.expressions.iter().any(|e| {
+                    let ExprKind::Bind { pattern, value, .. } = e.kind else {
+                        return false;
+                    };
+                    module.patterns[pattern.0].span == site
+                        && !matches!(
+                            module.expressions[value.0].kind,
+                            ExprKind::Arms(_)
+                        )
+                })
+            })
+    }
+
+    fn check_tests(&mut self) {
+        let module = self.module;
+        let resolved = self.resolved;
+        for entry in &module.entries {
+            if let Entry::Item(item) = entry {
+                if let ItemKind::Type {
+                    name,
+                    base,
+                    members,
+                    limits,
+                    ..
+                } = &item.kind
+                {
+                    let ty = self.limited(Type::named(
+                        Origin::This,
+                        &last(name),
+                        Vec::new(),
+                    ));
+                    let ty = meaning(&ty).clone();
+                    self.bind_local(
+                        &Name {
+                            segments: vec![String::from("self")],
+                            span: name.span,
+                        },
+                        ty.clone(),
+                    );
+                    self.self_type = Some(ty);
+                    for limit in limits {
+                        if let crate::ast::Limit::Test(id) = limit {
+                            let span = module.expressions[id.0].span;
+                            if base.is_none() && members.is_none() {
+                                self.error(
+                                    span,
+                                    Reason::Limit {
+                                        message: String::from(
+                                            "a test needs a base",
+                                        ),
+                                    },
+                                );
+                                continue;
+                            }
+                            let enters_self =
+                                resolved.expressions().any(|(expr, target)| {
+                                    let expression =
+                                        &module.expressions[expr.0];
+                                    span.start <= expression.span.start
+                                        && expression.span.end <= span.end
+                                        && test_enters_self(
+                                            module,
+                                            resolved,
+                                            expr,
+                                            target,
+                                            &last(name),
+                                        )
+                                });
+                            let line_binding =
+                                resolved.expressions().any(|(expr, target)| {
+                                    let expression =
+                                        &module.expressions[expr.0];
+                                    span.start <= expression.span.start
+                                        && expression.span.end <= span.end
+                                        && self
+                                            .limit_reads_line(target, name.span)
+                                });
+                            if line_binding {
+                                self.error(span, Reason::Limit { message: String::from("a limit cannot read a line binding") });
+                                continue;
+                            }
+                            if enters_self {
+                                self.error(
+                                    span,
+                                    Reason::Limit {
+                                        message: String::from(
+                                            "a test enters its own type",
+                                        ),
+                                    },
+                                );
+                                continue;
+                            }
+                            self.expr(
+                                *id,
+                                Some(&Expected::new(
+                                    prelude("Bool"),
+                                    name.span,
+                                )),
+                            );
+                        }
+                    }
+                    self.self_type = None;
+                }
+            }
+        }
+    }
+
     fn finish(mut self) -> (Typed, Vec<Error>) {
         self.check_conversions();
         self.dots();
@@ -779,7 +924,7 @@ impl Infer<'_> {
         let unsolved = self.settle();
         let (frozen, weak) = self.frozen();
         let subst = &self.state.subst;
-        let typed = Typed {
+        let mut typed = Typed {
             expressions: self
                 .state
                 .types
@@ -794,10 +939,45 @@ impl Infer<'_> {
                 .collect(),
 
             unsolved,
+            supplied: self.state.supplied,
+            checks: self.state.checks,
+            known: Vec::new(),
+            facts: Vec::new(),
             frozen,
             weak,
         };
+        let entries: Vec<_> = self
+            .state
+            .entries
+            .iter()
+            .map(|(id, ty, span, kind)| {
+                (*id, subst.apply(ty), *span, kind.clone())
+            })
+            .collect();
         let mut errors = self.state.errors;
+        errors.extend(crate::limits::check(
+            self.module,
+            self.resolved,
+            self.declarations,
+            (self.files, self.file_cache),
+            self.frame,
+            &entries,
+            &mut typed,
+        ));
+        for (stem, checked) in self.file_cache.borrow().iter() {
+            for check in &checked.typed.checks {
+                if check.place_origin != Origin::This {
+                    continue;
+                }
+                let mut check = check.clone();
+                check.place_origin = Origin::File(stem.clone());
+                if check.limit_origin == Origin::This {
+                    check.limit_origin = Origin::File(stem.clone());
+                }
+                check.known.rehome(&Origin::File(stem.clone()));
+                typed.checks.push(check);
+            }
+        }
         errors.sort_by_key(|error| (error.span.start, error.span.end));
         (typed, errors)
     }
@@ -1019,4 +1199,31 @@ pub(crate) fn check_declarations(
         }
     }
     infer.state.errors
+}
+
+fn test_enters_self(
+    module: &Module,
+    resolved: &Resolved,
+    expr: ExprId,
+    target: &Target,
+    name: &str,
+) -> bool {
+    match target {
+        Target::Type {
+            origin: Origin::This,
+            name: target,
+        } => target == name,
+        Target::Constructor {
+            origin: Origin::This,
+            ty,
+            ..
+        } => ty == name,
+        Target::Value {
+            origin: Origin::Prelude,
+            name: target,
+        } if matches!(target.as_str(), "to" | "try" | "read") => {
+            matches!(&module.expressions[expr.0].kind, ExprKind::Instance { arguments, .. } if arguments.iter().any(|arg| matches!(resolved.ty(*arg), Some(Target::Type { origin: Origin::This, name: target }) if target == name)))
+        }
+        _ => false,
+    }
 }

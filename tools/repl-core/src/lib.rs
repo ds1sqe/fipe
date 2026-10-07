@@ -20,7 +20,7 @@
 //!
 //! `:ast` prints the last line that parsed, accepted or not: a tree
 //! never depends on checking. Commands: `:ast`, `:r [line]`, `:t [line]`, `:load <stem or path>`,
-//! `:host [dir]`, `:q`; any other line goes to the session.
+//! `:checks [name]`, `:host [dir]`, `:q`; any other line goes to the session.
 //! `:{` and `:}` on their own lines collect one compilation unit; every
 //! intervening line is source text, including commands. EOF submits it.
 
@@ -63,6 +63,7 @@ pub enum Out {
 
 pub struct Repl {
     session: Session,
+    strict: bool,
     input: Vec<u8>,
     /// The entry's lines so far.
     entry: String,
@@ -135,6 +136,7 @@ impl Repl {
     pub fn new() -> Self {
         Self {
             session: Session::new(Declarations::new()),
+            strict: false,
             input: Vec::new(),
             entry: String::new(),
             continuation: Continuation::default(),
@@ -150,6 +152,12 @@ impl Repl {
             quit: false,
             ended: false,
         }
+    }
+
+    /// Reject open implicit checks, including after a host reload.
+    pub fn strict(&mut self, enabled: bool) {
+        self.strict = enabled;
+        self.session.strict(enabled);
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
@@ -351,6 +359,12 @@ impl Repl {
                 None => out.write(b"no accepted line\n"),
             },
             ("t", arg) => self.start(arg, Mode::Types, out),
+            ("checks", arg) => {
+                if !arg.is_empty() {
+                    self.start(arg, Mode::Types, out);
+                }
+                self.checks((!arg.is_empty()).then_some(arg), out);
+            }
             ("ast", "") => self.ast(out),
             ("ast", _) => {
                 out.write(b"usage: :ast (the last line that parsed)\n");
@@ -371,6 +385,36 @@ impl Repl {
                 });
             }
             _ => out.write(format!("unknown command :{name}\n").as_bytes()),
+        }
+    }
+
+    fn checks(&self, name: Option<&str>, out: &mut Outs) {
+        let checks = self.session.checks(name);
+        let lines: Vec<_> = checks
+            .iter()
+            .map(|check| render::check(check, None))
+            .collect();
+        for (check, line) in checks.iter().zip(&lines) {
+            if lines.iter().filter(|other| *other == line).count() > 1 {
+                let (source, prefix) = match &check.place_origin {
+                    fipe::resolve::Origin::File(stem) => (
+                        self.cached(stem).unwrap_or_default(),
+                        format!("{stem}:"),
+                    ),
+                    _ => (self.session.source(), String::new()),
+                };
+                let (line, column) =
+                    Source::new(source).line_col(check.place.start);
+                out.write(
+                    render::check(
+                        check,
+                        Some(&format!("{prefix}{line}:{column}")),
+                    )
+                    .as_bytes(),
+                );
+            } else {
+                out.write(line.as_bytes());
+            }
         }
     }
 
@@ -562,6 +606,7 @@ impl Repl {
         let lines: Vec<String> =
             self.session.lines().map(String::from).collect();
         self.session = Session::new(declarations);
+        self.session.strict(self.strict);
         self.last = None;
         for line in lines {
             let report = self.replay(&line);
@@ -705,6 +750,14 @@ fn types(session: &Session, report: &Report, line: &str, out: &mut Outs) {
             out.write(b"\n");
         }
         out.write(rendered.as_bytes());
+        let value = if let ExprKind::Bind { value, .. } = expr.kind {
+            value
+        } else {
+            *id
+        };
+        if let Some(known) = typed.known(value) {
+            out.write(format!("{known}").as_bytes());
+        }
     }
 }
 

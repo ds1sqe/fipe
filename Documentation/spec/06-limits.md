@@ -36,7 +36,8 @@ The forms are `type_item` in [syntax.ebnf](02-syntax.ebnf):
   limits chain. `type N: A & B` names a combination, met by meeting each
   part, and needs no limit. A single base with no limit would be an alias,
   and there is none.
-- `type N where …` has limits and no base.
+- `type N where …` has limits and no base: member limits only, since a
+  test needs a meaning to test; a test there is a check error.
 - `type N { … } where …` is a new meaning with limits; before its braces `:`
   takes holdings and claims, `type Vec2: Zero & Default { … }`. A claim
   names a member limit the meaning promises, by any name in scope, `a.Zero`.
@@ -65,10 +66,12 @@ has type `Self`.
 
 ## Gates
 
-A type with a test puts its name in the value namespace, as a record puts
-its constructor. A type of member limits alone has no gate: members are
-checked, never tested. A gate and a constructor of one name are a check
-error.
+A limited type with a test puts its name in the value namespace, as a
+record puts its constructor. A new meaning with a test has no gate of its
+own: its constructor is the way in and tests at construction, and its
+name as a pattern is the constructor's. A type of member limits alone has
+none: members are checked, never tested. A gate and a constructor of one
+name, from two types in scope, are a check error.
 
 - `U8 x`, or `to<U8> x`, enters and is a Fault when the test fails.
 - `try<U8> x` is `Result<U8, LimitError>`, `Err` on failure.

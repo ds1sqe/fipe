@@ -473,13 +473,7 @@ impl<'a> Resolver<'a> {
                             self.unchecked(name.span, Unchecked::TypeParameter);
                         }
                         let limited = base.is_some() || !limits.is_empty();
-                        if limited {
-                            if limits.iter().any(|l| {
-                                matches!(l, crate::ast::Limit::Test(_))
-                            }) {
-                                self.unchecked(name.span, Unchecked::Test);
-                            }
-                        } else if members.is_none() {
+                        if !limited && members.is_none() {
                             self.error(name.span, Reason::DeclarationForm);
                             continue;
                         }
@@ -494,6 +488,22 @@ impl<'a> Resolver<'a> {
                         );
                         if let Some(members) = members {
                             self.constructors(name, members, item.public);
+                        } else if test_chain(
+                            self.module,
+                            &self.declarations.prelude.module,
+                            &last(name),
+                            0,
+                        ) || base.is_some_and(|id| self.base_gate(id))
+                        {
+                            self.define(
+                                name,
+                                Space::Value,
+                                Target::Type {
+                                    origin: Origin::This,
+                                    name: last(name),
+                                },
+                                item.public,
+                            );
                         }
                     }
                     ItemKind::Declare { name, .. } => {
@@ -669,9 +679,13 @@ impl<'a> Resolver<'a> {
                         }),
                 }
             }
-            Origin::File(stem) => {
-                file_export(self.file(stem)?, origin, name, space)
-            }
+            Origin::File(stem) => file_export(
+                self.file(stem)?,
+                &self.declarations.prelude.module,
+                origin,
+                name,
+                space,
+            ),
             _ => None,
         }
     }
@@ -1002,6 +1016,15 @@ impl<'a> Resolver<'a> {
         public: bool,
     ) {
         let text = last(name);
+        if matches!(
+            (&target, self.lookup_value(&text)),
+            (Target::Constructor { .. }, Some(Target::Type { .. }))
+                | (Target::Type { .. }, Some(Target::Constructor { .. }))
+        ) && matches!(space, Space::Value)
+        {
+            self.error(name.span, Reason::Duplicate { first: name.span });
+            return;
+        }
         if let Some(first) = self.defined(&text, space) {
             let first = first.site;
             self.error(name.span, Reason::Duplicate { first });
@@ -1116,9 +1139,18 @@ impl<'a> Resolver<'a> {
                             }
                         }
                         for limit in limits {
-                            if let crate::ast::Limit::Member { ty, .. } = limit
-                            {
-                                self.ty(*ty);
+                            match limit {
+                                crate::ast::Limit::Member { ty, .. } => {
+                                    self.ty(*ty);
+                                }
+                                crate::ast::Limit::Test(id) => {
+                                    self.scopes.push(vec![(
+                                        String::from("self"),
+                                        Target::Local { site: name.span },
+                                    )]);
+                                    self.expr(*id, Position::Other);
+                                    self.scopes.pop();
+                                }
                             }
                         }
                         let mut fields = Vec::new();
@@ -1568,12 +1600,6 @@ impl<'a> Resolver<'a> {
             PatternKind::Constructor { name, payload } => {
                 if self.gate(name) {
                     let target = self.lookup_type(&name.segments[0]);
-                    if let Some(Target::Type { origin, name }) = &target {
-                        if self.owner(origin).is_some_and(|(module, _)| module.entries.iter().any(|entry| matches!(entry,
-                            Entry::Item(crate::ast::Item { kind: ItemKind::Type { name: n, base: Some(_), members: None, .. }, .. }) if last(n) == *name))) {
-                            self.unchecked(pattern.span, Unchecked::GatePattern);
-                        }
-                    }
                     self.resolved.patterns[id.0] = target;
                 } else {
                     let target = self.value_name(name, Position::Other);
@@ -1617,12 +1643,39 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    fn base_gate(&self, id: TypeId) -> bool {
+        match &self.module.types[id.0].kind {
+            TypeKind::Named { name, .. } => {
+                let Some(Target::Type { origin, name }) =
+                    self.lookup_type(&last(name))
+                else {
+                    return false;
+                };
+                self.owner(&origin).is_some_and(|(module, _)| {
+                    test_chain(
+                        module,
+                        &self.declarations.prelude.module,
+                        &name,
+                        0,
+                    )
+                })
+            }
+            TypeKind::Both(parts) | TypeKind::Either(parts) => {
+                parts.iter().any(|p| self.base_gate(*p))
+            }
+            TypeKind::Not(inner) => self.base_gate(*inner),
+            _ => false,
+        }
+    }
+
     /// A pattern head that names a type and no value: a gate.
     fn gate(&self, name: &Name) -> bool {
         let [first] = name.segments.as_slice() else {
             return false;
         };
-        self.lookup_value(first).is_none() && self.lookup_type(first).is_some()
+        (self.lookup_value(first).is_none()
+            || matches!(self.lookup_value(first), Some(Target::Type { .. })))
+            && self.lookup_type(first).is_some()
     }
 
     fn local(&mut self, name: &Name) {
@@ -1831,20 +1884,14 @@ impl<'a> Resolver<'a> {
             TypeKind::Tuple(parts)
             | TypeKind::Both(parts)
             | TypeKind::Either(parts) => {
-                let form = match ty.kind {
-                    TypeKind::Tuple(_) => Unchecked::Tuple,
-                    TypeKind::Both(_) => Unchecked::Both,
-                    _ => Unchecked::Either,
-                };
-                if !matches!(ty.kind, TypeKind::Either(_)) {
-                    self.unchecked(ty.span, form);
+                if matches!(ty.kind, TypeKind::Tuple(_)) {
+                    self.unchecked(ty.span, Unchecked::Tuple);
                 }
                 for part in parts {
                     self.ty(*part);
                 }
             }
             TypeKind::Not(inner) => {
-                self.unchecked(ty.span, Unchecked::Not);
                 self.ty(*inner);
             }
             TypeKind::Qualified { constraints, ty } => {
@@ -1887,6 +1934,7 @@ fn members(head: Target, rest: &[String]) -> Target {
 /// A `pub` name of a file module, read syntactically.
 fn file_export(
     module: &Module,
+    prelude: &Module,
     origin: &Origin,
     name: &str,
     space: Space,
@@ -1909,6 +1957,17 @@ fn file_export(
                     },
                     Space::Value,
                 ) => {
+                    if members.is_none() {
+                        if last(ty) == name
+                            && test_chain(module, prelude, name, 0)
+                        {
+                            return Some(Target::Type {
+                                origin,
+                                name: name.to_string(),
+                            });
+                        }
+                        continue;
+                    }
                     let sum = members
                         .iter()
                         .flatten()
@@ -2000,6 +2059,9 @@ fn namespace_value(
     origin: Origin,
     name: &str,
 ) -> Option<Target> {
+    if namespace.module.entries.iter().any(|e| matches!(e, Entry::Item(item) if matches!(&item.kind, ItemKind::Type { name: n, members: None, .. } if last(n) == name))) && test_chain(&namespace.module, &namespace.module, name, 0) {
+        return Some(Target::Type { origin, name: name.to_string() });
+    }
     if namespace.value(name).is_some() {
         return Some(Target::Value {
             origin,
@@ -2032,4 +2094,59 @@ fn namespace_type(
         origin,
         name: name.to_string(),
     })
+}
+
+fn test_chain(
+    module: &Module,
+    prelude: &Module,
+    name: &str,
+    depth: usize,
+) -> bool {
+    if depth > crate::parse::MAX_NESTING {
+        return false;
+    }
+    let declaration = module.entries.iter().find_map(|entry| {
+        let Entry::Item(item) = entry else {
+            return None;
+        };
+        if let ItemKind::Type {
+            name: n,
+            base,
+            limits,
+            ..
+        } = &item.kind
+        {
+            if last(n) == name {
+                return Some((base, limits));
+            }
+        }
+        None
+    });
+    if let Some((base, limits)) = declaration {
+        limits
+            .iter()
+            .any(|l| matches!(l, crate::ast::Limit::Test(_)))
+            || base.is_some_and(|id| test_base(module, prelude, id, depth + 1))
+    } else if !core::ptr::eq(module, prelude) {
+        test_chain(prelude, prelude, name, depth + 1)
+    } else {
+        false
+    }
+}
+fn test_base(
+    module: &Module,
+    prelude: &Module,
+    id: TypeId,
+    depth: usize,
+) -> bool {
+    match &module.types[id.0].kind {
+        TypeKind::Named { name, .. } => {
+            test_chain(module, prelude, &last(name), depth)
+        }
+        TypeKind::Both(parts) | TypeKind::Either(parts) => {
+            parts.iter().any(|p| test_base(module, prelude, *p, depth))
+        }
+        TypeKind::Not(inner) => test_base(module, prelude, *inner, depth),
+        _ => false,
+    }
 }

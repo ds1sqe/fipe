@@ -25,8 +25,20 @@ impl Infer<'_> {
             self.error(first.span, Reason::TypeDepth);
             return self.fresh();
         }
-        let parameters: Vec<Type> = (0..count).map(|_| self.fresh()).collect();
-        let result = self.fresh();
+        let mut declared = expected.map(|e| self.apply(&e.ty));
+        let parameters: Vec<Type> = (0..count)
+            .map(|_| {
+                if let Some(Type::Function { parameter, result }) =
+                    declared.take()
+                {
+                    declared = Some(*result);
+                    *parameter
+                } else {
+                    self.fresh()
+                }
+            })
+            .collect();
+        let result = declared.unwrap_or_else(|| self.fresh());
         let ty = parameters
             .iter()
             .rev()
@@ -37,7 +49,8 @@ impl Infer<'_> {
         let env = self.state.env.len();
         self.state.env.extend(parameters.iter().cloned());
         let input = expected.map_or(first.span, |e| e.span);
-        let mut sibling = Expected::new(result, input);
+        let result_span = module_result_span(self.module, input);
+        let mut sibling = Expected::new(result, result_span);
         for (index, arm) in arms.iter().enumerate() {
             if arm.patterns.len() != count {
                 let mut actual = self.fresh();
@@ -160,7 +173,8 @@ impl Infer<'_> {
             _ => None,
         };
         if let Some((origin, name)) = gate {
-            let meaning = Type::named(origin.clone(), name, Vec::new());
+            let meaning =
+                self.limited(Type::named(origin.clone(), name, Vec::new()));
             if let Type::Either(parts) = self.apply(ty) {
                 if !parts.contains(&meaning) {
                     self.unify(ty, &meaning, span, input);
@@ -245,4 +259,18 @@ pub(super) fn heads_in(module: &Module, arms: &[Arm]) -> Vec<Head> {
     arms.first()
         .map(|arm| arm.patterns.iter().map(|p| head(*p)).collect())
         .unwrap_or_default()
+}
+
+fn module_result_span(module: &Module, span: Span) -> Span {
+    let Some(mut ty) = module.types.iter().find(|ty| ty.span == span) else {
+        return span;
+    };
+    loop {
+        let next = match ty.kind {
+            crate::ast::TypeKind::Function { result, .. } => result,
+            crate::ast::TypeKind::Qualified { ty, .. } => ty,
+            _ => return ty.span,
+        };
+        ty = &module.types[next.0];
+    }
 }

@@ -14,7 +14,7 @@ use crate::{
     token::Span,
     types::{Obligation, Type},
 };
-use alloc::vec::Vec;
+use alloc::{string::ToString, vec::Vec};
 
 impl Infer<'_> {
     /// Type an expression, checked against `expected` when given.
@@ -40,6 +40,14 @@ impl Infer<'_> {
                 self.state.types[id.0] = Some(target.clone());
                 return target;
             }
+        }
+        if let Some(expected) = expected {
+            self.state.entries.push((
+                id,
+                expected.ty.clone(),
+                expected.span,
+                expected.place_kind.clone(),
+            ));
         }
         let ty = self.synth(id, expected);
         if self.state.subst.too_deep(&ty) {
@@ -527,11 +535,13 @@ impl Infer<'_> {
             }
             _ => self.fresh(),
         };
-        let mut sibling = Expected::new(element.clone(), span);
+        let mut sibling = Expected::new(element.clone(), span)
+            .at(crate::typed::Place::Element);
         for (index, item) in items.iter().enumerate() {
             let ty = self.expr(*item, Some(&sibling));
             if index == 0 {
-                sibling = Expected::new(ty, self.span(*item));
+                sibling = Expected::new(ty, self.span(*item))
+                    .at(crate::typed::Place::Element);
             }
         }
         prelude_of("Vec", alloc::vec![element])
@@ -563,10 +573,14 @@ impl Infer<'_> {
         };
         for field in fields {
             let name = super::last(&field.name);
-            let expected = declared
-                .iter()
-                .find(|f| f.name == name)
-                .map(|f| Expected::new(f.ty.clone(), field.name.span));
+            let expected = declared.iter().find(|f| f.name == name).map(|f| {
+                Expected::new(f.ty.clone(), field.name.span).at(
+                    crate::typed::Place::Field {
+                        owner: ty.to_string(),
+                        name: name.clone(),
+                    },
+                )
+            });
             self.expr(field.value, expected.as_ref());
         }
         for field in declared {

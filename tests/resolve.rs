@@ -777,13 +777,6 @@ fn a_module_s_type_names_its_members_through_the_module() {
 fn each_unchecked_form_is_reported_once() {
     use Unchecked as U;
     for (text, form, spelling) in [
-        ("type U8: Integer where self <= 255", U::Test, "U8"),
-        ("type Odd\nwhere self % 2 == 1", U::Test, "Odd"),
-        (
-            "type Range { lo: I64 } where 0 <= self.lo",
-            U::Test,
-            "Range",
-        ),
         (
             "type Pair<A, B> { first: A, second: B }",
             U::TypeParameter,
@@ -795,18 +788,21 @@ fn each_unchecked_form_is_reported_once() {
         ("n = 10ms", U::Affix, "10ms"),
         ("r = re\"a+b\"i", U::Affix, "re\"a+b\"i"),
         ("f = n => n | { 0r7 => 1, _ => 0 }", U::Affix, "0r7"),
-        ("f: I64 & U8 -> I64 = n => n", U::Both, "I64 & U8"),
-        ("f: !I64 -> I64 = n => 1", U::Not, "!I64"),
         ("f: Vec<8> -> I64 = n => 1", U::Number, "8"),
         ("f: [I64; n] -> I64 = a => 1", U::Number, "n"),
-        (
-            "f = n => n | { I64 m => m, _ => 0 }",
-            U::GatePattern,
-            "I64 m",
-        ),
     ] {
         let reason = Reason::NotYetChecked { form };
         assert_eq!(errors(text), [(reason, Some(spelling))], "{text}");
+    }
+    for text in [
+        "type U8: Integer where self <= 255",
+        "type Odd\nwhere self % 2 == 1",
+        "type Range { lo: I64 } where 0 <= self.lo",
+        "f: I64 & U8 -> I64 = n => n",
+        "f: !I64 -> I64 = n => 1",
+        "f = n => n | { I64 m => m, _ => 0 }",
+    ] {
+        ok(text);
     }
     // Two forms, each once.
     assert_eq!(
@@ -814,7 +810,7 @@ fn each_unchecked_form_is_reported_once() {
             .into_iter()
             .map(|(reason, _)| reason)
             .collect::<Vec<_>>(),
-        [U::Tuple, U::Both, U::Not].map(|form| Reason::NotYetChecked { form })
+        [U::Tuple].map(|form| Reason::NotYetChecked { form })
     );
     // `b"…"` stays bytes until the prelude claims its prefix.
     ok("b = b\"\\xFF\"");

@@ -1264,7 +1264,10 @@ impl Infer<'_> {
         } = kind
         {
             if limits.is_empty()
-                && !matches!(self.module.types[base.0].kind, TypeKind::Both(_))
+                && !matches!(
+                    self.module.types[base.0].kind,
+                    TypeKind::Both(_) | TypeKind::Either(_) | TypeKind::Not(_)
+                )
             {
                 let class = self.lower_here(*base);
                 self.block_error(

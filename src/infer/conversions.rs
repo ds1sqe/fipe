@@ -67,6 +67,7 @@ impl Infer<'_> {
         };
         let mut callee = Callee::plain(result);
         callee.spots = Some(vec![Slot {
+            place_kind: crate::typed::Place::Parameter(None),
             name: None,
             ty: self.fresh(),
             default: false,
@@ -102,6 +103,9 @@ impl Infer<'_> {
                 Type::Function { result, .. } => *result,
                 other => other,
             };
+        }
+        if let Some(result) = limited_conversion(&target, &source, kind) {
+            return result;
         }
         let mut candidates = Vec::new();
         for member in ["from", "try_from"] {
@@ -302,6 +306,9 @@ impl Infer<'_> {
         callee.spots = Some(
             (0..2)
                 .map(|index| Slot {
+                    place_kind: crate::typed::Place::Parameter(
+                        (index == self_slot).then(|| String::from("self")),
+                    ),
                     name: (index == self_slot).then(|| String::from("self")),
                     ty: if index == self_slot {
                         head.clone()
@@ -337,4 +344,29 @@ impl Infer<'_> {
         self.choose_meaning(source, &sources, head, span)
             .map_or_else(|| self.fresh(), |i| choices[i].clone())
     }
+}
+
+fn limited_conversion(
+    target: &Type,
+    source: &Type,
+    kind: &str,
+) -> Option<Type> {
+    if matches!(kind, "to" | "try") && matches!(target, Type::Limited { .. }) {
+        let target_meaning = super::meaning(target);
+        let source_meaning = super::meaning(source);
+        let numeric = |ty: &Type| matches!(ty, Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "Integer" | "F32" | "F64"));
+        if target_meaning == source_meaning
+            || (numeric(target_meaning) && numeric(source_meaning))
+        {
+            return Some(if kind == "try" {
+                super::prelude_of(
+                    "Result",
+                    vec![target.clone(), super::prelude("LimitError")],
+                )
+            } else {
+                target.clone()
+            });
+        }
+    }
+    None
 }

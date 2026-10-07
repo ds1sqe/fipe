@@ -104,6 +104,7 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::NotYetChecked { .. } => "NotYetChecked",
         Reason::Discarded => "Discarded",
         Reason::MissingField { .. } => "MissingField",
+        Reason::Limit { .. } => "Limit",
         Reason::OutOfRange => "OutOfRange",
         Reason::Ambiguous { .. } => "Ambiguous",
         Reason::ImportCycle => "ImportCycle",

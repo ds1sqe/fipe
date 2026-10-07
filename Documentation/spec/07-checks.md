@@ -89,7 +89,7 @@ once, per call, per element. The REPL shows it with `:checks`, and the
 ```text
 :checks sum2
 sum2: U8 -> U8 -> U8
-eval, per call: the result, known 0..510, against U8
+eval, per call: the result, range 0..510, against U8 (unknown input)
 ```
 
 ## What is known

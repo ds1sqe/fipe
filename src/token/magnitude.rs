@@ -61,6 +61,82 @@ impl Magnitude {
         }
     }
 
+    /// Exact addition.
+    #[must_use]
+    pub fn add(&self, other: &Self) -> Self {
+        let mut limbs = Vec::new();
+        let mut carry = 0_u128;
+        for i in 0..self.limbs.len().max(other.limbs.len()) {
+            let sum = u128::from(*self.limbs.get(i).unwrap_or(&0))
+                + u128::from(*other.limbs.get(i).unwrap_or(&0))
+                + carry;
+            limbs.push(low(sum));
+            carry = sum >> 64;
+        }
+        if carry != 0 {
+            limbs.push(low(carry));
+        }
+        Self::trimmed(limbs)
+    }
+
+    /// Exact subtraction, or `None` for a negative result.
+    #[must_use]
+    pub fn checked_sub(&self, other: &Self) -> Option<Self> {
+        if self < other {
+            return None;
+        }
+        let mut limbs = self.limbs.clone();
+        let mut borrow = false;
+        for (i, limb) in limbs.iter_mut().enumerate() {
+            let (value, first) =
+                limb.overflowing_sub(*other.limbs.get(i).unwrap_or(&0));
+            let (value, second) = value.overflowing_sub(u64::from(borrow));
+            *limb = value;
+            borrow = first || second;
+        }
+        Some(Self::trimmed(limbs))
+    }
+
+    /// Exact multiplication.
+    #[must_use]
+    pub fn multiply(&self, other: &Self) -> Self {
+        let mut limbs = alloc::vec![0; self.limbs.len() + other.limbs.len()];
+        for (i, a) in self.limbs.iter().enumerate() {
+            let mut carry = 0_u128;
+            for (j, b) in other.limbs.iter().enumerate() {
+                let value = u128::from(*a) * u128::from(*b)
+                    + u128::from(limbs[i + j])
+                    + carry;
+                limbs[i + j] = low(value);
+                carry = value >> 64;
+            }
+            limbs[i + other.limbs.len()] = low(carry);
+        }
+        Self::trimmed(limbs)
+    }
+
+    /// Quotient and remainder, or `None` for a zero divisor.
+    #[must_use]
+    pub fn div_rem(&self, divisor: &Self) -> Option<(Self, Self)> {
+        if divisor.is_zero() {
+            return None;
+        }
+        let mut quotient = alloc::vec![0; self.limbs.len()];
+        let mut remainder = Self::default();
+        // ponytail: binary long division is quadratic; use normalized limb
+        // division if large compile-time integer checks need higher throughput.
+        for (i, limb) in self.limbs.iter().enumerate().rev() {
+            for bit in (0..64).rev() {
+                remainder.multiply_add(2, (limb >> bit) & 1);
+                if let Some(rest) = remainder.checked_sub(divisor) {
+                    remainder = rest;
+                    quotient[i] |= 1_u64 << bit;
+                }
+            }
+        }
+        Some((Self::trimmed(quotient), remainder))
+    }
+
     /// Each digit is `width` bits.
     fn from_bits(digits: &[u32], width: u32) -> Self {
         let mut limbs = Vec::new();

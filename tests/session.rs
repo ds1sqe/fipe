@@ -410,9 +410,9 @@ fn an_accepted_line_is_frozen_and_a_redefinition_shadows_after_it() {
     ok(&mut session, "g = n => f n");
     ok(&mut session, "f = s => s | len");
     assert_eq!(line_type(&mut session, "g 3"), "Integer");
-    assert_eq!(line_type(&mut session, "f \"abc\""), "Natural");
+    assert_eq!(line_type(&mut session, "f \"abc\""), "Integer");
     assert_eq!(query(&mut session, "g"), "Add a, Literal a => a -> a");
-    assert_eq!(query(&mut session, "f"), "Len a => a -> Natural");
+    assert_eq!(query(&mut session, "f"), "Len a => a -> Integer");
     // A value, a type and an import are redefined the same way.
     ok(&mut session, "x = 1");
     ok(&mut session, "y = x + 1");

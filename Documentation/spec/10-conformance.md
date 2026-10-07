@@ -60,7 +60,6 @@ Also every keyword and non-keyword name, every operator beside its neighbor, byt
 | REPL raw quote opened on one input line, closed on the next | continuation, one string |
 
 ## Review regressions (06.4)
-
 | Case | Expected distinction |
 | --- | --- |
 | `x = ## d` LF `y = 2`, also impl and record values | unattached-doc error; docs never carry a value onto a new line |
@@ -124,7 +123,6 @@ Also every keyword and non-keyword name, every operator beside its neighbor, byt
 | `k: Number a => a -> a = p => p + 1`; `f = k` | prints `Number a => a -> a`, no redundant `Literal` |
 
 ## Syntax, types and checks (02 to 07)
-
 | Case | Expected distinction |
 | --- | --- |
 | `add 2 - 1` / `add (2 - 1)` | rejected argument operator / grouped operand |
@@ -196,22 +194,24 @@ Also every keyword and non-keyword name, every operator beside its neighbor, byt
 | `(Vec2 1.0 2.0) + (Vec2 3.0 4.0)` / written `show` / `impl Maybe { map: … }` in the prelude | `Vec2`'s `Add` claim / a `Show` block replaces the derived member / a supplied member |
 | `m: Mask = 0b0000_1111` | typed through `Mask.literal` |
 | `k: Mask = 15` | check error: the literal Faults *08* |
-| `who: Name = "fipe"` | `String`'s literal, then `Name`'s limits *06.5* |
+| `who: Name = "fipe"` | `String`'s literal, then `Name`'s limits |
 | `total: Vec<Shape> -> F64` / `Add -> Add` / `| area` for a member | packed elements / packs and cannot add / unknown name |
 | `id: Integer | String = 3` then `id | { Integer n => n.show, String s => s }` | packed; the gate pattern tells which |
-| a gate and a constructor of one name / a test entering its own type / `!Shape` | check error, each *06.5* |
-| `U8 2.0` / `U8 300` / `try<U8> 300` / `U8 x` with `x` open | check error: no conversion / refuted / `Err` / Fault when the test fails *06.5* |
-| `n: U8 & Prime = 13` / `p: Prime = 7` / `type Handy: U8 | Prime` | both / proved at compile time / either *06.5* |
-| `kind` over `Prime` and `NonPrime` / `classify` with `_` | covered by a gate and its `!` / gates tried in order *06.5* |
-| `c: U8 = (a + b) / 2` / `d: U8 = a + b` with `a: U8 = 200`, `b: U8 = 100` | proved: 150 / refuted: 300 *06.5* |
+| a gate and a constructor of one name / a test entering its own type / `!Shape` | check error, each |
+| `U8 2.0` / `U8 300` / `try<U8> 300` / `U8 x` with `x` open | check error: no conversion / refuted / `Err` / Fault when the test fails |
+| `n: U8 & Prime = 13` / `type Handy: U8 | Prime` | U8 proved, Prime open (compile-time evaluation) / either |
+| `p: Prime = 7` / `Seed` with `Compile (is_prime self)` | named test settled at compile time *08* |
+| `kind` over `Prime` and `NonPrime` / `classify` with `_` | covered by a gate and its `!` / gates tried in order |
+| `c: U8 = (a + b) / 2` / `d: U8 = a + b` with `a: U8 = 200`, `b: U8 = 100` | proved: 150 / refuted: 300 |
 | `h: U8 = half 200` / `clamp` / `m: U8 = max a b` / `next` over `Odd` | proved: by the body / by branches / at one variable / by the declared result *06.8* |
-| `sum2: U8 -> U8 -> U8 = x y => x + y` / `:checks sum2` | open, tested per call / one plan entry *06.5* |
-| an open entry in a strict session / a gate in one | check error / allowed *06.5* |
-| `x / 0` / `x / y`, `y` known `0..5` | refuted / tested at run *06.5* |
-| `Range { lo: 2, hi: 1 }` / `Range 1 2` | refuted: braces test the limit / proved *06.5* |
-| `a + b` with `a: U8`, `b: U16` / `w: U16 = a` / `n: U8 = b` | `Integer`, known 1200 / proved / refuted *06.5* |
+| `sum2: U8 -> U8 -> U8 = x y => x + y` / `:checks sum2` | open, tested per call / one plan entry |
+| an open entry in a strict session / a gate in one | check error / allowed |
+| `x / 0` / `x / y`, `y` known `0..5` | refuted / tested at run |
+| `Range { lo: 2, hi: 1 }` / `Range 1 2` | refuted: braces test the limit / proved |
+| `a + b` with `a: U8`, `b: U16` / `w: U16 = a` / `n: U8 = b` | `Integer`, known 1200 / proved / refuted |
 | `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open *06.8* |
-| `f: F64 = 2` / `k: I64 = round 2.5` | `2.0` / `2` *06.5* |
+| `f: F64 = 2` | `2.0` by the literal member |
+| `k: I64 = round 2.5` | `2` by the numeric cast *07* |
 | `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / prepared at compile time *06.6* |
 | `Compile` alone, as a value or in a pattern | check error *06.6* |
 | `Bits<8> & Bits<16>` / `type Odd8: Integer & Bits<8>` | check error, each: the holdings disagree / does not fit its holding *06.6* |

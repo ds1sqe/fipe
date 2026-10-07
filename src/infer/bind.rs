@@ -60,7 +60,17 @@ impl Infer<'_> {
         let env = self.state.env.len();
         let mut expected = annotation.map(|annotation| {
             let span = module.types[annotation.0].span;
-            Expected::new(self.lower_here(annotation), span)
+            let expected = Expected::new(self.lower_here(annotation), span);
+            if matches!(module.expressions[value.0].kind, ExprKind::Arms(_)) {
+                expected
+            } else {
+                expected.at(crate::typed::Place::Binding(
+                    match &module.patterns[pattern.0].kind {
+                        PatternKind::Name(name) => super::last(name),
+                        _ => String::from("pattern"),
+                    },
+                ))
+            }
         });
         if let (PatternKind::Name(name), ExprKind::Arms(arms)) = (
             &module.patterns[pattern.0].kind,
@@ -607,21 +617,7 @@ impl Infer<'_> {
         ty: &Type,
         span: Span,
     ) {
-        if let Type::Limited { name, meaning } = ty {
-            if let Lit::Int {
-                negative,
-                magnitude,
-            } = &literal
-            {
-                if let Some(valid) =
-                    in_range(name, *negative, magnitude.to_u64())
-                {
-                    if !valid {
-                        self.error(span, Reason::OutOfRange);
-                    }
-                    return;
-                }
-            }
+        if let Type::Limited { meaning, .. } = ty {
             return self.check_literal(literal, meaning, span);
         }
         let float = is_prelude(ty, "F32") || is_prelude(ty, "F64");
@@ -639,18 +635,8 @@ impl Infer<'_> {
                 return;
             }
             Lit::Float if float => return,
-            Lit::Int {
-                negative,
-                magnitude,
-            } => match in_range(ty, negative, magnitude.to_u64()) {
-                Some(true) => return,
-                Some(false) => {
-                    self.error(span, Reason::OutOfRange);
-                    return;
-                }
-                None if is_prelude(ty, "Integer") => return,
-                None => prelude("Integer"),
-            },
+            Lit::Int { .. } if is_prelude(ty, "Integer") => return,
+            Lit::Int { .. } => prelude("Integer"),
             Lit::Float => prelude("F64"),
             Lit::Text if is_prelude(ty, "String") => return,
             Lit::Text => prelude("String"),
@@ -672,31 +658,6 @@ impl Infer<'_> {
             },
         );
     }
-}
-
-/// Whether an integer literal fits an integer type; `None` for any
-/// other type.
-pub(super) fn in_range(
-    ty: &Type,
-    negative: bool,
-    magnitude: Option<u64>,
-) -> Option<bool> {
-    const INTEGERS: [&str; 8] =
-        ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
-    if is_prelude(ty, "Natural") {
-        return Some(!negative || magnitude == Some(0));
-    }
-    let index = INTEGERS.iter().position(|name| is_prelude(ty, name))?;
-    let Some(magnitude) = magnitude else {
-        return Some(false);
-    };
-    let width = 8u32 << (index % 4);
-    Some(if index < 4 {
-        let bound = 1u64 << (width - 1);
-        magnitude < bound || (negative && magnitude == bound)
-    } else {
-        magnitude <= u64::MAX >> (64 - width) && (!negative || magnitude == 0)
-    })
 }
 
 /// A scheme with the substitution applied to its type and obligations.
@@ -725,7 +686,8 @@ fn rigids(ty: &Type, out: &mut Vec<String>) {
                 rigids(argument, out);
             }
         }
-        Type::Either(parts) => {
+        Type::Not(inner) => rigids(inner, out),
+        Type::Either(parts) | Type::Both(parts) => {
             for p in parts {
                 rigids(p, out);
             }
@@ -753,6 +715,10 @@ fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
         Type::Either(parts) => {
             Type::Either(parts.iter().map(|p| unrigid(p, fresh)).collect())
         }
+        Type::Both(parts) => {
+            Type::Both(parts.iter().map(|p| unrigid(p, fresh)).collect())
+        }
+        Type::Not(inner) => Type::Not(Box::new(unrigid(inner, fresh))),
         Type::Limited { name, meaning } => Type::Limited {
             name: Box::new(unrigid(name, fresh)),
             meaning: Box::new(unrigid(meaning, fresh)),

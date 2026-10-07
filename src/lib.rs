@@ -10,6 +10,7 @@ pub mod embed;
 mod frame;
 pub mod infer;
 pub mod lex;
+pub mod limits;
 pub mod parse;
 pub mod resolve;
 pub mod session;

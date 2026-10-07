@@ -163,3 +163,25 @@ fn shadowed_type_names_show_their_origins() {
     let b = Type::named(Origin::Line(2), "A", vec![]);
     assert_ne!(a.beside(&b).to_string(), b.beside(&a).to_string());
 }
+
+#[test]
+fn variables_bind_meanings_without_carrying_place_limits() {
+    let integer = Type::named(Origin::Prelude, "Integer", vec![]);
+    let limited = Type::Limited {
+        name: Box::new(Type::named(Origin::Prelude, "U8", vec![])),
+        meaning: Box::new(integer.clone()),
+    };
+    for (place, meaning) in [
+        (limited.clone(), integer.clone()),
+        (vec(limited.clone()), vec(integer.clone())),
+        (
+            Type::function(limited.clone(), limited),
+            Type::function(integer.clone(), integer),
+        ),
+    ] {
+        let mut subst = Subst::default();
+        let variable = Type::Var(subst.fresh());
+        subst.unify(&variable, &place).unwrap();
+        assert_eq!(subst.apply(&variable), meaning);
+    }
+}

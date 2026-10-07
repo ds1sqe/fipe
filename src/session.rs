@@ -36,6 +36,7 @@ pub struct Session {
     frame: Frame,
     files: Vec<(String, Module)>,
     pending: Option<Pending>,
+    strict: bool,
 }
 
 /// A line waiting for a [`Reply`].
@@ -68,6 +69,8 @@ pub struct Report {
     pub resolved: Option<Resolved>,
     /// Present when the combined module resolved and typed.
     pub typed: Option<Typed>,
+    /// Open entries left by this line.
+    pub checks: Vec<crate::typed::Check>,
 }
 
 impl Report {
@@ -129,6 +132,7 @@ impl Session {
                 values: alloc::collections::BTreeMap::new(),
                 types: alloc::collections::BTreeMap::new(),
                 locals: alloc::collections::BTreeMap::new(),
+                facts: alloc::collections::BTreeMap::new(),
                 impls: alloc::collections::BTreeMap::new(),
                 members: alloc::collections::BTreeMap::new(),
                 constructors: alloc::collections::BTreeMap::new(),
@@ -136,7 +140,58 @@ impl Session {
             },
             files: Vec::new(),
             pending: None,
+            strict: false,
         }
+    }
+
+    /// Reject open implicit entries in subsequent units; explicit gates
+    /// remain allowed. Accepted lines retain their earlier checks.
+    pub const fn strict(&mut self, enabled: bool) {
+        self.strict = enabled;
+    }
+
+    /// Open checks of accepted lines, or of the latest binding named `name`.
+    #[must_use]
+    pub fn checks(&self, name: Option<&str>) -> Vec<crate::typed::Check> {
+        let site = name.and_then(|name| self.frame.values.get(name)).and_then(
+            |target| {
+                if let resolve::Target::Local { site } = target {
+                    Some(*site)
+                } else {
+                    None
+                }
+            },
+        );
+        self.frame
+            .lines
+            .iter()
+            .flat_map(|line| {
+                let span = site.and_then(|site| {
+                    line.module.entries.iter().find_map(|entry| {
+                        let Entry::Line(id) = entry else {
+                            return None;
+                        };
+                        let expr = line.module.expr(*id)?;
+                        let crate::ast::ExprKind::Bind { pattern, .. } =
+                            expr.kind
+                        else {
+                            return None;
+                        };
+                        (line.module.pattern(pattern)?.span == site)
+                            .then_some(expr.span)
+                    })
+                });
+                line.typed
+                    .checks
+                    .iter()
+                    .filter(move |check| {
+                        name.is_none()
+                            || span
+                                .is_some_and(|span| within(check.place, span))
+                    })
+                    .cloned()
+            })
+            .collect()
     }
 
     /// The accepted lines, each followed by a blank line: the text
@@ -234,6 +289,7 @@ impl Session {
                     diagnostics,
                     resolved: None,
                     typed: None,
+                    checks: Vec::new(),
                 });
             }
         };
@@ -287,6 +343,10 @@ impl Session {
             }));
             None
         });
+        let checks = typed
+            .as_ref()
+            .map_or_else(Vec::new, |typed| typed.checks.clone());
+        diagnostics.extend(self.open_errors(&checks, offset));
         if pending.accept && diagnostics.len() == files {
             if let (Some(resolved), Some(typed)) = (&resolved, &typed) {
                 self.frame.accept(module.clone(), resolved.clone(), typed);
@@ -301,7 +361,28 @@ impl Session {
             diagnostics,
             resolved,
             typed,
+            checks,
         })
+    }
+
+    fn open_errors(
+        &self,
+        checks: &[crate::typed::Check],
+        offset: usize,
+    ) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        if self.strict {
+            diagnostics.extend(checks.iter().filter(|check| !check.gate).map(
+                |check| match &check.place_origin {
+                    resolve::Origin::File(stem) => Diagnostic::FileType {
+                        stem: stem.clone(),
+                        error: strict_error(check, 0),
+                    },
+                    _ => Diagnostic::Type(strict_error(check, offset)),
+                },
+            ));
+        }
+        diagnostics
     }
 
     /// A loaded file module's own diagnostics. A type error inside an
@@ -419,5 +500,18 @@ const fn local(span: Span, offset: usize) -> Span {
     Span {
         start: span.start.saturating_sub(offset),
         end: span.end.saturating_sub(offset),
+    }
+}
+
+fn strict_error(check: &crate::typed::Check, offset: usize) -> infer::Error {
+    infer::Error {
+        span: local(check.place, offset),
+        reason: infer::Reason::Limit {
+            message: alloc::format!(
+                "open entry against {} in strict session: {}",
+                check.name,
+                check.reason
+            ),
+        },
     }
 }

@@ -26,6 +26,8 @@ session::Session::new(declarations: decl::Declarations) -> Session
 line(&mut self, text: &str) -> Outcome<Report>
 query(&mut self, text: &str) -> Outcome<Report>
 reply(&mut self, reply: Reply) -> Outcome<Report>
+strict(&mut self, enabled: bool)
+checks(&self, name: Option<&str>) -> Vec<typed::Check>
 retract(&mut self) -> Option<String>
 source(&self) -> &str
 lines(&self) -> impl Iterator<Item = &str>
@@ -42,9 +44,10 @@ private fields. `line` accepts a line when it has no diagnostic of its
 own; `query` checks without accepting, and generalizes an expression line
 where `line` defaults it, so its scheme is the line's `typed.binding`.
 `retract` removes the last accepted line and what it defined, returning
-its text. The host's strict session and compile budget, and the plan of
-open entries returned with a checked unit ([checks](../spec/07-checks.md)), have no
-Rust form yet. The source is the accepted lines, each followed by a blank
+its text. `strict(true)` makes each open implicit entry a check error in
+the line and its file modules; explicit gates remain allowed. It defaults
+to false. The compile budget has no Rust form until evaluation exists.
+The source is the accepted lines, each followed by a blank
 line; spans are in the source followed by the line being checked.
 `lines` yields the accepted units in order, keeping embedded blank lines.
 
@@ -62,7 +65,7 @@ per checked unit; every use in that unit shares the result.
 ~~~text
 Report { module: Option<ast::Module>, offset: usize,
          diagnostics: Vec<Diagnostic>, resolved: Option<resolve::Resolved>,
-         typed: Option<typed::Typed> }
+         typed: Option<typed::Typed>, checks: Vec<typed::Check> }
 Diagnostic = Syntax(parse::Error) | Resolve(resolve::Error)
            | Type(infer::Error) | File { stem: String, error: parse::Error }
            | FileResolve { stem: String, error: resolve::Error }
@@ -88,3 +91,32 @@ substitution unification exposes this as `types::Mismatch::DepthLimit`.
 `Session::documentation(&Report, ExprId)` returns the doc of a binding or
 resolved declaration from the report, accepted lines, prelude, host or
 loaded module. It reads syntax only and returns `None` without an owner.
+
+## Open checks and known facts
+
+`Typed::checks` and `Report::checks` list the open entries described by
+[checks](../spec/07-checks.md), in entry order:
+
+~~~text
+typed::Check { place: Span, place_kind: typed::Place, limit: Span,
+               phase, reason, frequency }
+typed::Place = Binding(String) | Parameter(Option<String>) | Result
+             | Field { owner: String, name: String } | Element | Payload
+~~~
+
+The phase is eval; timing adds other phases later. Reasons distinguish
+an unknown input, no rule, compile-time evaluation and narrowing. Frequency
+is once, per call or per element. The place kind names a binding, parameter,
+result, field, element or payload. Spans identify the place itself where
+written and belong to the source containing
+the place or limit; imported declarations retain their source identity.
+An entry refuted by the known facts is an error in every session.
+
+Known facts are separate from the inferred type: exact values, Integer
+ranges, names of limits passed, and construction parts. The REPL's `:t x`
+prints only the facts held, one per line (`exact 300`, `range 200..300`,
+`names Quad, U16`, `parts lo: 2, hi: ..`). `:checks [name]` prints the
+open entries with the place in words, those same facts comma separated, and
+the reason each remains open. Otherwise identical entries include the place's
+line and column. Both REPL builds accept `--strict` beside `--host <dir>` and
+`--cwd <dir>`; it enables strict checking before input and survives `:host`.

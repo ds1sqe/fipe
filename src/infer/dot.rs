@@ -553,6 +553,7 @@ impl<'a> Infer<'a> {
         let mut spots = Vec::new();
         if member != "show" {
             spots.push(super::Slot {
+                place_kind: crate::typed::Place::Parameter(None),
                 name: None,
                 ty: ty.clone(),
                 default: false,
@@ -562,6 +563,9 @@ impl<'a> Infer<'a> {
         }
         let slot = spots.len();
         spots.push(super::Slot {
+            place_kind: crate::typed::Place::Parameter(Some(String::from(
+                "self",
+            ))),
             name: Some(String::from("self")),
             ty: ty.clone(),
             default: false,
@@ -917,7 +921,9 @@ pub(super) fn contains_type(ty: &Type, needle: &Type) -> bool {
         Type::Function { parameter, result } => {
             contains_type(parameter, needle) || contains_type(result, needle)
         }
-        Type::Named { arguments, .. } | Type::Either(arguments) => {
+        Type::Named { arguments, .. }
+        | Type::Either(arguments)
+        | Type::Both(arguments) => {
             arguments.iter().any(|t| contains_type(t, needle))
         }
         Type::Limited { meaning, .. } => contains_type(meaning, needle),

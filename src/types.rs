@@ -29,6 +29,8 @@ pub enum Type {
         arguments: Vec<Self>,
     },
     Either(Vec<Self>),
+    Both(Vec<Self>),
+    Not(Box<Self>),
     Limited {
         name: Box<Self>,
         meaning: Box<Self>,
@@ -63,6 +65,35 @@ impl Type {
         }
     }
 
+    /// The meaning used when binding an inference variable. Limits belong
+    /// to declared places, including places nested inside a container.
+    #[must_use]
+    pub fn without_limits(&self) -> Self {
+        match self {
+            Self::Limited { meaning, .. } => meaning.without_limits(),
+            Self::Named { name, arguments } => Self::Named {
+                name: name.clone(),
+                arguments: arguments.iter().map(Self::without_limits).collect(),
+            },
+            Self::Either(parts) => {
+                Self::Either(parts.iter().map(Self::without_limits).collect())
+            }
+            Self::Both(parts) => {
+                Self::Both(parts.iter().map(Self::without_limits).collect())
+            }
+            Self::Not(inner) => Self::Not(Box::new(inner.without_limits())),
+            Self::Array { element, length } => Self::Array {
+                element: Box::new(element.without_limits()),
+                length: *length,
+            },
+            Self::Function { parameter, result } => Self::function(
+                parameter.without_limits(),
+                result.without_limits(),
+            ),
+            Self::Unit | Self::Var(_) | Self::Rigid(_) => self.clone(),
+        }
+    }
+
     /// The inference variables in this type, in order of appearance.
     pub fn variables(&self, out: &mut Vec<Var>) {
         match self {
@@ -77,7 +108,8 @@ impl Type {
                     argument.variables(out);
                 }
             }
-            Self::Either(parts) => {
+            Self::Not(inner) => inner.variables(out),
+            Self::Either(parts) | Self::Both(parts) => {
                 for p in parts {
                     p.variables(out);
                 }
@@ -111,6 +143,10 @@ impl Type {
             Self::Either(parts) => {
                 Self::Either(parts.iter().map(|p| p.rehome(origin)).collect())
             }
+            Self::Both(parts) => {
+                Self::Both(parts.iter().map(|p| p.rehome(origin)).collect())
+            }
+            Self::Not(inner) => Self::Not(Box::new(inner.rehome(origin))),
             Self::Limited { name, meaning } => Self::Limited {
                 name: Box::new(name.rehome(origin)),
                 meaning: Box::new(meaning.rehome(origin)),
@@ -316,6 +352,10 @@ pub(crate) fn replace(ty: &Type, fresh: &[(Var, Type)]) -> Type {
         Type::Either(parts) => {
             Type::Either(parts.iter().map(|p| replace(p, fresh)).collect())
         }
+        Type::Both(parts) => {
+            Type::Both(parts.iter().map(|p| replace(p, fresh)).collect())
+        }
+        Type::Not(inner) => Type::Not(Box::new(replace(inner, fresh))),
         Type::Limited { name, meaning } => Type::Limited {
             name: Box::new(replace(name, fresh)),
             meaning: Box::new(replace(meaning, fresh)),
@@ -390,6 +430,10 @@ impl Subst {
             Type::Either(parts) => {
                 Type::Either(parts.iter().map(|p| self.apply(p)).collect())
             }
+            Type::Both(parts) => {
+                Type::Both(parts.iter().map(|p| self.apply(p)).collect())
+            }
+            Type::Not(inner) => Type::Not(Box::new(self.apply(inner))),
             Type::Limited { name, meaning } => Type::Limited {
                 name: Box::new(self.apply(name)),
                 meaning: Box::new(self.apply(meaning)),
@@ -440,7 +484,7 @@ impl Subst {
                         ty: other.clone(),
                     }));
                 }
-                self.bindings[var.0 as usize] = Some(other.clone());
+                self.bindings[var.0 as usize] = Some(other.without_limits());
                 Ok(())
             }
             (Type::Limited { meaning, .. }, other)
@@ -595,7 +639,8 @@ impl Type {
                     argument.declared(out);
                 }
             }
-            Self::Either(parts) => {
+            Self::Not(inner) => inner.declared(out),
+            Self::Either(parts) | Self::Both(parts) => {
                 for p in parts {
                     p.declared(out);
                 }
@@ -696,10 +741,18 @@ fn write(
             }
             f.write_str(">")
         }
-        Type::Either(parts) => {
+        Type::Not(inner) => {
+            f.write_str("!")?;
+            write(inner, f, names, clashes)
+        }
+        Type::Either(parts) | Type::Both(parts) => {
             for (i, p) in parts.iter().enumerate() {
                 if i > 0 {
-                    f.write_str(" | ")?;
+                    f.write_str(if matches!(ty, Type::Both(_)) {
+                        " & "
+                    } else {
+                        " | "
+                    })?;
                 }
                 write(p, f, names, clashes)?;
             }
@@ -739,13 +792,16 @@ impl Subst {
                         stack.push((bound, depth));
                     }
                 }
-                Type::Named { arguments, .. } | Type::Either(arguments) => {
+                Type::Named { arguments, .. }
+                | Type::Either(arguments)
+                | Type::Both(arguments) => {
                     stack.extend(arguments.iter().map(|ty| (ty, depth + 1)));
                 }
                 Type::Function { parameter, result } => {
                     stack.push((parameter, depth + 1));
                     stack.push((result, depth + 1));
                 }
+                Type::Not(inner) => stack.push((inner, depth + 1)),
                 Type::Limited { name, meaning } => {
                     stack.push((name, depth + 1));
                     stack.push((meaning, depth + 1));

@@ -188,7 +188,7 @@ private field defaults. A sum constructor's fields are its payload and are
 always visible. A member of a type is reached from another module only
 when it is `pub`, a claim's member whenever its type is; reaching a hidden one is a check error that says the
 member is private. `String`'s field has no default, so `utf8` is the only
-way in.
+way in; its `len` counts its UTF-8 bytes.
 
 ## Defaults and declarations
 
