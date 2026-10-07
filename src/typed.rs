@@ -18,6 +18,8 @@ use alloc::vec::Vec;
 pub struct Typed {
     /// Non-fatal call-spacing diagnostics, in module source coordinates.
     pub warnings: Vec<Warning>,
+    /// Binding decisions keyed by the call or stage span in this module.
+    pub bound: alloc::collections::BTreeMap<(usize, usize), Bound>,
     pub(crate) expressions: Vec<Option<Type>>,
     pub(crate) bindings: Vec<Option<Scheme>>,
     /// Obligations left on variables, such as `Ord a`.
@@ -73,4 +75,34 @@ impl Typed {
 pub struct Warning {
     pub span: crate::token::Span,
     pub style: crate::ast::CallStyle,
+}
+
+/// The checker binds once; evaluation consumes these decisions in order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Bound {
+    /// Supplies in source order, with their zero-based declaration spot.
+    pub supplies: Vec<(usize, Supply)>,
+    /// Defaults in declaration order.
+    pub defaults: Vec<(usize, DefaultValue)>,
+    /// Unfilled spots in declaration order.
+    pub open: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Supply {
+    Expression(ExprId),
+    Flag(crate::token::Span),
+    Pipe(crate::token::Span),
+    Head(crate::token::Span),
+    /// One operand appended to its collected spot, in source order.
+    Element(ExprId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DefaultValue {
+    Declared {
+        origin: crate::resolve::Origin,
+        value: ExprId,
+    },
+    Type(Type),
 }

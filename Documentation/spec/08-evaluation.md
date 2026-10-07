@@ -24,21 +24,24 @@ arguments are kept in order until the signature is known, then bound:
    For a Bool, a bare flag is `True` and `= value` an explicit Bool. A
    non-Bool flag consumes its `= operand` or the next operand. A chained
    flag expands only to unambiguous Bool first letters, case-sensitive.
-2. Positional operands fill unfilled non-Bool spots in declaration order.
-   A trailing `Vec<T>` collects the remaining operands, default empty; a
-   named Vec argument supplies one list. A word over `Items<T>` does not
-   collect trailing operands; commands retain their `Vec` spots.
+2. Positional operands fill unfilled non-Bool spots in declaration order. A
+   trailing `Vec<T>` collects the remaining operands; a named Vec argument
+   supplies one list. Exactly one operand is tried as the whole list first,
+   then as one element if that fails; two or more are elements. With none
+   the spot stays open for the pipe and defaults. A word over `Items<T>`
+   does not collect trailing operands; commands retain their `Vec` spots.
 3. A pipe supplies the last spot still open, whatever its type: `x | f 1 2`
    is `f 1 2 x`; to place the input elsewhere, name it, `x | v => f v 2 3`.
    A previously filled spot is a check error. Collections and tuples are
    never spread; `f (a, b)` passes one tuple ([containers](05-containers.md)).
-4. Each remaining spot takes its parameter default, then its type default,
-   in declaration order; a default may name the spots before it, so `dir
-   (width = 80) (cols = width / 8) => …` is well defined. A spot with
-   neither stays open. The result is a function of the open spots in order,
-   or the body result. Construction is application: `Point 1` fills `y`
-   from its default, and `Just` stays a function; construction tests the
-   meaning's limits ([limits](06-limits.md) §Gates).
+4. Each remaining function spot takes its declared default; a record field
+   takes its declared default, else its type default, in declaration order;
+   a default may name the spots before it, so `dir (width = 80) (cols =
+   (width / 8)) => …` is well defined. A spot with neither stays open. The
+   result is a function of the open spots in order, or the body result.
+   Construction is application: `Point 1` fills `y` from its default, and
+   `Just` stays a function; construction tests the meaning's limits
+   ([limits](06-limits.md) §Gates).
 
 Each bound argument enters its spot ([checks](07-checks.md)). Duplicate
 supply, unknown flags, non-Bool chaining and extra arguments are check
@@ -55,8 +58,8 @@ add2 4                         # 6
 ## Plain pipe
 
 `a | f x ≡ f x a`: evaluate the left once, then bind its value to the final
-spot of the right stage. No payload is extracted: `Maybe<Entry> | cat` is a
-check error when `cat` needs `Entry`.
+spot still open in the right stage. No payload is extracted: `Maybe<Entry> |
+cat` is a check error when `cat` needs `Entry`.
 
 ## Marked pipes
 

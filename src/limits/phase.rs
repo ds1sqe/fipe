@@ -289,7 +289,7 @@ impl Pass<'_> {
         }
         let (stem, _) =
             self.files.iter().find(|(_, m)| core::ptr::eq(m, module))?;
-        self.cache.borrow().get(stem)?.typed.expr(id).cloned()
+        self.cache.files.borrow().get(stem)?.typed.expr(id).cloned()
     }
 
     fn pure_scoped(
@@ -414,9 +414,9 @@ impl Pass<'_> {
                     });
                 }
                 if let Origin::File(stem) = origin {
-                    return self.cache.borrow().get(stem).is_some_and(|c| {
-                        self.pure_tree(module, &c.resolved, value, visited)
-                    });
+                    return self.cache.files.borrow().get(stem).is_some_and(
+                        |c| self.pure_tree(module, &c.resolved, value, visited),
+                    );
                 }
                 // A supplied written value is a host constant.
                 true
@@ -507,14 +507,16 @@ impl Pass<'_> {
                             return false;
                         };
                         if let Origin::File(stem) = &origin {
-                            if self.cache.borrow().get(stem).is_some_and(|c| {
-                                !self.pure_tree(
-                                    module,
-                                    &c.resolved,
-                                    *value,
-                                    visited,
-                                )
-                            }) {
+                            if self.cache.files.borrow().get(stem).is_some_and(
+                                |c| {
+                                    !self.pure_tree(
+                                        module,
+                                        &c.resolved,
+                                        *value,
+                                        visited,
+                                    )
+                                },
+                            ) {
                                 return false;
                             }
                         }
@@ -704,6 +706,7 @@ impl Pass<'_> {
                 .cloned(),
             Origin::File(stem) => self
                 .cache
+                .files
                 .borrow()
                 .get(stem)
                 .and_then(|c| c.resolved.expr(id))

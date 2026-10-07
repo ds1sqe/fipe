@@ -35,7 +35,9 @@ name or impl member with no value is implemented by the host. A host
 declaration with a written value, such as `pub max_port = 65535`, is
 an exact compile-time constant and belongs to the checked unit. No Rust,
 kernel or transport type is part of Fipe type identity unless a
-declaration admits it.
+declaration admits it. A host default is typed in its declaring module
+when a stage first needs it; a failure names its spot at that stage. A
+program default is checked at its declaration.
 
 A declaration file keeps Markdown docs on its tree. After optional
 indentation, `- ` then a one-segment lowercase name and `:`, then a space or

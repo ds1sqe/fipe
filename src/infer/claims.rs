@@ -456,7 +456,7 @@ impl Infer<'_> {
             if let Some(literal) = owed.literal.clone() {
                 if matches!(&head, Type::Named { name, .. } if name.origin == crate::resolve::Origin::Prelude)
                 {
-                    self.check_literal(literal, &original, dot);
+                    self.check_literal(literal, &original, owed.span, dot);
                 }
             }
             if !matches!(head, Type::Rigid(_)) {
@@ -473,6 +473,35 @@ impl Infer<'_> {
                     candidates,
                 },
             );
+        } else {
+            self.missing_claim(owed, &original, head, class, dot);
+        }
+    }
+
+    fn missing_claim(
+        &mut self,
+        owed: &super::Owed,
+        original: &Type,
+        head: Type,
+        class: Type,
+        dot: Span,
+    ) {
+        if let Some(literal) = owed
+            .literal
+            .clone()
+            .filter(|_| owed.literal_argument && owed.span != dot)
+        {
+            self.check_literal(literal, original, owed.span, dot);
+            if let Some(super::Error {
+                reason:
+                    super::Reason::Mismatch {
+                        expected, actual, ..
+                    },
+                ..
+            }) = self.state.errors.last_mut()
+            {
+                core::mem::swap(expected, actual);
+            }
         } else {
             self.error(
                 dot,
@@ -830,13 +859,48 @@ impl Infer<'_> {
 
 impl Infer<'_> {
     pub(super) fn default_available(&mut self, ty: &Type) -> bool {
-        if self.claim_member_count(ty, &super::prelude("Default"), "default")
-            > 0
-        {
-            return true;
+        self.type_default(ty).is_some()
+    }
+
+    pub(super) fn type_default(
+        &mut self,
+        ty: &Type,
+    ) -> Option<crate::limits::known::Known> {
+        use crate::limits::known::{Integer, Known, Range};
+        let length_fact = |length| Known {
+            parts: alloc::vec![(
+                "len".into(),
+                Known {
+                    range: Some(Range::exact(Integer::new(false, length))),
+                    ..Known::default()
+                }
+            )],
+            ..Known::default()
+        };
+        if let Type::Limited { meaning, .. } = ty {
+            let known = self.type_default(meaning)?;
+            return crate::limits::default_proved(
+                self.module,
+                self.resolved,
+                self.declarations,
+                (self.files, self.file_cache),
+                self.frame,
+                ty,
+                &known,
+            )
+            .then_some(known);
         }
-        match super::meaning(ty) {
-            Type::Unit => true,
+        if !matches!(ty, Type::Named { name, .. } if name.origin == crate::resolve::Origin::Prelude)
+            && self.claim_member_count(
+                ty,
+                &super::prelude("Default"),
+                "default",
+            ) > 0
+        {
+            return Some(Known::default());
+        }
+        match ty {
+            Type::Unit => Some(Known::default()),
             Type::Named { name, .. }
                 if name.origin == crate::resolve::Origin::Prelude
                     && matches!(
@@ -844,34 +908,61 @@ impl Infer<'_> {
                         "Bool" | "Vec" | "Deque" | "Maybe"
                     ) =>
             {
-                true
-            }
-            Type::Named { name, .. }
-                if matches!(
-                    name.origin,
-                    crate::resolve::Origin::Prelude
-                        | crate::resolve::Origin::Commands
-                        | crate::resolve::Origin::Host(_)
-                ) =>
-            {
-                false
+                if matches!(name.name.as_str(), "Vec" | "Deque") {
+                    return Some(length_fact(0.into()));
+                }
+                Some(Known {
+                    boolean: (name.name == "Bool").then_some(false),
+                    constructor: (name.name == "Maybe")
+                        .then(|| "Nothing".into()),
+                    ..Known::default()
+                })
             }
             Type::Named { name, .. } => {
-                if self.state.lowering.contains(name) {
-                    return false;
+                if (name.origin == crate::resolve::Origin::Prelude
+                    && name.name == "String")
+                    || self.state.lowering.contains(name)
+                {
+                    return None;
                 }
                 self.state.lowering.push(name.clone());
                 let fields = self.fields(ty);
-                let available = fields.is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .all(|f| f.default || self.default_available(&f.ty))
+                let result = fields.and_then(|fields| {
+                    let module = self.owner(&name.origin)?;
+                    let (_, members) = self.type_item(module, &name.name)?;
+                    let mut parts = Vec::new();
+                    for field in fields {
+                        let value = members?.iter().find_map(|m| match m {
+                            crate::ast::Member::Field(f)
+                                if super::last(&f.name) == field.name =>
+                            {
+                                f.default
+                            }
+                            _ => None,
+                        });
+                        let known = match value {
+                            Some(id) => crate::limits::default_fact(module, id),
+                            None => self.type_default(&field.ty)?,
+                        };
+                        parts.push((field.name, known));
+                    }
+                    Some(Known {
+                        parts,
+                        constructor: Some(name.name.clone()),
+                        ..Known::default()
+                    })
                 });
                 self.state.lowering.pop();
-                available
+                result
             }
-            Type::Array { element, .. } => self.default_available(element),
-            _ => false,
+            Type::Array { element, length } => {
+                self.type_default(element)?;
+                Some(match length.as_ref() {
+                    Type::Number(length) => length_fact(length.clone()),
+                    _ => Known::default(),
+                })
+            }
+            _ => None,
         }
     }
 }

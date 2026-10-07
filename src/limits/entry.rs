@@ -188,7 +188,12 @@ impl Pass<'_> {
             }
         }
     }
-    fn evaluate_type(&self, ty: &Type, known: &Known, depth: usize) -> Known {
+    pub(super) fn evaluate_type(
+        &self,
+        ty: &Type,
+        known: &Known,
+        depth: usize,
+    ) -> Known {
         if depth > crate::parse::MAX_NESTING {
             return Known::default();
         }

@@ -24,7 +24,7 @@ pub use unchecked::Unchecked;
 pub(crate) use unchecked::{bytes, scan};
 
 /// Where a declaration lives.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Origin {
     /// The module being resolved.
     This,
@@ -357,17 +357,73 @@ impl Resolver<'_> {
 pub(crate) fn resolve_default(
     module: &Module,
     declarations: &Declarations,
+    home: &Origin,
     value: ExprId,
     spots: &[(String, Span)],
-) -> Resolved {
+) -> (Resolved, Vec<Error>) {
     let mut resolver = Resolver::new(module, declarations, &[]);
+    let namespace = match home {
+        Origin::Prelude => Some(&declarations.prelude),
+        Origin::Commands => declarations.commands.as_ref(),
+        Origin::Host(name) => declarations.get_module(name),
+        _ => None,
+    };
+    if let Some(namespace) = namespace {
+        for declaration in &namespace.types {
+            let name = Name {
+                segments: vec![declaration.name.clone()],
+                span: declaration.span,
+            };
+            if let Some(target) =
+                namespace_type(namespace, home.clone(), &declaration.name)
+            {
+                resolver.define(&name, Space::Type, target, false);
+            }
+            if let Kind::Type { constructors, .. } = &declaration.kind {
+                for constructor in constructors {
+                    if let Some(target) =
+                        namespace_value(namespace, home.clone(), constructor)
+                    {
+                        let name = Name {
+                            segments: vec![constructor.clone()],
+                            span: declaration.span,
+                        };
+                        resolver.define(&name, Space::Value, target, false);
+                    }
+                }
+            }
+        }
+        for declaration in &namespace.values {
+            let name = Name {
+                segments: vec![declaration.name.clone()],
+                span: declaration.span,
+            };
+            if let Some(target) =
+                namespace_value(namespace, home.clone(), &declaration.name)
+            {
+                resolver.define(&name, Space::Value, target, false);
+            }
+        }
+    }
+    for entry in &module.entries {
+        if let Entry::Item(crate::ast::Item {
+            kind: ItemKind::Use { names, .. },
+            ..
+        }) = entry
+        {
+            for name in names {
+                resolver.import(name);
+            }
+        }
+    }
+
     let scope = spots
         .iter()
         .map(|(name, site)| (name.clone(), Target::Local { site: *site }))
         .collect();
     resolver.scopes.push(scope);
     resolver.expr(value, Position::Other);
-    resolver.resolved
+    (resolver.resolved, resolver.errors)
 }
 
 /// Which namespace a frame entry belongs to.

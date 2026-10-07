@@ -18,7 +18,7 @@ fn bindings_generalize_and_uses_instantiate() {
     // A block binding generalizes; one that captures a parameter keeps
     // that parameter's variable.
     let id = "f = x => {\n    id = y => y\n    _ = id 1\n    id \"a\"\n}";
-    assert_eq!(ty(id), "a -> String");
+    assert_eq!(ty(id), "Literal b => a -> b");
     assert_eq!(ty("g = x => {\n    h = y => x\n    h 1\n}"), "a -> a");
     // VAR brings the obligations to the use.
     assert_eq!(
@@ -52,19 +52,18 @@ fn groups_are_monomorphic_inside() {
     );
     // An arm binding calls itself, monomorphic inside, generalized after.
     let count = "count = n => if n == 0 { 0 } else { count (n - 1) }";
-    // Its result is held only by the literal `0`: `I64`.
-    assert_eq!(ty(count), "Eq a, Sub a, Literal a => a -> Integer");
+    // Its result keeps the literal form until a use fixes its meaning.
+    assert_eq!(ty(count), "Eq a, Sub a, Literal a, Literal b => a -> b");
     assert_eq!(ty(&format!("{count}\ncount 2.0")), "Integer");
     // No polymorphic recursion: the first use fixes the parameter, so
     // the second use's argument fails at that use.
     let text = "f = x => {\n    _ = f \"a\"\n    f True\n}";
     let [error] = errors(text).try_into().unwrap();
-    let Reason::MissingClaim { ty: actual, claim } = error.reason else {
+    let Reason::Mismatch { other, .. } = error.reason else {
         panic!("{:?}", error.reason)
     };
-    assert_eq!(Source::new(text).slice(error.span), Some("\"a\""));
-    assert_eq!(actual.to_string(), "Bool");
-    assert_eq!(claim.to_string(), "Literal");
+    assert_eq!(Source::new(text).slice(error.span), Some("True"));
+    assert_eq!(Source::new(text).slice(other), Some("\"a\""));
 }
 
 #[test]

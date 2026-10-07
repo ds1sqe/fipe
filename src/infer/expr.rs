@@ -234,6 +234,7 @@ impl Infer<'_> {
         };
         let mut owed = Owed::new(obligation, span);
         owed.literal = Some(lit);
+        owed.literal_argument = expected.is_some_and(|e| e.spot);
         self.state.obligations.push(owed);
         ty
     }
@@ -315,7 +316,6 @@ impl Infer<'_> {
             ty,
             site: self.span(id),
             annotated: false,
-            binding: false,
         };
         let scheme = self.generalize(&[part], mark, &[]).remove(0);
         self.state.bindings[id.0] = Some(scheme);

@@ -36,7 +36,7 @@ pub out: Sink
 ## - recursive: visit subdirectories
 ## - depth: how far down to look
 ## - name: the name pattern
-pub ls: (path: Src = ".") -> (long: Bool = False) -> (recursive: Bool = False) ->
+pub ls: (path: Src = ./) -> (long: Bool = False) -> (recursive: Bool = False) ->
     (depth: U64 = 1) -> (name: String = "*") -> Vec<Entry>
 ## Read an entry as text.
 pub cat: Entry -> String

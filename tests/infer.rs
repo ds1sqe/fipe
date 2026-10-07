@@ -97,6 +97,10 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::Conversion { .. } => "Conversion",
         Reason::ConflictingConversion => "ConflictingConversion",
         Reason::NotAFunction => "NotAFunction",
+        Reason::Spots { .. } => "Spots",
+        Reason::DeclarationValue { .. } => "DeclarationValue",
+        Reason::Default { .. } => "Default",
+        Reason::NonBoolChaining => "NonBoolChaining",
         Reason::ExtraArgument => "ExtraArgument",
         Reason::UnknownSpot { .. } => "UnknownSpot",
         Reason::FilledSpot => "FilledSpot",
@@ -212,8 +216,7 @@ fn spots_bind_before_application() {
     assert_eq!(kinds(&text), [("ExtraArgument", "5")]);
     assert_eq!(kinds("ls | cat x"), [("FilledSpot", "cat x")]);
     assert_eq!(kinds("ls -nope"), [("UnknownSpot", "-nope")]);
-    // Chained Bool flags are 07's.
-    assert_eq!(kinds("ls -lr"), [("UnknownSpot", "-lr")]);
+    assert_eq!(ty("ls -lr"), "Vec<Entry>");
     assert_eq!(ty("Just"), "a -> Maybe<a>");
     assert_eq!(ty("f = x => x\nf 1"), "Integer");
 }

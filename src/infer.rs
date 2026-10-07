@@ -1,6 +1,6 @@
 //! Inference over a resolved module.
 //!
-//! The judgments of [types.md] with the arity half of spot binding from
+//! The judgments of [types.md] with recorded spot binding from
 //! [evaluation.md] §Parameter binding. It unifies and never casts,
 //! evaluates no default and calls no host. Bindings generalize at their
 //! boundary; an arm binding and the members of one impl are typed as a
@@ -44,6 +44,9 @@ pub struct Error {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
+    Spots {
+        problem: crate::decl::SpotProblem,
+    },
     TypeDepth,
     CallReading {
         style: crate::ast::CallStyle,
@@ -88,6 +91,15 @@ pub enum Reason {
     },
     ConflictingConversion,
     ExtraArgument,
+    NonBoolChaining,
+    Default {
+        name: String,
+    },
+    DeclarationValue {
+        name: String,
+        origin: Origin,
+        declaration: Span,
+    },
     /// A flag naming no spot, or a valued flag with no operand.
     UnknownSpot {
         name: String,
@@ -216,8 +228,12 @@ fn run(
         visiting,
         cache,
     );
+    for error in crate::decl::spots::check(module) {
+        if let crate::decl::Reason::Spots { problem } = error.reason {
+            infer.error(error.span, Reason::Spots { problem });
+        }
+    }
     infer.declare();
-    infer.field_defaults_all();
     infer.check_tests();
     let mut impls = 0;
     for entry in &module.entries {
@@ -241,7 +257,11 @@ fn run(
                 }
                 impls += 1;
             }
-            Entry::Item(_) => {}
+            Entry::Item(item) => {
+                if let ItemKind::Type { name, members, .. } = &item.kind {
+                    infer.field_defaults(name, members.as_deref());
+                }
+            }
         }
         // A depth refusal ends this unit: later bindings can otherwise
         // rebuild the refused chain repeatedly during error recovery.
@@ -266,6 +286,8 @@ struct State {
     entries: Vec<(ExprId, Type, Span, crate::typed::Place)>,
     checks: Vec<crate::typed::Check>,
     supplied: BTreeMap<(usize, usize), Vec<(String, Supply)>>,
+    bound: BTreeMap<(usize, usize), crate::typed::Bound>,
+    defaults: Vec<(Origin, Span)>,
     bindings: Vec<Option<Scheme>>,
     /// Lexical bindings by the span of the name that bound them.
     locals: BTreeMap<(usize, usize), Local>,
@@ -297,6 +319,8 @@ impl State {
             entries: Vec::new(),
             checks: Vec::new(),
             supplied: BTreeMap::new(),
+            bound: BTreeMap::new(),
+            defaults: Vec::new(),
             bindings: vec![None; size],
             locals: BTreeMap::new(),
             obligations: Vec::new(),
@@ -320,6 +344,7 @@ struct Owed {
     obligation: Obligation,
     span: Span,
     literal: Option<Lit>,
+    literal_argument: bool,
     /// A member obligation already solved, left in place so that marks
     /// into the list stay valid.
     solved: bool,
@@ -332,6 +357,7 @@ impl Owed {
             obligation,
             span,
             literal: None,
+            literal_argument: false,
             solved: false,
             assumed: false,
         }
@@ -366,6 +392,8 @@ pub(crate) struct Local {
 pub(crate) struct Head {
     name: Option<String>,
     default: bool,
+    value: Option<ExprId>,
+    site: Span,
 }
 
 /// A value of this module known before its line: an impl member, or
@@ -606,7 +634,21 @@ impl Infer<'_> {
                     }
                 }
                 let ty = self.instantiate(&local.scheme, span);
-                self.with_heads(ty, local.heads.as_deref())
+                let mut callee = self.with_heads(ty, local.heads.as_deref());
+                if !self.state.locals.contains_key(&key) {
+                    callee.home = self
+                        .frame
+                        .and_then(|frame| {
+                            frame.lines.iter().position(|line| {
+                                line.typed
+                                    .frozen
+                                    .iter()
+                                    .any(|(at, _)| *at == key)
+                            })
+                        })
+                        .map(Origin::Line);
+                }
+                callee
             }
             None => Callee::plain(self.fresh()),
         }
@@ -782,18 +824,6 @@ impl Infer<'_> {
         }
     }
 
-    /// Record field defaults, checked against their field's types.
-    fn field_defaults_all(&mut self) {
-        let module = self.module;
-        for entry in &module.entries {
-            if let Entry::Item(item) = entry {
-                if let ItemKind::Type { name, members, .. } = &item.kind {
-                    self.field_defaults(name, members.as_deref());
-                }
-            }
-        }
-    }
-
     /// Obligations settle, members resolve or fail, and
     /// every type is applied through the final substitution.
     fn limit_reads_line(&self, target: &Target, self_site: Span) -> bool {
@@ -957,6 +987,13 @@ impl Infer<'_> {
         let unsolved = self.settle();
         let (frozen, weak) = self.frozen();
         let subst = &self.state.subst;
+        for bound in self.state.bound.values_mut() {
+            for (_, default) in &mut bound.defaults {
+                if let crate::typed::DefaultValue::Type(ty) = default {
+                    *ty = subst.apply(ty);
+                }
+            }
+        }
         let mut typed = Typed {
             warnings: self.state.warnings,
             expressions: self
@@ -974,6 +1011,7 @@ impl Infer<'_> {
 
             unsolved,
             supplied: self.state.supplied,
+            bound: self.state.bound,
             checks: self.state.checks,
             known: Vec::new(),
             facts: Vec::new(),
@@ -998,7 +1036,7 @@ impl Infer<'_> {
             &entries,
             &mut typed,
         ));
-        for (stem, checked) in self.file_cache.borrow().iter() {
+        for (stem, checked) in self.file_cache.files.borrow().iter() {
             for check in &checked.typed.checks {
                 if check.place_origin != Origin::This {
                     continue;

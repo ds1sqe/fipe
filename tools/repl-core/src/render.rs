@@ -170,6 +170,16 @@ pub fn infer(reason: &infer::Reason) -> String {
         R::NotAFunction => "not a function".into(),
         R::ExtraArgument => "one argument too many".into(),
         R::UnknownSpot { name } => format!("no spot named `{name}`"),
+        R::Spots { problem } => spot_problem(problem),
+        R::DeclarationValue { name, .. } => {
+            format!("declared value `{name}` does not type check")
+        }
+        R::Default { name } => {
+            format!("default for spot `{name}` does not meet its type")
+        }
+        R::NonBoolChaining => {
+            "a chained flag needs only Bool spots and no value".into()
+        }
         R::FilledSpot => "no open spot to fill".into(),
         R::OpenSpot => "`|!` on Maybe needs a value, not an open spot".into(),
         R::NeedsMaybeOrResult => "`||` and `&&` need Maybe or Result".into(),
@@ -193,6 +203,7 @@ pub fn declaration(reason: &decl::Reason, text: &str) -> String {
     match reason {
         R::Syntax(reason) => syntax(*reason),
         R::ClaimBlock { problem } => format!("invalid claim block: {problem}"),
+        R::Spots { problem } => spot_problem(problem),
         R::UnknownDocSpot { name } => {
             format!("doc names unknown spot `{name}`")
         }
@@ -276,4 +287,18 @@ pub fn check(
         "{}, {}: {place}, against {limit} ({})\n",
         check.phase, check.frequency, check.reason
     )
+}
+
+fn spot_problem(problem: &fipe::decl::SpotProblem) -> String {
+    match problem {
+        fipe::decl::SpotProblem::Duplicate(name) => {
+            format!("spot `{name}` is declared twice")
+        }
+        fipe::decl::SpotProblem::AmbiguousFlag(letter) => {
+            format!("more than one Bool spot starts with `{letter}`")
+        }
+        fipe::decl::SpotProblem::SelfNotLast => {
+            "a supplied member must take `self` last".into()
+        }
+    }
 }

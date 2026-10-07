@@ -1,9 +1,10 @@
 # Types and checking
 
-Checking precedes all program effects. This chapter owns meanings and
-the forms that join them; [containers](05-containers.md), [limits](06-limits.md),
-[checks](07-checks.md) and [members](04-members.md) own the rest. T3 to T5 and E2 in
-[open decisions](11-open.md) name the remaining choices.
+Checking precedes all program effects. This chapter owns meanings and the
+forms that join them; [containers](05-containers.md),
+[limits](06-limits.md), [checks](07-checks.md) and [members](04-members.md)
+own the rest. T3 to T5 and E2 in [open decisions](11-open.md) name the
+remaining choices.
 
 ## Meanings and places
 
@@ -185,10 +186,10 @@ type with no members is a marker; a body is shape only, code lives in
 and suppliable only inside its module; outside it is not a spot and takes
 its default, so the derived constructor exists outside exactly when every
 private field defaults. A sum constructor's fields are its payload and are
-always visible. A member of a type is reached from another module only
-when it is `pub`, a claim's member whenever its type is; reaching a hidden one is a check error that says the
-member is private. `String`'s field has no default, so `utf8` is the only
-way in; its `len` counts its UTF-8 bytes.
+always visible. A member of a type is reached from another module only when
+it is `pub`, a claim's member whenever its type is; reaching a hidden one is
+a check error that says the member is private. `String`'s field has no
+default, so `utf8` is the only way in; its `len` counts its UTF-8 bytes.
 
 ## Defaults and declarations
 
@@ -201,7 +202,7 @@ way in; its `len` counts its UTF-8 bytes.
 | `[T; n]` | `n` copies of `T`'s default, if it has one |
 | record | its constructor applied to nothing, if every spot defaults |
 | `Maybe<T>` | `Nothing` |
-| limited type | its base's default, when that meets the limits |
+| limited type | its base's default, only when entry is proved by the static checks |
 
 A meaning that claims `Default` has the table's value as `Self.default`,
 or writes its own ([members](04-members.md) §Prelude). A zero is not a
@@ -214,8 +215,9 @@ Vec<Entry>`. An opaque type has no fields, constructors or derived
 members; a declaration of its own name, `Rd: U64 -> Rd<api>`, is its
 constructor. A declared `= value` overrides the type default, may name
 the spots before it, and is checked against its spot's type. Duplicate
-parameter names and ambiguous Bool shorthand letters are check errors. No
-parameter is `Maybe` or `Result`; defaults model optional arguments. A
+parameter names and ambiguous Bool shorthand letters are check errors. A
+default models an optional argument; `Maybe` and `Result` remain valid
+parameter types. A
 host boundary type has no unresolved variable and no function value. T3
 limits default expressions.
 

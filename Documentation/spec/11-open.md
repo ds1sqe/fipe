@@ -46,7 +46,14 @@ A trait is a type (ruled 2026-09-29), and every operation lives in a
 type: [types](03-types.md), [limits](06-limits.md), [checks](07-checks.md) and
 [members](04-members.md). Still open from T3: `Self<A>`, inferred Bool
 arguments, default-expression evaluation and termination of recursive
-type detection.
+type detection. Binding is ruled 2026-09-30: a function spot uses only its
+declared default, a record field also its type default; a limited type
+default requires proved entry. A trailing Vec's single operand tries the
+whole list before one element; no operand leaves it for pipe and defaults.
+`Maybe` and `Result` are valid parameter types. Host default errors are
+reported at the first stage needing them, naming the spot; program defaults
+are checked at their declaration ([evaluation](08-evaluation.md),
+[types](03-types.md), [host](09-host.md)).
 
 Ruled 2026-09-30: a host type that takes an API reference declares its
 parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays

@@ -126,7 +126,6 @@ impl Infer<'_> {
             ty: item.ty.clone(),
             site: item.site,
             annotated: item.annotated || self.groups[item.group].self_type.as_ref().is_some_and(|ty| matches!(ty, Type::Named { arguments, .. } if !arguments.is_empty())),
-            binding: true,
         };
         let expected = Expected::new(part.ty.clone(), part.site);
         match item.body.clone() {

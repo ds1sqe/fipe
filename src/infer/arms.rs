@@ -81,6 +81,21 @@ impl Infer<'_> {
                 sibling.span = self.span(arm.body);
             }
         }
+        for arm in arms {
+            let heads = heads_in(self.module, core::slice::from_ref(arm));
+            let spots: Vec<_> = heads
+                .iter()
+                .zip(&parameters)
+                .map(|(head, ty)| {
+                    (head.name.clone(), self.is_bool(ty), head.site)
+                })
+                .collect();
+            for error in crate::decl::spots::validate(&spots, false) {
+                if let crate::decl::Reason::Spots { problem } = error.reason {
+                    self.error(error.span, Reason::Spots { problem });
+                }
+            }
+        }
         self.state.env.truncate(env);
         ty
     }
@@ -249,12 +264,16 @@ pub(super) fn heads_in(module: &Module, arms: &[Arm]) -> Vec<Head> {
                 break Head {
                     name: Some(super::last(name)),
                     default: false,
+                    value: None,
+                    site: module.patterns[id.0].span,
                 };
             }
-            PatternKind::Default { name, .. } => {
+            PatternKind::Default { name, value } => {
                 break Head {
                     name: Some(super::last(name)),
                     default: true,
+                    value: Some(*value),
+                    site: name.span,
                 };
             }
             PatternKind::Group(inner) => id = *inner,
@@ -262,6 +281,8 @@ pub(super) fn heads_in(module: &Module, arms: &[Arm]) -> Vec<Head> {
                 break Head {
                     name: None,
                     default: false,
+                    value: None,
+                    site: module.patterns[id.0].span,
                 };
             }
         }

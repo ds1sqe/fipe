@@ -476,7 +476,7 @@ fn holding_widths_are_type_facts_not_value_ranges() {
         "rgb = pixels.rgb",
         "type Flag: Bool & Bits<1>",
         "type Mode: Size<1> { read: Flag, write: Flag, exec: Flag }",
-        "m = Mode True False True",
+        "m = Mode -read -write=False -exec",
         "type Byte: Integer & Bits<8> where 0 <= self, self <= 255",
     ] {
         let report = line(&mut session, text);

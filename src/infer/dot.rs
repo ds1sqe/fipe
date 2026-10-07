@@ -183,7 +183,7 @@ impl<'a> Infer<'a> {
         if let Some(literal) = owed.literal.clone() {
             if let Type::Named { name: owner, .. } = &head {
                 if owner.origin == Origin::Prelude {
-                    self.check_literal(literal, &original, dot);
+                    self.check_literal(literal, &original, owed.span, dot);
                     return;
                 }
             }
@@ -804,7 +804,9 @@ impl<'a> Infer<'a> {
             ExprKind::Arms(arms) => Some(heads_in(module, arms)),
             _ => None,
         };
-        self.with_heads(ty, heads.as_deref())
+        let mut callee = self.with_heads(ty, heads.as_deref());
+        callee.home = Some(Origin::File(String::from(stem)));
+        callee
     }
 
     /// Whether `ty` is a file module's type with a non-`pub` inherent
@@ -872,7 +874,9 @@ impl<'a> Infer<'a> {
             return Some(Callee::plain(self.fresh()));
         };
         let ty = self.imported(&local.scheme, stem, span);
-        Some(self.with_heads(ty, local.heads.as_deref()))
+        let mut callee = self.with_heads(ty, local.heads.as_deref());
+        callee.home = Some(origin);
+        Some(callee)
     }
 
     /// File module `stem` typed on its own for a use at `span`; `None`

@@ -39,7 +39,6 @@ pub(super) struct Part {
     pub ty: Type,
     pub site: Span,
     pub annotated: bool,
-    pub binding: bool,
 }
 
 impl Infer<'_> {
@@ -107,7 +106,6 @@ impl Infer<'_> {
                         .map_or_else(|| ty.clone(), |e| e.ty.clone()),
                     site: name.span,
                     annotated: annotation.is_some(),
-                    binding: true,
                 };
                 let scheme = self.generalize(&[part], mark, &[]).remove(0);
                 let heads = match &module.expressions[value.0].kind {
@@ -281,8 +279,7 @@ impl Infer<'_> {
             .iter()
             .zip(&reach)
             .filter(|(part, _)| {
-                !part.binding
-                    || matches!(self.apply(&part.ty), Type::Function { .. })
+                matches!(self.apply(&part.ty), Type::Function { .. })
             })
             .flat_map(|(_, vars)| vars.iter().copied())
             .collect();
@@ -535,7 +532,7 @@ impl Infer<'_> {
                 .collect();
             let literal = held.iter().any(|o| matches!(&o.obligation, Obligation::Claim { class, .. } if is_prelude(class, "Literal")));
             let only = held.iter().all(|o| matches!(&o.obligation, Obligation::Claim { class, .. } if is_prelude(class, "Literal")));
-            if !literal || (stay.contains(&var) && !only) {
+            if !literal || stay.contains(&var) {
                 continue;
             }
             let forms: Vec<_> =
@@ -639,9 +636,10 @@ impl Infer<'_> {
         literal: Lit,
         ty: &Type,
         span: Span,
+        other: Span,
     ) {
         if let Type::Limited { meaning, .. } = ty {
-            return self.check_literal(literal, meaning, span);
+            return self.check_literal(literal, meaning, span, other);
         }
         let float = is_prelude(ty, "F32") || is_prelude(ty, "F64");
         let actual = match literal {
@@ -677,7 +675,7 @@ impl Infer<'_> {
             Reason::Mismatch {
                 expected,
                 actual,
-                other: span,
+                other,
             },
         );
     }

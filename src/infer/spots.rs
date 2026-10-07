@@ -3,9 +3,6 @@
 //! function, a constructor, or a binding whose value is an arm list;
 //! anything else applies positionally and curried.
 //!
-//! Chained Bool flags (`-la`) and a trailing `Vec` collecting operands
-//! are 07's; they are reported as an unknown spot and an extra argument.
-//!
 //! [evaluation.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/08-evaluation.md
 
 use super::{
@@ -25,8 +22,10 @@ use alloc::{vec, vec::Vec};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Supply {
     Expr(ExprId),
+    Collected(Vec<ExprId>),
+    Default(crate::limits::known::Known),
     /// A bare Bool flag.
-    True,
+    True(Span),
     /// A value typed already: the pipe's input or a dot's head.
     Typed(Type, Span),
 }
@@ -147,8 +146,8 @@ impl Infer<'_> {
                 name: head.name.clone(),
                 ty,
                 default: head.default,
-                value: None,
-                site: Span::default(),
+                value: head.value,
+                site: head.site,
             })
             .collect::<Vec<_>>();
         let mut callee = Callee::plain(result);
@@ -190,12 +189,38 @@ impl Infer<'_> {
     /// Apply a callee to written arguments and an optional piped input.
     pub(super) fn apply_callee(
         &mut self,
-        callee: Callee,
+        mut callee: Callee,
         arguments: &[Argument],
         pipe: Option<(Type, Span)>,
         stage: Span,
         expected: Option<&Type>,
     ) -> Type {
+        if callee.spots.is_none() {
+            let mut ty = self.apply(&callee.ty);
+            let mut slots = Vec::new();
+            while let Type::Function { parameter, result } = ty {
+                slots.push(Slot {
+                    place_kind: crate::typed::Place::Parameter(None),
+                    name: None,
+                    ty: *parameter,
+                    default: false,
+                    value: None,
+                    site: stage,
+                });
+                ty = *result;
+            }
+            let supplied = arguments.len() + usize::from(pipe.is_some());
+            if !slots.is_empty()
+                && (!matches!(ty, Type::Var(_))
+                    || supplied <= slots.len()
+                    || slots
+                        .last()
+                        .is_some_and(|s| is_prelude(&self.apply(&s.ty), "Vec")))
+            {
+                callee.spots = Some(slots);
+                callee.ty = ty;
+            }
+        }
         if callee.spots.is_none() {
             let ty = self.curried(&callee.ty, arguments, pipe, stage);
             self.dots();
@@ -324,9 +349,10 @@ impl Infer<'_> {
         expected: Option<&Type>,
     ) -> Type {
         let mark = self.state.obligations.len();
-        let slots = callee.spots.unwrap_or_default();
+        let mut slots = callee.spots.unwrap_or_default();
         let result = callee.ty;
         let mut filled: Vec<Option<Supply>> = vec![None; slots.len()];
+        let head_slot = callee.supplied.as_ref().map(|(index, _, _)| *index);
         if let Some((index, ty, span)) = callee.supplied {
             filled[index] = Some(Supply::Typed(ty, span));
         }
@@ -343,17 +369,7 @@ impl Infer<'_> {
                 self.hint(expected, &result);
             }
         }
-        let supplied = slots
-            .iter()
-            .zip(&filled)
-            .filter_map(|(slot, value)| {
-                Some((slot.name.clone()?, value.clone()?))
-            })
-            .collect();
-        self.state
-            .supplied
-            .insert((stage.start, stage.end), supplied);
-        self.supply(&slots, &filled, stage);
+        self.supply(&slots, &mut filled, stage);
         if let Some((target, kind)) = &callee.conversion {
             let member =
                 !matches!(kind.as_str(), "from" | "try_from" | "to" | "try");
@@ -379,7 +395,10 @@ impl Infer<'_> {
                 ));
             }
         }
-        if let Some(home) = &callee.home {
+        if let Some(
+            home @ (Origin::Prelude | Origin::Commands | Origin::Host(_)),
+        ) = &callee.home
+        {
             for (index, supply) in filled.iter().enumerate() {
                 if supply.is_none() && slots[index].value.is_some() {
                     self.declared_default(home, &slots, index, stage);
@@ -387,6 +406,34 @@ impl Infer<'_> {
             }
         }
         self.dots();
+        for (slot, supply) in slots.iter_mut().zip(&mut filled) {
+            if supply.is_none()
+                && slot.value.is_none()
+                && matches!(slot.place_kind, crate::typed::Place::Field { .. })
+            {
+                if let Some(known) = self.type_default(&self.apply(&slot.ty)) {
+                    slot.default = true;
+                    *supply = Some(Supply::Default(known));
+                }
+            }
+        }
+        let supplied = slots
+            .iter()
+            .zip(&filled)
+            .filter_map(|(slot, value)| {
+                Some((slot.name.clone()?, value.clone()?))
+            })
+            .collect();
+        self.state
+            .supplied
+            .insert((stage.start, stage.end), supplied);
+        self.record_binding(
+            &slots,
+            &filled,
+            head_slot,
+            callee.home.as_ref(),
+            stage,
+        );
         // Step 4: a defaulted spot closes; the rest stay open in order.
         slots
             .iter()
@@ -394,6 +441,62 @@ impl Infer<'_> {
             .rev()
             .filter(|(slot, supply)| supply.is_none() && !slot.default)
             .fold(result, |ty, (slot, _)| Type::function(slot.ty.clone(), ty))
+    }
+
+    fn record_binding(
+        &mut self,
+        slots: &[Slot],
+        filled: &[Option<Supply>],
+        head: Option<usize>,
+        home: Option<&Origin>,
+        stage: Span,
+    ) {
+        use crate::typed::{Bound, DefaultValue, Supply as Source};
+        let mut bound = Bound::default();
+        let mut supplied = Vec::new();
+        for (index, (slot, value)) in slots.iter().zip(filled).enumerate() {
+            let source = match value {
+                Some(Supply::Expr(id)) => {
+                    Some((self.span(*id), Source::Expression(*id)))
+                }
+                Some(Supply::True(span)) => Some((*span, Source::Flag(*span))),
+                Some(Supply::Typed(_, span)) => Some((
+                    *span,
+                    if head == Some(index) {
+                        Source::Head(*span)
+                    } else {
+                        Source::Pipe(*span)
+                    },
+                )),
+                Some(Supply::Collected(ids)) => {
+                    supplied.extend(ids.iter().map(|id| {
+                        (self.span(*id).start, index, Source::Element(*id))
+                    }));
+                    continue;
+                }
+                None | Some(Supply::Default(_)) => None,
+            };
+            if let Some((span, source)) = source {
+                supplied.push((span.start, index, source));
+            } else if slot.default {
+                let default = slot.value.map_or_else(
+                    || DefaultValue::Type(self.apply(&slot.ty)),
+                    |value| DefaultValue::Declared {
+                        origin: home.cloned().unwrap_or(Origin::This),
+                        value,
+                    },
+                );
+                bound.defaults.push((index, default));
+            } else {
+                bound.open.push(index);
+            }
+        }
+        supplied.sort_by_key(|(start, _, _)| *start);
+        bound.supplies = supplied
+            .into_iter()
+            .map(|(_, index, source)| (index, source))
+            .collect();
+        self.state.bound.insert((stage.start, stage.end), bound);
     }
 
     /// Step 1: named arguments fill their spots.
@@ -409,11 +512,61 @@ impl Infer<'_> {
                 continue;
             };
             let slot = self.flag_slot(slots, name);
+            if slot.is_none() && name.chars().count() > 1 {
+                let chain: Option<Vec<_>> = name
+                    .chars()
+                    .map(|letter| {
+                        slots
+                            .iter()
+                            .enumerate()
+                            .find(|(_, slot)| {
+                                self.is_bool(&slot.ty)
+                                    && slot
+                                        .name
+                                        .as_ref()
+                                        .is_some_and(|n| n.starts_with(letter))
+                            })
+                            .or_else(|| {
+                                slots.iter().enumerate().find(|(_, slot)| {
+                                    slot.name
+                                        .as_ref()
+                                        .is_some_and(|n| n.starts_with(letter))
+                                })
+                            })
+                            .map(|(index, _)| index)
+                    })
+                    .collect();
+                let reason = chain.as_ref().map_or_else(
+                    || Some(Reason::UnknownSpot { name: name.clone() }),
+                    |chain| {
+                        (value.is_some()
+                            || chain
+                                .iter()
+                                .any(|&i| !self.is_bool(&slots[i].ty)))
+                        .then_some(Reason::NonBoolChaining)
+                    },
+                );
+                if let Some(reason) = reason {
+                    self.error(argument.span, reason);
+                    if let Some(value) = value {
+                        self.expr(*value, None);
+                    }
+                } else {
+                    for slot in chain.unwrap_or_default() {
+                        if filled[slot].is_some() {
+                            self.error(argument.span, Reason::FilledSpot);
+                        } else {
+                            filled[slot] = Some(Supply::True(argument.span));
+                        }
+                    }
+                }
+                continue;
+            }
             let supply = match (slot, value) {
                 (None, _) => None,
                 (Some(_), Some(value)) => Some(Supply::Expr(*value)),
                 (Some(slot), None) if self.is_bool(&slots[slot].ty) => {
-                    Some(Supply::True)
+                    Some(Supply::True(argument.span))
                 }
                 (Some(_), None) => match arguments.get(index + 1) {
                     Some(Argument {
@@ -481,6 +634,13 @@ impl Infer<'_> {
         consumed: &[bool],
         filled: &mut [Option<Supply>],
     ) {
+        let trailing = slots
+            .iter()
+            .rposition(|slot| !self.is_bool(&slot.ty))
+            .filter(|&i| {
+                filled[i].is_none()
+                    && is_prelude(&self.apply(&slots[i].ty), "Vec")
+            });
         let mut next = 0;
         for (index, argument) in arguments.iter().enumerate() {
             let ArgumentKind::Positional(value) = &argument.kind else {
@@ -490,12 +650,21 @@ impl Infer<'_> {
                 continue;
             }
             while next < slots.len()
-                && (filled[next].is_some() || self.is_bool(&slots[next].ty))
+                && ((filled[next].is_some() && trailing != Some(next))
+                    || self.is_bool(&slots[next].ty))
             {
                 next += 1;
             }
             if next < slots.len() {
-                filled[next] = Some(Supply::Expr(*value));
+                if trailing == Some(next) {
+                    if let Some(Supply::Collected(values)) = &mut filled[next] {
+                        values.push(*value);
+                    } else {
+                        filled[next] = Some(Supply::Collected(vec![*value]));
+                    }
+                } else {
+                    filled[next] = Some(Supply::Expr(*value));
+                }
             } else {
                 self.error(argument.span, Reason::ExtraArgument);
                 self.expr(*value, None);
@@ -538,10 +707,10 @@ impl Infer<'_> {
     fn supply(
         &mut self,
         slots: &[Slot],
-        filled: &[Option<Supply>],
+        filled: &mut [Option<Supply>],
         stage: Span,
     ) {
-        for (slot, supply) in slots.iter().zip(filled) {
+        for (slot, supply) in slots.iter().zip(filled.iter()) {
             match supply {
                 Some(Supply::Typed(ty, span)) => {
                     self.argument_span(&slot.ty, *span);
@@ -553,8 +722,22 @@ impl Infer<'_> {
                         slot.place_kind.clone(),
                     );
                 }
-                Some(Supply::True) => {
-                    self.unify(&slot.ty, &prelude("Bool"), stage, stage);
+                Some(Supply::True(span)) => {
+                    self.unify(&slot.ty, &prelude("Bool"), *span, stage);
+                    let ty = self.apply(&slot.ty);
+                    if crate::limits::has_limits(&ty) {
+                        let (errors, checks) = crate::limits::flag_entry(
+                            self.module,
+                            self.resolved,
+                            self.declarations,
+                            (self.files, self.file_cache),
+                            self.frame,
+                            &ty,
+                            (*span, slot.place_kind.clone()),
+                        );
+                        self.state.errors.extend(errors);
+                        self.state.checks.extend(checks);
+                    }
                 }
                 _ => {}
             }
@@ -567,7 +750,47 @@ impl Infer<'_> {
             )
         };
         for pass in [false, true] {
-            for (slot, supply) in slots.iter().zip(filled) {
+            for (slot, supply) in slots.iter().zip(filled.iter_mut()) {
+                if !pass {
+                    if let Some(Supply::Collected(ids)) = supply {
+                        if ids.len() == 1 {
+                            let before = self.state.clone();
+                            let id = ids[0];
+                            self.expr(
+                                id,
+                                Some(&Expected {
+                                    place_kind: slot.place_kind.clone(),
+                                    ty: slot.ty.clone(),
+                                    span: self.span(id),
+                                    spot: true,
+                                }),
+                            );
+                            self.dots();
+                            if self.state.errors.len() == before.errors.len() {
+                                *supply = Some(Supply::Expr(id));
+                                continue;
+                            }
+                            self.state = before;
+                        }
+                        let Type::Named { arguments, .. } =
+                            self.apply(&slot.ty)
+                        else {
+                            unreachable!()
+                        };
+                        for id in ids {
+                            self.expr(
+                                *id,
+                                Some(&Expected {
+                                    place_kind: crate::typed::Place::Element,
+                                    ty: arguments[0].clone(),
+                                    span: self.span(*id),
+                                    spot: true,
+                                }),
+                            );
+                        }
+                        continue;
+                    }
+                }
                 if let Some(Supply::Expr(id)) = supply {
                     if late(id) == pass {
                         let expected = Expected {
@@ -604,7 +827,14 @@ impl Infer<'_> {
                 }
             }
         }
-        let count = operands.len() + usize::from(pipe.is_some());
+        let supplied = operands.len() + usize::from(pipe.is_some());
+        let mut count = 0;
+        let mut tail = self.apply(ty);
+        while let Type::Function { result, .. } = tail {
+            count += 1;
+            tail = *result;
+        }
+        let count = count.max(supplied);
         let Some((parameters, result)) = self.peel(ty, count) else {
             self.error(stage, Reason::NotAFunction);
             for operand in operands {
@@ -612,6 +842,26 @@ impl Infer<'_> {
             }
             return self.fresh();
         };
+        let mut bound = crate::typed::Bound::default();
+        if let Some((_, span)) = &pipe {
+            bound
+                .supplies
+                .push((count - 1, crate::typed::Supply::Pipe(*span)));
+        }
+        bound.supplies.extend(
+            operands.iter().enumerate().map(|(index, id)| {
+                (index, crate::typed::Supply::Expression(*id))
+            }),
+        );
+        let end = count - usize::from(pipe.is_some());
+        bound.open.extend(operands.len()..end);
+        let result = parameters[operands.len()..end]
+            .iter()
+            .rev()
+            .fold(result, |result, parameter| {
+                Type::function(parameter.clone(), result)
+            });
+        self.state.bound.insert((stage.start, stage.end), bound);
         // An overload can be chosen only after all this call's operands
         // have entered their spots (including a selector's argument).
         let solving = core::mem::replace(&mut self.state.solving_dots, true);
@@ -678,7 +928,7 @@ impl Infer<'_> {
     }
 
     pub(super) fn is_bool(&self, ty: &Type) -> bool {
-        is_prelude(&self.apply(ty), "Bool")
+        is_prelude(super::meaning(&self.apply(ty)), "Bool")
     }
 
     /// Step 4 for a callee declared elsewhere: its spot default, typed
@@ -691,12 +941,40 @@ impl Infer<'_> {
         index: usize,
         stage: Span,
     ) {
-        let (Some(module), Some(value)) =
-            (self.owner(home), slots[index].value)
-        else {
-            return;
+        let (_, valid) = self.declared_expression(
+            home,
+            &slots[index],
+            &slots[..index],
+            stage,
+            true,
+        );
+        if !valid {
+            self.error(
+                stage,
+                Reason::Default {
+                    name: slots[index].name.clone().unwrap_or_default(),
+                },
+            );
+        }
+    }
+
+    pub(super) fn declared_expression(
+        &mut self,
+        home: &Origin,
+        slot: &Slot,
+        earlier: &[Slot],
+        stage: Span,
+        is_default: bool,
+    ) -> (Scheme, bool) {
+        // Recursive defaults use their signatures. Evaluation decides termination.
+        let key = (home.clone(), slot.site);
+        if self.state.defaults.contains(&key) {
+            return (Scheme::mono(slot.ty.clone()), true);
+        }
+        let (Some(module), Some(value)) = (self.owner(home), slot.value) else {
+            return (Scheme::mono(slot.ty.clone()), false);
         };
-        let earlier: Vec<_> = slots[..index]
+        let earlier: Vec<_> = earlier
             .iter()
             .filter_map(|slot| Some((slot.name.clone()?, slot.site, &slot.ty)))
             .collect();
@@ -704,8 +982,8 @@ impl Infer<'_> {
             .iter()
             .map(|(name, site, _)| (name.clone(), *site))
             .collect();
-        let resolved =
-            resolve_default(module, self.declarations, value, &names);
+        let (resolved, resolve_errors) =
+            resolve_default(module, self.declarations, home, value, &names);
         let subst = core::mem::take(&mut self.state.subst);
         let mut inner = Infer {
             module,
@@ -722,6 +1000,8 @@ impl Infer<'_> {
             groups: Vec::new(),
             self_type: None,
         };
+        inner.state.defaults.clone_from(&self.state.defaults);
+        inner.state.defaults.push(key);
         for (_, site, ty) in earlier {
             let local = Local {
                 scheme: Scheme::mono(ty.clone()),
@@ -730,50 +1010,36 @@ impl Infer<'_> {
             inner.state.locals.insert((site.start, site.end), local);
         }
         let expected = Expected {
-            place_kind: slots[index].place_kind.clone(),
-            ty: slots[index].ty.clone(),
+            place_kind: slot.place_kind.clone(),
+            ty: slot.ty.clone(),
             span: stage,
-            spot: true,
+            spot: is_default,
         };
+        let mark = inner.mark();
         inner.expr(value, Some(&expected));
         inner.dots();
-        let mut typed = crate::typed::Typed {
-            expressions: inner
-                .state
-                .types
-                .iter()
-                .map(|ty| ty.as_ref().map(|ty| inner.apply(ty)))
-                .collect(),
-            supplied: inner.state.supplied.clone(),
-            checks: inner.state.checks.clone(),
-            frozen: inner
-                .state
-                .locals
-                .iter()
-                .map(|(site, local)| (*site, local.clone()))
-                .collect(),
-            ..crate::typed::Typed::default()
+        let scheme = if is_default {
+            inner.default_literals(0, &[], &[]);
+            Scheme::mono(inner.apply(&slot.ty))
+        } else {
+            inner
+                .generalize(
+                    &[super::bind::Part {
+                        ty: slot.ty.clone(),
+                        site: slot.site,
+                        annotated: false,
+                    }],
+                    mark,
+                    &[],
+                )
+                .remove(0)
         };
-        let entries: Vec<_> = inner
-            .state
-            .entries
-            .iter()
-            .map(|(id, ty, span, kind)| {
-                (*id, inner.apply(ty), *span, kind.clone())
-            })
-            .collect();
-        for mut error in crate::limits::check(
-            module,
-            &resolved,
-            self.declarations,
-            (self.files, self.file_cache),
-            self.frame,
-            &entries,
-            &mut typed,
-        ) {
-            error.span = stage;
-            self.state.errors.push(error);
-        }
+        inner.finish_dots();
+        inner.settle();
+        let (typed, errors) = inner.default_checks();
+        let valid = inner.state.errors.is_empty()
+            && resolve_errors.is_empty()
+            && errors.is_empty();
         for mut check in typed.checks {
             check.place = stage;
             check.frequency = crate::limits::frequency(self.module, stage);
@@ -789,6 +1055,44 @@ impl Infer<'_> {
             owed.span = stage;
             self.state.obligations.push(owed);
         }
+        (scheme, valid)
+    }
+    fn default_checks(&self) -> (crate::typed::Typed, Vec<super::Error>) {
+        let mut typed = crate::typed::Typed {
+            expressions: self
+                .state
+                .types
+                .iter()
+                .map(|ty| ty.as_ref().map(|ty| self.apply(ty)))
+                .collect(),
+            supplied: self.state.supplied.clone(),
+            checks: self.state.checks.clone(),
+            frozen: self
+                .state
+                .locals
+                .iter()
+                .map(|(site, local)| (*site, local.clone()))
+                .collect(),
+            ..crate::typed::Typed::default()
+        };
+        let entries: Vec<_> = self
+            .state
+            .entries
+            .iter()
+            .map(|(id, ty, span, kind)| {
+                (*id, self.apply(ty), *span, kind.clone())
+            })
+            .collect();
+        let errors = crate::limits::check(
+            self.module,
+            self.resolved,
+            self.declarations,
+            (self.files, self.file_cache),
+            self.frame,
+            &entries,
+            &mut typed,
+        );
+        (typed, errors)
     }
 }
 
@@ -799,6 +1103,13 @@ impl Infer<'_> {
             return;
         }
         for owed in &mut self.state.obligations {
+            if !owed.solved
+                && owed.literal.is_some()
+                && self.state.subst.apply(owed.obligation.subject())
+                    == parameter
+            {
+                owed.span = span;
+            }
             if !owed.solved
                 && matches!(
                     owed.obligation,

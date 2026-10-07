@@ -108,7 +108,7 @@ fn host_declarations_carry_spots_defaults_and_opaque_types() {
         source.slice(commands.module.ty(*result).unwrap().span),
         Some("Vec<Entry>")
     );
-    assert_eq!(source.slice(spots[0].span), Some("(path: Src = \".\")"));
+    assert_eq!(source.slice(spots[0].span), Some("(path: Src = ./)"));
     assert!(matches!(
         &commands.ty("Rd").unwrap().kind,
         Kind::Type {

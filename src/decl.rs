@@ -16,6 +16,8 @@ use alloc::{string::String, vec::Vec};
 
 mod claims;
 mod docs;
+pub(crate) mod spots;
+pub use spots::Problem as SpotProblem;
 
 const PRELUDE: &str = include_str!("../prelude/prelude.fipe");
 
@@ -150,6 +152,7 @@ impl Namespace {
             reason: Reason::NotYetChecked { form },
         })
         .collect();
+        errors.extend(spots::check(&namespace.module));
         docs::check(&namespace.module, &mut errors);
         claims::check(&namespace.module, others, &mut errors);
         for index in 0..namespace.module.entries.len() {
@@ -312,6 +315,9 @@ pub struct Error {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
+    Spots {
+        problem: SpotProblem,
+    },
     ClaimBlock {
         problem: String,
     },

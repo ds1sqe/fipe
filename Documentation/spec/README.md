@@ -29,7 +29,7 @@ not language rules. Parsing never depends on checking.
 | [07 Checks](07-checks.md) | phases, entry and outcome, modes, timing, the plan, what is known, order and charges |
 | [08 Evaluation](08-evaluation.md) | application, pipelines, outcomes, pattern binding |
 | [09 Host](09-host.md) | compilation units, name lookup, host services, budget, backends |
-| [10 Conformance](10-conformance.md) | observables and required discriminating cases |
+| [10 Conformance](10-conformance.md), [checks](10-conformance-checks.md), [corners](10-conformance-corners.md) | observables and required discriminating cases |
 | [11 Open](11-open.md) | proposals that are not yet language rulings |
 
 | API | Serves |

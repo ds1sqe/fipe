@@ -723,14 +723,94 @@ impl<'a> Infer<'a> {
                 }
                 callee
             }
-            Kind::Binding {
-                annotation: Some(annotation),
-            } => {
-                let mut vars = Vars::new(SelfKind::None);
-                Callee::plain(self.lower(&scope, *annotation, &mut vars))
+            Kind::Binding { annotation } => {
+                self.declared_binding(origin, name, *annotation, span)
             }
-            _ => Callee::plain(self.fresh()),
+            Kind::Type { .. } => Callee::plain(self.fresh()),
         }
+    }
+
+    fn declared_binding(
+        &mut self,
+        home: &Origin,
+        name: &str,
+        annotation: Option<TypeId>,
+        span: Span,
+    ) -> Callee {
+        use super::files::DeclaredValue;
+        let key = (home.clone(), String::from(name));
+        let cached = self.file_cache.values.borrow().get(&key).cloned();
+        match cached {
+            Some(DeclaredValue::Typed(scheme)) => {
+                return Callee::plain(self.instantiate(&scheme, span))
+            }
+            Some(DeclaredValue::Failed) => return Callee::plain(self.fresh()),
+            Some(DeclaredValue::Checking) => {
+                self.error(
+                    span,
+                    super::Reason::DeclarationValue {
+                        name: name.into(),
+                        origin: home.clone(),
+                        declaration: span,
+                    },
+                );
+                return Callee::plain(self.fresh());
+            }
+            None => {}
+        }
+        let Some(module) = self.owner(home) else {
+            return Callee::plain(self.fresh());
+        };
+        let binding = module.entries.iter().rev().find_map(|entry| {
+            let Entry::Line(id) = entry else { return None };
+            let crate::ast::ExprKind::Bind { pattern, value, .. } = module.expressions[id.0].kind else { return None };
+            matches!(&module.patterns[pattern.0].kind, crate::ast::PatternKind::Name(n) if super::last(n) == name).then_some((value, module.patterns[pattern.0].span))
+        });
+        let Some((value, site)) = binding else {
+            return Callee::plain(self.fresh());
+        };
+        let ty = match annotation {
+            Some(id) => self.lower(
+                &Scope::Declared {
+                    module,
+                    origin: home.clone(),
+                },
+                id,
+                &mut Vars::new(SelfKind::None),
+            ),
+            None => self.fresh(),
+        };
+        self.file_cache
+            .values
+            .borrow_mut()
+            .insert(key.clone(), DeclaredValue::Checking);
+        let slot = Slot {
+            place_kind: crate::typed::Place::Binding(name.into()),
+            name: Some(name.into()),
+            ty,
+            default: false,
+            value: Some(value),
+            site,
+        };
+        let (scheme, valid) =
+            self.declared_expression(home, &slot, &[], span, false);
+        let cached = if valid {
+            DeclaredValue::Typed(scheme.clone())
+        } else {
+            DeclaredValue::Failed
+        };
+        self.file_cache.values.borrow_mut().insert(key, cached);
+        if !valid {
+            self.error(
+                span,
+                super::Reason::DeclarationValue {
+                    name: name.into(),
+                    origin: home.clone(),
+                    declaration: site,
+                },
+            );
+        }
+        Callee::plain(self.instantiate(&scheme, span))
     }
 
     pub(super) fn finish_callee(
@@ -813,8 +893,7 @@ impl<'a> Infer<'a> {
         for field in fields {
             let field_ty = self.lower(&scope, field.ty, &mut vars);
             let default = field.default.is_some()
-                || (self.has_claim(&field_ty, &super::prelude("Default"))
-                    && self.default_available(&field_ty));
+                || (sum.is_none() && self.default_available(&field_ty));
             slots.push(Slot {
                 place_kind: if sum.is_some() {
                     crate::typed::Place::Payload
@@ -884,12 +963,13 @@ impl<'a> Infer<'a> {
                 name: head.name,
                 ty: Type::Var(self.state.subst.fresh()),
                 default: head.default,
-                value: None,
-                site: Span::default(),
+                value: head.value,
+                site: head.site,
             })
             .collect();
         let mut callee = Callee::plain(result.clone());
         callee.spots = Some(slots);
+        callee.home = Some(origin.clone());
         Some(callee)
     }
 
@@ -918,9 +998,8 @@ impl<'a> Infer<'a> {
         for member in members {
             if let Member::Field(field) = member {
                 let ty = self.lower(&scope, field.ty, &mut vars);
-                let default = field.default.is_some()
-                    || (self.has_claim(&ty, &super::prelude("Default"))
-                        && self.default_available(&ty));
+                let default =
+                    field.default.is_some() || self.default_available(&ty);
                 fields.push(Field {
                     name: super::last(&field.name),
                     ty,

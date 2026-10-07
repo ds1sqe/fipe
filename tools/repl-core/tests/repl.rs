@@ -891,7 +891,7 @@ fn timing_and_holding_facts_are_visible_on_both_driver_paths() {
     assert!(!text.contains("binding port at "), "{text}");
     assert!(text.contains("known at compile"), "{text}");
     assert!(text.contains("held Size<3>"), "{text}");
-    let text = written(repl.feed(b"type Flag: Bool & Bits<1>\ntype Mode: Size<1> { read: Flag, write: Flag, exec: Flag }\nm = Mode True False True\n:t m\n"));
+    let text = written(repl.feed(b"type Flag: Bool & Bits<1>\ntype Mode: Size<1> { read: Flag, write: Flag, exec: Flag }\nm = Mode -read -write=False -exec\n:t m\n"));
     assert!(text.contains("held Size<1>, 3 of 8 bits"), "{text}");
     assert!(
         text.contains("parts read: True, write: False, exec: True"),
@@ -935,7 +935,7 @@ fn written_tests_keep_sources_and_include_proved_siblings() {
 
 #[test]
 fn container_types_warnings_and_conversion_hint_are_visible() {
-    let text = written(Repl::new().feed(b"xs = [1, 2, 3]\n:t xs ++ [4, 5]\ng = x (y = 0) => x\ng (1, 2)\ntotal: Vec<Integer> -> Integer = xs => xs | sum\ntotal xs\n"));
+    let text = written(Repl::new().feed(b"xs = [1, 2, 3]\n:t xs ++ [4, 5]\ng = x (y = 0) => x\ng (1, 2)\ntotal: Vec<Integer> -> Integer = xs => xs | sum\ntotal -xs xs\n"));
     assert!(text.contains("[Integer; 5]"), "{text}");
     assert!(
         text.contains("warning: written as one tuple argument"),

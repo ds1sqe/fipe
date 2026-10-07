@@ -136,6 +136,76 @@ pub(crate) fn check(
     pass.errors
 }
 
+/// Ask the same static entry pass whether a type default is proved.
+pub(crate) fn default_proved(
+    module: &Module,
+    resolved: &Resolved,
+    declarations: &Declarations,
+    files: (&[(String, Module)], &crate::infer::files::FileCache),
+    frame: Option<&Frame>,
+    ty: &Type,
+    known: &Known,
+) -> bool {
+    let mut typed = Typed::default();
+    let pass = Pass {
+        module,
+        resolved,
+        declarations,
+        files: files.0,
+        cache: files.1,
+        frame,
+        typed: &mut typed,
+        locals: BTreeMap::new(),
+        errors: Vec::new(),
+        active: Vec::new(),
+        place_kind: Place::Result,
+        entry_phase: None,
+        purity: core::cell::RefCell::new(Vec::new()),
+    };
+    pass.evaluate_type(ty, known, 0).boolean == Some(true)
+}
+
+pub(crate) fn flag_entry(
+    module: &Module,
+    resolved: &Resolved,
+    declarations: &Declarations,
+    files: (&[(String, Module)], &crate::infer::files::FileCache),
+    frame: Option<&Frame>,
+    ty: &Type,
+    (span, place_kind): (Span, Place),
+) -> (Vec<Error>, Vec<Check>) {
+    let mut typed = Typed::default();
+    let mut pass = Pass {
+        module,
+        resolved,
+        declarations,
+        files: files.0,
+        cache: files.1,
+        frame,
+        typed: &mut typed,
+        locals: BTreeMap::new(),
+        errors: Vec::new(),
+        active: Vec::new(),
+        place_kind,
+        entry_phase: None,
+        purity: core::cell::RefCell::new(Vec::new()),
+    };
+    pass.enter(
+        ty,
+        &Known {
+            boolean: Some(true),
+            ..Known::default()
+        },
+        span,
+        frequency(module, span),
+    );
+    (pass.errors, typed.checks)
+}
+
+pub(crate) fn default_fact(module: &Module, value: ExprId) -> Known {
+    test(module, value, &Known::default())
+}
+
 struct Pass<'a> {
     module: &'a Module,
     resolved: &'a Resolved,
@@ -353,6 +423,7 @@ impl Pass<'_> {
                 name,
             }) = self
                 .cache
+                .files
                 .borrow()
                 .get(stem)
                 .and_then(|c| c.resolved.ty(id))
@@ -781,10 +852,15 @@ impl Pass<'_> {
             return Known::default();
         };
         let fields = construction_fields(module, ty, name);
-        let supplied = self
-            .typed
-            .supplied
-            .get(&(expression.span.start, expression.span.end));
+        let stage = match expression.kind {
+            ExprKind::Pipe {
+                op: PipeOp::Plain,
+                right,
+                ..
+            } => self.module.expressions[right.0].span,
+            _ => expression.span,
+        };
+        let supplied = self.typed.supplied.get(&(stage.start, stage.end));
         let parts = fields
             .iter()
             .map(|field| {
@@ -794,7 +870,21 @@ impl Pass<'_> {
                     .and_then(|values| values.iter().find(|(n, _)| *n == name))
                     .map(|(_, supplied)| match supplied {
                         crate::infer::Supply::Expr(id) => get(*id),
-                        crate::infer::Supply::True => Known {
+                        crate::infer::Supply::Collected(ids) => Known {
+                            parts: core::iter::once((
+                                String::from("len"),
+                                exact(Integer::from(ids.len() as u64)),
+                            ))
+                            .chain(
+                                ids.iter()
+                                    .enumerate()
+                                    .map(|(i, id)| (i.to_string(), get(*id))),
+                            )
+                            .collect(),
+                            ..Known::default()
+                        },
+                        crate::infer::Supply::Default(known) => known.clone(),
+                        crate::infer::Supply::True(_) => Known {
                             boolean: Some(true),
                             ..Known::default()
                         },
@@ -880,7 +970,7 @@ impl Pass<'_> {
                 else {
                     return Known::default();
                 };
-                let cache = self.cache.borrow();
+                let cache = self.cache.files.borrow();
                 let Some(checked) = cache.get(stem) else {
                     return Known::default();
                 };

@@ -9,7 +9,19 @@ use crate::{
 use alloc::{collections::BTreeMap, rc::Rc, string::String, vec::Vec};
 use core::cell::RefCell;
 
-pub type FileCache = RefCell<BTreeMap<String, CheckedFile>>;
+#[derive(Default)]
+pub struct FileCache {
+    pub files: RefCell<BTreeMap<String, CheckedFile>>,
+    pub values:
+        RefCell<BTreeMap<(crate::resolve::Origin, String), DeclaredValue>>,
+}
+
+#[derive(Clone)]
+pub enum DeclaredValue {
+    Checking,
+    Failed,
+    Typed(crate::types::Scheme),
+}
 
 #[derive(Clone)]
 pub struct CheckedFile {
@@ -26,7 +38,7 @@ pub fn check_file(
     cache: &FileCache,
     visiting: &[String],
 ) -> Option<CheckedFile> {
-    if let Some(checked) = cache.borrow().get(stem) {
+    if let Some(checked) = cache.files.borrow().get(stem) {
         return Some(checked.clone());
     }
     let (_, module) = files.iter().find(|(name, _)| name == stem)?;
@@ -50,6 +62,7 @@ pub fn check_file(
         type_errors,
     };
     cache
+        .files
         .borrow_mut()
         .insert(String::from(stem), checked.clone());
     Some(checked)
@@ -57,6 +70,6 @@ pub fn check_file(
 
 impl Infer<'_> {
     pub(super) fn cached_file(&self, stem: &str) -> Option<CheckedFile> {
-        self.file_cache.borrow().get(stem).cloned()
+        self.file_cache.files.borrow().get(stem).cloned()
     }
 }

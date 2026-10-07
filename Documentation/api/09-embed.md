@@ -139,3 +139,31 @@ open entries with the place in words, those same facts comma separated, and
 the reason each remains open. Otherwise identical entries include the place's
 line and column. Both REPL builds accept `--strict` beside `--host <dir>` and
 `--cwd <dir>`; it enables strict checking before input and survives `:host`.
+
+## Call binding
+
+`Typed::bound` maps a call or stage's `(span.start, span.end)` to `Bound`.
+`Bound::supplies` lists `(spot_index, Supply)` in source order; indices are
+zero-based declaration positions. `Expression(ExprId)` is a written
+argument, `Flag(Span)` a bare Bool flag, `Pipe(Span)` the input and
+`Head(Span)` the dot receiver. Each `Element(ExprId)` appends one collected
+operand; interleaved named arguments retain their source order.
+`Bound::defaults` lists `(spot_index, DefaultValue)` in declaration order:
+`Declared { origin, value }` identifies the expression in its declaring
+module, and `Type(Type)` selects the table default. `Bound::open` lists
+unfilled positions in declaration order. A function value keeps its types
+but no declaration's spot names or defaults. Evaluation consumes this
+record; it does not bind again.
+
+`decl::SpotProblem` distinguishes duplicate names, ambiguous Bool initials
+and a supplied member's non-final `self`; declaration and inference reasons
+carry it as `Spots { problem }`. `infer::Reason::NonBoolChaining` rejects
+a valued chain or a chain naming a non-Bool spot. `Default { name }` reports
+an invalid host default when a stage needs it. Program defaults are checked
+at their declarations, with earlier spots in scope.
+
+Written host values are typed in their home module and cached once per
+checked unit alongside file modules. A failed value produces
+`DeclarationValue { name, origin, declaration }` at its first use; the
+origin and declaration span identify its binding. A default that needs the
+failed value reports `Default { name }` for its own spot.
