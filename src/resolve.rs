@@ -500,8 +500,13 @@ impl<'a> Resolver<'a> {
         }
         for entry in &self.module.entries {
             if let Entry::Item(item) = entry {
-                if let ItemKind::Impl { target, members } = &item.kind {
-                    self.impl_item(*target, members);
+                if let ItemKind::Impl {
+                    target,
+                    claim,
+                    members,
+                } = &item.kind
+                {
+                    self.impl_item(*target, members, claim.is_some());
                 }
             }
         }
@@ -678,10 +683,11 @@ impl<'a> Resolver<'a> {
             let frame = self.frame_in?;
             let lines = frame.impls.get(&(*line, name.clone()));
             let found = core::iter::once(self.module)
+                .chain(frame.lines.get(*line).map(|l| &l.module))
                 .chain(lines.into_iter().flatten().filter_map(|index| {
                     frame.lines.get(*index).map(|line| &line.module)
                 }))
-                .map(|module| Self::impl_has(module, name, member, false))
+                .map(|module| self.impl_has(module, name, member, false))
                 .find(|membership| *membership != Membership::Absent)
                 .unwrap_or(Membership::Absent);
             return Some(found);
@@ -708,7 +714,7 @@ impl<'a> Resolver<'a> {
                 name,
             } => {
                 // Another file module's inherent member must be `pub`.
-                return Some(Self::impl_has(
+                return Some(self.impl_has(
                     self.file(stem)?,
                     name,
                     member,
@@ -717,13 +723,14 @@ impl<'a> Resolver<'a> {
             }
             _ => return None,
         };
-        Some(Self::impl_has(module, name, member, false))
+        Some(self.impl_has(module, name, member, false))
     }
 
     /// Whether an impl of the type `name` in `module` has `member`; with
     /// `public`, an inherent member that is not `pub` is [`Membership::
     /// Private`] rather than visible.
     fn impl_has(
+        &self,
         module: &Module,
         name: &str,
         member: &str,
@@ -732,7 +739,10 @@ impl<'a> Resolver<'a> {
         let mut hidden = false;
         for entry in &module.entries {
             let Entry::Item(item) = entry else { continue };
-            let ItemKind::Impl { target, members } = &item.kind else {
+            let ItemKind::Impl {
+                target, members, ..
+            } = &item.kind
+            else {
                 continue;
             };
             if named(module, *target).as_deref() != Some(name) {
@@ -757,11 +767,72 @@ impl<'a> Resolver<'a> {
         if hidden {
             return Membership::Private;
         }
-        if matches!(member, "eq" | "cmp" | "show") && module.entries.iter().any(|entry| matches!(entry,
+        if matches!(member, "eq" | "cmp" | "show" | "default") && module.entries.iter().any(|entry| matches!(entry,
             Entry::Item(crate::ast::Item { kind: ItemKind::Type { name: n, members: Some(_), .. }, .. }) if last(n) == name)) {
             return Membership::Visible;
         }
+        for entry in &module.entries {
+            if let Entry::Item(crate::ast::Item {
+                kind:
+                    ItemKind::Type {
+                        name: n,
+                        base: Some(base),
+                        members: Some(_),
+                        ..
+                    },
+                ..
+            }) = entry
+            {
+                if last(n) == name
+                    && self.claim_member(module, *base, member, &mut Vec::new())
+                {
+                    return Membership::Visible;
+                }
+            }
+        }
         Membership::Absent
+    }
+
+    fn claim_member(
+        &self,
+        module: &Module,
+        id: TypeId,
+        member: &str,
+        visiting: &mut Vec<String>,
+    ) -> bool {
+        match &module.types[id.0].kind {
+            TypeKind::Both(parts) => parts
+                .iter()
+                .any(|p| self.claim_member(module, *p, member, visiting)),
+            TypeKind::Named { name, .. } => {
+                let text = name.segments.join(".");
+                if visiting.contains(&text) {
+                    return false;
+                }
+                visiting.push(text);
+                let candidates = [module, &self.declarations.prelude.module];
+                let found = candidates.iter().find_map(|m| {
+                    m.entries.iter().find_map(|e| match e {
+                        Entry::Item(crate::ast::Item {
+                            kind:
+                                ItemKind::Type {
+                                    name: n,
+                                    base,
+                                    limits,
+                                    members: None,
+                                    ..
+                                },
+                            ..
+                        }) if last(n) == last(name) => Some((*m, base, limits)),
+                        _ => None,
+                    })
+                });
+                let result = found.is_some_and(|(m,base,limits)| limits.iter().any(|l| matches!(l,crate::ast::Limit::Member { name, .. } if last(name) == member)) || base.is_some_and(|b| self.claim_member(m,b,member,visiting)));
+                visiting.pop();
+                result
+            }
+            _ => false,
+        }
     }
 
     /// A record's constructor is the type's name; a sum's are its members.
@@ -821,7 +892,12 @@ impl<'a> Resolver<'a> {
     }
 
     /// `impl T` belongs to the module declaring T and supplies its members.
-    fn impl_item(&mut self, target: TypeId, members: &[ImplMember]) {
+    fn impl_item(
+        &mut self,
+        target: TypeId,
+        members: &[ImplMember],
+        claimed: bool,
+    ) {
         let span = self.module.types[target.0].span;
         if let Some(name) = named(self.module, target) {
             if let Some(Target::Type { origin, name }) = self.lookup_type(&name)
@@ -865,10 +941,10 @@ impl<'a> Resolver<'a> {
             // One definition per (type, name), owned by the meaning.
             let text = last(name);
             if let Some((_, _, first)) =
-                self.members.iter().find(|(t, n, _)| {
+                self.members.iter().find(|(t, n, first)| {
                     *t == ty
                         && *n == text
-                        && !matches!(text.as_str(), "from" | "try_from")
+                        && !(claimed && self.claim_site(*first))
                 })
             {
                 let first = *first;
@@ -877,6 +953,10 @@ impl<'a> Resolver<'a> {
             }
             self.members.push((ty.clone(), text, name.span));
         }
+    }
+
+    fn claim_site(&self, site: Span) -> bool {
+        core::iter::once(self.module).chain(self.frame_in.into_iter().flat_map(|f| f.lines.iter().map(|l| &l.module))).any(|module| module.entries.iter().any(|e| matches!(e,Entry::Item(item) if matches!(item.kind,ItemKind::Impl { claim: Some(_), .. }) && item.span.start <= site.start && site.end <= item.span.end)))
     }
 
     /// A used module holds items and bindings only.
@@ -1044,42 +1124,55 @@ impl<'a> Resolver<'a> {
                         self.self_type = None;
                         self.parameters.clear();
                     }
-                    ItemKind::Impl { target, members } => {
-                        self.ty(*target);
-                        self.self_type = named(self.module, *target);
-                        for member in members {
-                            match member {
-                                ImplMember::Named {
-                                    name,
-                                    annotation,
-                                    value,
-                                    ..
-                                } => {
-                                    if let Some(annotation) = annotation {
-                                        self.ty(*annotation);
-                                    }
-                                    match value {
-                                        Some(value) => {
-                                            self.expr(*value, Position::Other);
-                                        }
-                                        None => self.error(
-                                            name.span,
-                                            Reason::DeclarationForm,
-                                        ),
-                                    }
-                                }
-                                ImplMember::Constructor { arm, .. } => {
-                                    self.arm(arm);
-                                }
-                            }
-                        }
-                        self.self_type = None;
+                    ItemKind::Impl {
+                        target,
+                        claim,
+                        members,
+                    } => {
+                        self.walk_impl(*target, *claim, members);
                     }
                 },
                 Entry::Line(id) => self.line(*id),
             }
         }
         self.top = self.scopes.pop().unwrap_or_default();
+    }
+
+    fn walk_impl(
+        &mut self,
+        target: TypeId,
+        claim: Option<TypeId>,
+        members: &[ImplMember],
+    ) {
+        self.ty(target);
+        self.self_type = named(self.module, target);
+        if let Some(claim) = claim {
+            self.ty(claim);
+        }
+        for member in members {
+            match member {
+                ImplMember::Named {
+                    name,
+                    annotation,
+                    value,
+                    ..
+                } => {
+                    if let Some(annotation) = annotation {
+                        self.ty(*annotation);
+                    }
+                    match value {
+                        Some(value) => {
+                            self.expr(*value, Position::Other);
+                        }
+                        None => self.error(name.span, Reason::DeclarationForm),
+                    }
+                }
+                ImplMember::Constructor { arm, .. } => {
+                    self.arm(arm);
+                }
+            }
+        }
+        self.self_type = None;
     }
 
     /// A line of a file, block or group: a binding is visible after it.

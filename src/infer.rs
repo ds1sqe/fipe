@@ -11,10 +11,10 @@
 
 mod arms;
 mod bind;
+mod claims;
 mod conversions;
 mod dot;
 mod expr;
-mod folds;
 mod groups;
 mod lower;
 mod outcome;
@@ -55,6 +55,14 @@ pub enum Reason {
     NoField {
         ty: Type,
         other: Span,
+    },
+    ClaimBlock {
+        claim: Type,
+        problem: String,
+    },
+    MissingClaim {
+        ty: Type,
+        claim: Type,
     },
     MissingMember {
         ty: Type,
@@ -215,6 +223,7 @@ fn run(
             Entry::Item(_) => {}
         }
     }
+    infer.check_claim_blocks();
     infer.finish()
 }
 
@@ -228,6 +237,8 @@ struct State {
     locals: BTreeMap<(usize, usize), Local>,
     obligations: Vec<Owed>,
     solving_dots: bool,
+    claims: Vec<(Type, bool, Vec<Type>)>,
+    checked_claims: Vec<(Type, Type)>,
     lowering: Vec<crate::types::TypeName>,
     errors: Vec<Error>,
     /// Monomorphic types in scope: parameters and destructured values.
@@ -252,6 +263,8 @@ impl State {
             locals: BTreeMap::new(),
             obligations: Vec::new(),
             solving_dots: false,
+            claims: Vec::new(),
+            checked_claims: Vec::new(),
             lowering: Vec::new(),
             errors: Vec::new(),
             env: Vec::new(),
@@ -534,7 +547,8 @@ impl Infer<'_> {
             Some(mut local) => {
                 if !self.state.locals.contains_key(&key) {
                     for obligation in &mut local.scheme.obligations {
-                        let Obligation::Member { dot, .. } = obligation;
+                        let (Obligation::Member { dot, .. }
+                        | Obligation::Claim { dot, .. }) = obligation;
                         *dot = span;
                     }
                     for (_, _, dot) in &mut local.scheme.literals {
@@ -576,7 +590,10 @@ impl Infer<'_> {
         let module = self.module;
         for entry in &module.entries {
             if let Entry::Item(item) = entry {
-                if let ItemKind::Impl { target, members } = &item.kind {
+                if let ItemKind::Impl {
+                    target, members, ..
+                } = &item.kind
+                {
                     self.declare_impl(*target, members);
                     let names = self.outside_names(item.span);
                     if let Some(group) = self.groups.last_mut() {
@@ -790,19 +807,6 @@ impl Infer<'_> {
                     .obligations
                     .iter()
                     .map(|o| o.map(|ty| replace(ty, &names)))
-                    .collect(),
-                folds: scheme
-                    .folds
-                    .iter()
-                    .map(|(name, members)| {
-                        (
-                            replace(name, &names),
-                            members
-                                .iter()
-                                .map(|o| o.map(|ty| replace(ty, &names)))
-                                .collect(),
-                        )
-                    })
                     .collect(),
                 literals: scheme
                     .literals

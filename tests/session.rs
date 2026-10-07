@@ -282,7 +282,7 @@ fn a_line_whose_read_target_is_unknown_is_ambiguous() {
     assert_eq!(
         error.reason,
         fipe::infer::Reason::Ambiguous {
-            class: "read".into()
+            class: "Read".into()
         }
     );
     assert_eq!(error.span, span(0, 4));
@@ -742,18 +742,18 @@ fn a_module_s_type_members_answer_queries() {
 #[test]
 fn conversion_overloads_and_conflicts_span_session_lines() {
     let mut session = Session::new(host());
-    ok(&mut session, "type P { n: Integer }");
+    ok(&mut session, "type P: From<Integer> & From<String> & TryFrom<Integer, String> { n: Integer }");
     ok(
         &mut session,
-        "impl P { from: Integer -> Self = n => Self n }",
+        "impl P: From<Integer> { from: Integer -> Self = n => Self n }",
     );
     ok(
         &mut session,
-        "impl P { from: String -> Self = s => Self 0 }",
+        "impl P: From<String> { from: String -> Self = s => Self 0 }",
     );
     assert_eq!(line_type(&mut session, "1 | to<P>"), "P");
     assert_eq!(line_type(&mut session, "\"s\" | to<P>"), "P");
-    let report = done(session.line("impl P { try_from: Integer -> Result<Self, String> = n => Ok (Self n) }"));
+    let report = done(session.line("impl P: TryFrom<Integer, String> { try_from: Integer -> Result<Self, String> = n => Ok (Self n) }"));
     assert!(report.diagnostics.iter().any(|d| matches!(
         d,
         Diagnostic::Type(fipe::infer::Error {
@@ -821,4 +821,67 @@ fn program_docs_never_validate_spot_lists() {
         session.documentation(&report, id),
         Some("- absent: opaque Markdown")
     );
+}
+
+#[test]
+fn a_session_claim_holds_only_after_its_block() {
+    let mut session = Session::new(host());
+    ok(&mut session, "type V: Add { x: F64 }");
+    let report = done(session.line("(V 1) + (V 2)"));
+    assert!(report.diagnostics.iter().any(|d| matches!(d,Diagnostic::Type(e) if matches!(e.reason,fipe::infer::Reason::MissingClaim { .. }))));
+    ok(
+        &mut session,
+        "impl V: Add { add = other self => Self (self.x + other.x) }",
+    );
+    ok(&mut session, "(V 1) + (V 2)");
+}
+
+#[test]
+fn an_unwritten_static_claim_names_the_missing_claim() {
+    let mut session = Session::new(host());
+    ok(&mut session, "type V: Zero { x: F64 }");
+    let report = done(session.line("V.zero"));
+    assert!(report.diagnostics.iter().any(|d| matches!(d,Diagnostic::Type(e) if matches!(&e.reason,fipe::infer::Reason::MissingClaim { claim, .. } if claim.to_string() == "Zero"))),"{:?}",report.diagnostics);
+    ok(&mut session, "impl V: Zero { zero = Self 0.0 }");
+    assert_eq!(line_type(&mut session, "V.zero"), "V");
+}
+
+#[test]
+fn the_mutually_claimed_example_checks_as_one_session_unit() {
+    let mut session = Session::new(host());
+    let report = done(
+        session.line(include_str!("../Documentation/examples/03-types.fipe")),
+    );
+    // These fourteen numeric casts are assigned to 07; every claim resolves.
+    assert_eq!(report.diagnostics.len(), 14, "{:?}", report.diagnostics);
+    assert!(report.diagnostics.iter().all(|d| matches!(d,Diagnostic::Type(e) if matches!(e.reason,fipe::infer::Reason::Mismatch { .. }))));
+}
+
+#[test]
+fn a_shadowing_type_does_not_supply_an_earlier_types_claim() {
+    let mut session = Session::new(host());
+    ok(&mut session, "type V: Add { x: F64 }");
+    ok(&mut session, "old = V 1");
+    let report = done(session.line("type V: Add { x: F64 }\nimpl V: Add { add = other self => Self (self.x + other.x) }\nold + old"));
+    assert!(report.diagnostics.iter().any(|d| matches!(d,Diagnostic::Type(e) if matches!(e.reason,fipe::infer::Reason::MissingClaim { .. }))),"{:?}",report.diagnostics);
+}
+
+#[test]
+fn session_plain_and_claim_members_conflict_in_either_order() {
+    for (first, second) in [
+        (
+            "impl W: Zero { zero = Self 0.0 }",
+            "impl W { zero = Self 1.0 }",
+        ),
+        (
+            "impl W { zero = Self 1.0 }",
+            "impl W: Zero { zero = Self 0.0 }",
+        ),
+    ] {
+        let mut session = Session::new(host());
+        ok(&mut session, "type W: Zero { x: F64 }");
+        ok(&mut session, first);
+        let report = done(session.line(second));
+        assert!(report.diagnostics.iter().any(|d| matches!(d, Diagnostic::Type(e) if matches!(&e.reason, fipe::infer::Reason::ClaimBlock { problem, .. } if problem.contains("plain impl")))), "{:?}", report.diagnostics);
+    }
 }

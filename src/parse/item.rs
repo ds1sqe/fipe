@@ -207,6 +207,11 @@ impl Parser {
     fn impl_item(&mut self) -> Result<ItemKind, Error> {
         self.bump();
         let target = self.type_syntax()?;
+        let claim = if self.eat(Symbol::Colon) {
+            Some(self.type_atom()?)
+        } else {
+            None
+        };
         self.expect(Symbol::LBrace)?;
         let members = self.list(Symbol::RBrace, |parser| {
             let doc = parser.docs(false)?;
@@ -239,7 +244,11 @@ impl Parser {
                 span: parser.since(start),
             })
         })?;
-        Ok(ItemKind::Impl { target, members })
+        Ok(ItemKind::Impl {
+            target,
+            claim,
+            members,
+        })
     }
 
     /// A member's value inside a comma list: one arm, or a non-arm line.

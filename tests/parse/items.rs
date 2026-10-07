@@ -301,7 +301,10 @@ fn types_traits_and_impls_have_member_lists() {
     );
     assert_eq!(limits.len(), 1);
 
-    let ItemKind::Impl { target, members } = &inherent.kind else {
+    let ItemKind::Impl {
+        target, members, ..
+    } = &inherent.kind
+    else {
         panic!()
     };
     assert_eq!(
@@ -531,4 +534,34 @@ fn labeled_parameters_and_opaque_types_are_declaration_forms() {
             "{input}"
         );
     }
+}
+
+#[test]
+fn impl_claim_keeps_its_type_and_span() {
+    let input = "impl Vec2: Mul<F64> { mul = k self => self }\nimpl Vec2 {}";
+    let parsed = module(input);
+    let Entry::Item(item) = &parsed.entries[0] else {
+        panic!()
+    };
+    let ItemKind::Impl {
+        target,
+        claim: Some(claim),
+        members,
+    } = &item.kind
+    else {
+        panic!()
+    };
+    assert_eq!(
+        Source::new(input).slice(parsed.ty(*target).unwrap().span),
+        Some("Vec2")
+    );
+    assert_eq!(
+        Source::new(input).slice(parsed.ty(*claim).unwrap().span),
+        Some("Mul<F64>")
+    );
+    assert_eq!(members.len(), 1);
+    let Entry::Item(item) = &parsed.entries[1] else {
+        panic!()
+    };
+    assert!(matches!(item.kind, ItemKind::Impl { claim: None, .. }));
 }

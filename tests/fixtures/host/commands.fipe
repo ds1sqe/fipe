@@ -8,12 +8,12 @@ pub type Rd<Api>
 pub Rd: U64 -> Rd<api>
 ## A host input source.
 pub type Src
-impl Src { read: String -> Result<Self, ParseError> }
+impl Src: Read { read: String -> Result<Self, ParseError> }
 ## A host output destination.
 pub type Sink
-impl Sink { read: String -> Result<Self, ParseError> }
+impl Sink: Read { read: String -> Result<Self, ParseError> }
 ## A directory entry.
-pub type Entry {
+pub type Entry: Eq & Ord & Show & Read {
     ## The entry name.
     pub name: String,
     ## The entry path.
@@ -23,7 +23,7 @@ pub type Entry {
     ## The entry age.
     pub age: U64,
 }
-impl Entry { read: String -> Result<Self, ParseError> }
+impl Entry: Read { read: String -> Result<Self, ParseError> }
 
 ## The root resource.
 pub root: Rd<sys>

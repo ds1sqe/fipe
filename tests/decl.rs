@@ -295,3 +295,27 @@ fn doc_lists_check_only_declared_spot_names() {
     // An implemented member is program text, not a supplied signature.
     Namespace::parse("host", "type P { x: Integer }\nimpl P {\n## - opaque: text\nf = self => self,\n}").unwrap();
 }
+
+#[test]
+fn supplied_claim_blocks_are_validated_at_load() {
+    for text in [
+        "type V\nimpl V: Unknown {}",
+        "type V\nimpl V: Zero {}",
+        "type V\nimpl V: Zero { zero: Self, extra: Self }",
+        "type V\nimpl V: Zero { zero: Self }\nimpl V: Zero { zero: Self }",
+        "type V\nimpl V { zero: Self }\nimpl V: Zero { zero: Self }",
+    ] {
+        assert!(
+            fipe::decl::Namespace::parse("host", text)
+                .unwrap_err()
+                .iter()
+                .any(|e| matches!(e.reason, Reason::ClaimBlock { .. })),
+            "{text}"
+        );
+    }
+    assert!(fipe::decl::Namespace::parse(
+        "host",
+        "type V\nimpl V: Zero { zero: Self }"
+    )
+    .is_ok());
+}

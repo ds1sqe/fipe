@@ -14,14 +14,17 @@ it takes its value last, so its `self` is its last spot.
 
 A type whose limits are member limits names who has an operation: `Add`,
 `Concat`, `Eq` and `Show` are declared with `type … where` (§Prelude).
-**Membership is by members**: a meaning is an `Add` when it has `add` of
-that type; nothing is declared. "Of that type" is the proof of
-[checks](07-checks.md) §What is known for a function, so a member whose
-parameter is narrower than the limit's does not meet it.
+**Membership is by claim** ([limits](06-limits.md) §Declaration): a meaning
+is an `Add` when its type line says so and `impl T: Add { … }` writes `add`
+of that type, or the member is derived. A member of that name on a meaning
+that does not claim is its own, not the limit's. "Of that type" is the proof
+of [checks](07-checks.md) §What is known for a function, so a member whose
+parameter is narrower does not meet it. A limit claimed twice, `Mul<F64> &
+Mul<Vec2>`, has a block each; the argument's meaning chooses.
 
 An operation is a member of the meaning of its subject. An operator is a
-spelling of a member, `a + b` is `a.add b`, and it requires its whole
-type:
+spelling of a claimed member: `a + b` is the `add` of the left operand's
+`Add`, and a meaning that does not claim `Add` has no `+`:
 
 | Written | Type | Its limit |
 | --- | --- | --- |
@@ -67,19 +70,20 @@ A dot dispatches on the head's tag. A member limit with no value to read,
 `Self.read` or `Self.literal`, receives the meaning as a hidden argument.
 A program cannot read a tag.
 
-**Member limits are inferred.** A dot or an operator on a head whose
-meaning is not yet known is a member limit in the scheme, solved by the
-same lookup once the head is known, and the error at the dot if it never
-is. The prefix the REPL prints is written in programs too, by name or by
-member: `Eq a => …`, `b.age: a => …`. The printer folds member limits into
-a name on an exact match and never turns a variable with a limit into a
-packed type.
+**Limits are inferred.** On a head whose meaning is not yet known an
+operator is its type's limit in the scheme, `Add<b> a`, met by a claim,
+and a dot is a member limit, `b.age: a`, met by any member of that name;
+each is solved once the head is known, and the error stands at the
+operator or the dot if it never is. The prefix the REPL prints is written
+in programs too. The printer never turns a member limit into a name, nor
+a variable with a limit into a packed type.
 
 ## Derived members
 
-`eq`, `cmp` and `show` exist for every declared meaning whose parts have
-them, and for a tuple from its parts; a function has none, an opaque
-meaning only what is supplied. A written member replaces the derived one.
+`eq`, `cmp` and `show` are derived for a meaning that claims `Eq`, `Ord`
+or `Show` and writes no block for it, when its parts claim them, and for
+a tuple and an array from their parts; a function has none, an opaque
+meaning only what is supplied. A block replaces the derived member.
 Derived `cmp` orders constructors by declaration, then fields left to
 right. The REPL and a Fault print a value by its structure, whatever
 `show` is written, and text as text. `String` supplies its `show`.
@@ -88,7 +92,7 @@ right. The REPL and a Fault print a value by its structure, whatever
 
 A type whose limits are all member limits, or an `A | B` of two meanings,
 used as the type of a place, is a meaning of its own: it holds a value of
-any meaning that meets the limits, with its tag. Entering it packs, at a
+any meaning that claims the limits, with its tag. Entering it packs, at a
 place of known type. Its members are those of its limits that take `Self`
 as the receiver alone, and `eq` when `Eq` is among the limits: tags
 first, then values. So `Add a => a -> a` is generic and keeps `add`, while
@@ -112,7 +116,7 @@ anywhere else it is `String`.
 | `String`, `Vec<U8>` | any `T` via `show` | never |
 | host-declared type | `Vec<U8>` via the host codec | Fault |
 | `Vec<U8>` | `String` | never |
-| a packed type | a meaning that meets its limits | never |
+| a packed type | a meaning that claims its limits | never |
 
 The number row is the one way between numeric meanings, and there is no
 `from` for it; between widths of `Integer` entry replaces it. An integer
@@ -126,10 +130,10 @@ never falls back, and a type name is never a conversion: `pl | Point` is
 Every other conversion is a word. Text and numbers: `show`, `read : Read
 a => String -> Result<a, ParseError>`, `bytes`, `utf8 : Vec<U8> ->
 Result<String, Utf8Error>`, and `round : Float a => a -> a`. A change of
-meaning is a `from` or a `try_from` member on the target, one per source
-meaning, the single exception to one member per name, and never both for
-one pair. The argument's meaning chooses among them and must be known at
-the call, else a check error that names the candidates. `to<T>` calls
+meaning is a `From<A>` or a `TryFrom<A, E>` claim on the target, one
+block per source meaning, and never both for one pair. The argument's
+meaning chooses among them and must be known at the call, else a check
+error that names the candidates. `to<T>` calls
 `from`, or `try_from` and Faults on `Err`; `try<T>` calls `try_from`, or
 wraps `from` in `Ok` after testing its parameter's limits, so it never
 Faults on them. The target comes from `<T>` or the spot. A new type that
@@ -154,17 +158,17 @@ literal is prepared there. With nothing fixed a number in any radix is an
 `Integer` known exactly, a fraction an `F64` known after rounding, text a
 `String`, bytes a `Vec<U8>`; literals side by side choose together
 ([types](03-types.md) §Core judgments). A program's own meaning takes
-literals by writing `literal`.
+literals by claiming `Literal`.
 
 A written form may carry a prefix and a suffix ([lexical](01-lexical.md)):
 each constructor of `Form` also holds `prefix: String` and `suffix:
 String`, empty when not written. A place decides as for any literal, and
-its type's `literal` reads both; with no place the claim in scope, a
+its type's `literal` reads both; with no place the reader in scope, a
 type's statement that it reads a prefix or suffix, decides the type.
-Two claims of one prefix or suffix in scope with no place to decide are
+Two readers of one prefix or suffix in scope with no place to decide are
 a check error; one with neither is a check error that names the missing
-claim, never an application. `b"…"` is the prelude's claim. The claim's
-spelling is open ([open decisions](11-open.md) L1).
+reader, never an application. `b"…"` is the prelude's reader. The
+reader's spelling is open ([open decisions](11-open.md) L1).
 
 ## Number types
 
@@ -204,25 +208,23 @@ type Number: Add & Sub & Mul & Div & Rem & Ord & Literal
 type Float: Number where self.round: Self
 type I8: Integer & Bits<8> where -128 <= self, self <= 127   # I16 to I64
 
-impl Integer { add: Self -> (self: Self) -> Self }       # supplied
+impl Integer: Add { add: Self -> (self: Self) -> Self }  # supplied
 impl Maybe   { map: (a -> b) -> (self: Maybe<a>) -> Maybe<b> }
 ```
 
 ## Examples
 
 ```fipe
-type Vec2 { x: F64, y: F64 }
-impl Vec2 {
-    add = o self => Self (self.x + o.x) (self.y + o.y),  # Vec2 is an Add
-    mul = k self => Self (self.x * k) (self.y * k),      # Vec2 is a Mul<F64>
-    show = self => join "," [self.x.show, self.y.show],  # replaces derived
-}
+type Vec2: Add & Mul<F64> & Show { x: F64, y: F64 }
+impl Vec2: Add      { add = o self => Self (self.x + o.x) (self.y + o.y) }
+impl Vec2: Mul<F64> { mul = k self => Self (self.x * k) (self.y * k) }
+impl Vec2: Show     { show = self => join "," [self.x.show, self.y.show] }
 (Vec2 1.0 2.0) + (Vec2 3.0 4.0)
 scale = v k => v * k           # Mul<b> a => a -> b -> a
 (Vec2 1.0 2.0) * 2.0           # check error: Vec2 is no Literal
 
-type Mask { bits: U8 }
-impl Mask {
+type Mask: Literal { bits: U8 }
+impl Mask: Literal {
     literal = f => f | {
         Whole { value, radix: 2, digits: 8 } => Self value,
         _ => fault "a Mask is written as eight binary digits",

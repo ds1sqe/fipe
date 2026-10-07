@@ -303,9 +303,14 @@ fn item_node(kind: &ItemKind) -> Node {
             Node::L(label("Declare", name), vec![Node::T(*ty)])
         }
         ItemKind::Impl {
-            target, members, ..
+            target,
+            claim,
+            members,
         } => {
             let mut children = vec![Node::T(*target)];
+            children.extend(
+                claim.map(|ty| Node::L("Claim".into(), vec![Node::T(ty)])),
+            );
             children.extend(members.iter().map(|member| match member {
                 ImplMember::Named {
                     doc,

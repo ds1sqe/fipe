@@ -14,6 +14,7 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 
+mod claims;
 mod docs;
 
 const PRELUDE: &str = include_str!("../prelude/prelude.fipe");
@@ -48,7 +49,13 @@ impl Declarations {
     /// Syntax errors, lines that declare nothing, duplicate names, and
     /// forms the checker does not check yet.
     pub fn commands(&mut self, text: &str) -> Result<(), Vec<Error>> {
-        self.commands = Some(Namespace::parse("commands", text)?);
+        let others: Vec<_> =
+            core::iter::once(("prelude", &self.prelude.module))
+                .chain(
+                    self.modules.iter().map(|m| (m.name.as_str(), &m.module)),
+                )
+                .collect();
+        self.commands = Some(Namespace::parse_in("commands", text, &others)?);
         Ok(())
     }
 
@@ -58,7 +65,16 @@ impl Declarations {
     /// Syntax errors, lines that declare nothing, duplicate names, and
     /// forms the checker does not check yet.
     pub fn module(&mut self, name: &str, text: &str) -> Result<(), Vec<Error>> {
-        let namespace = Namespace::parse(name, text)?;
+        let others: Vec<_> =
+            core::iter::once(("prelude", &self.prelude.module))
+                .chain(
+                    self.modules
+                        .iter()
+                        .filter(|m| m.name != name)
+                        .map(|m| (m.name.as_str(), &m.module)),
+                )
+                .collect();
+        let namespace = Namespace::parse_in(name, text, &others)?;
         self.modules.retain(|module| module.name != name);
         self.modules.push(namespace);
         Ok(())
@@ -93,7 +109,21 @@ impl Namespace {
     /// # Errors
     /// Syntax errors, lines that declare nothing, duplicate names, and
     /// forms the checker does not check yet.
+    ///
+    /// # Panics
+    /// If the bundled prelude does not parse, a crate defect.
     pub fn parse(name: &str, text: &str) -> Result<Self, Vec<Error>> {
+        let prelude = (name != "prelude")
+            .then(|| parse(lex(PRELUDE)).expect("bundled prelude parses"));
+        let others: Vec<_> = prelude.iter().map(|m| ("prelude", m)).collect();
+        Self::parse_in(name, text, &others)
+    }
+
+    fn parse_in(
+        name: &str,
+        text: &str,
+        others: &[(&str, &Module)],
+    ) -> Result<Self, Vec<Error>> {
         let module = parse(lex(text)).map_err(|errors| {
             errors
                 .into_iter()
@@ -121,6 +151,7 @@ impl Namespace {
         })
         .collect();
         docs::check(&namespace.module, &mut errors);
+        claims::check(&namespace.module, others, &mut errors);
         for index in 0..namespace.module.entries.len() {
             if let Err(error) = namespace.collect(index) {
                 errors.push(error);
@@ -223,6 +254,9 @@ pub struct Error {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
+    ClaimBlock {
+        problem: String,
+    },
     /// A declaration doc names a spot absent from its signature.
     UnknownDocSpot {
         name: String,

@@ -173,7 +173,10 @@ fn delta(
     }
     for entry in &module.entries {
         let Entry::Item(item) = entry else { continue };
-        let ItemKind::Impl { target, members } = &item.kind else {
+        let ItemKind::Impl {
+            target, members, ..
+        } = &item.kind
+        else {
             continue;
         };
         let owner = match resolved.ty(*target) {

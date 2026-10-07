@@ -63,7 +63,7 @@ fn named_member_types_fold_from_their_declarations() {
 
 #[test]
 fn packed_places_check_members_and_keep_only_receiver_operations() {
-    let shape = "type Shape where self.area: F64\ntype Circle { radius: F64 }\nimpl Circle { area = self => self.radius * self.radius }\n";
+    let shape = "type Shape where self.area: F64\ntype Circle: Shape { radius: F64 }\nimpl Circle: Shape { area = self => self.radius * self.radius }\n";
     assert_eq!(ty(&format!("{shape}s: Shape = Circle 2\ns.area")), "F64");
     assert_eq!(
         ty(&format!("{shape}xs: Vec<Shape> = [Circle 2, Circle 3]")),
@@ -82,13 +82,13 @@ fn member_words_dispatch_without_a_higher_kind() {
 
 #[test]
 fn derived_members_follow_parts_and_recursive_shapes() {
-    assert_eq!(ty("type Tree { Leaf(value: Integer), Branch(children: Vec<Tree>) }\n(Leaf 1) == (Leaf 2)"), "Bool");
-    assert_eq!(ty("type P { x: Integer }\nshow (P 2)"), "String");
+    assert_eq!(ty("type Tree: Eq { Leaf(value: Integer), Branch(children: Vec<Tree>) }\n(Leaf 1) == (Leaf 2)"), "Bool");
+    assert_eq!(ty("type P: Show { x: Integer }\nshow (P 2)"), "String");
     assert_ne!(
-        errors("type P { f: Integer -> Integer }\nshow (P (x => x))"),
+        errors("type P: Show { f: Integer -> Integer }\nshow (P (x => x))"),
         []
     );
-    let shape = "type Shape where self.area: F64\ntype C { r: F64 }\nimpl C { area = self => self.r }\nf: Shape -> F64 = x => x.area\nC 2 | f";
+    let shape = "type Shape where self.area: F64\ntype C: Shape { r: F64 }\nimpl C: Shape { area = self => self.r }\nf: Shape -> F64 = x => x.area\nC 2 | f";
     assert_eq!(ty(shape), "F64");
 }
 

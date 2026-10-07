@@ -129,7 +129,7 @@ prefix and suffix. A name with no uppercase letter touching the opening
 quote is its prefix, `re"a+b"`; a one-segment name touching the closing
 quote is its suffix, `"a+b"i`. A keyword is neither, and another word
 beside a quote is a token of its own. `f "abc"` applies `f`; `f"abc"` is
-a prefix. `b"…"` is the prefix `b`, bytes by the prelude's claim. With a
+a prefix. `b"…"` is the prefix `b`, bytes by the prelude's reader. With a
 prefix or suffix a decoded quote carries its bytes, which need not be
 UTF-8. A raw quote crosses LF, keeping its bytes and indentation; it
 closes at the next `'` and has no escapes. A decoded quote crosses LF only

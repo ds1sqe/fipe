@@ -260,7 +260,7 @@ fn a_duplicate_in_one_entry_names_its_first_site() {
 fn an_ambiguity_names_its_class() {
     let text = written(Repl::new().feed(b"[] == []\n"));
     let line = text.lines().next().unwrap();
-    assert_eq!(line, "1:4: ambiguous: `eq` on an unknown type");
+    assert_eq!(line, "1:4: ambiguous: `Eq` on an unknown type");
 }
 
 #[test]
@@ -539,8 +539,8 @@ fn member_schemes_and_type_parameter_defaults_are_visible() {
             .feed(b"type Op<R = Self, O = Self> where self.op: R -> O\n:ast\n"),
     );
     assert_eq!(text.matches("Default").count(), 2, "{text}");
-    let text = written(Repl::new().feed(b"type V { x: F64 }\nimpl V { mul = k self => Self (self.x * k) }\nv = V 1.0\n:t v * 2.0\n"));
-    assert!(text.contains("missing member V.literal"), "{text}");
+    let text = written(Repl::new().feed(b"type V: Mul<F64> { x: F64 }\nimpl V: Mul<F64> { mul = k self => Self (self.x * k) }\nv = V 1.0\n:t v * 2.0\n"));
+    assert!(text.contains("V does not claim Literal"), "{text}");
     let text = written(Repl::new().feed(b"n = 1\n:t n.nope\n"));
     assert!(
         text.contains("no such field or member on Integer"),
@@ -606,4 +606,15 @@ fn quotes_continue_across_physical_input_lines() {
     let text = written(repl.feed(b"x = \"unterminated\ny = 2\n:t y\n"));
     assert!(text.contains("unterminated quote"), "{text}");
     assert!(text.contains("y: Integer"), "{text}");
+}
+
+#[test]
+fn ast_shows_impl_claim() {
+    let text = written(
+        Repl::new()
+            .feed(b"impl Vec2: Mul<F64> { mul = k self => self }\n:ast\n"),
+    );
+    assert!(text.contains("Claim"), "{text}");
+    assert!(text.contains("Mul"), "{text}");
+    assert!(text.contains("F64"), "{text}");
 }

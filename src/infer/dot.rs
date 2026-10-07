@@ -75,8 +75,7 @@ impl<'a> Infer<'a> {
             let ready: Vec<usize> = (0..self.state.obligations.len())
                 .filter(|index| {
                     let owed = &self.state.obligations[*index];
-                    matches!(owed.obligation, Obligation::Member { .. })
-                        && !owed.solved
+                    !owed.solved
                         && !matches!(
                             self.apply(owed.obligation.subject()),
                             Type::Var(_)
@@ -107,7 +106,11 @@ impl<'a> Infer<'a> {
             name,
             ty,
             dot,
-        } = &owed.obligation;
+        } = &owed.obligation
+        else {
+            self.claim(owed);
+            return;
+        };
         let original = self.apply(head);
         let (head, dot) = (
             super::meaning(&original).clone(),
@@ -118,15 +121,7 @@ impl<'a> Infer<'a> {
             },
         );
         if matches!(head, Type::Rigid(_)) {
-            let supplied = self.state.obligations.iter().find_map(|o| {
-                let Obligation::Member {
-                    head: h,
-                    name: n,
-                    ty: t,
-                    ..
-                } = &o.obligation;
-                (o.assumed && h == &head && n == name).then(|| t.clone())
-            });
+            let supplied = self.assumed_member(&head, name, dot);
             if let Some(supplied) = supplied {
                 self.unify(ty, &supplied, dot, owed.span);
                 return;
@@ -159,6 +154,16 @@ impl<'a> Infer<'a> {
                 return;
             }
         }
+        if self.member_choices(&head, name).len() > 1 {
+            let expected = self.apply(ty);
+            let source = match &expected {
+                Type::Function { parameter, .. } => (**parameter).clone(),
+                _ => self.fresh(),
+            };
+            let selected = self.select_member(&head, name, &source, dot);
+            self.unify(ty, &selected, dot, owed.span);
+            return;
+        }
         let value = if let Some(field) = self.field(&head, name) {
             field
         } else if let Some(mut callee) = self.self_function(name, &head, dot) {
@@ -181,6 +186,45 @@ impl<'a> Infer<'a> {
         self.unify(ty, &value, dot, owed.span);
     }
 
+    fn assumed_member(
+        &mut self,
+        head: &Type,
+        name: &str,
+        dot: Span,
+    ) -> Option<Type> {
+        let assumed: Vec<_> = self
+            .state
+            .obligations
+            .iter()
+            .filter(|o| o.assumed)
+            .map(|o| o.obligation.clone())
+            .collect();
+        let mut members = Vec::new();
+        for obligation in assumed {
+            match obligation {
+                Obligation::Member { .. } => members.push(obligation),
+                Obligation::Claim { head: h, class, .. } if h == *head => {
+                    members.extend(self.member_limits(
+                        &class,
+                        head,
+                        dot,
+                        &mut Vec::new(),
+                    ));
+                }
+                Obligation::Claim { .. } => {}
+            }
+        }
+        members.into_iter().find_map(|o| match o {
+            Obligation::Member {
+                head: h,
+                name: n,
+                ty: t,
+                ..
+            } if h == *head && n == *name => Some(t),
+            _ => None,
+        })
+    }
+
     /// A readable field of a record type.
     fn field(&mut self, ty: &Type, name: &str) -> Option<Type> {
         if let Some(fields) = self.fields(ty) {
@@ -197,7 +241,10 @@ impl<'a> Infer<'a> {
                     name: n,
                     ty: member,
                     ..
-                } = o;
+                } = o
+                else {
+                    return None;
+                };
                 (n == name && (name == "eq" || !contains_type(&member, ty)))
                     .then_some(member)
             })
@@ -212,6 +259,12 @@ impl<'a> Infer<'a> {
         ty: &Type,
         span: Span,
     ) -> Option<Callee> {
+        if self.hidden_member(ty, name) {
+            return None;
+        }
+        if let Some(callee) = self.overloaded_member(ty, name) {
+            return Some(callee);
+        }
         let mut keys = Vec::new();
         if let Type::Named { name: owner, .. } = ty {
             if matches!(owner.origin, Origin::This | Origin::Line(_)) {
@@ -264,9 +317,8 @@ impl<'a> Infer<'a> {
             {
                 return Some(callee);
             }
-            return self.derived_member(ty, name, span);
         }
-        None
+        self.derived_member(ty, name, span)
     }
 
     /// `.name` as a value: `a -> b` with the member obligation
@@ -314,8 +366,20 @@ impl<'a> Infer<'a> {
             self.error(span, Reason::NotAFunction);
             return Callee::plain(self.fresh());
         };
-        if matches!(member, "from" | "try_from") {
+        if matches!(member, "from" | "try_from") && self.claims(&named, true).iter().any(|class| matches!(class, Type::Named { name, .. } if name.origin == Origin::Prelude && name.name == (if member == "from" { "From" } else { "TryFrom" }))) {
             return self.conversion_callee(named, member);
+        }
+        if self.hidden_member(&named, member) {
+            self.error(
+                span,
+                Reason::PrivateMember {
+                    member: String::from(member),
+                },
+            );
+            return Callee::plain(self.fresh());
+        }
+        if let Some(callee) = self.overloaded_member(&named, member) {
+            return callee;
         }
         let Type::Named { name: owner, .. } = &named else {
             unreachable!()
@@ -340,25 +404,47 @@ impl<'a> Infer<'a> {
         self.supplied_member(&owner.origin, &owner.name, &named, member, span)
             .or_else(|| self.derived_member(&named, member, span))
             .unwrap_or_else(|| {
-                self.error(
-                    span,
-                    Reason::MissingMember {
-                        ty: named.clone(),
-                        name: String::from(member),
-                    },
-                );
+                let missing = self.claims(&named, false).into_iter().find(|class| self.member_limits(class,&named,span,&mut Vec::new()).iter().any(|o| matches!(o,Obligation::Member { name, .. } if name == member)));
+                let reason = missing.map_or_else(|| Reason::MissingMember { ty: named.clone(), name: String::from(member) }, |claim| Reason::MissingClaim { ty: named.clone(), claim });
+                self.error(span,reason);
                 Callee::plain(self.fresh())
             })
     }
 
-    fn derived_member(
+    pub(super) fn derived_member(
         &mut self,
         ty: &Type,
         member: &str,
         span: Span,
     ) -> Option<Callee> {
+        if member == "default"
+            && self.has_claim(ty, &super::prelude("Default"))
+            && self.default_available(ty)
+        {
+            return Some(Callee::plain(ty.clone()));
+        }
         if !matches!(member, "eq" | "cmp" | "show") {
             return None;
+        }
+        let class = super::prelude(match member {
+            "eq" => "Eq",
+            "cmp" => "Ord",
+            _ => "Show",
+        });
+        if !self.has_claim(ty, &class) {
+            return None;
+        }
+        let result = super::prelude(match member {
+            "eq" => "Bool",
+            "cmp" => "Ordering",
+            _ => "String",
+        });
+        if let Type::Array { element, .. } = ty {
+            self.require_claim((**element).clone(), class, span);
+            return Some(Self::derived_callee(ty, result, member, span));
+        }
+        if *ty == Type::Unit {
+            return Some(Self::derived_callee(ty, result, member, span));
         }
         let Type::Named { name, arguments } = ty else {
             return None;
@@ -392,27 +478,21 @@ impl<'a> Infer<'a> {
         } else {
             return None;
         };
-        let result = super::prelude(match member {
-            "eq" => "Bool",
-            "cmp" => "Ordering",
-            _ => "String",
-        });
         for field in fields {
-            let member_ty = if member == "show" {
-                result.clone()
-            } else {
-                Type::function(field.clone(), result.clone())
-            };
-            let present = self.state.obligations.iter().any(|o| {
-                let Obligation::Member { head, name, ty, .. } = &o.obligation;
-                name == member
-                    && self.apply(head) == field
-                    && self.apply(ty) == member_ty
-            });
+            let present = self.state.obligations.iter().any(|o| matches!(&o.obligation, Obligation::Claim { head, class: c, .. } if self.apply(head) == field && *c == class));
             if !present {
-                self.require_member(field, member, member_ty, span);
+                self.require_claim(field, class.clone(), span);
             }
         }
+        Some(Self::derived_callee(ty, result, member, span))
+    }
+
+    fn derived_callee(
+        ty: &Type,
+        result: Type,
+        member: &str,
+        span: Span,
+    ) -> Callee {
         let mut spots = Vec::new();
         if member != "show" {
             spots.push(super::Slot {
@@ -434,7 +514,7 @@ impl<'a> Infer<'a> {
         let mut callee = Callee::plain(result);
         callee.spots = Some(spots);
         callee.self_slot = Some(slot);
-        Some(callee)
+        callee
     }
 
     pub(super) fn conversion_members(
@@ -577,7 +657,7 @@ impl<'a> Infer<'a> {
 
     /// The modules that may hold impls of type `ty`: its own, or for an
     /// accepted line's type, this module and the lines with its impls.
-    fn impl_scopes(
+    pub(super) fn impl_scopes(
         &self,
         origin: &Origin,
         ty: &str,

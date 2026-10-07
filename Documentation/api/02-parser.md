@@ -48,7 +48,7 @@ Docs do not participate in lookup or checking except declaration spot lists.
 | `(a, b)` | tuple, in values and patterns |
 | `A -> B`, `A * B`, `A & B`, `A | B`, `!A` | curried function type; tuple type; both, either and not, each sign one flat node |
 | `Show a => T`, `b.age: a => T`, `(x: T = v) -> U` | qualified type with constraints; labeled parameter with a default |
-| `use`, `type`, `impl`, `name: T` | items with visibility; declarations keep parameters, constraints, a base and limits, each limit a member limit or a test; a `type` without a body has no member list; an impl member may have no value |
+| `use`, `type`, `impl`, `name: T` | items with visibility; declarations keep parameters, constraints, a base and limits, each limit a member limit or a test; a `type` without a body has no member list; an impl keeps `claim: Option<TypeId>`; an impl member may have no value |
 
 No parser rule decides which spot an argument fills, whether a dot is a
 field or a module, or whether a declaration form is allowed; checking

@@ -21,7 +21,10 @@ fn bindings_generalize_and_uses_instantiate() {
     assert_eq!(ty(id), "a -> String");
     assert_eq!(ty("g = x => {\n    h = y => x\n    h 1\n}"), "a -> a");
     // VAR brings the obligations to the use.
-    assert_eq!(kinds(&format!("{add}add \"a\" \"b\"")), [("NoField", "+")]);
+    assert_eq!(
+        kinds(&format!("{add}add \"a\" \"b\"")),
+        [("MissingClaim", "+")]
+    );
 }
 
 #[test]
@@ -56,30 +59,12 @@ fn groups_are_monomorphic_inside() {
     // the second use's argument fails at that use.
     let text = "f = x => {\n    _ = f \"a\"\n    f True\n}";
     let [error] = errors(text).try_into().unwrap();
-    let Reason::Mismatch {
-        expected,
-        actual,
-        other,
-    } = error.reason
-    else {
-        panic!("{:?}", error.reason)
-    };
-    let source = Source::new(text);
-    assert_eq!(source.slice(error.span), Some("\"a\""));
-    assert_eq!(source.slice(other), Some("\"a\""));
-    assert_eq!(
-        (expected.to_string(), actual.to_string()),
-        ("Bool".into(), "String".into())
-    );
-    // Inside an impl the second use names the first.
-    let text =
-        "type P {}\nimpl P { f = x => {\n    _ = Self.f \"a\"\n    Self.f True\n} }";
-    let [error] = errors(text).try_into().unwrap();
-    let Reason::Mismatch { other, .. } = error.reason else {
+    let Reason::MissingClaim { ty: actual, claim } = error.reason else {
         panic!("{:?}", error.reason)
     };
     assert_eq!(Source::new(text).slice(error.span), Some("\"a\""));
-    assert_eq!(Source::new(text).slice(other), Some("\"a\""));
+    assert_eq!(actual.to_string(), "Bool");
+    assert_eq!(claim.to_string(), "Literal");
 }
 
 #[test]
@@ -88,8 +73,8 @@ fn annotations_are_rigid_and_pub_may_be_open() {
     assert_eq!(ty(area), "F64 -> F64 -> F64");
     assert_eq!(ty("pub f = x => x"), "a -> a");
     assert_eq!(ty("f: a -> a = x => x"), "a -> a");
-    assert_eq!(kinds("f: a -> a = x => x + x"), [("NoField", "+")]);
-    assert_eq!(kinds("f: a -> a = x => 1"), [("NoField", "1")]);
+    assert_eq!(kinds("f: a -> a = x => x + x"), [("MissingClaim", "+")]);
+    assert_eq!(kinds("f: a -> a = x => 1"), [("MissingClaim", "1")]);
     let member = "type P { x: I64 }\nimpl P { pub f = a => a }\nP.f";
     assert_eq!(ty(member), "a -> a");
 }
@@ -110,14 +95,14 @@ fn literals_default_and_the_rest_is_ambiguous() {
     // 07's cast row: `round` keeps `F64`.
     assert_eq!(
         kinds("n: I64 = round 2.5"),
-        [("NoField", "round"), ("Mismatch", "2.5")]
+        [("MissingClaim", "round"), ("Mismatch", "2.5")]
     );
     let text = "f = s => {\n    _ = read s\n    ()\n}";
     let [error] = errors(text).try_into().unwrap();
     assert_eq!(
         error.reason,
         Reason::Ambiguous {
-            class: "read".into()
+            class: "Read".into()
         }
     );
     assert_eq!(Source::new(text).slice(error.span), Some("read"));

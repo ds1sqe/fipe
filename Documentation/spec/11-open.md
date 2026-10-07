@@ -14,7 +14,7 @@ Ruled 2026-09-30: a program's prefix and suffix on a number or quote
 ([lexical](01-lexical.md) §Numbers, §Quoted literals; [members](04-members.md)
 §Literals). Open:
 
-- The claim's spelling. **Proposed:** in the type's `impl`, exported by
+- The reader's spelling. **Proposed:** in the type's `impl`, exported by
   `pub` and brought in by `use`: `impl Regex { literal re"" = f => … }`,
   `impl Complex { literal ""i = f => … }`.
 - Whether a path, a word and a bracket take a prefix or suffix.

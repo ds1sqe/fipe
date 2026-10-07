@@ -67,13 +67,13 @@ divmod: Integer -> Integer -> Integer * Integer = a b => (a / b, a % b)
 ends: U8 * U8 = (0, 255)
 rgb: [U8; 3] = [255, 128, 0]                  # Size<3>
 type Pair<A, B> { first: A, second: B }
-type Ring<T, n> { slots: [T; n], at: Natural }
+type Ring<T, n>: Sequence<T> { slots: [T; n], at: Natural }
 type Sorted<T: Ord>: Vec<T> where is_sorted self
 
 type Sequence<T> where Self.sequence: [T; n] -> Self
 type Items<T> where self.fold: b -> (b -> T -> b) -> b
-impl Vec<T>     { sequence: [T; n] -> Self }               # supplied
-impl Ring<T, n> { sequence = slots => Self slots 0 }
+impl Vec<T>: Sequence<T>     { sequence: [T; n] -> Self }  # supplied
+impl Ring<T, n>: Sequence<T> { sequence = slots => Self slots 0 }
 xs = [1, 2, 3]                                   # [Integer; 3]
 zs = xs ++ [4, 5]                                # [Integer; 5]
 shapes: Vec<Shape> = [Circle 1.0, Square 2.0]    # packed, then sequence

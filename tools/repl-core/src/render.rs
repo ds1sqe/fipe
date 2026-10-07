@@ -115,9 +115,11 @@ pub fn infer(reason: &infer::Reason) -> String {
         ),
         R::Occurs => "a type that would contain itself".into(),
         R::UnknownFamily => "no outcome family is known here".into(),
+        R::ClaimBlock { claim, problem } => format!("claim {claim} {problem}"),
+        R::MissingClaim { ty, claim } => format!("{ty} does not claim {claim}, or its claim block is not yet written"),
         R::MissingMember { ty, name } => format!("missing member {ty}.{name}"),
         R::NoField { ty, .. } => format!("no such field or member on {ty}"),
-        R::Conversion { target, candidates } => format!("conversion to {target} needs a known source meaning; candidates: {}", candidates.iter().map(ToString::to_string).collect::<alloc::vec::Vec<_>>().join(", ")),
+        R::Conversion { target, candidates } => format!("{target} needs a known argument meaning; candidates: {}", candidates.iter().map(ToString::to_string).collect::<alloc::vec::Vec<_>>().join(", ")),
         R::ConflictingConversion => "a conversion for this source meaning is already declared".into(),
         R::NoCommonMeaning { forms } => format!("no meaning reads all literal forms: {}", forms.join(", ")),
         R::NotAFunction => "not a function".into(),
@@ -143,6 +145,7 @@ pub fn declaration(reason: &decl::Reason, text: &str) -> String {
     use decl::Reason as R;
     match reason {
         R::Syntax(reason) => syntax(*reason),
+        R::ClaimBlock { problem } => format!("invalid claim block: {problem}"),
         R::UnknownDocSpot { name } => {
             format!("doc names unknown spot `{name}`")
         }

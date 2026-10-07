@@ -1,16 +1,16 @@
 # A library module: `05-modules.fipe` imports `Point` and `Polar` from it.
 ## A point with integer coordinates.
-pub type Point {
+pub type Point: Eq & Ord & Show & Read {
     ## The horizontal coordinate.
     pub x: I64,
     ## The vertical coordinate.
     pub y: I64 = 0,
 }
-impl Point {
+impl Point: Show {
     ## Render a value as text.
     pub show: Self -> String = self => join "," [show self.x, show self.y],
 }
-impl Point {
+impl Point: Read {
     ## Read text as the requested meaning.
     pub read: String -> Result<Self, ParseError> = s => s | split "," | map read<I64> | collect |: {
         [x, y] => Ok (Self x y),
@@ -19,17 +19,17 @@ impl Point {
 }
 
 ## A point in polar coordinates.
-pub type Polar {
+pub type Polar: Eq & Ord & Show & From<Point> {
     ## The radius.
     pub r: F64,
     ## The angle.
     pub t: F64,
 }
-impl Polar {
+impl Polar: From<Point> {
     ## Convert from the source meaning.
     pub from: Point -> Self = p => Self { r: hypot p.x p.y, t: atan2 p.y p.x },
 }
-impl Polar {
+impl Polar: Show {
     ## Render a value as text.
     pub show: Self -> String = self => join "@" [show self.r, show self.t],
 }

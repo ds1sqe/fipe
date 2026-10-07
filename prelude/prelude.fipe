@@ -34,36 +34,36 @@ pub type Deque<T>
 ## A failed limit check.
 pub type LimitError
 ## A truth value.
-pub type Bool { True, False }
+pub type Bool: Eq & Ord & Show & Not & Default { True, False }
 ## UTF-8 text.
-pub type String { bytes: Vec<U8> }
+pub type String: Eq & Ord & Concat & Show & Len & Literal { bytes: Vec<U8> }
 ## The result of comparing two values.
-pub type Ordering { Less, Equal, Greater }
+pub type Ordering: Eq & Ord & Show { Less, Equal, Greater }
 ## A value or its absence.
-pub type Maybe<T> { Just(v: T), Nothing }
+pub type Maybe<T>: Eq & Ord & Show & Default { Just(v: T), Nothing }
 ## A success value or an error.
-pub type Result<T, E> { Ok(v: T), Err(e: E) }
+pub type Result<T, E>: Eq & Ord & Show { Ok(v: T), Err(e: E) }
 ## One of two alternatives.
-pub type Either<L, R> { Left(l: L), Right(r: R) }
+pub type Either<L, R>: Eq & Ord & Show { Left(l: L), Right(r: R) }
 ## An error reading text as a value.
-pub type ParseError {
+pub type ParseError: Eq & Ord & Show {
     ## The error message.
     pub message: String,
 }
 ## An invalid UTF-8 byte sequence.
-pub type Utf8Error {
+pub type Utf8Error: Eq & Ord & Show {
     ## The failing byte position.
     pub at: Natural,
 }
 ## An item and its occurrence count.
-pub type Count<T> {
+pub type Count<T>: Eq & Ord & Show {
     ## The counted item.
     pub item: T,
     ## The occurrence count.
     pub n: Natural,
 }
 ## The exact written form of a literal.
-pub type Form {
+pub type Form: Eq & Ord & Show {
     Whole(value: Integer, radix: U8, digits: Natural, prefix: String, suffix: String),
     Fraction(digits: Integer, exponent: Integer, prefix: String, suffix: String),
     Text(value: String, prefix: String, suffix: String),
@@ -99,11 +99,15 @@ pub type Literal where Self.literal: Form -> Self
 pub type From<A> where Self.from: A -> Self
 ## A fallible conversion from another meaning.
 pub type TryFrom<A, E> where Self.try_from: A -> Result<Self, E>
+## The additive identity.
+pub type Zero where Self.zero: Self
+## The value of an empty place.
+pub type Default where Self.default: Self
 ## Arithmetic, ordering and literal members.
 pub type Number: Add & Sub & Mul & Div & Rem & Ord & Literal
 ## Number members and rounding.
 pub type Float: Number where self.round: Self
-impl Integer {
+impl Integer: Number {
     add: Self -> (self: Self) -> Self,
     sub: Self -> (self: Self) -> Self,
     mul: Self -> (self: Self) -> Self,
@@ -111,11 +115,31 @@ impl Integer {
     rem: Self -> (self: Self) -> Self,
     eq: Self -> (self: Self) -> Bool,
     cmp: Self -> (self: Self) -> Ordering,
-    show: (self: Self) -> String,
-    read: String -> Result<Self, ParseError>,
     literal: Form -> Self,
 }
+impl Integer: Show { show: (self: Self) -> String }
+impl Integer: Read { read: String -> Result<Self, ParseError> }
+impl Integer: Zero { zero: Self }
+impl F32: Float {
+    add: Self -> (self: Self) -> Self,
+    sub: Self -> (self: Self) -> Self,
+    mul: Self -> (self: Self) -> Self,
+    div: Self -> (self: Self) -> Self,
+    rem: Self -> (self: Self) -> Self,
+    eq: Self -> (self: Self) -> Bool,
+    cmp: Self -> (self: Self) -> Ordering,
+    literal: Form -> Self,
+    round: (self: Self) -> Self,
+}
+impl F32: Show { show: (self: Self) -> String }
+impl F32: Read { read: String -> Result<Self, ParseError> }
+impl F32: Zero { zero: Self }
 impl F32 {
+    trunc: (self: Self) -> Self,
+    floor: (self: Self) -> Self,
+    ceil: (self: Self) -> Self,
+}
+impl F64: Float {
     add: Self -> (self: Self) -> Self,
     sub: Self -> (self: Self) -> Self,
     mul: Self -> (self: Self) -> Self,
@@ -123,43 +147,38 @@ impl F32 {
     rem: Self -> (self: Self) -> Self,
     eq: Self -> (self: Self) -> Bool,
     cmp: Self -> (self: Self) -> Ordering,
-    show: (self: Self) -> String,
-    read: String -> Result<Self, ParseError>,
     literal: Form -> Self,
     round: (self: Self) -> Self,
-    trunc: (self: Self) -> Self,
-    floor: (self: Self) -> Self,
-    ceil: (self: Self) -> Self,
 }
+impl F64: Show { show: (self: Self) -> String }
+impl F64: Read { read: String -> Result<Self, ParseError> }
+impl F64: Zero { zero: Self }
 impl F64 {
-    add: Self -> (self: Self) -> Self,
-    sub: Self -> (self: Self) -> Self,
-    mul: Self -> (self: Self) -> Self,
-    div: Self -> (self: Self) -> Self,
-    rem: Self -> (self: Self) -> Self,
-    eq: Self -> (self: Self) -> Bool,
-    cmp: Self -> (self: Self) -> Ordering,
-    show: (self: Self) -> String,
-    read: String -> Result<Self, ParseError>,
-    literal: Form -> Self,
-    round: (self: Self) -> Self,
     trunc: (self: Self) -> Self,
     floor: (self: Self) -> Self,
     ceil: (self: Self) -> Self,
 }
-impl Bool { not: (self: Self) -> Self }
-impl String {
-    concat: Self -> (self: Self) -> Self,
-    show: (self: Self) -> String,
-    len: (self: Self) -> Natural,
-    literal: Form -> Self,
+impl Bool: Not { not: (self: Self) -> Self }
+impl String: Concat { concat: Self -> (self: Self) -> Self }
+impl String: Show { show: (self: Self) -> String }
+impl String: Len { len: (self: Self) -> Natural }
+impl String: Literal { literal: Form -> Self }
+impl Vec: Concat { concat: Vec<a> -> (self: Vec<a>) -> Vec<a> }
+impl Vec: Len { len: (self: Vec<a>) -> Natural }
+impl Vec: Literal { literal: Form -> Vec<U8> }
+impl Vec: Eq { eq: Eq a => Vec<a> -> (self: Vec<a>) -> Bool }
+impl Vec: Ord {
+    cmp: Ord a => Vec<a> -> (self: Vec<a>) -> Ordering,
 }
-impl Vec {
-    concat: Vec<a> -> (self: Vec<a>) -> Vec<a>,
-    len: (self: Vec<a>) -> Natural,
-    literal: Form -> Vec<U8>,
-    map: (a -> b) -> (self: Vec<a>) -> Vec<b>,
+impl Vec: Show { show: Show a => (self: Vec<a>) -> String }
+impl Vec: Default { default: Vec<a> }
+impl Deque: Eq { eq: Eq a => Deque<a> -> (self: Deque<a>) -> Bool }
+impl Deque: Ord {
+    cmp: Ord a => Deque<a> -> (self: Deque<a>) -> Ordering,
 }
+impl Deque: Show { show: Show a => (self: Deque<a>) -> String }
+impl Deque: Default { default: Deque<a> }
+impl Vec { map: (a -> b) -> (self: Vec<a>) -> Vec<b> }
 impl Maybe {
     map: (a -> b) -> (self: Maybe<a>) -> Maybe<b>,
     pure: a -> Maybe<a>,

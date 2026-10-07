@@ -142,8 +142,8 @@ impl Infer<'_> {
         let ty = self.apply(ty);
         matches!(ty, Type::Var(_))
             && self.state.obligations.iter().any(|owed| {
-                matches!(&owed.obligation, Obligation::Member { name, head, .. }
-                    if name == "literal" && self.apply(head) == ty)
+                matches!(&owed.obligation, Obligation::Claim { class, head, .. }
+                    if is_prelude(class, "Literal") && self.apply(head) == ty)
             })
     }
 
@@ -162,10 +162,9 @@ impl Infer<'_> {
         for (head, form, dot) in &scheme.literals {
             let head = crate::types::replace(head, &fresh);
             let mut owed = Owed::new(
-                Obligation::Member {
-                    head: head.clone(),
-                    name: String::from("literal"),
-                    ty: Type::function(prelude("Form"), head),
+                Obligation::Claim {
+                    head,
+                    class: prelude("Literal"),
                     dot: *dot,
                 },
                 span,
@@ -213,7 +212,11 @@ impl Infer<'_> {
         loop {
             let before = vars.len();
             for owed in self.state.obligations.iter().filter(|o| !o.solved) {
-                let Obligation::Member { head, ty, .. } = &owed.obligation;
+                let head = owed.obligation.subject();
+                let ty = match &owed.obligation {
+                    Obligation::Member { ty, .. } => ty,
+                    Obligation::Claim { class, .. } => class,
+                };
                 if let Type::Var(var) = self.apply(head) {
                     if vars.contains(&var) {
                         self.apply(ty).variables(vars);
@@ -329,7 +332,7 @@ impl Infer<'_> {
             .map(|(((part, ty), obligations), literals)| {
                 let mut scheme =
                     self.scheme(part, ty, obligations, literals, &env);
-                scheme.folds = self.fold_names(&scheme);
+                self.trim_claims(&mut scheme);
                 scheme
             })
             .collect()
@@ -339,7 +342,12 @@ impl Infer<'_> {
     fn left(&mut self, left: Vec<Obligation>, site: Span) {
         let mut errors: Vec<Error> = Vec::new();
         for obligation in left {
-            let Obligation::Member { name, dot, .. } = obligation;
+            let (name, dot) = match obligation {
+                Obligation::Member { name, dot, .. } => (name, dot),
+                Obligation::Claim { class, dot, .. } => {
+                    (alloc::format!("{class}"), dot)
+                }
+            };
             let error = Error {
                 span: if dot == Span::default() { site } else { dot },
                 reason: Reason::Ambiguous { class: name },
@@ -368,9 +376,8 @@ impl Infer<'_> {
             variables.retain(|var| !env.contains(var));
             return Scheme {
                 variables,
-                literals,
-                folds: Vec::new(),
                 obligations,
+                literals,
                 ty,
             };
         }
@@ -389,7 +396,6 @@ impl Infer<'_> {
                     (unrigid(ty, &fresh), form.clone(), *span)
                 })
                 .collect(),
-            folds: Vec::new(),
             obligations: obligations
                 .iter()
                 .map(|o| o.map(|t| unrigid(t, &fresh)))
@@ -437,7 +443,7 @@ impl Infer<'_> {
         self.close(&mut stay);
         let mut left = Vec::new();
         for owed in &mut self.state.obligations {
-            let Obligation::Member { head, .. } = &owed.obligation;
+            let head = owed.obligation.subject();
             let head = self.state.subst.apply(head);
             if !owed.solved
                 && matches!(head, Type::Var(v) if !stay.contains(&v))
@@ -473,8 +479,8 @@ impl Infer<'_> {
                         && self.apply(o.obligation.subject()) == Type::Var(var)
                 })
                 .collect();
-            let literal = held.iter().any(|o| matches!(&o.obligation, Obligation::Member { name, .. } if name == "literal"));
-            let only = held.iter().all(|o| matches!(&o.obligation, Obligation::Member { name, .. } if name == "literal"));
+            let literal = held.iter().any(|o| matches!(&o.obligation, Obligation::Claim { class, .. } if is_prelude(class, "Literal")));
+            let only = held.iter().all(|o| matches!(&o.obligation, Obligation::Claim { class, .. } if is_prelude(class, "Literal")));
             if !literal || (stay.contains(&var) && !only) {
                 continue;
             }
@@ -662,19 +668,6 @@ pub(super) fn applied(scheme: &Scheme, subst: &Subst) -> Scheme {
             .obligations
             .iter()
             .map(|obligation| obligation.map(|ty| subst.apply(ty)))
-            .collect(),
-        folds: scheme
-            .folds
-            .iter()
-            .map(|(name, members)| {
-                (
-                    subst.apply(name),
-                    members
-                        .iter()
-                        .map(|o| o.map(|ty| subst.apply(ty)))
-                        .collect(),
-                )
-            })
             .collect(),
         literals: scheme
             .literals

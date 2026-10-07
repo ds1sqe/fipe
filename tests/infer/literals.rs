@@ -27,7 +27,7 @@ fn forms_choose_together_and_widths_keep_their_names() {
 
 #[test]
 fn a_program_literal_member_accepts_a_form_without_evaluating_it() {
-    let mask = "type Mask { bits: U8 }\nimpl Mask { literal = f => Self 0 }\n";
+    let mask = "type Mask: Literal { bits: U8 }\nimpl Mask: Literal { literal = f => Self 0 }\n";
     assert_eq!(ty(&format!("{mask}m: Mask = 0b0000_1111")), "Mask");
 }
 
@@ -40,10 +40,10 @@ fn arithmetic_right_operands_and_literal_ties() {
         ty("double: Add a => a -> a = n => n + n"),
         "Add a => a -> a"
     );
-    let vector = "type V { x: F64 }\nimpl V { mul: F64 -> Self -> Self = k self => Self (self.x * k) }\nv = V 1.0\n";
+    let vector = "type V: Mul<F64> { x: F64 }\nimpl V: Mul<F64> { mul: F64 -> Self -> Self = k self => Self (self.x * k) }\nv = V 1.0\n";
     assert_eq!(ty(&format!("{vector}k: F64 = 2\nv * k")), "V");
     assert!(matches!(errors(&format!("{vector}v * 2.0")).as_slice(),
-        [fipe::infer::Error { reason: fipe::infer::Reason::MissingMember { name, .. }, .. }] if name == "literal"));
+        [fipe::infer::Error { reason: fipe::infer::Reason::MissingClaim { claim: fipe::types::Type::Named { name, .. }, .. }, .. }] if name.name == "Literal"));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn generic_literal_forms_survive_instantiation() {
 fn arithmetic_results_follow_a_known_receivers_member() {
     assert_eq!(ty("diff = p q => p - q"), "Sub<b> a => a -> b -> a");
     assert_eq!(ty("diff = p => p - p"), "Sub a => a -> a");
-    let source = "type Vector { x: F64 }\ntype Point { x: F64 }\nimpl Point { sub: Self -> Self -> Vector = q self => Vector (self.x - q.x) }\ndiff: Point -> Point -> Vector = p q => p - q";
+    let source = "type Vector { x: F64 }\ntype Point: Sub<Self, Vector> { x: F64 }\nimpl Point: Sub<Self, Vector> { sub: Self -> Self -> Vector = q self => Vector (self.x - q.x) }\ndiff: Point -> Point -> Vector = p q => p - q";
     assert_eq!(ty(source), "Point -> Point -> Vector");
 }
 

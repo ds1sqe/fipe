@@ -214,9 +214,13 @@ impl Infer<'_> {
         }
         self.supply(&slots, &filled, stage);
         if let Some((target, kind)) = &callee.conversion {
-            if filled.first().is_some_and(Option::is_some) {
+            let member =
+                !matches!(kind.as_str(), "from" | "try_from" | "to" | "try");
+            let source_slot =
+                usize::from(member && callee.self_slot == Some(0));
+            if filled.get(source_slot).is_some_and(Option::is_some) || member {
                 self.default_literals(mark, &[], &[]);
-                let source = self.apply(&slots[0].ty);
+                let source = self.apply(&slots[source_slot].ty);
                 let converted = self.convert(target, kind, &source, stage);
                 self.unify(&result, &converted, stage, stage);
             }
@@ -427,6 +431,9 @@ impl Infer<'_> {
             }
             return self.fresh();
         };
+        // An overload can be chosen only after all this call's operands
+        // have entered their spots (including a selector's argument).
+        let solving = core::mem::replace(&mut self.state.solving_dots, true);
         if let Some((ty, span)) = pipe {
             self.enter(&parameters[count - 1], &ty, span, stage);
         }
@@ -438,6 +445,7 @@ impl Infer<'_> {
             };
             self.expr(operand, Some(&expected));
         }
+        self.state.solving_dots = solving;
         result
     }
 

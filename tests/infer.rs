@@ -87,6 +87,8 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::Mismatch { .. } => "Mismatch",
         Reason::Occurs => "Occurs",
         Reason::UnknownFamily => "UnknownFamily",
+        Reason::ClaimBlock { .. } => "ClaimBlock",
+        Reason::MissingClaim { .. } => "MissingClaim",
         Reason::MissingMember { .. } => "MissingMember",
         Reason::NoField { .. } => "NoField",
         Reason::NoCommonMeaning { .. } => "NoCommonMeaning",
@@ -162,7 +164,7 @@ fn literals_and_arithmetic() {
             forms: vec!["Whole".into(), "Text".into()]
         }
     );
-    assert_eq!(kinds("\"a\" + \"b\""), [("NoField", "+")]);
+    assert_eq!(kinds("\"a\" + \"b\""), [("MissingClaim", "+")]);
 }
 
 #[test]
@@ -182,8 +184,8 @@ fn arms_share_their_input_and_result_types() {
     let Type::Var(var) = a else { panic!("{a}") };
     assert_eq!(scheme.variables, [var]);
     assert_eq!(**result, Type::function(a.clone(), a.clone()));
-    assert_eq!(scheme.obligations.len(), 2);
-    assert!(scheme.obligations.iter().any(|o| matches!(o, Obligation::Member { name, head, .. } if name == "cmp" && head == &a)));
+    assert_eq!(scheme.obligations.len(), 1);
+    assert!(scheme.obligations.iter().any(|o| matches!(o, Obligation::Claim { class: Type::Named { name, .. }, head, .. } if name.name == "Ord" && head == &a)));
     assert_eq!(typed.unsolved, Vec::<Obligation>::new());
     // A dot on an unknown head is a member obligation in the scheme.
     assert_eq!(ty("f = x => x.size"), "a.size: b => a -> b");
@@ -251,7 +253,7 @@ fn outcomes_follow_their_family() {
     // The fallback `"d"` is not `find`'s `Entry`.
     assert_eq!(
         kinds("find x |! log \"x\" || \"d\""),
-        [("MissingMember", "\"d\"")]
+        [("MissingClaim", "\"d\"")]
     );
     // On `Result`, `|!` still passes the error payload.
     let result = "r: Result<I64, String> = Ok 1\n";
@@ -283,7 +285,7 @@ fn a_line_whose_target_is_unknown_is_ambiguous() {
     assert_eq!(
         error.reason,
         Reason::Ambiguous {
-            class: "read".into()
+            class: "Read".into()
         }
     );
     assert_eq!(Source::new(text).slice(error.span), Some("read"));
@@ -345,7 +347,7 @@ fn the_examples_type_except_assigned_rows() {
                 // 07, Cast: a `String` at a `U16` spot.
                 (34, mismatch, "\"8080\"".into()),
                 // 07, Cast: `round 2.5` is `F64`, the binding `I64`.
-                (36, "NoField", "round".into()),
+                (36, "MissingClaim", "round".into()),
                 round(36, "2.5"),
                 // 07, Cast: a `String` at a `Vec<U8>` spot.
                 bytes(39, "[\"a\", \"b\", \"c\"] | join \"\\n\""),
@@ -653,3 +655,6 @@ fn the_neutral_conversion_example_converts_a_point() {
 mod conversions;
 #[path = "infer/literals.rs"]
 mod literals;
+
+#[path = "infer/claims.rs"]
+mod claims;

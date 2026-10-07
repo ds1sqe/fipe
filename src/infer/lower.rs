@@ -178,6 +178,7 @@ impl<'a> Infer<'a> {
                     Scope::Declared { module, origin } => self
                         .name_declared(module, origin, name, arguments, vars),
                 };
+                self.parameter_claims(&ty, vars, node.span);
                 self.limited(ty)
             }
             TypeKind::Array { element, length } => {
@@ -318,12 +319,11 @@ impl<'a> Infer<'a> {
                 ConstraintKind::Named { class, variable } => {
                     let head = self.variable(&super::last(variable), vars);
                     let class = self.lower(scope, *class, vars);
-                    vars.obligations.extend(self.member_limits(
-                        &class,
-                        &head,
-                        constraint.span,
-                        &mut Vec::new(),
-                    ));
+                    vars.obligations.push(Obligation::Claim {
+                        head,
+                        class,
+                        dot: constraint.span,
+                    });
                 }
                 ConstraintKind::Member { member, ty } => {
                     let head = self.variable(&member.segments[0], vars);
@@ -364,7 +364,7 @@ impl<'a> Infer<'a> {
                     parameters,
                     base,
                     limits,
-                    ..
+                    members: None,
                 } if super::last(n) == name.name => {
                     Some((parameters, base, limits))
                 }
@@ -474,7 +474,13 @@ impl<'a> Infer<'a> {
         let first = name.segments[0].as_str();
         if name.segments.len() == 2 {
             // `fs.Error`; `Self.Error` is an associated type, unknown here.
-            return if self.declarations.get_module(first).is_some() {
+            return if self.files.iter().any(|(stem, _)| stem == first) {
+                Type::named(
+                    Origin::File(String::from(first)),
+                    &name.segments[1],
+                    arguments,
+                )
+            } else if self.declarations.get_module(first).is_some() {
                 let host = Origin::Host(String::from(first));
                 Type::named(host, &name.segments[1], arguments)
             } else {
@@ -489,6 +495,28 @@ impl<'a> Infer<'a> {
         }
         if type_item(module, first).is_some() {
             return Type::named(origin.clone(), first, arguments);
+        }
+        for entry in &module.entries {
+            if let Entry::Item(crate::ast::Item {
+                kind: ItemKind::Use { names, .. },
+                ..
+            }) = entry
+            {
+                for imported in names {
+                    if imported.segments.len() == 2
+                        && imported.segments[1] == first
+                    {
+                        let stem = &imported.segments[0];
+                        let origin =
+                            if self.files.iter().any(|(s, _)| s == stem) {
+                                Origin::File(stem.clone())
+                            } else {
+                                Origin::Host(stem.clone())
+                            };
+                        return Type::named(origin, first, arguments);
+                    }
+                }
+            }
         }
         let declarations = self.declarations;
         if declarations.prelude.ty(first).is_some() {
@@ -612,7 +640,8 @@ impl<'a> Infer<'a> {
         span: Span,
     ) -> Callee {
         for mut obligation in vars.obligations {
-            let Obligation::Member { dot, .. } = &mut obligation;
+            let (Obligation::Member { dot, .. }
+            | Obligation::Claim { dot, .. }) = &mut obligation;
             *dot = span;
             self.state
                 .obligations
@@ -805,18 +834,12 @@ impl<'a> Infer<'a> {
     }
 
     /// Whether a host-declared type implements `Read` in its namespace.
-    pub(super) fn reads(&self, ty: &Type) -> bool {
+    pub(super) fn reads(&mut self, ty: &Type) -> bool {
         let Type::Named { name, .. } = ty else {
             return false;
         };
-        if !matches!(name.origin, Origin::Commands | Origin::Host(_)) {
-            return false;
-        }
-        self.owner(&name.origin).is_some_and(|module| {
-            impls(module, &name.name).any(|members| members.iter().any(|m| {
-                matches!(m, ImplMember::Named { name, .. } if super::last(name) == "read")
-            }))
-        })
+        matches!(name.origin, Origin::Commands | Origin::Host(_))
+            && self.has_claim(ty, &super::prelude("Read"))
     }
 
     /// Record field defaults, checked against their field's type with
@@ -909,9 +932,9 @@ pub(super) fn impls<'m>(
 ) -> impl Iterator<Item = &'m [ImplMember]> + 'm {
     module.entries.iter().filter_map(move |entry| match entry {
         Entry::Item(item) => match &item.kind {
-            ItemKind::Impl { target, members }
-                if named(module, *target).as_deref() == Some(ty) =>
-            {
+            ItemKind::Impl {
+                target, members, ..
+            } if named(module, *target).as_deref() == Some(ty) => {
                 Some(members.as_slice())
             }
             _ => None,

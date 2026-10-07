@@ -180,7 +180,10 @@ fn member_doc<'a>(
 ) -> Option<&'a str> {
     for entry in &module.entries {
         let Entry::Item(item) = entry else { continue };
-        let ItemKind::Impl { target, members } = &item.kind else {
+        let ItemKind::Impl {
+            target, members, ..
+        } = &item.kind
+        else {
             continue;
         };
         let TypeKind::Named { name: owner, .. } = &module.ty(*target)?.kind

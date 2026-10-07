@@ -139,6 +139,11 @@ impl Type {
 /// the dot `dot`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Obligation {
+    Claim {
+        head: Type,
+        class: Type,
+        dot: Span,
+    },
     Member {
         head: Type,
         name: String,
@@ -152,7 +157,7 @@ impl Obligation {
     #[must_use]
     pub const fn subject(&self) -> &Type {
         match self {
-            Self::Member { head: ty, .. } => ty,
+            Self::Member { head: ty, .. } | Self::Claim { head: ty, .. } => ty,
         }
     }
 
@@ -160,6 +165,11 @@ impl Obligation {
     #[must_use]
     pub fn map(&self, mut f: impl FnMut(&Type) -> Type) -> Self {
         match self {
+            Self::Claim { head, class, dot } => Self::Claim {
+                head: f(head),
+                class: f(class),
+                dot: *dot,
+            },
             Self::Member {
                 head,
                 name,
@@ -177,6 +187,10 @@ impl Obligation {
     /// The inference variables of its types, in order of appearance.
     pub fn variables(&self, out: &mut Vec<Var>) {
         match self {
+            Self::Claim { head, class, .. } => {
+                head.variables(out);
+                class.variables(out);
+            }
             Self::Member { head, ty, .. } => {
                 head.variables(out);
                 ty.variables(out);
@@ -204,7 +218,6 @@ pub struct Scheme {
     pub variables: Vec<Var>,
     pub obligations: Vec<Obligation>,
     pub(crate) literals: Vec<(Type, Lit, Span)>,
-    pub(crate) folds: Vec<(Type, Vec<Obligation>)>,
     pub ty: Type,
 }
 
@@ -216,7 +229,6 @@ impl Scheme {
             variables: Vec::new(),
             obligations: Vec::new(),
             literals: Vec::new(),
-            folds: Vec::new(),
             ty,
         }
     }
@@ -231,19 +243,6 @@ impl Scheme {
                 .obligations
                 .iter()
                 .map(|obligation| obligation.map(|ty| ty.rehome(origin)))
-                .collect(),
-            folds: self
-                .folds
-                .iter()
-                .map(|(name, members)| {
-                    (
-                        name.rehome(origin),
-                        members
-                            .iter()
-                            .map(|o| o.map(|ty| ty.rehome(origin)))
-                            .collect(),
-                    )
-                })
                 .collect(),
             literals: self
                 .literals
@@ -280,7 +279,6 @@ impl Scheme {
             variables,
             obligations,
             literals: Vec::new(),
-            folds: Vec::new(),
             ty,
         }
     }
@@ -520,58 +518,44 @@ impl fmt::Display for Scheme {
         let names = letters(&variables);
         let mut remaining = Vec::new();
         for obligation in &self.obligations {
-            let Obligation::Member { head, name, ty, .. } = obligation;
-            if !remaining.iter().any(|o| matches!(o, Obligation::Member { head: h, name: n, ty: t, .. } if h == head && n == name && t == ty)) {
-                remaining.push(obligation.clone());
+            let key = obligation.map(Clone::clone);
+            if !remaining.iter().any(|o: &Obligation| match (o, &key) {
+                (
+                    Obligation::Member {
+                        head: a,
+                        name: b,
+                        ty: c,
+                        ..
+                    },
+                    Obligation::Member { head, name, ty, .. },
+                ) => a == head && b == name && c == ty,
+                (
+                    Obligation::Claim {
+                        head: a, class: b, ..
+                    },
+                    Obligation::Claim { head, class, .. },
+                ) => a == head && b == class,
+                _ => false,
+            }) {
+                remaining.push(key);
             }
         }
-        remaining.sort_by_key(|o| matches!(o, Obligation::Member { name, .. } if name == "literal"));
-        let mut printed = false;
-        while !remaining.is_empty() {
-            let head = remaining[0].subject().clone();
-            let mut folded = None;
-            for (label, members) in &self.folds {
-                let indices: Option<Vec<usize>> = members
-                    .iter()
-                    .map(|member| {
-                        let Obligation::Member {
-                            head: h,
-                            name: n,
-                            ty: t,
-                            ..
-                        } = member;
-                        remaining.iter().position(|o| {
-                            let Obligation::Member { head, name, ty, .. } = o;
-                            head == h && name == n && ty == t
-                        })
-                    })
-                    .collect();
-                if let Some(indices) = indices {
-                    if indices.contains(&0) {
-                        folded = Some((label, indices));
-                        break;
-                    }
-                }
-            }
-            if printed {
+        remaining.sort_by_key(|o| matches!(o, Obligation::Claim { class: Type::Named { name, .. }, .. } if name.name == "Literal"));
+        for (index, obligation) in remaining.iter().enumerate() {
+            if index > 0 {
                 f.write_str(", ")?;
             }
-            printed = true;
-            if let Some((label, indices)) = folded {
-                write(label, f, &names, &[])?;
-                f.write_str(" ")?;
-                write(&head, f, &names, &[])?;
-                remaining = remaining
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(i, o)| (!indices.contains(&i)).then_some(o))
-                    .collect();
-            } else {
-                let Obligation::Member { head, name, ty, .. } =
-                    remaining.remove(0);
-                write(&head, f, &names, &[])?;
-                write!(f, ".{name}: ")?;
-                write(&ty, f, &names, &[])?;
+            match obligation {
+                Obligation::Member { head, name, ty, .. } => {
+                    write(head, f, &names, &[])?;
+                    write!(f, ".{name}: ")?;
+                    write(ty, f, &names, &[])?;
+                }
+                Obligation::Claim { head, class, .. } => {
+                    write(class, f, &names, &[])?;
+                    f.write_str(" ")?;
+                    write(head, f, &names, &[])?;
+                }
             }
         }
         if !self.obligations.is_empty() {

@@ -14,7 +14,7 @@ use crate::{
     token::Span,
     types::{Obligation, Type},
 };
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
 impl Infer<'_> {
     /// Type an expression, checked against `expected` when given.
@@ -84,11 +84,7 @@ impl Infer<'_> {
             }
             return;
         }
-        for obligation in
-            self.member_limits(target, actual, span, &mut Vec::new())
-        {
-            self.state.obligations.push(Owed::new(obligation, span));
-        }
+        self.require_claim(actual.clone(), target.clone(), span);
         self.dots();
     }
 
@@ -141,7 +137,7 @@ impl Infer<'_> {
             }
             ExprKind::Not { operator, value } => {
                 let ty = self.expr(*value, expected);
-                self.require_member(ty.clone(), "not", ty.clone(), *operator);
+                self.require_claim(ty.clone(), prelude("Not"), *operator);
                 ty
             }
             ExprKind::Binary { .. } | ExprKind::Pipe { .. } => {
@@ -191,10 +187,9 @@ impl Infer<'_> {
             Some(e) => self.apply(&e.ty),
             None => self.fresh(),
         };
-        let obligation = Obligation::Member {
+        let obligation = Obligation::Claim {
             head: ty.clone(),
-            name: String::from("literal"),
-            ty: Type::function(prelude("Form"), ty.clone()),
+            class: prelude("Literal"),
             dot: span,
         };
         let mut owed = Owed::new(obligation, span);
@@ -206,7 +201,7 @@ impl Infer<'_> {
     /// A word or path is text: at a spot of type `String` or of a
     /// host-declared type implementing `Read` it takes that type,
     /// anywhere else it is `String` (types.md §Conversion).
-    fn word(&self, expected: Option<&Expected>) -> Type {
+    fn word(&mut self, expected: Option<&Expected>) -> Type {
         if let Some(expected) = expected.filter(|e| e.spot) {
             let ty = self.apply(&expected.ty);
             if self.reads(&ty) {
@@ -430,7 +425,7 @@ impl Infer<'_> {
             let errors = self.state.errors.len();
             self.dots();
             if self.state.errors[errors..].iter().any(|error| {
-                matches!(&error.reason, Reason::MissingMember { name, .. } if name == "literal")
+                matches!(&error.reason, Reason::MissingClaim { claim, .. } if super::is_prelude(claim, "Literal"))
             }) {
                 return self.fresh();
             }
@@ -456,32 +451,33 @@ impl Infer<'_> {
             BinaryOp::Equal | BinaryOp::NotEqual => "eq",
             _ => "cmp",
         };
-        if name == "cmp" {
+        if name == "concat" {
             self.require_member(
                 left_ty.clone(),
-                "eq",
-                Type::function(left_ty.clone(), prelude("Bool")),
+                name,
+                Type::function(left_ty, result.clone()),
                 operator,
             );
-        }
-        let member_result = if name == "cmp" {
-            prelude("Ordering")
         } else {
-            result.clone()
-        };
-        self.require_member(
-            left_ty.clone(),
-            name,
-            Type::function(
-                if arithmetic {
-                    super::meaning(&self.apply(&right_ty)).clone()
-                } else {
-                    left_ty
-                },
-                member_result,
-            ),
-            operator,
-        );
+            let class = match name {
+                "add" => "Add",
+                "sub" => "Sub",
+                "mul" => "Mul",
+                "div" => "Div",
+                "rem" => "Rem",
+                "eq" => "Eq",
+                _ => "Ord",
+            };
+            let args = if arithmetic {
+                alloc::vec![
+                    super::meaning(&self.apply(&right_ty)).clone(),
+                    result.clone()
+                ]
+            } else {
+                Vec::new()
+            };
+            self.require_claim(left_ty, prelude_of(class, args), operator);
+        }
         if known {
             self.dots();
         }

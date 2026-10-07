@@ -36,13 +36,19 @@ The forms are `type_item` in [syntax.ebnf](02-syntax.ebnf):
   limits chain. `type N: A & B` names a combination and needs no limit.
   A single base with no limit would be an alias, and there is none.
 - `type N where …` has limits and no base.
-- `type N { … } where …` is a new meaning with limits; before its braces
-  `:` takes holdings and claims, `type Vec2: Zero & Default { … }`. A
-  claim names a member limit the meaning promises, by any name in scope,
-  `a.Zero`. `impl Vec2: Zero { … }` holds exactly that claim's members; a
-  limit the type line does not list is a check error there. A claim
-  already met, `Default` by field defaults or a derived `Eq`, needs no
-  block; one left unmet is a check error at the claim.
+- `type N { … } where …` is a new meaning with limits; before its braces `:`
+  takes holdings and claims, `type Vec2: Zero & Default { … }`. A claim
+  names a member limit the meaning promises, by any name in scope, `a.Zero`.
+  `impl Vec2: Zero { … }` holds that claim's members and no other; a part's
+  members, `eq` for an `Ord`, stand there, in the part's own block, or are
+  derived. A limit the type line does not list is a check error there. A
+  claim's members are written in its block or derived, `Default` from field
+  defaults, `Eq` from the parts; a claim left unmet is a check error at the
+  claim when its module ends; in a session it holds from the line that
+  writes its block, and a use before that is the error. A member of a plain
+  `impl` is the meaning's own and never a claim's, and one name in both is a
+  check error. An opaque meaning has no type line to list on: its blocks are
+  its claims. A limited type has the claims of its meaning.
 - `type N`, with nothing after the name, is opaque.
 
 `where` is the one word for limits ([syntax](02-syntax.md) §Definitions). A

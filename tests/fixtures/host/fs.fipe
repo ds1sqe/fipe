@@ -1,10 +1,10 @@
 # The conformance host's `fs` module.
 ## A host operation error.
-pub type Error {
+pub type Error: Show {
     ## The error message.
     pub message: String,
 }
-impl Error { show = self => self.message }
+impl Error: Show { show = self => self.message }
 
 ## List entries under a filesystem resource.
 ## - dir: the resource

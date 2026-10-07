@@ -358,9 +358,10 @@ pub enum ItemKind {
         members: Option<Vec<Member>>,
         limits: Vec<Limit>,
     },
-    /// `impl Target { members }`.
+    /// `impl Target [: Claim] { members }`.
     Impl {
         target: TypeId,
+        claim: Option<TypeId>,
         members: Vec<ImplMember>,
     },
     /// `name: type` with no value: a signature-only declaration, the form

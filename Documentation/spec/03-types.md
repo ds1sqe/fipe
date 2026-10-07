@@ -203,10 +203,10 @@ way in.
 | `Maybe<T>` | `Nothing` |
 | limited type | its base's default, when that meets the limits |
 
-The table is the `default` member the prelude supplies
-([members](04-members.md) §Prelude). A zero is not a default: `Integer` has
-`zero` and no default, and a type that wants both writes `default =
-Self.zero`. A default enters its field as any value does
+A meaning that claims `Default` has the table's value as `Self.default`,
+or writes its own ([members](04-members.md) §Prelude). A zero is not a
+default: `Integer` claims `Zero` and has no default, and a type that wants
+both writes `default = Self.zero`. A default enters its field as any value does
 ([checks](07-checks.md)). A
 declaration's labeled parameters are its spot names and defaults, not
 part of its type: `(long: Bool = False) -> Vec<Entry>` has type `Bool ->

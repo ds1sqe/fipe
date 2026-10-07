@@ -160,7 +160,7 @@ impl Parser {
         Ok(self.add_type(node(parts), self.since(start)))
     }
 
-    fn type_atom(&mut self) -> Result<TypeId, Error> {
+    pub(super) fn type_atom(&mut self) -> Result<TypeId, Error> {
         let start = self.here().start;
         let labeled = self.label_follows();
         let kind = match self.peek() {
