@@ -39,7 +39,11 @@ and each body enters the declared result.
 At a place of known type a value of another meaning is cast, not unified
 ([types](03-types.md)), by the closed cast table of [members](04-members.md)
 §Conversions: a number to another numeric meaning, a word read, text, the
-host codec, packing. Each element of a literal enters the element place
+host codec, packing. First check against the place; on failure, read again
+without an expected type, default literals and consult the table, keeping
+the first error if no pair is admitted. Casts that may Fault are recorded
+for evaluation, not open limit entries, and strict mode does not refuse
+them. Each element of a literal enters the element place
 before the elements are unified, so `[Circle 1.0, Square 2.0]` fills a
 `Vec<Shape>`. Then each limit of the place is:
 

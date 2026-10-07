@@ -88,6 +88,8 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::Occurs => "Occurs",
         Reason::CallReading { .. } => "CallReading",
         Reason::TypeDepth => "TypeDepth",
+        Reason::NothingPayload => "NothingPayload",
+        Reason::OutcomeText { .. } => "OutcomeText",
         Reason::UnknownFamily => "UnknownFamily",
         Reason::ClaimBlock { .. } => "ClaimBlock",
         Reason::MissingClaim { .. } => "MissingClaim",
@@ -225,11 +227,7 @@ fn spots_bind_before_application() {
 fn words_take_a_read_spot_type() {
     assert_eq!(ty("cat foo"), "String");
     assert_eq!(ty("find ./x"), "Maybe<Entry>");
-    // A String at a `U16` spot is a cast, 07's.
-    let text = "port: U16 = \"8080\"";
-    let [error] = errors(text).try_into().unwrap();
-    assert!(matches!(error.reason, Reason::Mismatch { .. }));
-    assert_eq!(Source::new(text).slice(error.span), Some("\"8080\""));
+    assert_eq!(ty("port: U16 = \"8080\""), "U16");
 }
 
 #[test]
@@ -244,7 +242,7 @@ fn outcomes_follow_their_family() {
         "Src -> Maybe<String>"
     );
     assert_eq!(kinds("m = [:1]"), [("UnknownFamily", "[:1]")]);
-    assert_eq!(kinds("m: Maybe<I64> = [!1]"), [("Mismatch", "[!1]")]);
+    assert_eq!(kinds("m: Maybe<I64> = [!1]"), [("NothingPayload", "[!1]")]);
     let either = "e: Either<(), I64> = Right 1\n";
     assert_eq!(
         ty(&format!("{either}e |: (x => x + 1)")),
@@ -257,11 +255,7 @@ fn outcomes_follow_their_family() {
     assert_eq!(ty("find x |: cat |! log \"no config\""), "Maybe<String>");
     assert_eq!(ty("find x |! find y"), "Maybe<Entry>");
     assert_eq!(kinds("find x |! log"), [("OpenSpot", "log")]);
-    // The fallback `"d"` is not `find`'s `Entry`.
-    assert_eq!(
-        kinds("find x |! log \"x\" || \"d\""),
-        [("MissingClaim", "\"d\"")]
-    );
+    assert_eq!(ty("find x |! log \"x\" || \"d\""), "Entry");
     // On `Result`, `|!` still passes the error payload.
     let result = "r: Result<I64, String> = Ok 1\n";
     assert_eq!(ty(&format!("{result}r |! (e => e)")), "Result<I64, String>");
@@ -308,85 +302,11 @@ fn a_line_whose_target_is_unknown_is_ambiguous() {
     assert_eq!(ty("Just"), "a -> Maybe<a>");
 }
 
-/// Every example types, except lines whose failure is a row of 07
-/// (casts, Bool shorthand) or a question still open.
+/// Every example checks without exemptions.
 #[test]
-fn the_examples_type_except_assigned_rows() {
-    let mismatch = "Mismatch";
-    // 07, Cast: a `Vec<U8>` spot admits any `T` via `Display`.
-    let bytes = |line: usize, text: &str| (line, mismatch, text.to_string());
-    // 07, Cast: an `I64` at `hypot`'s or `atan2`'s `F64` spot.
-    let float = bytes;
-    // 07, Cast: `round`'s `F64` where an `I64` is expected.
-    let round = bytes;
-    let expected = [
-        (
-            "01-files",
-            vec![
-                bytes(16, "big | map .name"),
-                bytes(21, "ls -l /tmp | filter (older 7) | map .name"),
-            ],
-        ),
-        ("02-outcomes", vec![]),
-        (
-            "03-types",
-            vec![
-                float(12, "hypot x y"),
-                float(12, "x"),
-                float(12, "y"),
-                float(25, "hypot x y"),
-                float(25, "x"),
-                float(25, "y"),
-                // Each once, at the operand the expected type reaches.
-                float(31, "self.x - q.x"),
-                float(31, "self.y - q.y"),
-                float(67, "p.x"),
-                float(67, "p.y"),
-                float(67, "p.y"),
-                float(67, "p.x"),
-                round(70, "round (p.r * (cos p.t))"),
-                round(70, "round (p.r * (sin p.t))"),
-            ],
-        ),
-        (
-            "04-text",
-            vec![
-                // 07, Cast: a `String` at a `U16` spot.
-                (34, mismatch, "\"8080\"".into()),
-                // 07, Cast: `round 2.5` is `F64`, the binding `I64`.
-                (36, "MissingClaim", "round".into()),
-                round(36, "2.5"),
-                // 07, Cast: a `String` at a `Vec<U8>` spot.
-                bytes(39, "[\"a\", \"b\", \"c\"] | join \"\\n\""),
-            ],
-        ),
-        (
-            "05-modules",
-            vec![
-                bytes(15, "p | Polar.from | show"),
-                bytes(30, "ls | map .name"),
-            ],
-        ),
-        (
-            "geometry",
-            vec![
-                float(30, "p.x"),
-                float(30, "p.y"),
-                float(30, "p.y"),
-                float(30, "p.x"),
-            ],
-        ),
-    ];
-    let stems: Vec<String> = examples().into_iter().map(|(s, _)| s).collect();
-    assert_eq!(
-        stems,
-        expected
-            .iter()
-            .map(|(s, _)| s.to_string())
-            .collect::<Vec<_>>()
-    );
-    for (stem, failures) in expected {
-        assert_eq!(example(stem), failures, "{stem}");
+fn the_examples_type() {
+    for (stem, _) in examples() {
+        assert_eq!(example(&stem), [], "{stem}");
     }
 }
 
@@ -481,15 +401,7 @@ fn the_example_comments_state_the_inferred_types() {
     }
     assert_eq!(
         checked,
-        [
-            "older",
-            "load",
-            "read_port",
-            "(dist)",
-            "scale",
-            "greet",
-            "check"
-        ]
+        ["older", "load", "read_port", "scale", "greet", "check"]
     );
 }
 
@@ -618,7 +530,7 @@ fn one_mismatch_is_reported_once() {
         .collect();
     assert_eq!(located, [("Mismatch", Some("p.n + 2"))]);
     let text = "f: String -> String = s => s\nx: U64 = 1\nf (x + 2 * 3)";
-    assert_eq!(kinds(text), [("Mismatch", "x + 2 * 3")]);
+    assert_eq!(ty(text), "String");
 }
 
 #[test]

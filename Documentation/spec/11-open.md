@@ -115,6 +115,7 @@ identity and fix a semantic charging schedule shared by backends, including
 `Integer` by operand size. Ruled 2026-09-30: the lexer has no bound on a
 number ([lexical](01-lexical.md) §Numbers). Specify closure environment
 capture, cancellation, cleanup failure, external byte charging, declaration
-validation and codec/formatter failure in the embedding contract. No Reovim
+validation and codec/formatter failure in the embedding contract. Every
+host-declared type admits the codec cast (ruled 2026-09-30). No Reovim
 paths, wire hashes or placeholder budget numbers become language constants.
 Tests replay one host response/effect trace on each backend.

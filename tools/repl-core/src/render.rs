@@ -133,6 +133,10 @@ pub fn infer(reason: &infer::Reason) -> String {
         },
         R::TypeDepth => "inferred type nesting limit exceeded".into(),
         R::Occurs => "a type that would contain itself".into(),
+        R::NothingPayload => "Nothing has no payload".into(),
+        R::OutcomeText { family } => {
+            format!("{family} cannot enter a text place; use || or |:")
+        }
         R::UnknownFamily => "no outcome family is known here".into(),
         R::ClaimBlock { claim, problem } => format!("claim {claim} {problem}"),
         R::MissingClaim { ty, claim } => {

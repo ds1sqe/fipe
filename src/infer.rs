@@ -1,7 +1,8 @@
 //! Inference over a resolved module.
 //!
 //! The judgments of [types.md] with recorded spot binding from
-//! [evaluation.md] §Parameter binding. It unifies and never casts,
+//! [evaluation.md] §Parameter binding. It unifies meanings and records
+//! the closed cast table at known places; it
 //! evaluates no default and calls no host. Bindings generalize at their
 //! boundary; an arm binding and the members of one impl are typed as a
 //! group, monomorphic inside.
@@ -11,6 +12,7 @@
 
 mod arms;
 mod bind;
+mod casts;
 mod claims;
 mod containers;
 mod conversions;
@@ -61,6 +63,10 @@ pub enum Reason {
     Occurs,
     /// An outcome bracket or marked operator with no known family.
     UnknownFamily,
+    NothingPayload,
+    OutcomeText {
+        family: Type,
+    },
     /// No field or member on `ty`; `other` is the
     /// use that made a scheme's head `ty`, or the dot itself.
     NoField {
@@ -285,6 +291,8 @@ struct State {
     types: Vec<Option<Type>>,
     entries: Vec<(ExprId, Type, Span, crate::typed::Place)>,
     checks: Vec<crate::typed::Check>,
+    casts: Vec<Option<crate::typed::Cast>>,
+    families: Vec<outcome::Pending>,
     supplied: BTreeMap<(usize, usize), Vec<(String, Supply)>>,
     bound: BTreeMap<(usize, usize), crate::typed::Bound>,
     defaults: Vec<(Origin, Span)>,
@@ -318,6 +326,8 @@ impl State {
             types: vec![None; size],
             entries: Vec::new(),
             checks: Vec::new(),
+            casts: vec![None; size],
+            families: Vec::new(),
             supplied: BTreeMap::new(),
             bound: BTreeMap::new(),
             defaults: Vec::new(),
@@ -518,11 +528,13 @@ struct Expected {
     span: Span,
     /// At a spot, where a word takes the spot's type.
     spot: bool,
+    cast: bool,
 }
 
 impl Expected {
     fn at(mut self, place_kind: crate::typed::Place) -> Self {
         self.place_kind = place_kind;
+        self.cast = true;
         self
     }
 
@@ -532,6 +544,7 @@ impl Expected {
             ty,
             span,
             spot: false,
+            cast: false,
         }
     }
 }
@@ -983,6 +996,7 @@ impl Infer<'_> {
         self.dots();
         self.default_literals(0, &[], &[]);
         self.finish_dots();
+        self.solve_families(true);
         self.left_members();
         let unsolved = self.settle();
         let (frozen, weak) = self.frozen();
@@ -995,6 +1009,18 @@ impl Infer<'_> {
             }
         }
         let mut typed = Typed {
+            casts: self
+                .state
+                .casts
+                .iter()
+                .map(|cast| {
+                    cast.as_ref().map(|cast| crate::typed::Cast {
+                        row: cast.row,
+                        from: subst.apply(&cast.from),
+                        to: subst.apply(&cast.to),
+                    })
+                })
+                .collect(),
             warnings: self.state.warnings,
             expressions: self
                 .state

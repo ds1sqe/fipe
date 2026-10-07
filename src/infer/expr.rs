@@ -18,28 +18,13 @@ use alloc::{string::ToString, vec::Vec};
 
 impl Infer<'_> {
     /// Type an expression, checked against `expected` when given.
-    pub(super) fn expr(
+    pub(super) fn check_expr(
         &mut self,
         id: ExprId,
         expected: Option<&Expected>,
     ) -> Type {
         if let Some(expected) = expected.filter(|e| e.spot) {
             self.argument_span(&expected.ty, self.span(id));
-        }
-        if let Some(expected) = expected {
-            let target = self.apply(&expected.ty);
-            if self.packed(&target) {
-                let ty = self.synth(id, None);
-                self.default_entering(&ty);
-                self.pack(
-                    &target,
-                    &self.apply(&ty),
-                    self.span(id),
-                    expected.span,
-                );
-                self.state.types[id.0] = Some(target.clone());
-                return target;
-            }
         }
         if let Some(expected) = expected {
             self.state.entries.push((
@@ -107,11 +92,11 @@ impl Infer<'_> {
         let span = self.span(id);
         match &module.expressions[id.0].kind {
             ExprKind::Literal(literal) => self.literal(literal, expected, span),
-            ExprKind::Word(_) | ExprKind::Path(_) => self.word(expected),
+            ExprKind::Word(_) | ExprKind::Path(_) => prelude("String"),
             ExprKind::Name(_)
                 if self.resolved.expr(id) == Some(&Target::Word) =>
             {
-                self.word(expected)
+                prelude("String")
             }
             ExprKind::Name(_)
             | ExprKind::Instance { .. }
@@ -237,19 +222,6 @@ impl Infer<'_> {
         owed.literal_argument = expected.is_some_and(|e| e.spot);
         self.state.obligations.push(owed);
         ty
-    }
-
-    /// A word or path is text: at a spot of type `String` or of a
-    /// host-declared type implementing `Read` it takes that type,
-    /// anywhere else it is `String` (types.md §Conversion).
-    fn word(&mut self, expected: Option<&Expected>) -> Type {
-        if let Some(expected) = expected.filter(|e| e.spot) {
-            let ty = self.apply(&expected.ty);
-            if self.reads(&ty) {
-                return ty;
-            }
-        }
-        prelude("String")
     }
 
     /// A block is its last line, or `()`; a refutable binding lifts the
@@ -570,11 +542,14 @@ impl Infer<'_> {
         };
         let mut sibling = Expected::new(element.clone(), span)
             .at(crate::typed::Place::Element);
+        sibling.cast = expected.is_some_and(|e| e.cast);
         for (index, item) in items.iter().enumerate() {
             let ty = self.expr(*item, Some(&sibling));
             if index == 0 {
+                let cast = sibling.cast;
                 sibling = Expected::new(ty, self.span(*item))
                     .at(crate::typed::Place::Element);
+                sibling.cast = cast;
             }
         }
         if let Some(target) = target {

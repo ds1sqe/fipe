@@ -127,7 +127,8 @@ impl Infer<'_> {
             site: item.site,
             annotated: item.annotated || self.groups[item.group].self_type.as_ref().is_some_and(|ty| matches!(ty, Type::Named { arguments, .. } if !arguments.is_empty())),
         };
-        let expected = Expected::new(part.ty.clone(), part.site);
+        let mut expected = Expected::new(part.ty.clone(), part.site);
+        expected.cast = item.annotated;
         match item.body.clone() {
             Some(Body::Value(value)) => {
                 self.expr(value, Some(&expected));

@@ -28,7 +28,7 @@ impl Point {
     ## A point with equal coordinates.
     pub line: I64 -> Self = p => Self p p,
     # dist: Point -> Point -> F64
-    dist = self q => hypot (self.x - q.x) (self.y - q.y),
+    dist: Self -> Self -> F64 = self q => hypot (self.x - q.x) (self.y - q.y),
     # scale: Point -> Integer -> Point
     scale = self k => Self (self.x * k) (self.y * k),
 }

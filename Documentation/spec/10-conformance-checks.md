@@ -57,14 +57,14 @@ opening says how a row is read and what a mark means.
 | each call's supplied expressions, defaults and open spots | recorded once; supplies in source order, defaults and open spots in declaration order |
 | wrong record field | check error before any host call |
 | `Maybe<Entry> | cat` versus `|: cat` | whole-value mismatch / payload bind |
-| `find x | put out` / `find x || "" | put out` | outcome at a byte spot: check error / text written *07* |
+| `find x | put out` / `find x || "" | put out` | outcome guard: check error naming `||` and `|:` / text cast recorded |
 | `m = [:1]` / `m: Maybe<Integer> = [:1]` | family unknown: check error / `Just 1` |
 | `Point 3 4`, `Point 3`, `1 | Point 1` / `Point 3 4 5` | constructor, default, pipe fills `y` / extra argument |
 | `Point { x: 3, y: 4, len: 5 }`, `Point 3 4 5`, `Point -len 5` outside its module | check error at the field or argument: `len` is private |
 | a member without `pub` reached from another module | check error: the member is private |
 | `pl | Point.from`, `pl | to<Point>`, `"3,4" | try<Point>` / `pl | Point` | conversions / `Point pl`: check error at an `I64` spot |
 | `from` and `try_from` on one target for one source / `Point.from x`, `x` of unknown meaning | check error: never both / check error naming the candidates |
-| `"42" | read<I64>` / `n: I64 = "42"` / `n: I64 = "x"` | `Result` / `42` (T5) / check error |
+| `"42" | read<I64>` / `n: I64 = "42"` / `n: I64 = "x"` | `Result` / read cast recorded / admitted read, literal verdict *08* |
 | `read p | { [!e] => … }` with `read p : Maybe<T>` | check error: `Nothing` has no payload |
 | `Either<(),Integer> || 0` | check error preserving outcome identity (T1) |
 | `older = d e => e.age > d` / `filter (older 7)` | `b.age: a, Ord a => a -> b -> Bool` / solved at `Entry` |
@@ -103,7 +103,7 @@ opening says how a row is read and what a mark means.
 | `a + b` with `a: U8`, `b: U16` / `w: U16 = a` / `n: U8 = b` | `Integer`, known 1200 / proved / refuted |
 | `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open *06.8* |
 | `f: F64 = 2` | `2.0` by the literal member |
-| `k: I64 = round 2.5` | `2` by the numeric cast *07* |
+| `k: I64 = round 2.5` | numeric cast recorded, then open `I64` entry; evaluates to `2` in *08* |
 | `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / compile demand met; preparation awaits *08* |
 | `Compile` alone, as a value or in a pattern | check error |
 | `x: Init & Integer = cli.port` / a parameter with `Init & Integer` | known at init / check error |

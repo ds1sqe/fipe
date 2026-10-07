@@ -62,7 +62,12 @@ pub(crate) fn check(
         if pass.typed.expr(id).is_none() {
             continue;
         }
-        let mut known = pass.value(id);
+        let mut known =
+            if pass.typed.casts.get(id.0).is_some_and(Option::is_some) {
+                Known::default()
+            } else {
+                pass.value(id)
+            };
         known.pure = pass.pure_expression(id);
         known.phase = pass.expression_phase(id);
         known.demanded |= call_head(module, id)

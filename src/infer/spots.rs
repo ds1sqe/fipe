@@ -364,10 +364,16 @@ impl Infer<'_> {
                 None => self.error(stage, Reason::FilledSpot),
             }
         }
-        if callee.conversion.is_some() {
-            if let Some(expected) = expected {
-                self.hint(expected, &result);
-            }
+        if let Some(expected) = expected {
+            let whole = slots
+                .iter()
+                .zip(&filled)
+                .rev()
+                .filter(|(slot, supply)| supply.is_none() && !slot.default)
+                .fold(result.clone(), |ty, (slot, _)| {
+                    Type::function(slot.ty.clone(), ty)
+                });
+            self.hint(expected, &whole);
         }
         self.supply(&slots, &mut filled, stage);
         if let Some((target, kind)) = &callee.conversion {
@@ -693,11 +699,41 @@ impl Infer<'_> {
                 ));
             }
         }
-        if self.packed(&target) {
+        let before = self.numeric_var(actual).then(|| self.state.clone());
+        let subst = self.state.subst.clone();
+        let errors = self.state.errors.len();
+        self.unify(&target, actual, span, other);
+        if before.is_some() {
+            self.dots();
+        }
+        if self.state.errors[errors..]
+            .iter()
+            .any(|e| matches!(e.reason, Reason::OutOfRange))
+        {
+            return;
+        }
+        if self.state.errors.len() != errors {
+            let failed = self.state.clone();
+            if let Some(before) = before {
+                self.state = before;
+            } else {
+                self.state.subst = subst;
+                self.state.errors.truncate(errors);
+            }
             self.default_entering(actual);
-            self.pack(&target, &self.apply(actual), span, other);
-        } else {
-            self.unify(&target, actual, span, other);
+            let source = self.apply(actual);
+            if let Some(row) = self.cast_pair(&target, &source, span, other) {
+                if let Some(index) =
+                    self.module.expressions.iter().position(|e| e.span == span)
+                {
+                    self.record_cast(ExprId(index), row, source, target);
+                }
+            } else if !self.state.errors[errors..]
+                .iter()
+                .any(|e| matches!(e.reason, Reason::OutcomeText { .. }))
+            {
+                self.state = failed;
+            }
         }
     }
 
@@ -763,6 +799,7 @@ impl Infer<'_> {
                                     ty: slot.ty.clone(),
                                     span: self.span(id),
                                     spot: true,
+                                    cast: true,
                                 }),
                             );
                             self.dots();
@@ -785,6 +822,7 @@ impl Infer<'_> {
                                     ty: arguments[0].clone(),
                                     span: self.span(*id),
                                     spot: true,
+                                    cast: true,
                                 }),
                             );
                         }
@@ -798,6 +836,7 @@ impl Infer<'_> {
                             ty: slot.ty.clone(),
                             span: self.span(*id),
                             spot: true,
+                            cast: true,
                         };
                         self.expr(*id, Some(&expected));
                     }
@@ -881,6 +920,7 @@ impl Infer<'_> {
                 ty: parameter,
                 span: self.span(operand),
                 spot: true,
+                cast: true,
             };
             self.expr(operand, Some(&expected));
         }
@@ -1014,6 +1054,7 @@ impl Infer<'_> {
             ty: slot.ty.clone(),
             span: stage,
             spot: is_default,
+            cast: true,
         };
         let mark = inner.mark();
         inner.expr(value, Some(&expected));
@@ -1059,6 +1100,7 @@ impl Infer<'_> {
     }
     fn default_checks(&self) -> (crate::typed::Typed, Vec<super::Error>) {
         let mut typed = crate::typed::Typed {
+            casts: self.state.casts.clone(),
             expressions: self
                 .state
                 .types

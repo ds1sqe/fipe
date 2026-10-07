@@ -38,6 +38,7 @@ impl Infer<'_> {
                 }
             })
             .collect();
+        let declared_result = declared.is_some();
         let result = declared.unwrap_or_else(|| self.fresh());
         let ty = parameters
             .iter()
@@ -51,6 +52,7 @@ impl Infer<'_> {
         let input = expected.map_or(first.span, |e| e.span);
         let result_span = module_result_span(self.module, input);
         let mut sibling = Expected::new(result, result_span);
+        sibling.cast = declared_result && expected.is_some_and(|e| e.cast);
         for (index, arm) in arms.iter().enumerate() {
             if arm.patterns.len() != count {
                 let mut actual = self.fresh();

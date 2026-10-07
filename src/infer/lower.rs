@@ -1037,15 +1037,6 @@ impl<'a> Infer<'a> {
         (callee.ty, fields)
     }
 
-    /// Whether a host-declared type implements `Read` in its namespace.
-    pub(super) fn reads(&mut self, ty: &Type) -> bool {
-        let Type::Named { name, .. } = ty else {
-            return false;
-        };
-        matches!(name.origin, Origin::Commands | Origin::Host(_))
-            && self.has_claim(ty, &super::prelude("Read"))
-    }
-
     /// Record field defaults, checked against their field's type with
     /// the fields before them in scope.
     pub(super) fn field_defaults(

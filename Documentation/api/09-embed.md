@@ -167,3 +167,12 @@ checked unit alongside file modules. A failed value produces
 `DeclarationValue { name, origin, declaration }` at its first use; the
 origin and declaration span identify its binding. A default that needs the
 failed value reports `Default { name }` for its own spot.
+
+`Typed.casts` indexes expressions with optional `Cast { row, from, to }`.
+`CastRow` is `Number`, `Read`, `Show`, `Codec`, `Bytes` or `Pack`;
+`can_fail()` identifies number, read and codec casts for evaluation.
+Expression types retain the source meaning; the cast gives the receiving
+place's type, whose limits are checked after conversion. A fallible cast
+is not an open limit entry and does not itself fail strict mode.
+`NothingPayload` and `OutcomeText { family }` distinguish the outcome
+errors; the latter recommends `||` or `|:`.

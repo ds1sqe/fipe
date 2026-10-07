@@ -85,10 +85,8 @@ fn load_asks_for_the_stem() {
         repl.feed(b":load geometry\n"),
         [Out::File("geometry.fipe".into())]
     );
-    // Its four `hypot`/`atan2` rows are 07's casts; the line is accepted.
     let text = written(repl.file("geometry.fipe", Some(GEOMETRY)));
-    assert_eq!(text.matches("expected F64, found I64").count(), 4, "{text}");
-    assert!(text.starts_with("geometry.fipe:30:52: "), "{text}");
+    assert!(!text.contains("expected F64"), "{text}");
     assert!(text.ends_with("fipe> "), "{text}");
     let text = written(repl.feed(b":r geometry.Point 1\n"));
     assert!(text.contains("constructor"), "{text}");
@@ -942,4 +940,18 @@ fn container_types_warnings_and_conversion_hint_are_visible() {
         "{text}"
     );
     assert!(text.contains("to<Vec<Integer>>"), "{text}");
+}
+
+#[test]
+fn outcome_errors_explain_the_family_and_exit() {
+    let text = written(
+        Repl::new()
+            .feed(b"s: String = Just 1\nm: Maybe<Integer> = [!1]\nf = [:1]\n"),
+    );
+    assert!(
+        text.contains("Maybe<Integer> cannot enter a text place; use || or |:"),
+        "{text}"
+    );
+    assert!(text.contains("Nothing has no payload"), "{text}");
+    assert!(text.contains("no outcome family is known here"), "{text}");
 }

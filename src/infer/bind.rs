@@ -59,7 +59,8 @@ impl Infer<'_> {
         let env = self.state.env.len();
         let mut expected = annotation.map(|annotation| {
             let span = module.types[annotation.0].span;
-            let expected = Expected::new(self.lower_here(annotation), span);
+            let expected = Expected::new(self.lower_here(annotation), span)
+                .at(crate::typed::Place::Result);
             if matches!(module.expressions[value.0].kind, ExprKind::Arms(_)) {
                 expected
             } else {
@@ -595,7 +596,9 @@ impl Infer<'_> {
             } else {
                 prelude(name)
             };
-            if name == "Integer" && !only {
+            if name == "Vec" {
+                self.state.subst.default_bytes(var, ty);
+            } else if name == "Integer" && !only {
                 let before = self.state.clone();
                 self.hint(&Type::Var(var), &ty);
                 self.dots();

@@ -16,6 +16,8 @@ use alloc::vec::Vec;
 /// a variable left in them is unsolved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Typed {
+    /// A conversion at each expression's receiving place, if any.
+    pub casts: Vec<Option<Cast>>,
     /// Non-fatal call-spacing diagnostics, in module source coordinates.
     pub warnings: Vec<Warning>,
     /// Binding decisions keyed by the call or stage span in this module.
@@ -105,4 +107,30 @@ pub enum DefaultValue {
         value: ExprId,
     },
     Type(Type),
+}
+
+/// One row of the closed implicit conversion table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CastRow {
+    Number,
+    Read,
+    Show,
+    Codec,
+    Bytes,
+    Pack,
+}
+
+/// A cast preserves the source meaning; its limits are entered afterward.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cast {
+    pub row: CastRow,
+    pub from: Type,
+    pub to: Type,
+}
+
+impl CastRow {
+    #[must_use]
+    pub const fn can_fail(self) -> bool {
+        matches!(self, Self::Number | Self::Read | Self::Codec)
+    }
 }

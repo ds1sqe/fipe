@@ -35,24 +35,22 @@ spelling of a claimed member: `a + b` is the `add` of the left operand's
 | a literal | `Literal` | `Self.literal: Form -> Self` |
 | words | `Len`, `Show`, `Read` | `self.len: Natural`, and alike |
 
-`++` spells `concat` by name, not its type: an array is not a `Concat`,
-whose result is `Self`; its `concat` adds the lengths
+`++` spells `concat` by name, not its type: an array is not a `Concat`, whose
+result is `Self`; its `concat` adds the lengths
 ([containers](05-containers.md) §Parameters). The right operand and the
-result of an arithmetic operator are what the left's member takes and
-gives, `Self` by the parameters' defaults ([containers](05-containers.md)
+result of an arithmetic operator are what the left's member takes and gives,
+`Self` by the parameters' defaults ([containers](05-containers.md)
 §Parameters): `v * k` is a `Vec2`'s `Mul<F64>`, `p - q` a `Sub<Point,
-Vector>`, and the left operand owns the operation. On a head whose
-meaning is unknown a parameter the operands do not fix takes its
-default: the right operand fixes `R`, nothing fixes `O`, so `diff = p q
-=> p - q` is `Sub<b> a => a -> b -> a` and a mixed result needs a known
-head. A literal operand is read by its other
-operand's meaning (§Literals). The other operators take one meaning; a
-comparison across meanings is a conversion, not an operator. A prelude
-word is an ordinary function over such a type: `show = x =>
-x.show`, `len`, `map`, `concat`. `Functor`, `Monad` and `Alternative` are
-the members `map`, `then`, `pure`, `or` and `empty`, each meaning with its
-own types, as there is no higher kind ([containers](05-containers.md)
-§Parameters).
+Vector>`, and the left operand owns the operation. On a head whose meaning is
+unknown a parameter the operands do not fix takes its default: the right
+operand fixes `R`, nothing fixes `O`, so `diff = p q => p - q` is `Sub<b> a
+=> a -> b -> a` and a mixed result needs a known head. A literal operand is
+read by its other operand's meaning (§Literals). The other operators take one
+meaning; a comparison across meanings is a conversion, not an operator. A
+prelude word is an ordinary function over such a type: `show = x => x.show`,
+`len`, `map`, `concat`. `Functor`, `Monad` and `Alternative` are the members
+`map`, `then`, `pure`, `or` and `empty`, each meaning with its own types, as
+there is no higher kind ([containers](05-containers.md) §Parameters).
 
 ## The dot
 
@@ -106,26 +104,27 @@ each position has its type.
 else fires at a place. A missing pair is a check error, a failing admitted
 one a Fault, a statically invalid literal a check error. A word or path
 literal is text with no type of its own: at a spot whose type is
-`String`, or a host-declared type that is a `Read`, it takes that type;
+`String`, or any meaning claiming `Read`, it takes that type;
 anywhere else it is `String`.
 
 | Place | Admitted source | On failure |
 | --- | --- | --- |
 | numeric meaning | a number of another numeric meaning | exact, or Fault; a literal is checked at compile time |
 | a `Read` | word or `String` | Fault |
-| `String`, `Vec<U8>` | any `T` via `show` | never |
+| `String`, `Vec<U8>` | any `T` claiming `Show` | never |
 | host-declared type | `Vec<U8>` via the host codec | Fault |
 | `Vec<U8>` | `String` | never |
 | a packed type | a meaning that claims its limits | never |
 
-The number row is the one way between numeric meanings, and there is no
-`from` for it; between widths of `Integer` entry replaces it. An integer
-literal a float cannot hold exactly is a check error. `Vec<U8>` to
-`Vec<U8>` is identity. Pairs do not chain, a codec or formatting failure
-never falls back, and a type name is never a conversion: `pl | Point` is
-`Point pl`, the constructor. An outcome type never meets a `String` or
-`Vec<U8>` spot implicitly, so `find x | put out` is a check error until
-`||` or `|:` removes the `Maybe`.
+The number row is the one way between numeric meanings, with no `from` for
+it; between widths of `Integer` entry replaces it. An integer literal a
+float cannot hold exactly is a check error. A byte row needs a `Vec<U8>`
+place, written or reached by a limited base chain; `Vec<Integer>` is none.
+An exact pair precedes `Show`, and every host-declared type admits the
+codec. Pairs do not chain, a codec or formatting failure never falls back,
+and a type name is never a conversion: `pl | Point` is `Point pl`. An
+outcome type, by its own meaning, never meets a `String` or `Vec<U8>` place
+until `||` or `|:` removes it.
 
 Every other conversion is a word. Text and numbers: `show`, `read : Read
 a => String -> Result<a, ParseError>`, `bytes`, `utf8 : Vec<U8> ->

@@ -97,11 +97,11 @@ On Bool, `||` and `&&` short-circuit with Bool operands. For `Maybe` or
 | same outcome family | original left value | evaluate right outcome |
 | good payload type | unwrap good payload | evaluate right payload |
 
-An unneeded right side has no effects and no budget cost. Other right
-types are check errors after entry; both branches have one result type,
-so a wrapper cannot survive where the failure branch returns a payload.
-`m && rhs` is `m |: (_ => rhs)`. `Either` refuses `||` and `&&`.
-A user meaning's fallback is T5's.
+An unneeded right side has no effects and no budget cost. Other right types
+are check errors after entry into the left's good payload place; both
+branches have one result type, so a wrapper cannot survive where the failure
+branch returns a payload. `m && rhs` is `m |: (_ => rhs)`. `Either` refuses
+`||` and `&&`. A user meaning's fallback is T5's.
 
 ## Pattern binding
 

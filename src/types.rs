@@ -617,6 +617,13 @@ impl Subst {
         }
     }
 
+    /// Byte literal defaulting retains its nested U8 place shape.
+    /// Ordinary variable binding still erases limits.
+    pub(crate) fn default_bytes(&mut self, var: Var, ty: Type) {
+        debug_assert_eq!(self.apply(&Type::Var(var)), Type::Var(var));
+        self.bindings[var.0 as usize] = Some(ty);
+    }
+
     fn get(&self, var: Var) -> Option<&Type> {
         self.bindings.get(var.0 as usize).and_then(Option::as_ref)
     }

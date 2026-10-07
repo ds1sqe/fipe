@@ -6,7 +6,6 @@
 
 use super::{prelude_of, Expected, Infer, Reason};
 use crate::{ast::ExprId, resolve::Origin, token::Span, types::Type};
-use alloc::vec;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Family {
@@ -17,7 +16,7 @@ pub(super) enum Family {
 
 /// The outcome family of a type, with its arguments.
 pub(super) fn family(ty: &Type) -> Option<(Family, &[Type])> {
-    let Type::Named { name, arguments } = ty else {
+    let Type::Named { name, arguments } = super::meaning(ty) else {
         return None;
     };
     if name.origin != Origin::Prelude {
@@ -75,34 +74,25 @@ impl Infer<'_> {
         span: Span,
         other: Span,
     ) -> Option<Type> {
+        if matches!(applied, Type::Var(_)) {
+            let side = self.fresh();
+            self.state.families.push(Pending {
+                ty: applied.clone(),
+                side: side.clone(),
+                good,
+                has_payload,
+                span,
+                other,
+            });
+            return Some(side);
+        }
         match family(applied) {
-            None => {
-                let reason = if matches!(applied, Type::Var(_)) {
-                    Reason::UnknownFamily
-                } else {
-                    Reason::NeedsMaybeOrResult
-                };
-                self.error(span, reason);
-                None
-            }
-            Some((Family::Either, _)) => {
+            None | Some((Family::Either, _)) => {
                 self.error(span, Reason::NeedsMaybeOrResult);
                 None
             }
-            Some((Family::Maybe, arguments)) if !good && has_payload => {
-                let actual = prelude_of(
-                    "Result",
-                    vec![arguments[0].clone(), self.fresh()],
-                );
-                let expected = applied.clone();
-                self.error(
-                    span,
-                    Reason::Mismatch {
-                        expected,
-                        actual,
-                        other,
-                    },
-                );
+            Some((Family::Maybe, _)) if !good && has_payload => {
+                self.error(span, Reason::NothingPayload);
                 None
             }
             Some((family, arguments)) => Some(payload(family, arguments, good)),
@@ -117,13 +107,11 @@ impl Infer<'_> {
         expected: Option<&Expected>,
         span: Span,
     ) -> Type {
-        let applied = expected.map(|e| (self.apply(&e.ty), e.span));
-        let side = if let Some((ty, other)) = &applied {
-            self.bracket_side(ty, good, payload.is_some(), span, *other)
-        } else {
-            self.error(span, Reason::UnknownFamily);
-            None
-        };
+        let ty = expected.map_or_else(|| self.fresh(), |e| e.ty.clone());
+        let head = self.apply(&ty);
+        let other = expected.map_or(span, |e| e.span);
+        let side =
+            self.bracket_side(&head, good, payload.is_some(), span, other);
         match (payload, &side) {
             (Some(payload), Some(ty)) => {
                 self.expr(
@@ -140,10 +128,7 @@ impl Infer<'_> {
             (None, Some(ty)) => self.unify(ty, &Type::Unit, span, span),
             (None, None) => {}
         }
-        match (side, applied) {
-            (Some(_), Some((ty, _))) => ty,
-            _ => self.fresh(),
-        }
+        head
     }
 
     /// `left |: right` and `left |! right`, the left already typed.
@@ -251,7 +236,13 @@ impl Infer<'_> {
             return applied;
         }
         self.state = before;
-        self.expr(right, Some(&Expected::new(good.clone(), left_span)));
+        self.expr(
+            right,
+            Some(
+                &Expected::new(good.clone(), left_span)
+                    .at(crate::typed::Place::Payload),
+            ),
+        );
         good
     }
 
@@ -279,5 +270,39 @@ impl Infer<'_> {
         }
         let result = self.expr(right, None);
         self.rebuild(&applied, true, result, self.span(right), left_span)
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct Pending {
+    ty: Type,
+    side: Type,
+    good: bool,
+    has_payload: bool,
+    span: Span,
+    other: Span,
+}
+
+impl Infer<'_> {
+    pub(super) fn solve_families(&mut self, finish: bool) {
+        let pending = core::mem::take(&mut self.state.families);
+        for owed in pending {
+            let ty = self.apply(&owed.ty);
+            if matches!(ty, Type::Var(_)) {
+                if finish {
+                    self.error(owed.span, Reason::UnknownFamily);
+                } else {
+                    self.state.families.push(owed);
+                }
+            } else if let Some(side) = self.bracket_side(
+                &ty,
+                owed.good,
+                owed.has_payload,
+                owed.span,
+                owed.other,
+            ) {
+                self.unify(&side, &owed.side, owed.span, owed.other);
+            }
+        }
     }
 }

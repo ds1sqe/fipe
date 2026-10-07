@@ -19,10 +19,10 @@ limits.
 
 A **place** holds a value and declares a type: a parameter, a field, a
 constructor payload, an element, an annotated binding, a declared result,
-the host boundary. Every value in a place meets its limits; outside a
-hatch (T4) values and places are immutable, so this never goes stale. The
-meaning belongs to the value, the limits to the place: `2` is an
-`Integer` and may enter every place whose limits it meets.
+the host boundary, the payload fallback of `||`. Every value in a place
+meets its limits; outside a hatch (T4) values and places are immutable, so
+this never goes stale. The meaning belongs to the value, the limits to the
+place: `2` is an `Integer` and may enter every place whose limits it meets.
 
 ## Type forms
 
@@ -233,9 +233,10 @@ and `Result`; `|:` and `|!` on `Either`, `Left` bad and `Right` good;
 time.
 
 An outcome bracket names a side, not a family. Against `Maybe<T>`, `[:e]`
-binds `e : T` and `[!]` is `Nothing`; against `Result<T,E>`, `[:e]` binds
-`e : T` and `[!e]` binds `e : E`; `[!e]` against `Maybe` is a check error.
-In construction the expected type supplies the family; with none, `m =
-[:1]` is the check error "outcome family unknown". `Just`, `Nothing`, `Ok`
-and `Err` are ordinary constructors and fix a family. `Either` has no
-bracket form, as it has no `|:`.
+binds `e : T` and `[!]` is `Nothing`; against `Result<T,E>`, `[:e]` binds `e
+: T` and `[!e]` binds `e : E`; `[!e]` against `Maybe` reports "`Nothing` has
+no payload". An annotation, spot, arm input or sibling arm supplies the
+family, including one learned later; with none, `m = [:1]` is the check
+error "outcome family unknown". `Just`, `Nothing`, `Ok` and `Err` are
+ordinary constructors and fix a family. `Either` has no bracket form, as it
+has no `|:`.

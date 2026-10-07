@@ -202,7 +202,10 @@ fn gates_cover_with_their_declared_complement_and_keep_passed_names() {
 fn entries_reach_container_parts_and_payloads() {
     let mut session =
         fipe::session::Session::new(fipe::decl::Declarations::new());
-    assert_eq!(line(&mut session, "xs = [1, 300]").diagnostics, []);
+    assert_eq!(
+        line(&mut session, "xs: Vec<Integer> = [1, 300]").diagnostics,
+        []
+    );
     assert_ne!(line(&mut session, "ys: Vec<U8> = xs").diagnostics, []);
     assert_eq!(line(&mut session, "m = Just 300").diagnostics, []);
     assert_ne!(line(&mut session, "n: Maybe<U8> = m").diagnostics, []);

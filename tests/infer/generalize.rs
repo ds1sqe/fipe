@@ -91,11 +91,7 @@ fn literals_default_and_the_rest_is_ambiguous() {
     let check = "check = n => if n < 0 { fault \"negative\" } else { Ok n }";
     assert_eq!(ty(check), "Ord a, Literal a => a -> Result<a, b>");
     assert_eq!(ty(&format!("{check}\ncheck 5")), "Result<Integer, a>");
-    // 07's cast row: `round` keeps `F64`.
-    assert_eq!(
-        kinds("n: I64 = round 2.5"),
-        [("MissingClaim", "round"), ("Mismatch", "2.5")]
-    );
+    assert_eq!(ty("n: I64 = round 2.5"), "I64");
     let text = "f = s => {\n    _ = read s\n    ()\n}";
     let [error] = errors(text).try_into().unwrap();
     assert_eq!(
@@ -146,7 +142,7 @@ fn an_inner_binding_does_not_generalize_over_the_recursive_name() {
     // `g = f` inside `f`'s arms sees `f` monomorphic, as `f` itself is:
     // `g` at two types is the polymorphic recursion the direct form
     // already rejects.
-    let text = "f = n => {\n  g = f\n  a: I64 = g n\n  b: String = g n\n  a\n}";
+    let text = "f = n => {\n  g = f\n  a: I64 = g n\n  b: Bool = g n\n  a\n}";
     assert_eq!(kinds(text), [("Mismatch", "g n")]);
 }
 
@@ -177,8 +173,5 @@ fn value_bindings_default_literal_claims() {
 
 #[test]
 fn pattern_binding_defaults_literal_claims() {
-    assert_eq!(
-        kinds("[x] = [1] | map (n => n + 1)\ny: F64 = x"),
-        [("Mismatch", "x")]
-    );
+    assert_eq!(ty("[x] = [1] | map (n => n + 1)\ny: F64 = x"), "F64");
 }

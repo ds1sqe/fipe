@@ -126,17 +126,7 @@ fn use_requests_a_file_module_once() {
     );
     let text = include_str!("../Documentation/examples/geometry.fipe");
     let report = done(session.reply(Reply::File(Some(text.into()))));
-    // The file's own errors, `hypot p.x p.y` and `atan2 p.y p.x`, are
-    // 07's cast rows; the line itself checks.
-    assert_eq!(
-        file_errors(&report, text),
-        [
-            ("geometry".to_string(), "p.x"),
-            ("geometry".to_string(), "p.y"),
-            ("geometry".to_string(), "p.y"),
-            ("geometry".to_string(), "p.x"),
-        ]
-    );
+    assert_eq!(file_errors(&report, text), []);
     assert_eq!(session.source(), "use geometry.Point\n\n");
     let report = ok(&mut session, "Point 1");
     assert_eq!(
@@ -291,7 +281,7 @@ fn a_line_whose_read_target_is_unknown_is_ambiguous() {
 }
 
 const BAD: &str = "pub k: I64 = 2
-pub f: I64 = \"x\"
+pub f: I64 = True
 pub g = 1 + \"a\"
 pub h = nosuch 1
 ";
@@ -324,7 +314,7 @@ fn a_loaded_file_is_checked_once_and_its_values_are_typed() {
     let bad = |text: &'static str| ("bad".to_string(), text);
     assert_eq!(
         file_errors(&report, BAD),
-        [bad("\"x\""), bad("1 + \"a\""), bad("nosuch")]
+        [bad("True"), bad("1 + \"a\""), bad("nosuch")]
     );
     assert!(matches!(
         report.diagnostics[0],
@@ -341,14 +331,7 @@ fn a_loaded_file_is_checked_once_and_its_values_are_typed() {
     assert_eq!(session.source(), "use bad\n\n");
     assert_eq!(query(&mut session, "bad.k"), "I64");
     assert_eq!(query(&mut session, "bad.f"), "I64");
-    let report = done(session.line("w1: String = bad.k"));
-    assert!(matches!(
-        report.diagnostics.as_slice(),
-        [Diagnostic::Type(fipe::infer::Error {
-            reason: fipe::infer::Reason::Mismatch { .. },
-            ..
-        })]
-    ));
+    ok(&mut session, "w1: String = bad.k");
     // Loaded once: a later line that reaches the file reports nothing.
     ok(&mut session, "k2 = bad.k + 1");
 }
@@ -653,7 +636,7 @@ fn a_pattern_bound_binding_stays_monomorphic_across_lines() {
     let mut session = Session::new(host());
     ok(&mut session, "[f] = [(x => x)]");
     ok(&mut session, "a = f 1");
-    let report = done(session.line("b = f \"s\""));
+    let report = done(session.line("b = f True"));
     assert!(matches!(
         type_reasons(&report).as_slice(),
         [fipe::infer::Reason::Mismatch { .. }]
@@ -669,7 +652,7 @@ fn a_pattern_bound_binding_stays_monomorphic_across_lines() {
     ok(&mut session, "c = h \"s\"");
     assert_eq!(query(&mut session, "g"), "String -> String");
     assert!(matches!(
-        type_reasons(&done(session.line("h 1"))).as_slice(),
+        type_reasons(&done(session.line("h (x => x)"))).as_slice(),
         [fipe::infer::Reason::Mismatch { .. }, ..]
     ));
     // A generalized binding still freezes as a scheme.
@@ -852,9 +835,7 @@ fn the_mutually_claimed_example_checks_as_one_session_unit() {
     let report = done(
         session.line(include_str!("../Documentation/examples/03-types.fipe")),
     );
-    // These fourteen numeric casts are assigned to 07; every claim resolves.
-    assert_eq!(report.diagnostics.len(), 14, "{:?}", report.diagnostics);
-    assert!(report.diagnostics.iter().all(|d| matches!(d,Diagnostic::Type(e) if matches!(e.reason,fipe::infer::Reason::Mismatch { .. }))));
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
 }
 
 #[test]
@@ -902,7 +883,7 @@ fn diagnostics_follow_source_order() {
     let mut session = Session::new(host());
     assert!(matches!(session.line("use bad"), Outcome::Request(_)));
     let report = done(session.reply(Reply::File(Some(
-        "a: Bool = 1\nx = missing\nb: String = True".into(),
+        "a: Bool = 1\nx = missing\nb: String = (x => x)".into(),
     ))));
     let spans: Vec<_> = report
         .diagnostics
