@@ -269,14 +269,13 @@ impl Repl {
         }
     }
 
-    /// Carry the continuation over a line added to the entry. Inside a
-    /// bracket only the new line is lexed; an open raw quote waits for
-    /// a line holding `'`; otherwise the whole entry is read again.
+    /// Carry the continuation over a line added to the entry. Outside a
+    /// quote and a pending doc only the new line is lexed, whatever the
+    /// bracket depth, so a long entry costs its own length once; an open
+    /// raw quote waits for a line holding `'`; otherwise the whole entry
+    /// is read again, since the quote changes how its lines lex.
     fn extend(&mut self, line: &str) {
-        if self.continuation.depth > 0
-            && self.continuation.quote.is_none()
-            && !self.continuation.doc
-        {
+        if self.continuation.quote.is_none() && !self.continuation.doc {
             let depth = self.continuation.depth;
             self.continuation = continuation(line, lex(line));
             self.continuation.depth += depth;
