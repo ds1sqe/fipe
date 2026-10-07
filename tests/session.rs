@@ -493,22 +493,19 @@ fn spans_stay_in_the_session_s_source() {
 }
 
 #[test]
-fn retract_removes_the_last_accepted_line() {
+fn a_session_is_rebuilt_from_its_lines() {
     let mut session = Session::new(host());
     ok(&mut session, "e = 0");
-    ok(&mut session, "f = 1");
-    assert_eq!(session.retract().as_deref(), Some("f = 1"));
-    assert_eq!(session.source(), "e = 0\n\n");
-    assert_eq!(unknown_name(&done(session.line("f"))), [span(0, 1)]);
-    ok(&mut session, "e");
-    // A redefinition retracted uncovers the earlier one.
-    ok(&mut session, "e = \"text\"");
-    session.retract();
-    assert_eq!(query(&mut session, "e"), "Integer");
-    assert_eq!(session.retract().as_deref(), Some("e"));
-    assert_eq!(session.retract().as_deref(), Some("e = 0"));
-    assert_eq!(session.retract(), None);
-    assert_eq!(session.source(), "");
+    ok(&mut session, "e = \"text\"\nf = e");
+    let lines: Vec<String> = session.lines().map(String::from).collect();
+    assert_eq!(lines, ["e = 0", "e = \"text\"\nf = e"]);
+    // A host that edits an accepted line starts over from the lines
+    // before it; the result is the session those lines make.
+    let mut rebuilt = Session::new(host());
+    ok(&mut rebuilt, &lines[0]);
+    assert_eq!(rebuilt.source(), "e = 0\n\n");
+    assert_eq!(query(&mut rebuilt, "e"), "Integer");
+    assert_eq!(unknown_name(&done(rebuilt.line("f"))), [span(0, 1)]);
 }
 
 #[test]
@@ -642,8 +639,9 @@ fn a_pattern_bound_binding_stays_monomorphic_across_lines() {
         [fipe::infer::Reason::Mismatch { .. }]
     ));
     assert_eq!(query(&mut session, "f"), "Integer -> Integer");
-    // Retracting the line that fixed it frees it again.
-    assert_eq!(session.retract().as_deref(), Some("a = f 1"));
+    // Without the line that fixed it, the variable is still free.
+    let mut session = Session::new(host());
+    ok(&mut session, "[f] = [(x => x)]");
     ok(&mut session, "b = f \"s\"");
     // A binding over it shares its variable; a constructor pattern too.
     let mut session = Session::new(host());
@@ -1071,7 +1069,7 @@ fn later_lines_record_receivers_for_earlier_generic_members() {
 }
 
 #[test]
-fn indexed_session_meanings_follow_accept_query_and_retract() {
+fn indexed_session_meanings_follow_accept_and_query() {
     let mut session = Session::new(host());
     let unit = ok(&mut session, "[empty] = [[]]").unit.unwrap();
     assert_eq!(unit.tables().session_meanings, [None]);
@@ -1083,22 +1081,18 @@ fn indexed_session_meanings_follow_accept_query_and_retract() {
     let next = ok(&mut session, "fixed: [Integer; 0] = empty")
         .unit
         .unwrap();
-    assert!(unit.tables().session_meanings[0].is_some());
     assert_eq!(unit.tables().nodes.len(), next.tables().nodes.len());
-    session.retract();
-    assert_eq!(unit.tables().session_meanings[0], None);
-    ok(&mut session, "fixed: [String; 0] = empty");
     let tables = unit.tables();
     let Some(fipe::ir::Type::Meaning { index, .. }) =
         &tables.session_meanings[0]
     else {
         panic!("fixed meaning")
     };
-    assert_eq!(tables.meanings[*index].label, "String");
+    assert_eq!(tables.meanings[*index].label, "Integer");
 }
 
 #[test]
-fn indexed_dispatch_rows_follow_retraction() {
+fn indexed_dispatch_rows_follow_accepted_lines_not_queries() {
     let mut session = Session::new(Declarations::new());
     let unit = ok(&mut session, "inc = n => n + 1").unit.unwrap();
     let before: Vec<_> = unit
@@ -1107,6 +1101,10 @@ fn indexed_dispatch_rows_follow_retraction() {
         .iter()
         .map(|d| d.rows.clone())
         .collect();
+    assert_eq!(done(session.query("inc 2.0")).diagnostics, []);
+    for (dispatch, rows) in unit.tables().dispatch.iter().zip(&before) {
+        assert_eq!(&dispatch.rows, rows);
+    }
     ok(&mut session, "inc 2.0");
     assert_ne!(
         unit.tables()
@@ -1116,8 +1114,4 @@ fn indexed_dispatch_rows_follow_retraction() {
             .collect::<Vec<_>>(),
         before
     );
-    session.retract();
-    for (dispatch, rows) in unit.tables().dispatch.iter().zip(before) {
-        assert_eq!(dispatch.rows, rows);
-    }
 }

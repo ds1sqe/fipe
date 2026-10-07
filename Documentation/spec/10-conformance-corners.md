@@ -25,7 +25,7 @@ each once a defect: a row stays so the defect cannot return.
 | REPL `g = f 1 \` LF `2`, `f = a b => a` | joined application; `g: Integer` |
 | REPL `:t 'a` LF `  b'` | echoed literal retains LF and indentation |
 | REPL `##! module` alone then `:ast` | accepted empty module; its doc is printed once |
-| REPL `:{`, types with mutual claims, `:}` | one compilation unit; commands inside are text; EOF also submits |
+| REPL lines up to a blank line, types with mutual claims | one compilation unit; EOF also submits |
 | unannotated `From<Polar>.from = p => Self p.r p.t` | `p` is `Polar`; conversion is callable |
 | a claim member with missing/extra receiver | check error; every member has the required receiver |
 | overloaded `Mul` through `scale v k` or `(v \| .mul) k` | select after the argument meaning is known |
@@ -116,9 +116,25 @@ each once a defect: a row stays so the defect cannot return.
 | single array length error: `z: [Integer; 2] = [1, 2, 3]` | one length diagnostic |
 | single holding conflict: `hb: Bits<8> & Bits<16> = 1` | one holdings-disagree diagnostic |
 | no-test gate diagnostic: `type Flag: Bool & Bits<1>` LF `Flag True` | no gate; suggest a typed place or to<Flag> |
-| gate constructor conflict: `:{` LF `type Gate: Integer where self > 0` LF `type Sum { Gate }` LF `:}` | duplicate diagnostic points at the first declaration |
+| gate constructor conflict: `type Gate: Integer where self > 0` LF `type Sum { Gate }` LF LF | duplicate diagnostic points at the first declaration |
 | failed imported binding; imported limit reading a host constant | failed binding carries no proof; host constant is read in its module |
 | unannotated supplied constant; supplied `bad: U8 = 300` | infer the written constant; reject bad when read |
 | repeated module uses; `:checks module.member`; global `:checks` | entries unique, source identities preserved, owning function named |
 | exact String record field; limited F64 literal; unknown range | keep String and float spelling; omit unknown range; names list tested limits only |
 | private named constructor field and positional inputs | one private-field diagnostic, no repeated positional report |
+
+## REPL input and presentation
+
+| Case | Expected distinction |
+| --- | --- |
+| Linux input is a directory or fails while reading | read error, never successful EOF or an empty module |
+| host path contains NUL | rejected; never reads the prefix before NUL |
+| command-line host path contains LF | passed as a path, never interpreted as REPL commands |
+| `:t` followed by a tab and `1` | same query as a space-separated command |
+| source contains a tab or terminal escape | control bytes escaped; caret follows the displayed text |
+| `:ast` of public types, fields, members, or versioned imports | visibility, annotation and version are shown |
+| `:r x` | source line and column, name and readable target; no byte offsets |
+| REPL `y = 1` LF `  + 2` LF LF `:t y` | the blank line fires one entry: `Integer`, exact 3 |
+| REPL `y = 1` LF `:t y` | the command fires the entry before it, then answers |
+| REPL `y = 1` LF `  + "a"` LF LF `:t y` | the entry is rejected whole; `y` is unknown |
+| REPL `w = (1` LF LF `)` LF LF | a blank line inside a bracket stays in the entry |

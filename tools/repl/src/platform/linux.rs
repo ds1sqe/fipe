@@ -81,18 +81,18 @@ unsafe fn syscall(number: usize, a: usize, b: usize, c: usize) -> isize {
     result
 }
 
-/// Bytes read from stdin into `buffer`; 0 at end of input or on error.
-pub fn read(buffer: &mut [u8]) -> usize {
+/// Bytes read from stdin into `buffer`; 0 only at end of input.
+pub fn read(buffer: &mut [u8]) -> Result<usize, ()> {
     read_fd(0, buffer)
 }
 
-fn read_fd(fd: usize, buffer: &mut [u8]) -> usize {
+fn read_fd(fd: usize, buffer: &mut [u8]) -> Result<usize, ()> {
     loop {
         let (at, len) = (buffer.as_mut_ptr() as usize, buffer.len());
         // SAFETY: the kernel writes at most `len` bytes into `buffer`.
         let read = unsafe { syscall(READ, fd, at, len) };
         if read != -4 {
-            return usize::try_from(read).unwrap_or(0);
+            return usize::try_from(read).map_err(|_| ());
         }
     }
 }
@@ -115,6 +115,9 @@ fn write_fd(fd: usize, mut bytes: &[u8]) {
 }
 
 pub fn read_file(path: &str) -> Option<String> {
+    if path.contains('\0') {
+        return None;
+    }
     let mut name = Vec::with_capacity(path.len() + 1);
     name.extend_from_slice(path.as_bytes());
     name.push(0);
@@ -123,15 +126,16 @@ pub fn read_file(path: &str) -> Option<String> {
     let fd = usize::try_from(fd).ok()?;
     let mut text = Vec::new();
     let mut buffer = [0; 4096];
-    loop {
+    let success = loop {
         match read_fd(fd, &mut buffer) {
-            0 => break,
-            read => text.extend_from_slice(&buffer[..read]),
+            Ok(0) => break true,
+            Ok(read) => text.extend_from_slice(&buffer[..read]),
+            Err(()) => break false,
         }
-    }
+    };
     // SAFETY: `fd` was opened above and is closed once.
     unsafe { syscall(CLOSE, fd, 0, 0) };
-    String::from_utf8(text).ok()
+    success.then(|| String::from_utf8(text).ok()).flatten()
 }
 
 pub fn exit(code: usize) -> ! {
@@ -142,6 +146,9 @@ pub fn exit(code: usize) -> ! {
 
 /// Whether the working directory is now `path`.
 pub fn chdir(path: &str) -> bool {
+    if path.contains('\0') {
+        return false;
+    }
     let mut name = Vec::with_capacity(path.len() + 1);
     name.extend_from_slice(path.as_bytes());
     name.push(0);

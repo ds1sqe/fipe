@@ -8,21 +8,20 @@
 //! nothing is awaited, so `feed(&[])` yields the first one; none comes
 //! after `flush`.
 //!
-//! An entry continues onto the next line, prompted by `....> `, while it
-//! has an unclosed bracket or ends in an operator, `=` or a comma; an
-//! empty line submits it. A complete entry is submitted at once, and a
-//! next line that starts with an operator takes the accepted entry back
-//! and continues it (accepting it again if the joined entry is
-//! rejected), whether the lines arrive together or one at a time. A
-//! command, an empty line or a comment line ends that chance. A `:t` or
-//! `:r` query is answered when its entry is complete. A line that starts with `where`
-//! continues an accepted `type` item the same way.
+//! An entry is the input up to a blank line: the lines before it are
+//! one compilation unit, checked and accepted once, as a file's lines
+//! are, whether they arrive together or one at a time. A blank line
+//! inside an open bracket, in a quote across lines or after a doc
+//! comment waiting for its item stays inside the entry, which is
+//! prompted by `....> `. End of input submits what is held. A command
+//! line, `:` first, runs on its own line after submitting the entry
+//! before it; a bracket or quote it opens is closed first. A comment
+//! line between entries is skipped.
 //!
 //! `:ast` prints the last line that parsed, accepted or not: a tree
-//! never depends on checking. Commands: `:ast`, `:r [line]`, `:t [line]`, `:load <stem or path>`,
-//! `:checks [name]`, `:host [dir]`, `:q`; any other line goes to the session.
-//! `:{` and `:}` on their own lines collect one compilation unit; every
-//! intervening line is source text, including commands. EOF submits it.
+//! never depends on checking. Commands: `:ast`, `:r [line]`, `:t [line]`,
+//! `:ir [line]`, `:load <stem or path>`, `:checks [name]`, `:host [dir]`,
+//! `:q`; any other line goes to the session.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -44,7 +43,7 @@ use fipe::{
     embed::{Outcome, Reply, Request},
     lex::{lex, Lexed},
     session::{Diagnostic, Report, Session},
-    token::{Keyword, Kind, Source, Span, Symbol, Token},
+    token::{Kind, Source, Span, Symbol, Token},
 };
 use render::Context;
 
@@ -69,7 +68,6 @@ pub struct Repl {
     /// The entry's lines so far.
     entry: String,
     continuation: Continuation,
-    unit: bool,
     wait: Option<Wait>,
     /// Replied file texts by stem, for replays and file diagnostics.
     files: Vec<(String, String)>,
@@ -83,11 +81,6 @@ pub struct Repl {
     last: Option<(Report, String)>,
     /// The last line that parsed, accepted or not, for `:ast`.
     parsed: Option<Report>,
-    /// The session's last line when the entry before this one was it,
-    /// which a line starting with an operator continues.
-    retractable: Option<String>,
-    /// A retracted line, accepted again if its continuation is rejected.
-    restore: Option<String>,
     quit: bool,
     ended: bool,
 }
@@ -144,7 +137,6 @@ impl Repl {
             input: Vec::new(),
             entry: String::new(),
             continuation: Continuation::default(),
-            unit: false,
             wait: None,
             files: Vec::new(),
             host_texts: Vec::new(),
@@ -152,8 +144,6 @@ impl Repl {
             prompted: false,
             last: None,
             parsed: None,
-            retractable: None,
-            restore: None,
             quit: false,
             ended: false,
         }
@@ -231,101 +221,43 @@ impl Repl {
 
     fn run(&mut self, out: &mut Outs) {
         while !self.quit && self.wait.is_none() {
-            if !self.unit && !self.entry.is_empty() && !self.continuation.open {
-                self.submit(out);
-                continue;
-            }
             let Some(end) = self.input.iter().position(|&b| b == b'\n') else {
-                if self.ended && (self.unit || !self.entry.is_empty()) {
+                if self.ended && !self.entry.is_empty() {
                     self.submit(out);
                     continue;
                 }
                 break;
             };
-            if !self.unit
-                && self.continuation.next.is_some_and(|next| {
-                    let line = String::from_utf8_lossy(&self.input[..end]);
-                    let tokens = lex(&line).tokens;
-                    match next {
-                        NextLine::Assign => !matches!(
-                            tokens[0].kind,
-                            Kind::Symbol(Symbol::Assign)
-                        ),
-                        NextLine::Where => !where_word(&tokens[0].kind),
-                    }
-                })
-            {
-                self.submit(out);
-                continue;
-            }
-            if !self.unit
-                && !self.entry.is_empty()
+            if !self.entry.is_empty()
                 && self.continuation.quote.is_none()
+                && self.continuation.depth == 0
                 && self.input[..end].trim_ascii_start().starts_with(b":")
             {
-                // A command ends the entry before it.
+                // A command submits the entry before it and stands alone.
                 self.submit(out);
                 continue;
             }
             let bytes: Vec<u8> = self.input.drain(..=end).collect();
             let line = String::from_utf8_lossy(&bytes);
             let line = line.trim_end_matches(['\n', '\r']);
-            if self.unit {
-                if line.trim() == ":}" {
-                    self.submit(out);
-                } else {
-                    self.entry.push_str(line);
-                    self.entry.push('\n');
-                }
-                continue;
-            }
             let blank = line.trim().is_empty();
-            if (blank
-                && self.continuation.quote.is_none()
-                && !self.continuation.doc)
-                || (self.entry.is_empty() && comment(line))
-            {
-                if !self.entry.is_empty() {
-                    self.submit(out);
+            if self.entry.is_empty() {
+                if blank || comment(line) {
+                    continue;
                 }
-                self.retractable = None;
-            } else if !self.entry.is_empty() {
+                self.entry = line.to_string();
+                self.continuation = continuation(code(line), lex(code(line)));
+            } else if blank && !self.continuation.open {
+                self.submit(out);
+                continue;
+            } else {
                 self.entry.push('\n');
                 self.entry.push_str(line);
-                if self.continuation.depth > 0
-                    && self.continuation.quote.is_none()
-                    && !self.continuation.doc
-                {
-                    let depth = self.continuation.depth;
-                    self.continuation = continuation(line, lex(line));
-                    self.continuation.depth += depth;
-                    self.continuation.open |= self.continuation.depth > 0;
-                } else if self.continuation.quote != Some('\'')
-                    || line.contains('\'')
-                {
-                    self.continuation =
-                        continuation(code(&self.entry), lex(code(&self.entry)));
-                }
-            } else if continuable(line) {
-                self.entry = line.to_string();
-                let lexed = lex(code(line));
-                let first = lexed.tokens.first();
-                let joins = !query(line)
-                    && (leading_tokens(&lexed.tokens)
-                        || (first
-                            .is_some_and(|token| where_word(&token.kind))
-                            && self.retractable.as_deref().is_some_and(
-                                |text| type_item(&lex(text).tokens),
-                            )));
-                if joins && self.retractable.take().is_some() {
-                    self.continue_last();
-                    self.continuation =
-                        continuation(code(&self.entry), lex(code(&self.entry)));
-                } else {
-                    self.continuation = continuation(code(line), lexed);
-                }
-            } else {
-                self.command(line, out);
+                self.extend(line);
+            }
+            if command_entry(&self.entry) && !self.continuation.open {
+                // A command runs once what it opened is closed.
+                self.submit(out);
             }
         }
         if !self.quit
@@ -333,22 +265,32 @@ impl Repl {
             && self.wait.is_none()
             && self.input.is_empty()
         {
-            out.write(if self.entry.is_empty() && !self.unit {
-                PROMPT
-            } else {
-                MORE
-            });
+            out.write(if self.entry.is_empty() { PROMPT } else { MORE });
+        }
+    }
+
+    /// Carry the continuation over a line added to the entry. Inside a
+    /// bracket only the new line is lexed; an open raw quote waits for
+    /// a line holding `'`; otherwise the whole entry is read again.
+    fn extend(&mut self, line: &str) {
+        if self.continuation.depth > 0
+            && self.continuation.quote.is_none()
+            && !self.continuation.doc
+        {
+            let depth = self.continuation.depth;
+            self.continuation = continuation(line, lex(line));
+            self.continuation.depth += depth;
+            self.continuation.open |= self.continuation.depth > 0;
+        } else if self.continuation.quote != Some('\'') || line.contains('\'') {
+            self.continuation =
+                continuation(code(&self.entry), lex(code(&self.entry)));
         }
     }
 
     fn submit(&mut self, out: &mut Outs) {
         let entry = core::mem::take(&mut self.entry);
         self.continuation = Continuation::default();
-        if core::mem::take(&mut self.unit) {
-            self.start(&entry, Mode::Accept, out);
-        } else {
-            self.command(&entry, out);
-        }
+        self.command(&entry, out);
     }
 
     fn command(&mut self, line: &str, out: &mut Outs) {
@@ -358,12 +300,10 @@ impl Repl {
             }
             return;
         };
-        self.retractable = None;
         let (name, arg) = command
-            .split_once(' ')
+            .split_once(char::is_whitespace)
             .map_or((command, ""), |(name, arg)| (name, arg.trim()));
         match (name, arg) {
-            ("{", "") => self.unit = true,
             ("q", "") => {
                 self.quit = true;
                 out.0.push(Out::Exit);
@@ -395,16 +335,29 @@ impl Repl {
             ("r", line) => self.start(line, Mode::Resolve, out),
             ("load", "") => out.write(b"usage: :load <stem or path>\n"),
             ("load", arg) => self.load(arg, out),
-            ("host", dir) => {
-                let dir = if dir.is_empty() { HOST_DIR } else { dir };
-                out.0.push(Out::File(host_path(dir, HOST[0])));
-                self.wait = Some(Wait::Host {
-                    dir: dir.to_string(),
-                    texts: Vec::new(),
-                });
-            }
+            ("host", dir) => self.request_host(dir, out),
             _ => out.write(format!("unknown command :{name}\n").as_bytes()),
         }
+    }
+
+    /// Load host declarations from a directory without interpreting it as input.
+    pub fn host_directory(&mut self, dir: &str) -> Vec<Out> {
+        let mut out = Outs::default();
+        self.request_host(dir, &mut out);
+        self.finish(out)
+    }
+
+    fn request_host(&mut self, dir: &str, out: &mut Outs) {
+        let dir = if dir.is_empty() { HOST_DIR } else { dir };
+        if dir.contains('\0') {
+            out.write(b"host path contains a NUL character\n");
+            return;
+        }
+        out.0.push(Out::File(host_path(dir, HOST[0])));
+        self.wait = Some(Wait::Host {
+            dir: dir.to_string(),
+            texts: Vec::new(),
+        });
     }
 
     fn checks(&self, name: Option<&str>, out: &mut Outs) {
@@ -561,24 +514,9 @@ impl Repl {
             self.parsed = Some(report.clone());
         }
         match mode {
-            Mode::Accept | Mode::Load
-                if report.diagnostics.iter().all(from_file) =>
-            {
-                self.restore = None;
-                if matches!(mode, Mode::Accept) {
-                    self.retractable = Some(text.clone());
-                }
-                self.last = Some((report, text));
-            }
             Mode::Accept | Mode::Load => {
-                self.retractable = None;
-                if let Some(line) = self.restore.take() {
-                    // Nothing is lost: the line before is kept as it was.
-                    let report = self.replay(&line);
-                    if report.diagnostics.iter().all(from_file) {
-                        self.retractable = Some(line.clone());
-                        self.last = Some((report, line));
-                    }
+                if report.diagnostics.iter().all(from_file) {
+                    self.last = Some((report, text));
                 }
             }
             Mode::Resolve => names(&self.session, &report, &text, out),
@@ -684,8 +622,6 @@ impl Repl {
             let report = self.replay(&line);
             self.done(report, line, Mode::Accept, out);
         }
-        // `:host` is a command: the next line starts a fresh entry.
-        self.retractable = None;
         out.write(format!("host: {dir}\n").as_bytes());
     }
 
@@ -702,16 +638,6 @@ impl Repl {
             }
         }
     }
-
-    /// The fresh entry starts with an operator and the entry before it
-    /// was accepted: take that line back and continue it.
-    fn continue_last(&mut self) {
-        let Some(last) = self.session.retract() else {
-            return;
-        };
-        self.entry = format!("{last}\n{}", self.entry);
-        self.restore = Some(last);
-    }
 }
 
 fn host_path(dir: &str, name: &str) -> String {
@@ -727,20 +653,36 @@ fn located(prefix: &str, text: &str, span: Span, reason: &str, out: &mut Outs) {
         .and_then(|s| s.rfind('\n'))
         .map_or(0, |i| i + 1);
     let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
-    let width = text
-        .get(at..span.end.clamp(at, end))
-        .map_or(0, |s| s.chars().count())
-        .max(1);
-    let row = &text[start..end];
+    let marked = text.get(at..span.end.clamp(at, end)).unwrap_or_default();
+    let width = visible(marked).chars().count().max(1);
+    let row = visible(&text[start..end]);
+    let padding = text
+        .get(start..at)
+        .map_or(0, |text| visible(text).chars().count());
+    let prefix = visible(prefix);
+    let reason = visible(reason);
     // Padding by repetition: a format width panics above 65535.
     let mut rendered = format!("{prefix}{line}:{col}: {reason}\n{row}\n");
-    rendered.push_str(&" ".repeat(col - 1));
+    rendered.push_str(&" ".repeat(padding));
     rendered.push_str(&"^".repeat(width));
     rendered.push('\n');
     out.write(rendered.as_bytes());
 }
 
-/// Each name expression of the line: line:col, span and target, with
+/// Keep source line breaks; escape controls that can alter a terminal.
+fn visible(text: &str) -> String {
+    let mut rendered = String::new();
+    for ch in text.chars() {
+        if ch.is_control() && ch != '\n' {
+            rendered.extend(ch.escape_default());
+        } else {
+            rendered.push(ch);
+        }
+    }
+    rendered
+}
+
+/// Each name expression of the line: line:col and target, with
 /// spans in the line's text and a `Local` site in the session's source.
 fn names(session: &Session, report: &Report, line: &str, out: &mut Outs) {
     let (Some(module), Some(resolved)) = (&report.module, &report.resolved)
@@ -760,14 +702,14 @@ fn names(session: &Session, report: &Report, line: &str, out: &mut Outs) {
         })
         .collect();
     names.sort_by_key(|&(start, ..)| start);
-    for (start, end, name, target) in names {
+    for (start, _, name, target) in names {
         let (l, c) = Source::new(line).line_col(start);
         let at = Context {
             source: session.source(),
             line,
         };
         let target = render::target(target, &at);
-        let text = format!("{l}:{c} {start}..{end} {name}: {target}\n");
+        let text = format!("{l}:{c} {name}: {target}\n");
         out.write(text.as_bytes());
     }
 }
@@ -803,7 +745,7 @@ fn types(session: &Session, report: &Report, line: &str, out: &mut Outs) {
             let source =
                 text_of(line, report.offset, expr.span).unwrap_or_default();
             let source = if source.contains(['\'', '"']) {
-                source.to_string()
+                visible(source)
             } else {
                 source.lines().map(str::trim).collect::<Vec<_>>().join(" ")
             };
@@ -818,7 +760,7 @@ fn types(session: &Session, report: &Report, line: &str, out: &mut Outs) {
             }
         };
         if let Some(doc) = session.documentation(report, *id) {
-            out.write(doc.as_bytes());
+            out.write(visible(doc).as_bytes());
             out.write(b"\n");
         }
         out.write(rendered.as_bytes());
@@ -858,38 +800,19 @@ fn comment(line: &str) -> bool {
             || line.trim_start().starts_with("###"))
 }
 
-/// A `:t` or `:r` entry, held for a next line that continues it.
-fn query(entry: &str) -> bool {
+/// A command entry, which runs once what it opened is closed.
+fn command_entry(entry: &str) -> bool {
     entry.trim_start().starts_with(':')
 }
 
-/// A fresh line may start an entry unless it is a command other than
-/// `:t` or `:r` with a line.
-fn continuable(line: &str) -> bool {
-    line.trim_start().strip_prefix(':').is_none_or(|command| {
-        command.split_once(' ').is_some_and(|(name, arg)| {
-            matches!(name, "t" | "r") && !arg.trim().is_empty()
-        })
-    })
-}
-
-/// Whether an entry needs another line: an unclosed bracket, a last
-/// token that is an operator, `=`, `->`, `=>`, a comma or a type item's
-/// `where`, or a bare signature waiting for its `= value`. A `>`
-/// touching what precedes it closes type arguments, as in `read<I64>`.
+/// What keeps a blank line inside an entry: an unclosed bracket, a
+/// quote across lines, or a doc comment waiting for its item.
 #[derive(Default)]
 struct Continuation {
     open: bool,
     depth: isize,
     quote: Option<char>,
     doc: bool,
-    next: Option<NextLine>,
-}
-
-#[derive(Clone, Copy)]
-enum NextLine {
-    Assign,
-    Where,
 }
 
 fn code(entry: &str) -> &str {
@@ -897,7 +820,9 @@ fn code(entry: &str) -> &str {
         .trim_start()
         .strip_prefix(':')
         .map_or(entry, |command| {
-            command.split_once(' ').map_or("", |(_, arg)| arg)
+            command
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, arg)| arg)
         })
 }
 
@@ -909,33 +834,26 @@ fn continuation(code: &str, lexed: Lexed) -> Continuation {
         open: quote.is_some() || doc,
         quote,
         doc,
-        next: None,
         depth: 0,
     };
     if result.open || !lexed.errors.is_empty() {
         return result;
     }
-    let limited = type_item(tokens);
     let mut depth = 0_isize;
-    let mut trailing = false;
-    let mut assigns = false;
     for token in tokens {
-        let Kind::Symbol(symbol) = token.kind else {
-            if !matches!(token.kind, Kind::Newline | Kind::Eof) {
-                trailing = limited && where_word(&token.kind);
+        match token.kind {
+            Kind::Symbol(
+                Symbol::LParen | Symbol::LBracket | Symbol::LBrace,
+            ) => {
+                depth += 1;
             }
-            continue;
-        };
-        match symbol {
-            Symbol::LParen | Symbol::LBracket | Symbol::LBrace => depth += 1,
-            Symbol::RParen | Symbol::RBracket | Symbol::RBrace => depth -= 1,
-            Symbol::Assign if depth == 0 => assigns = true,
+            Kind::Symbol(
+                Symbol::RParen | Symbol::RBracket | Symbol::RBrace,
+            ) => {
+                depth -= 1;
+            }
             _ => {}
         }
-        let closes = symbol == Symbol::Greater
-            && !code[..token.span.start].ends_with([' ', '\t']);
-        trailing = (operator(symbol) && !closes)
-            || matches!(symbol, Symbol::Assign | Symbol::Arrow | Symbol::Comma);
     }
     result.doc = depth > 0
         && tokens
@@ -945,33 +863,8 @@ fn continuation(code: &str, lexed: Lexed) -> Continuation {
             .is_some_and(|token| {
                 matches!(token.kind, Kind::Doc(_) | Kind::InnerDoc(_))
             });
-    // A discarded join occupies the source gap after the last token/trivia.
-    let end = tokens
-        .iter()
-        .filter(|t| !matches!(t.kind, Kind::Eof))
-        .map(|t| t.span.end)
-        .chain(lexed.comments.iter().map(|s| s.end))
-        .max()
-        .unwrap_or(0);
-    let joined = code[end..].contains('\\');
-    let bare_type = limited
-        && (!tokens.iter().any(|t| t.kind == Kind::Symbol(Symbol::Ampersand))
-            || tokens.iter().any(|t| matches!(&t.kind, Kind::Name(n) if n.last().is_some_and(|n| matches!(n.as_str(), "Bits" | "Size")))))
-        && !tokens.iter().any(|t| {
-            matches!(t.kind, Kind::Symbol(Symbol::LBrace))
-                || where_word(&t.kind)
-        });
-    if depth == 0 && !trailing && !joined {
-        result.next = if !assigns && signature(tokens) {
-            Some(NextLine::Assign)
-        } else if bare_type {
-            Some(NextLine::Where)
-        } else {
-            None
-        };
-    }
     result.depth = depth;
-    result.open = depth > 0 || trailing || joined || result.next.is_some();
+    result.open = depth > 0;
     result
 }
 
@@ -1001,90 +894,6 @@ fn pending_doc(tokens: &[Token]) -> bool {
         return false;
     }
     last == 0 || matches!(tokens[last - 1].kind, Kind::Newline)
-}
-
-/// Whether the entry starts `[pub] NAME :`, a signature's head. Only the
-/// head is scanned; the type after the colon is the parser's.
-fn signature(tokens: &[Token]) -> bool {
-    let mut kinds = tokens.iter().map(|token| &token.kind).skip_while(|kind| {
-        matches!(kind, Kind::Doc(_) | Kind::InnerDoc(_) | Kind::Newline)
-    });
-    let mut first = kinds.next();
-    if matches!(first, Some(Kind::Kw(Keyword::Pub))) {
-        first = kinds.next();
-    }
-    matches!(first, Some(Kind::Name(segments)) if segments.len() == 1)
-        && matches!(kinds.next(), Some(Kind::Symbol(Symbol::Colon)))
-}
-
-/// Whether an entry is a `type` item, which a `where` line continues.
-fn type_item(tokens: &[Token]) -> bool {
-    let mut kinds = tokens.iter().map(|token| &token.kind).skip_while(|kind| {
-        matches!(kind, Kind::Doc(_) | Kind::InnerDoc(_) | Kind::Newline)
-    });
-    let mut first = kinds.next();
-    if matches!(first, Some(Kind::Kw(Keyword::Pub))) {
-        first = kinds.next();
-    }
-    matches!(first, Some(Kind::Kw(Keyword::Type)))
-}
-
-fn where_word(kind: &Kind) -> bool {
-    matches!(kind, Kind::Name(parts) if parts.len() == 1 && parts[0] == "where")
-}
-
-/// Whether a line starts with an operator that continues the line
-/// before it: a pipe, `+ - * %`, a comparison, `=>` or `=`, so a
-/// signature may stand above its `= value`.
-fn leading_tokens(tokens: &[Token]) -> bool {
-    let Some(first) = tokens.first() else {
-        return false;
-    };
-    match first.kind {
-        Kind::Symbol(Symbol::Slash) => tokens.get(1).is_some_and(|next| {
-            matches!(
-                next.kind,
-                Kind::Name(_)
-                    | Kind::Word(_)
-                    | Kind::Path(_)
-                    | Kind::Selector(_)
-                    | Kind::Int { .. }
-                    | Kind::Float(_)
-                    | Kind::Str { .. }
-                    | Kind::Affixed(_)
-                    | Kind::Symbol(
-                        Symbol::LParen
-                            | Symbol::LBracket
-                            | Symbol::LBrace
-                            | Symbol::Slash
-                    )
-            )
-        }),
-        Kind::Symbol(symbol) => operator(symbol) || symbol == Symbol::Assign,
-        _ => false,
-    }
-}
-
-/// The operators that continue a line from either side; `/` does not,
-/// as a lone `/` is the root path.
-const fn operator(symbol: Symbol) -> bool {
-    symbol.continues_line()
-        || matches!(
-            symbol,
-            Symbol::Plus
-                | Symbol::Minus
-                | Symbol::Star
-                | Symbol::Percent
-                | Symbol::Concat
-                | Symbol::Eq
-                | Symbol::NotEq
-                | Symbol::Less
-                | Symbol::LessEq
-                | Symbol::Greater
-                | Symbol::GreaterEq
-                | Symbol::Ampersand
-                | Symbol::FatArrow
-        )
 }
 
 /// The Name part of a file stem: from its first letter or `_`, with

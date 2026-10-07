@@ -9,19 +9,6 @@ impl Index {
         }
     }
 
-    pub fn checkpoint(&self) -> Self {
-        Self {
-            dispatch_lengths: self
-                .tables
-                .borrow()
-                .dispatch
-                .iter()
-                .map(|dispatch| dispatch.rows.len())
-                .collect(),
-            ..self.clone()
-        }
-    }
-
     pub fn session(&mut self, line: usize, typed: &crate::typed::Typed) {
         let home = Origin::Line(line);
         self.home = Some(home.clone());
@@ -55,24 +42,5 @@ impl Index {
                 value;
         }
         self.session_variables = saved;
-    }
-
-    pub fn restore_meanings(&self, saved: &[Option<crate::ir::Type>]) {
-        for (index, dispatch) in
-            self.tables.borrow_mut().dispatch.iter_mut().enumerate()
-        {
-            dispatch.rows.truncate(
-                self.dispatch_lengths.get(index).copied().unwrap_or(0),
-            );
-        }
-        for (index, meaning) in self
-            .tables
-            .borrow_mut()
-            .session_meanings
-            .iter_mut()
-            .enumerate()
-        {
-            meaning.clone_from(&saved.get(index).cloned().flatten());
-        }
     }
 }

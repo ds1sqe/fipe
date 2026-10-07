@@ -41,13 +41,12 @@ pub struct Frame {
     pub weak: Subst,
 }
 
-/// One accepted line: its parse, its resolution, what it added.
+/// One accepted line: its parse, its resolution, its typing.
 #[derive(Clone, Debug)]
 pub struct Line {
     pub module: Module,
     pub resolved: Resolved,
     pub typed: Typed,
-    delta: Delta,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -95,20 +94,7 @@ impl Frame {
             module,
             resolved,
             typed,
-            delta,
         });
-    }
-
-    /// Forget the last accepted line.
-    pub fn retract(&mut self) -> Option<Line> {
-        let line = self.lines.pop()?;
-        let lines = core::mem::take(&mut self.lines);
-        *self = Self::default();
-        for (index, line) in lines.iter().enumerate() {
-            self.add(index, &line.delta);
-        }
-        self.lines = lines;
-        Some(line)
     }
 
     fn add(&mut self, index: usize, delta: &Delta) {

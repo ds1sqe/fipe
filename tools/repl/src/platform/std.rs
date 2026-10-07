@@ -3,11 +3,11 @@
 use std::io::{Read, Write};
 
 /// Bytes read from stdin into `buffer`; 0 at end of input.
-pub fn read(buffer: &mut [u8]) -> usize {
+pub fn read(buffer: &mut [u8]) -> Result<usize, ()> {
     loop {
         match std::io::stdin().read(buffer) {
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            result => return result.unwrap_or(0),
+            result => return result.map_err(|_| ()),
         }
     }
 }

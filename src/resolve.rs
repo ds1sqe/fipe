@@ -337,12 +337,15 @@ impl Resolver<'_> {
     /// A module exports its final bindings: a name whose final
     /// file-level binding is `pub`.
     fn export_bindings(&mut self) {
-        let mut finals: Vec<(String, bool, Span)> = Vec::new();
-        for (name, public, site) in top_bindings(self.module) {
-            finals.retain(|(n, _, _)| *n != name);
-            finals.push((name, public, site));
+        let mut finals = alloc::collections::BTreeMap::new();
+        for (index, (name, public, site)) in
+            top_bindings(self.module).enumerate()
+        {
+            finals.insert(name, (index, public, site));
         }
-        for (name, public, span) in finals {
+        let mut finals: Vec<_> = finals.into_iter().collect();
+        finals.sort_unstable_by_key(|(_, (index, _, _))| *index);
+        for (name, (_, public, span)) in finals {
             if public {
                 self.resolved.exports.push(Export {
                     target: Target::Value {
@@ -516,6 +519,7 @@ struct Resolver<'a> {
     /// Every impl member of this module, by (type, name), for coherence.
     members: alloc::collections::BTreeMap<(String, String), (Span, bool)>,
     errors: Vec<Error>,
+    error_sites: alloc::collections::BTreeMap<Span, Vec<usize>>,
 }
 
 /// The fields of a record or of a constructor with fields.
@@ -560,6 +564,7 @@ impl<'a> Resolver<'a> {
             parameters: Vec::new(),
             members: alloc::collections::BTreeMap::new(),
             errors: Vec::new(),
+            error_sites: alloc::collections::BTreeMap::new(),
         }
     }
 
@@ -567,7 +572,9 @@ impl<'a> Resolver<'a> {
     /// name, so a duplicate type is found twice at one site.
     fn error(&mut self, span: Span, reason: Reason) {
         let error = Error { span, reason };
-        if !self.errors.contains(&error) {
+        let earlier = self.error_sites.entry(span).or_default();
+        if !earlier.iter().any(|index| self.errors[*index] == error) {
+            earlier.push(self.errors.len());
             self.errors.push(error);
         }
     }

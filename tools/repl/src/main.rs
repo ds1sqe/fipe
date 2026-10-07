@@ -47,8 +47,10 @@ fn run() {
     };
     let mut repl = Repl::new();
     repl.strict(strict);
-    let first = host.map_or_else(String::new, |dir| format!(":host {dir}\n"));
-    let mut outs = VecDeque::from(repl.feed(first.as_bytes()));
+    let mut outs = VecDeque::from(match host {
+        Some(dir) => repl.host_directory(&dir),
+        None => repl.feed(&[]),
+    });
     let mut buffer = [0; 4096];
     let mut end = false;
     loop {
@@ -57,6 +59,11 @@ fn run() {
                 Out::Write(bytes) => platform::write(&bytes),
                 Out::File(path) => {
                     let text = platform::read_file(&path);
+                    if text.is_none() {
+                        platform::write(
+                            format!("{path}: cannot read file\n").as_bytes(),
+                        );
+                    }
                     outs.extend(repl.file(&path, text.as_deref()));
                 }
                 Out::Exit => return,
@@ -65,7 +72,13 @@ fn run() {
         if end {
             return;
         }
-        let read = platform::read(&mut buffer);
+        let read = match platform::read(&mut buffer) {
+            Ok(read) => read,
+            Err(()) => {
+                platform::write(b"cannot read standard input\n");
+                platform::exit(2);
+            }
+        };
         end = read == 0;
         outs.extend(if end {
             repl.flush()

@@ -22,7 +22,13 @@ pub fn entry(module: &Module, entry: &Entry) -> String {
     let root = match entry {
         Entry::Line(id) => Node::E(*id),
         Entry::Item(item) => {
-            documented(item_node(&item.kind), item.doc.as_deref())
+            let mut node = item_node(&item.kind);
+            if item.public {
+                if let Node::L(label, _) = &mut node {
+                    label.push_str(" pub");
+                }
+            }
+            documented(node, item.doc.as_deref())
         }
     };
     let mut out = String::new();
@@ -248,9 +254,13 @@ fn ty(kind: &TypeKind) -> (String, Vec<Node>) {
 fn item_node(kind: &ItemKind) -> Node {
     let label = |word: &str, name: &Name| format!("{word} {}", dotted(name));
     match kind {
-        ItemKind::Use { names, .. } => {
+        ItemKind::Use { names, version } => {
             let names: Vec<_> = names.iter().map(dotted).collect();
-            Node::L(format!("Use {}", names.join(" ")), Vec::new())
+            let mut label = format!("Use {}", names.join(" "));
+            if let Some(version) = version {
+                let _ = write!(label, " version {version}");
+            }
+            Node::L(label, Vec::new())
         }
         ItemKind::Type {
             name,
@@ -314,6 +324,7 @@ fn item_node(kind: &ItemKind) -> Node {
             children.extend(members.iter().map(|member| match member {
                 ImplMember::Named {
                     doc,
+                    public,
                     name,
                     annotation,
                     value,
@@ -323,7 +334,13 @@ fn item_node(kind: &ItemKind) -> Node {
                         annotation.iter().map(|t| Node::T(*t)).collect();
                     children.extend(value.map(Node::E));
                     documented(
-                        Node::L(label("Member", name), children),
+                        Node::L(
+                            label(
+                                if *public { "Member pub" } else { "Member" },
+                                name,
+                            ),
+                            children,
+                        ),
                         doc.as_deref(),
                     )
                 }
@@ -396,5 +413,9 @@ fn field_node(field: &fipe::ast::Field) -> Node {
     let mut children = doc_node(field.doc.as_deref());
     children.push(Node::T(field.ty));
     children.extend(field.default.map(Node::E));
-    Node::L(format!("Field {}", dotted(&field.name)), children)
+    let visibility = if field.public { "pub " } else { "" };
+    Node::L(
+        format!("Field {visibility}{}", dotted(&field.name)),
+        children,
+    )
 }

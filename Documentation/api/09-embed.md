@@ -28,7 +28,6 @@ query(&mut self, text: &str) -> Outcome<Report>
 reply(&mut self, reply: Reply) -> Outcome<Report>
 strict(&mut self, enabled: bool)
 checks(&self, name: Option<&str>) -> Vec<typed::Check>
-retract(&mut self) -> Option<String>
 source(&self) -> &str
 lines(&self) -> impl Iterator<Item = &str>
 ~~~
@@ -43,8 +42,8 @@ session's own, so a later line may write an impl of its type or read its
 private fields. `line` accepts a line when it has no diagnostic of its
 own; `query` checks without accepting, and generalizes an expression line
 where `line` defaults it, so its scheme is the line's `typed.binding`.
-`retract` removes the last accepted line and what it defined, returning
-its text. `strict(true)` makes each open implicit entry a check error in
+An accepted line is never taken back: a host that edits one starts a
+new session over the lines before it, from `lines`. `strict(true)` makes each open implicit entry a check error in
 the line and its file modules; explicit gates remain allowed. It defaults
 to false. The compile budget has no Rust form until evaluation exists.
 The source is the accepted lines, each followed by a blank
@@ -186,3 +185,10 @@ place's type, whose limits are checked after conversion. A fallible cast
 is not an open limit entry and does not itself fail strict mode.
 `NothingPayload` and `OutcomeText { family }` distinguish the outcome
 errors; the latter recommends `||` or `|:`.
+
+## REPL driver
+
+`fipe-repl-core::Repl::host_directory(&str) -> Vec<Out>` starts loading host
+files directly from a directory, without interpreting the path as source or
+commands. Drivers call it before feeding session input and service its
+`Out::File` requests with `Repl::file`. Interior NUL is rejected.

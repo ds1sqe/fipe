@@ -29,7 +29,6 @@ pub struct Index {
     shapes: BTreeMap<TypeName, (Origin, Shape)>,
     declarations: BTreeMap<(Origin, crate::token::Span), usize>,
     dispatch: BTreeMap<(String, bool), usize>,
-    dispatch_lengths: Vec<usize>,
     constant_defaults: Vec<usize>,
     home: Option<Origin>,
     visible: BTreeMap<crate::token::Span, usize>,

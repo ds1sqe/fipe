@@ -40,18 +40,11 @@ pub struct Session {
     pending: Option<Pending>,
     strict: bool,
     index: Option<crate::check::lower::Index>,
-    indexed: Vec<(crate::check::lower::Index, Vec<Option<crate::ir::Type>>)>,
 }
 
 impl Clone for Session {
     fn clone(&self) -> Self {
         let index = self.index.as_ref().map(crate::check::lower::Index::fork);
-        let mut indexed = self.indexed.clone();
-        if let Some(index) = &index {
-            for (snapshot, _) in &mut indexed {
-                snapshot.tables = index.tables.clone();
-            }
-        }
         Self {
             declarations: self.declarations.clone(),
             source: self.source.clone(),
@@ -62,7 +55,6 @@ impl Clone for Session {
             pending: self.pending.clone(),
             strict: self.strict,
             index,
-            indexed,
         }
     }
 }
@@ -170,7 +162,6 @@ impl Session {
             pending: None,
             strict: false,
             index: None,
-            indexed: Vec::new(),
         }
     }
 
@@ -268,20 +259,6 @@ impl Session {
     /// Accepted compilation units in order, preserving embedded blank lines.
     pub fn lines(&self) -> impl Iterator<Item = &str> {
         self.lines.iter().map(|(text, _)| text.as_str())
-    }
-
-    /// Remove the last accepted line and what it defined, and return its
-    /// text. A line awaiting a reply is abandoned.
-    pub fn retract(&mut self) -> Option<String> {
-        self.pending = None;
-        let (text, offset) = self.lines.pop()?;
-        self.frame.retract();
-        if let Some((index, meanings)) = self.indexed.pop() {
-            index.restore_meanings(&meanings);
-            self.index = Some(index);
-        }
-        self.source.truncate(offset);
-        Some(text)
     }
 
     /// Check a line and accept it when it has no diagnostic. A line still
@@ -384,13 +361,6 @@ impl Session {
         let checks = typed
             .as_ref()
             .map_or_else(Vec::new, |typed| typed.checks.clone());
-        if pending.accept && diagnostics.len() == files {
-            let index = self.index.get_or_insert_with(Default::default);
-            self.indexed.push((
-                index.checkpoint(),
-                index.tables.borrow().session_meanings.clone(),
-            ));
-        }
         let files_valid = cache.files.borrow().values().all(|file| {
             file.resolve_errors.is_empty() && file.type_errors.is_empty()
         });

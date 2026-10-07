@@ -407,7 +407,7 @@ impl Infer<'_> {
     /// An escaping obligation is ambiguous once per member name.
     fn left(&mut self, left: Vec<Obligation>, site: Span) {
         self.finish_lengths(site);
-        let mut errors: Vec<Error> = Vec::new();
+        let mut seen = alloc::collections::BTreeSet::new();
         for obligation in left {
             let (name, dot) = match obligation {
                 Obligation::Member { name, dot, .. } => (name, dot),
@@ -417,13 +417,14 @@ impl Infer<'_> {
             };
             let error = Error {
                 span: if dot == Span::default() { site } else { dot },
-                reason: Reason::Ambiguous { class: name },
+                reason: Reason::Ambiguous {
+                    class: name.clone(),
+                },
             };
-            if !errors.contains(&error) {
-                errors.push(error);
+            if seen.insert((error.span, name)) {
+                self.state.errors.push(error);
             }
         }
-        self.state.errors.extend(errors);
     }
 
     fn scheme(
