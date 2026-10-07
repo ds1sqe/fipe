@@ -1060,6 +1060,7 @@ impl Infer<'_> {
         let dispatch = self.record_dispatch(&shapes);
         let (frozen, weak, session_variables) = self.frozen();
         let decisions = self.record_decisions();
+        let inputs = self.limit_inputs();
         let subst = &self.state.subst;
         let mut typed = Typed {
             dispatch,
@@ -1126,15 +1127,8 @@ impl Infer<'_> {
             })
             .collect();
         let mut errors = self.state.errors;
-        errors.extend(crate::limits::check(
-            self.module,
-            self.resolved,
-            self.declarations,
-            (self.files, self.file_cache),
-            self.frame,
-            &entries,
-            &mut typed,
-        ));
+        errors
+            .extend(crate::limits::check(&inputs, &entries, None, &mut typed));
         import_checks(self.file_cache, &mut typed);
         errors.sort_by_key(|error| (error.span.start, error.span.end));
         (typed, errors)
@@ -1540,6 +1534,19 @@ fn import_checks(cache: &files::FileCache, typed: &mut Typed) {
                 .map(|ty| ty.rehome(&Origin::File(stem.clone())));
             check.known.rehome(&Origin::File(stem.clone()));
             typed.checks.push(check);
+        }
+    }
+}
+
+impl<'a> Infer<'a> {
+    pub(crate) const fn limit_inputs(&self) -> crate::limits::Inputs<'a> {
+        crate::limits::Inputs {
+            module: self.module,
+            resolved: self.resolved,
+            declarations: self.declarations,
+            files: self.files,
+            cache: self.file_cache,
+            frame: self.frame,
         }
     }
 }

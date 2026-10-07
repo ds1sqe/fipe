@@ -995,11 +995,7 @@ impl Infer<'_> {
                     let ty = self.apply(&slot.ty);
                     if crate::limits::has_limits(&ty) {
                         let (errors, checks) = crate::limits::flag_entry(
-                            self.module,
-                            self.resolved,
-                            self.declarations,
-                            (self.files, self.file_cache),
-                            self.frame,
+                            &self.limit_inputs(),
                             &ty,
                             (*span, slot.place_kind.clone()),
                         );
@@ -1433,7 +1429,7 @@ impl Infer<'_> {
         };
         self.finish_dots();
         self.settle();
-        let (typed, errors) = self.default_checks();
+        let (typed, errors) = self.default_checks(value);
         (scheme, typed, errors)
     }
 
@@ -1456,7 +1452,10 @@ impl Infer<'_> {
             );
         }
     }
-    fn default_checks(&mut self) -> (crate::typed::Typed, Vec<super::Error>) {
+    fn default_checks(
+        &mut self,
+        value: ExprId,
+    ) -> (crate::typed::Typed, Vec<super::Error>) {
         self.record_operations();
         let shapes = self.record_shapes();
         let dispatch = self.record_dispatch(&shapes);
@@ -1500,12 +1499,9 @@ impl Infer<'_> {
             })
             .collect();
         let errors = crate::limits::check(
-            self.module,
-            self.resolved,
-            self.declarations,
-            (self.files, self.file_cache),
-            self.frame,
+            &self.limit_inputs(),
             &entries,
+            Some(value),
             &mut typed,
         );
         (typed, errors)

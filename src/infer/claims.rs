@@ -880,11 +880,7 @@ impl Infer<'_> {
         if let Type::Limited { meaning, .. } = ty {
             let known = self.type_default(meaning)?;
             return crate::limits::default_proved(
-                self.module,
-                self.resolved,
-                self.declarations,
-                (self.files, self.file_cache),
-                self.frame,
+                &self.limit_inputs(),
                 ty,
                 &known,
             )

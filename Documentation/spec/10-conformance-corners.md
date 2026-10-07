@@ -78,6 +78,8 @@ each once a defect: a row stays so the defect cannot return.
 | union meaning: `id: U8 \| String = 300` | refuted; String cannot prove an Integer value |
 | function limit narrowing: `f: U8 -> U8 = n => n` LF `apply = g x => g x` LF `y = apply f 300` LF `:checks y` | open narrowing; strict refuses the implicit entry |
 | fault in a test: `type Q: Integer where 10 / self < 5` LF `z: Q = 0` | refuted test; no separate divisor entry |
+| field default fault: `type R { n: Integer, d: Integer = (10 / n) }` LF `R 0`; `R 2`; `k => R k` | refuted; proved; one entry per construction, none at the declaration |
+| cast value facts: `type Three: String where self.len == 3` LF `c: Three = [1, 2, 3]`; `d: Three = (1, 2)` | open entries; the list's length and the tuple's parts are not the text's |
 | float ranges: `type A: F64 where self < 5` LF `type B: F64 where self <= 4` LF `a: A = 4.5` LF `b: B = a` LF `:checks b` | no integer interval proves the entry |
 | written conversion facts: `type A { n: Integer }` LF `type B: From<A> { n: Integer }` LF `impl B: From<A> { from = a => B (a.n + 1000) }` LF `b = to<B> (A 5)` LF `x: U8 = b.n` LF `:checks x` | source field facts are dropped; x remains open |
 | written sequence facts: `type Buf<T>: Sequence<T> { len: Integer }` LF `impl Buf<T>: Sequence<T> { sequence = slots => Self 1000 }` LF `b: Buf<Integer> = [1, 2, 3]` LF `x: U8 = b.len` LF `:checks x` | bracket length is not the result length; x remains open |

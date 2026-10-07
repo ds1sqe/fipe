@@ -1353,3 +1353,99 @@ fn written_constructors_follow_body_guard_and_default_purity() {
         assert_eq!(line(&mut session, source).diagnostics, [], "{source}");
     }
 }
+
+#[test]
+fn a_cast_value_enters_by_its_meaning_alone() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    for text in [
+        "type Three: String where self.len == 3",
+        "type Short: Vec<U8> where self.len < 3",
+    ] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    // A Show cast: the text of `[1, 2, 3]` is nine bytes, of `(1, 2)`
+    // six; the list's length and the tuple's parts say nothing.
+    for text in [
+        "c: Three = [1, 2, 3]",
+        "d: Three = (1, 2)",
+        "e: Three = [1, 2]",
+        "f: Short = (1, 2, 3, 4, 5, 6)",
+        "g: Three = { 1 }",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
+        let entry = report
+            .checks
+            .iter()
+            .find(|check| check.name == "Three" || check.name == "Short");
+        let entry =
+            entry.unwrap_or_else(|| panic!("{text}: {:?}", report.checks));
+        assert_eq!(entry.known.parts, [], "{text}");
+    }
+    // A Bytes cast keeps a text literal's byte length, the bytes' own.
+    let short = line(&mut session, "s: Short = \"ab\"");
+    assert_eq!(short.diagnostics, []);
+    assert!(short.checks.iter().all(|check| check.name != "Short"));
+    assert_ne!(line(&mut session, "t: Short = \"abcdef\"").diagnostics, []);
+    // A cast argument enters its parameter's place too.
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .commands(include_str!("fixtures/host/commands.fipe"))
+        .unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    let report = line(&mut session, "put out (1, 2)");
+    assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
+    assert_ne!(report.checks, []);
+    let unit = report.unit.unwrap();
+    assert!(
+        unit.tables()
+            .nodes
+            .iter()
+            .any(|node| matches!(node.kind, fipe::ir::Kind::Enter { .. })),
+        "the unit enters the cast argument"
+    );
+}
+
+#[test]
+fn a_record_field_default_enters_at_each_construction() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    let declared = line(
+        &mut session,
+        "type Rd { n: Integer, d: Integer = (10 / n) }",
+    );
+    assert_eq!(declared.diagnostics, []);
+    assert_eq!(declared.checks, [], "no entry at the declaration");
+    assert_ne!(line(&mut session, "Rd 0").diagnostics, [], "exact zero");
+    assert_ne!(line(&mut session, "Rd { n: 0 }").diagnostics, []);
+    let proved = line(&mut session, "Rd 2");
+    assert_eq!(proved.diagnostics, []);
+    assert_eq!(proved.checks, [], "exact two: nothing runs");
+    let open = line(&mut session, "h = k => Rd k");
+    assert_eq!(open.diagnostics, []);
+    assert_eq!(open.checks.len(), 1, "{:?}", open.checks);
+    assert_eq!(open.checks[0].frequency, fipe::typed::Frequency::PerCall);
+    assert_eq!(open.checks[0].name, "nonzero divisor");
+    // The default's value is read with the fields before it.
+    for text in [
+        "type Rt { n: Integer, d: Integer = (10 / n) } where self.d > 1",
+        "Rt 2",
+    ] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}");
+        assert_eq!(report.checks, [], "{text}: {:?}", report.checks);
+    }
+    assert_ne!(line(&mut session, "Rt 10").diagnostics, []);
+    // A function spot's default is settled the same way at its calls.
+    assert_eq!(
+        line(&mut session, "dz = (n = 1) (d = (10 / n)) => d").diagnostics,
+        []
+    );
+    assert_ne!(line(&mut session, "dz 0").diagnostics, []);
+    assert_eq!(line(&mut session, "dz 5").checks, []);
+    // A division in a type's test stays the test's own fault.
+    let test = line(&mut session, "type Q: Integer where 100 / self <= 10");
+    assert_eq!(test.diagnostics, []);
+    assert_eq!(test.checks, []);
+}

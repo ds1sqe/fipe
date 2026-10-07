@@ -204,6 +204,12 @@ impl Index {
             };
             self.tables.borrow_mut().entries.push(recorded.clone());
             plan.push(recorded);
+            // A default's divisor check planned at this call was typed
+            // with the default, whose own lowering enters the divisor;
+            // its value is no expression of this scope.
+            if check.target.is_none() && check.limit_origin != Origin::This {
+                continue;
+            }
             for (id, node) in scope.nodes.iter().enumerate() {
                 if check.value.map_or(
                     source.module.expressions[id].span != check.place,

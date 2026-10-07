@@ -33,40 +33,26 @@ use known::{End, Integer, Known, Range};
 
 type Site = (usize, usize);
 
+/// What every static pass reads: the unit, its names, the declarations
+/// and files it may reach, and the session frame.
+pub(crate) struct Inputs<'a> {
+    pub module: &'a Module,
+    pub resolved: &'a Resolved,
+    pub declarations: &'a Declarations,
+    pub files: &'a [(String, Module)],
+    pub cache: &'a crate::infer::files::FileCache,
+    pub frame: Option<&'a Frame>,
+}
+
 pub(crate) fn check(
-    module: &Module,
-    resolved: &Resolved,
-    declarations: &Declarations,
-    (files, cache): (&[(String, Module)], &crate::infer::files::FileCache),
-    frame: Option<&Frame>,
+    inputs: &Inputs<'_>,
     entries: &[(ExprId, Type, Span, Place)],
+    instance: Option<ExprId>,
     typed: &mut Typed,
 ) -> Vec<Error> {
-    let mut pass = Pass {
-        module,
-        resolved,
-        declarations,
-        files,
-        cache,
-        frame,
-        typed,
-        locals: BTreeMap::new(),
-        errors: Vec::new(),
-        active: Vec::new(),
-        place_kind: Place::Result,
-        path: Vec::new(),
-        entry_phase: None,
-        purity: core::cell::RefCell::new(BTreeMap::new()),
-        purity_cycles: core::cell::Cell::new(0),
-        declarations_by_name: declaration_index(
-            module,
-            declarations,
-            files,
-            frame,
-        ),
-        contexts: contexts(module),
-        checks_seen: BTreeSet::new(),
-    };
+    let module = inputs.module;
+    let mut pass = Pass::new(inputs, typed, Place::Result);
+    pass.instance = instance;
     pass.typed.known = vec![Known::default(); module.expressions.len()];
     pass.seed_places();
     pass.check_purity();
@@ -79,39 +65,9 @@ pub(crate) fn check(
         if pass.typed.expr(id).is_none() {
             continue;
         }
-        let mut known = if pass
-            .typed
-            .casts
-            .get(id.0)
-            .and_then(Option::as_ref)
-            .is_some_and(|cast| cast.row != crate::typed::CastRow::Pack)
-        {
-            Known::default()
-        } else {
-            pass.value(id)
-        };
-        known.pure = pass.pure_expression(id);
-        known.phase = pass.expression_phase(id);
-        known.demanded |= call_head(module, id)
-            .and_then(|callee| crate::resolve::timing(resolved.expr(callee)))
-            == Some(Phase::Compile);
-        if let Some(ty) = pass.typed.expr(id) {
-            if let Type::Named { name, .. } = crate::infer::meaning(ty) {
-                known.meaning = Some(name.clone());
-            }
-            if (matches!(ty, Type::Array { .. })
-                || matches!(
-                    module.expressions[id.0].kind,
-                    ExprKind::Field { .. }
-                )
-                || matches!(resolved.expr(id), Some(Target::Members { .. })))
-                && known.failure != Some(known::Failure::Dependency)
-            {
-                pass.place_facts(ty, &mut known);
-            }
-            known.holding = pass.holding(ty, &mut Vec::new()).or(known.holding);
-        }
+        let mut known = pass.fact(id);
         pass.construction_entry(id, &mut known);
+        pass.settle_default_divisors(id);
         pass.expression_holding(id, entry_types[index]);
         pass.typed.known[index] = known.clone();
         pass.binding_facts(id);
@@ -133,78 +89,22 @@ pub(crate) fn check(
 
 /// Ask the same static entry pass whether a type default is proved.
 pub(crate) fn default_proved(
-    module: &Module,
-    resolved: &Resolved,
-    declarations: &Declarations,
-    files: (&[(String, Module)], &crate::infer::files::FileCache),
-    frame: Option<&Frame>,
+    inputs: &Inputs<'_>,
     ty: &Type,
     known: &Known,
 ) -> bool {
     let mut typed = Typed::default();
-    let pass = Pass {
-        module,
-        resolved,
-        declarations,
-        files: files.0,
-        cache: files.1,
-        frame,
-        typed: &mut typed,
-        locals: BTreeMap::new(),
-        errors: Vec::new(),
-        active: Vec::new(),
-        place_kind: Place::Result,
-        path: Vec::new(),
-        entry_phase: None,
-        purity: core::cell::RefCell::new(BTreeMap::new()),
-        purity_cycles: core::cell::Cell::new(0),
-        declarations_by_name: declaration_index(
-            module,
-            declarations,
-            files.0,
-            frame,
-        ),
-        contexts: contexts(module),
-        checks_seen: BTreeSet::new(),
-    };
+    let pass = Pass::new(inputs, &mut typed, Place::Result);
     pass.evaluate_type(ty, known, 0).boolean == Some(true)
 }
 
 pub(crate) fn flag_entry(
-    module: &Module,
-    resolved: &Resolved,
-    declarations: &Declarations,
-    files: (&[(String, Module)], &crate::infer::files::FileCache),
-    frame: Option<&Frame>,
+    inputs: &Inputs<'_>,
     ty: &Type,
     (span, place_kind): (Span, Place),
 ) -> (Vec<Error>, Vec<Check>) {
     let mut typed = Typed::default();
-    let mut pass = Pass {
-        module,
-        resolved,
-        declarations,
-        files: files.0,
-        cache: files.1,
-        frame,
-        typed: &mut typed,
-        locals: BTreeMap::new(),
-        errors: Vec::new(),
-        active: Vec::new(),
-        place_kind,
-        path: Vec::new(),
-        entry_phase: None,
-        purity: core::cell::RefCell::new(BTreeMap::new()),
-        purity_cycles: core::cell::Cell::new(0),
-        declarations_by_name: declaration_index(
-            module,
-            declarations,
-            files.0,
-            frame,
-        ),
-        contexts: contexts(module),
-        checks_seen: BTreeSet::new(),
-    };
+    let mut pass = Pass::new(inputs, &mut typed, place_kind);
     pass.enter(
         ty,
         &Known {
@@ -365,8 +265,103 @@ struct Pass<'a> {
     contexts: BTreeMap<usize, (Phase, Frequency, Option<String>)>,
     checks_seen:
         BTreeSet<(Span, Place, Span, Origin, Vec<crate::ir::Projection>)>,
+    /// The one declared expression this pass types for a use site, a
+    /// default for a call or construction or a limited type's test.
+    instance: Option<ExprId>,
+}
+impl<'a> Pass<'a> {
+    fn new(
+        inputs: &Inputs<'a>,
+        typed: &'a mut Typed,
+        place_kind: Place,
+    ) -> Self {
+        Self {
+            module: inputs.module,
+            resolved: inputs.resolved,
+            declarations: inputs.declarations,
+            files: inputs.files,
+            cache: inputs.cache,
+            frame: inputs.frame,
+            typed,
+            locals: BTreeMap::new(),
+            errors: Vec::new(),
+            active: Vec::new(),
+            place_kind,
+            path: Vec::new(),
+            entry_phase: None,
+            purity: core::cell::RefCell::new(BTreeMap::new()),
+            purity_cycles: core::cell::Cell::new(0),
+            declarations_by_name: declaration_index(
+                inputs.module,
+                inputs.declarations,
+                inputs.files,
+                inputs.frame,
+            ),
+            contexts: contexts(inputs.module),
+            checks_seen: BTreeSet::new(),
+            instance: None,
+        }
+    }
 }
 impl Pass<'_> {
+    /// What is known of an expression's value before it enters a place.
+    fn fact(&mut self, id: ExprId) -> Known {
+        // A cast value is known by its target's meaning alone: the
+        // facts of the source, its length or exact value, say nothing
+        // of the converted value. The Bytes row keeps a text literal's
+        // byte length, which is the bytes' length.
+        let cast = self
+            .typed
+            .casts
+            .get(id.0)
+            .and_then(Option::as_ref)
+            .filter(|cast| cast.row != crate::typed::CastRow::Pack)
+            .cloned();
+        let mut known = match &cast {
+            Some(cast)
+                if cast.row == crate::typed::CastRow::Bytes
+                    && matches!(
+                        self.module.expressions[id.0].kind,
+                        ExprKind::Literal(Literal::Str { .. })
+                    ) =>
+            {
+                Known {
+                    parts: self.value(id).parts,
+                    ..Known::default()
+                }
+            }
+            Some(_) => Known::default(),
+            None => self.value(id),
+        };
+        known.pure = self.pure_expression(id);
+        known.phase = self.expression_phase(id);
+        known.demanded |= call_head(self.module, id).and_then(|callee| {
+            crate::resolve::timing(self.resolved.expr(callee))
+        }) == Some(Phase::Compile);
+        if let Some(ty) = self.typed.expr(id) {
+            let ty = cast.as_ref().map_or(ty, |cast| &cast.to);
+            if let Type::Named { name, .. } = crate::infer::meaning(ty) {
+                known.meaning = Some(name.clone());
+            }
+            if cast.is_none()
+                && (matches!(ty, Type::Array { .. })
+                    || matches!(
+                        self.module.expressions[id.0].kind,
+                        ExprKind::Field { .. }
+                    )
+                    || matches!(
+                        self.resolved.expr(id),
+                        Some(Target::Members { .. })
+                    ))
+                && known.failure != Some(known::Failure::Dependency)
+            {
+                self.place_facts(ty, &mut known);
+            }
+            known.holding = self.holding(ty, &mut Vec::new()).or(known.holding);
+        }
+        known
+    }
+
     fn finish_checks(&mut self) {
         let demanded: BTreeSet<_> = self
             .module
@@ -387,6 +382,195 @@ impl Pass<'_> {
             if demanded.contains(&check.place) {
                 check.phase = Phase::Compile;
                 check.reason = Reason::CompileTimeEvaluation;
+            }
+        }
+    }
+
+    /// A division outside a type item is entered where it stands. In
+    /// a type's test it is the test's own fault, never an entry. In a
+    /// field default it is entered by the pass that types the default
+    /// for a construction, not at the declaration.
+    fn divisor_entered(&self, span: Span) -> bool {
+        let within =
+            |outer: Span| outer.start <= span.start && span.end <= outer.end;
+        let Some(item) = self.module.entries.iter().find_map(|entry| {
+            let Entry::Item(item) = entry else {
+                return None;
+            };
+            (matches!(item.kind, ItemKind::Type { .. }) && within(item.span))
+                .then_some(item)
+        }) else {
+            return true;
+        };
+        let ItemKind::Type { members, .. } = &item.kind else {
+            return true;
+        };
+        members.iter().flatten().any(|member| {
+            let crate::ast::Member::Field(field) = member else {
+                return false;
+            };
+            field.default.is_some_and(|default| {
+                self.instance == Some(default)
+                    && within(self.module.expressions[default.0].span)
+            })
+        })
+    }
+
+    /// The facts a call or construction supplies to each spot by name.
+    fn supplied_facts(&self, stage: Span) -> Vec<(String, Known)> {
+        self.typed
+            .supplied
+            .get(&(stage.start, stage.end))
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|(name, supply)| {
+                        (name.clone(), self.supply_fact(supply))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn supply_fact(&self, supply: &crate::infer::Supply) -> Known {
+        let get = |id: ExprId| self.typed.known[id.0].clone();
+        match supply {
+            crate::infer::Supply::Expr(id) => get(*id),
+            crate::infer::Supply::Collected(ids) => Known {
+                parts: core::iter::once((
+                    String::from("len"),
+                    exact(Integer::from(ids.len() as u64)),
+                ))
+                .chain(
+                    ids.iter()
+                        .enumerate()
+                        .map(|(i, id)| (i.to_string(), get(*id))),
+                )
+                .collect(),
+                ..Known::default()
+            },
+            crate::infer::Supply::Default(known) => known.clone(),
+            crate::infer::Supply::True(_) => Known {
+                boolean: Some(true),
+                ..Known::default()
+            },
+            crate::infer::Supply::Typed(_, span) => self
+                .module
+                .expressions
+                .iter()
+                .position(|e| e.span == *span)
+                .map_or_else(Known::default, |i| get(ExprId(i))),
+        }
+    }
+
+    /// The facts of a record written by its fields: each written field
+    /// by its value, each other field by its default read with the
+    /// fields before it.
+    fn record_facts(&self, id: ExprId) -> Vec<(String, Known)> {
+        let ExprKind::Record { fields, .. } =
+            &self.module.expressions[id.0].kind
+        else {
+            return Vec::new();
+        };
+        let written = |name: &str| {
+            fields
+                .iter()
+                .find(|f| f.name.segments.last().is_some_and(|n| n == name))
+                .map(|f| self.typed.known[f.value.0].clone())
+        };
+        let declared = self.typed.expr(id).and_then(|ty| {
+            let Type::Named { name, .. } = ty else {
+                return None;
+            };
+            let module = self.owner(&name.origin)?;
+            Some(
+                construction_fields(module, &name.name, &name.name)
+                    .into_iter()
+                    .map(|field| (field, module))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        let Some(declared) = declared.filter(|fields| !fields.is_empty())
+        else {
+            return fields
+                .iter()
+                .map(|f| {
+                    (
+                        f.name.segments.last().cloned().unwrap_or_default(),
+                        self.typed.known[f.value.0].clone(),
+                    )
+                })
+                .collect();
+        };
+        let mut parts: Vec<(String, Known)> = Vec::new();
+        for (field, module) in declared {
+            let name = field.name.segments.last().cloned().unwrap_or_default();
+            let value = written(&name)
+                .or_else(|| {
+                    field.default.map(|id| spot_test(module, id, &parts))
+                })
+                .unwrap_or_default();
+            parts.push((name, value));
+        }
+        parts
+    }
+
+    /// A default's divisor check, planned where the default was typed,
+    /// is settled with what this call or construction supplies: exact
+    /// zero refutes it, a range without zero proves it, the rest stays
+    /// open with the supplied facts.
+    fn settle_default_divisors(&mut self, id: ExprId) {
+        let expression = &self.module.expressions[id.0];
+        let stage = match expression.kind {
+            ExprKind::Pipe {
+                op: PipeOp::Plain,
+                right,
+                ..
+            } => self.module.expressions[right.0].span,
+            ExprKind::Call { .. } | ExprKind::Record { .. } => expression.span,
+            _ => return,
+        };
+        let spots = if matches!(expression.kind, ExprKind::Record { .. }) {
+            self.record_facts(id)
+        } else {
+            self.supplied_facts(stage)
+        };
+        let mut keep = Vec::new();
+        let mut errors = Vec::new();
+        for (index, check) in self.typed.checks.iter().enumerate() {
+            if check.place != stage || check.target.is_some() {
+                continue;
+            }
+            let Some(value) = check.value else { continue };
+            let Some(module) = self.owner(&check.limit_origin) else {
+                continue;
+            };
+            let fact = spot_test(module, value, &spots);
+            let range = fact.range.clone().unwrap_or_else(Range::unknown);
+            if range == Range::exact(0.into()) {
+                errors.push(Error {
+                    span: stage,
+                    reason: TypeReason::Limit {
+                        message: String::from(
+                            "division by zero in a default: \
+                             the divisor is exact 0",
+                        ),
+                    },
+                });
+                keep.push((index, None));
+            } else if range.contains_zero() {
+                keep.push((index, Some(fact)));
+            } else {
+                keep.push((index, None));
+            }
+        }
+        self.errors.extend(errors);
+        for (index, fact) in keep.into_iter().rev() {
+            match fact {
+                Some(fact) => self.typed.checks[index].known = fact,
+                None => {
+                    self.typed.checks.remove(index);
+                }
             }
         }
     }
@@ -617,13 +801,19 @@ impl Pass<'_> {
             let expr = &module.expressions[id.0];
             if self.typed.expr(*id) == Some(ty) && call_head(module, *id).is_some_and(|callee| matches!(self.resolved.expr(callee), Some(Target::Type { .. })) || matches!(self.resolved.expr(callee), Some(Target::Value { origin: Origin::Prelude, name }) if name == "to")) { continue; }
 
-            if matches!(
-                expr.kind,
-                ExprKind::Group(_)
-                    | ExprKind::Block(_)
-                    | ExprKind::Tuple(_)
-                    | ExprKind::With { .. }
-            ) {
+            // A group, block or `with` enters by its last value and a
+            // tuple by its parts, unless the whole is cast: then the
+            // cast value enters, known by its meaning alone.
+            let cast = self.typed.casts.get(id.0).is_some_and(Option::is_some);
+            if !cast
+                && matches!(
+                    expr.kind,
+                    ExprKind::Group(_)
+                        | ExprKind::Block(_)
+                        | ExprKind::Tuple(_)
+                        | ExprKind::With { .. }
+                )
+            {
                 continue;
             }
             if branches.iter().copied().any(
@@ -651,7 +841,7 @@ impl Pass<'_> {
                 continue;
             }
             let mut fact = self.typed.known[id.0].clone();
-            if matches!(expr.kind, ExprKind::List(_)) {
+            if !cast && matches!(expr.kind, ExprKind::List(_)) {
                 fact.demanded = true;
             }
             self.place_kind = place_kind.clone();
@@ -876,16 +1066,8 @@ impl Pass<'_> {
                     .collect(),
                 ..Known::default()
             },
-            ExprKind::Record { fields, .. } => Known {
-                parts: fields
-                    .iter()
-                    .map(|f| {
-                        (
-                            f.name.segments.last().cloned().unwrap_or_default(),
-                            get(f.value),
-                        )
-                    })
-                    .collect(),
+            ExprKind::Record { .. } => Known {
+                parts: self.record_facts(id),
                 ..Known::default()
             },
             ExprKind::Binary { .. } => self.binary_value(id),
@@ -1010,11 +1192,12 @@ impl Pass<'_> {
             self.typed.expr(*right),
             Some(Type::Var(_) | Type::Rigid(_))
         );
+        // A division in a type's test is the test's own fault, never a
+        // separate entry; one in a field default enters at each
+        // construction, as a function spot's default does at each call.
         if matches!(op, BinaryOp::Divide | BinaryOp::Remainder)
             && (integer_type(self.typed.expr(*right)) || when_integer)
-            && !self.module.entries.iter().any(|entry| matches!(entry,
-                Entry::Item(item) if matches!(item.kind, ItemKind::Type { .. })
-                && item.span.start <= expression.span.start && expression.span.end <= item.span.end))
+            && self.divisor_entered(expression.span)
         {
             let range = b.range.clone().unwrap_or_else(Range::unknown);
             if !when_integer && range == Range::exact(0.into()) {
@@ -1037,7 +1220,9 @@ impl Pass<'_> {
                             ExprKind::Name(name) => name.segments.join("."),
                             _ => String::from("divisor"),
                         }
-                    } else { String::from("divisor") })),
+                    } else {
+                        String::from("divisor")
+                    })),
                     limit: *operator,
                     phase: self.site_phase(expression.span),
                     reason: Reason::UnknownInput,
@@ -1135,7 +1320,6 @@ impl Pass<'_> {
         let Some(callee) = call_head(self.module, id) else {
             return Known::default();
         };
-        let get = |id: ExprId| self.typed.known[id.0].clone();
 
         let (origin, ty, name) = match self.resolved.expr(callee) {
             Some(Target::Constructor { origin, ty, name }) => {
@@ -1174,49 +1358,20 @@ impl Pass<'_> {
             _ => expression.span,
         };
         let supplied = self.typed.supplied.get(&(stage.start, stage.end));
-        let parts = fields
-            .iter()
-            .map(|field| {
-                let name =
-                    field.name.segments.last().cloned().unwrap_or_default();
-                let value = supplied
-                    .and_then(|values| values.iter().find(|(n, _)| *n == name))
-                    .map(|(_, supplied)| match supplied {
-                        crate::infer::Supply::Expr(id) => get(*id),
-                        crate::infer::Supply::Collected(ids) => Known {
-                            parts: core::iter::once((
-                                String::from("len"),
-                                exact(Integer::from(ids.len() as u64)),
-                            ))
-                            .chain(
-                                ids.iter()
-                                    .enumerate()
-                                    .map(|(i, id)| (i.to_string(), get(*id))),
-                            )
-                            .collect(),
-                            ..Known::default()
-                        },
-                        crate::infer::Supply::Default(known) => known.clone(),
-                        crate::infer::Supply::True(_) => Known {
-                            boolean: Some(true),
-                            ..Known::default()
-                        },
-                        crate::infer::Supply::Typed(_, span) => self
-                            .module
-                            .expressions
-                            .iter()
-                            .position(|e| e.span == *span)
-                            .map_or_else(Known::default, |i| get(ExprId(i))),
-                    })
-                    .or_else(|| {
-                        field
-                            .default
-                            .map(|id| test(module, id, &Known::default()))
-                    })
-                    .unwrap_or_default();
-                (name, value)
-            })
-            .collect();
+        // A field default is read with the fields before it, which it
+        // may name, as the construction fills them in order.
+        let mut parts: Vec<(String, Known)> = Vec::new();
+        for field in fields {
+            let name = field.name.segments.last().cloned().unwrap_or_default();
+            let value = supplied
+                .and_then(|values| values.iter().find(|(n, _)| *n == name))
+                .map(|(_, supplied)| self.supply_fact(supplied))
+                .or_else(|| {
+                    field.default.map(|id| spot_test(module, id, &parts))
+                })
+                .unwrap_or_default();
+            parts.push((name, value));
+        }
         Known {
             parts,
             constructor: Some(name.clone()),
@@ -1643,6 +1798,33 @@ fn test(module: &Module, id: ExprId, value: &Known) -> Known {
             narrowing: true,
             ..Known::default()
         },
+        _ => Known::default(),
+    }
+}
+/// Evaluate a default's expression with the facts of the spots it may
+/// name: an earlier field or parameter by its bare name.
+fn spot_test(module: &Module, id: ExprId, spots: &[(String, Known)]) -> Known {
+    match &module.expressions[id.0].kind {
+        ExprKind::Literal(l) => literal_fact(l),
+        ExprKind::Name(n) if n.segments.len() == 1 => spots
+            .iter()
+            .find(|(name, _)| *name == n.segments[0])
+            .map_or_else(Known::default, |(_, k)| k.clone()),
+        ExprKind::Field { value, field } => spot_test(module, *value, spots)
+            .parts
+            .into_iter()
+            .find(|(n, _)| Some(n) == field.segments.last())
+            .map_or_else(Known::default, |(_, k)| k),
+        ExprKind::Binary {
+            op, left, right, ..
+        } => test_binary(
+            *op,
+            &spot_test(module, *left, spots),
+            &spot_test(module, *right, spots),
+        ),
+        ExprKind::Group(ids) => ids
+            .last()
+            .map_or_else(Known::default, |id| spot_test(module, *id, spots)),
         _ => Known::default(),
     }
 }
