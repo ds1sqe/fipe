@@ -6,7 +6,9 @@
 //! class of at least 16 bytes; `dealloc` pushes the block onto its class's
 //! free list, threaded through the blocks' first word, and `alloc` pops
 //! from that list before bumping. Other alignments bump and are never
-//! reused; a `realloc` within one class keeps its block.
+//! reused; a `realloc` within one class keeps its block. Large allocations
+//! use anonymous mappings and return them to the kernel when freed, so
+//! growing syntax arenas do not strand large blocks in the fixed heap.
 
 #![allow(unsafe_code)]
 
@@ -33,6 +35,28 @@ const EXIT: usize = 60;
 const CHDIR: usize = 80;
 
 const ARENA: usize = 64 << 20;
+const MAPPED: usize = 64 << 10;
+
+fn mapped(layout: Layout) -> bool {
+    layout.size() >= MAPPED && layout.align() <= 4096
+}
+
+/// A page-aligned anonymous mapping; null on allocation failure.
+unsafe fn map(size: usize) -> *mut u8 {
+    let result: isize;
+    // SAFETY: anonymous private read/write memory, no address or file supplied.
+    unsafe {
+        asm!("syscall", inlateout("rax") 9_usize => result,
+            in("rdi") 0_usize, in("rsi") size, in("rdx") 3_usize,
+            in("r10") 0x22_usize, in("r8") usize::MAX, in("r9") 0_usize,
+            lateout("rcx") _, lateout("r11") _, options(nostack));
+    }
+    if result < 0 {
+        ptr::null_mut()
+    } else {
+        result as *mut u8
+    }
+}
 
 /// A syscall with up to three arguments; negative results are `-errno`.
 ///
@@ -234,6 +258,13 @@ unsafe impl GlobalAlloc for Heap {
         reason = "a block of a class is 16-aligned"
     )]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if mapped(layout) {
+            let Some(size) = layout.size().checked_next_power_of_two() else {
+                return ptr::null_mut();
+            };
+            // SAFETY: a mapping is page-aligned, enough for this layout.
+            return unsafe { map(size) };
+        }
         let Some(k) = class(layout) else {
             // SAFETY: no reference to the state is live.
             return unsafe { self.bump(layout.size(), layout.align()) };
@@ -256,6 +287,18 @@ unsafe impl GlobalAlloc for Heap {
         reason = "a block of a class is 16-aligned"
     )]
     unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
+        if mapped(layout) {
+            // SAFETY: this block came from map with this rounded length.
+            unsafe {
+                syscall(
+                    11,
+                    block as usize,
+                    layout.size().next_power_of_two(),
+                    0,
+                );
+            }
+            return;
+        }
         let Some(k) = class(layout) else { return };
         // SAFETY: single-threaded; the caller gives up `block`, which was
         // handed out for this class, so its first word is ours.
@@ -276,7 +319,10 @@ unsafe impl GlobalAlloc for Heap {
         // alignment, as for `GlobalAlloc::realloc`.
         let grown =
             unsafe { Layout::from_size_align_unchecked(size, layout.align()) };
-        if class(layout).is_some() && class(layout) == class(grown) {
+        if mapped(layout) == mapped(grown)
+            && class(layout).is_some()
+            && class(layout) == class(grown)
+        {
             return block;
         }
         // SAFETY: the caller's contract for `realloc`, passed on.

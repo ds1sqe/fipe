@@ -324,10 +324,10 @@ fn a_loaded_file_is_checked_once_and_its_values_are_typed() {
     let bad = |text: &'static str| ("bad".to_string(), text);
     assert_eq!(
         file_errors(&report, BAD),
-        [bad("nosuch"), bad("\"x\""), bad("1 + \"a\"")]
+        [bad("\"x\""), bad("1 + \"a\""), bad("nosuch")]
     );
     assert!(matches!(
-        report.diagnostics[1],
+        report.diagnostics[0],
         Diagnostic::FileType {
             error: fipe::infer::Error {
                 reason: fipe::infer::Reason::Mismatch { .. },
@@ -882,6 +882,82 @@ fn session_plain_and_claim_members_conflict_in_either_order() {
         ok(&mut session, "type W: Zero { x: F64 }");
         ok(&mut session, first);
         let report = done(session.line(second));
-        assert!(report.diagnostics.iter().any(|d| matches!(d, Diagnostic::Type(e) if matches!(&e.reason, fipe::infer::Reason::ClaimBlock { problem, .. } if problem.contains("plain impl")))), "{:?}", report.diagnostics);
+        assert!(report.diagnostics.iter().any(|d| (matches!(d, Diagnostic::Type(e) if matches!(&e.reason, fipe::infer::Reason::ClaimBlock { problem, .. } if problem.contains("plain impl"))) || matches!(d, Diagnostic::Resolve(fipe::resolve::Error { reason: Reason::Duplicate { .. }, .. })))), "{:?}", report.diagnostics);
     }
+}
+
+#[test]
+fn plain_member_cannot_be_replaced() {
+    let mut session = Session::new(host());
+    ok(&mut session, "type A { v: String }");
+    ok(&mut session, "impl A { get = self => self.v }");
+    assert_ne!(
+        done(session.line("impl A { get = self => 1 }")).diagnostics,
+        []
+    );
+}
+
+#[test]
+fn diagnostics_follow_source_order() {
+    let mut session = Session::new(host());
+    assert!(matches!(session.line("use bad"), Outcome::Request(_)));
+    let report = done(session.reply(Reply::File(Some(
+        "a: Bool = 1\nx = missing\nb: String = True".into(),
+    ))));
+    let spans: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|d| match d {
+            Diagnostic::FileResolve { error, .. } => error.span,
+            Diagnostic::FileType { error, .. } => error.span,
+            _ => panic!("unexpected diagnostic"),
+        })
+        .collect();
+    assert!(spans.len() >= 3, "{spans:?}");
+    assert!(
+        spans.windows(2).all(|p| p[0].start <= p[1].start),
+        "{spans:?}"
+    );
+}
+
+#[test]
+fn private_field_is_named_through_direct_and_deferred_dots() {
+    let mut session = Session::new(host());
+    assert!(matches!(session.line("use shapes"), Outcome::Request(_)));
+    assert_eq!(
+        done(session.reply(Reply::File(Some(
+            "pub type P { secret: Integer = 0 }\npub p = P {}".into()
+        ))))
+        .diagnostics,
+        []
+    );
+    for line in ["shapes.p.secret", "get = p => p.secret\nget shapes.p"] {
+        let report = done(session.line(line));
+        assert!(report.diagnostics.iter().any(|d| matches!(d, Diagnostic::Type(fipe::infer::Error { reason: fipe::infer::Reason::PrivateField { field }, .. }) if field == "secret")), "{:?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn underivable_claim_waits_for_its_session_block() {
+    let mut session = Session::new(host());
+    ok(&mut session, "type S: Show { f: Integer -> Integer }");
+    ok(&mut session, "impl S: Show { show = self => \"s\" }");
+    ok(&mut session, "type D: Default { n: Integer }");
+    ok(&mut session, "impl D: Default { default = Self 0 }");
+}
+
+#[test]
+fn imported_field_in_session_keeps_its_type() {
+    let mut session = Session::new(host());
+    assert!(matches!(session.line("use shape"), Outcome::Request(_)));
+    let shape =
+        "use geo\npub type Box { pub p: geo.Pt }\npub b = Box (geo.Pt 1)";
+    assert!(matches!(
+        session.reply(Reply::File(Some(shape.into()))),
+        Outcome::Request(_)
+    ));
+    let geo = "pub type Pt { pub x: I64 }";
+    let report = done(session.reply(Reply::File(Some(geo.into()))));
+    assert_eq!(report.diagnostics, []);
+    assert_eq!(query(&mut session, "shape.b.p"), "Pt");
 }

@@ -231,6 +231,7 @@ impl Parser {
             };
             let value = if annotation.is_none() || parser.at(Symbol::Assign) {
                 parser.expect(Symbol::Assign)?;
+                parser.skip_newline();
                 Some(parser.member_value()?)
             } else {
                 None

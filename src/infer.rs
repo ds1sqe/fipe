@@ -15,7 +15,9 @@ mod claims;
 mod conversions;
 mod dot;
 mod expr;
+pub(crate) mod files;
 mod groups;
+mod index;
 mod lower;
 mod outcome;
 mod spots;
@@ -40,6 +42,7 @@ pub struct Error {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
+    TypeDepth,
     /// `actual` at `span` against `expected`, which `other` required.
     Mismatch {
         expected: Type,
@@ -74,6 +77,7 @@ pub enum Reason {
     },
     NotAFunction,
     Conversion {
+        source: Option<Type>,
         target: Type,
         candidates: Vec<Type>,
     },
@@ -114,6 +118,9 @@ pub enum Reason {
     PrivateMember {
         member: String,
     },
+    PrivateField {
+        field: String,
+    },
 }
 
 /// Type one resolved module. `files` are the file modules its `use`
@@ -144,7 +151,15 @@ pub fn infer_partial(
     declarations: &Declarations,
     files: &[(String, Module)],
 ) -> (Typed, Vec<Error>) {
-    run(module, resolved, declarations, files, None, &[], usize::MAX)
+    run(
+        module,
+        resolved,
+        declarations,
+        files,
+        None,
+        (&[], &files::FileCache::default()),
+        usize::MAX,
+    )
 }
 
 /// [`infer_partial`] after the definitions of a session's accepted
@@ -158,6 +173,7 @@ pub(crate) fn infer_in(
     files: &[(String, Module)],
     frame: &Frame,
     query: usize,
+    cache: &files::FileCache,
 ) -> (Typed, Vec<Error>) {
     run(
         module,
@@ -165,7 +181,7 @@ pub(crate) fn infer_in(
         declarations,
         files,
         Some(frame),
-        &[],
+        (&[], cache),
         query,
     )
 }
@@ -179,23 +195,18 @@ fn run(
     declarations: &Declarations,
     files: &[(String, Module)],
     frame: Option<&Frame>,
-    visiting: &[String],
+    (visiting, cache): (&[String], &files::FileCache),
     query: usize,
 ) -> (Typed, Vec<Error>) {
-    let subst = frame.map_or_else(Subst::default, |f| f.weak.clone());
-    let mut infer = Infer {
+    let mut infer = Infer::new(
         module,
         resolved,
         declarations,
         files,
         frame,
-        visiting: visiting.to_vec(),
-        weak: subst.count(),
-        state: State::new(subst, module.expressions.len()),
-        items: Vec::new(),
-        groups: Vec::new(),
-        self_type: None,
-    };
+        visiting,
+        cache,
+    );
     infer.declare();
     infer.field_defaults_all();
     let mut impls = 0;
@@ -222,6 +233,16 @@ fn run(
             }
             Entry::Item(_) => {}
         }
+        // A depth refusal ends this unit: later bindings can otherwise
+        // rebuild the refused chain repeatedly during error recovery.
+        if infer
+            .state
+            .errors
+            .iter()
+            .any(|error| matches!(error.reason, Reason::TypeDepth))
+        {
+            break;
+        }
     }
     infer.check_claim_blocks();
     infer.finish()
@@ -237,8 +258,8 @@ struct State {
     locals: BTreeMap<(usize, usize), Local>,
     obligations: Vec<Owed>,
     solving_dots: bool,
+    dots_start: usize,
     claims: Vec<(Type, bool, Vec<Type>)>,
-    checked_claims: Vec<(Type, Type)>,
     lowering: Vec<crate::types::TypeName>,
     errors: Vec<Error>,
     /// Monomorphic types in scope: parameters and destructured values.
@@ -263,8 +284,8 @@ impl State {
             locals: BTreeMap::new(),
             obligations: Vec::new(),
             solving_dots: false,
+            dots_start: 0,
             claims: Vec::new(),
-            checked_claims: Vec::new(),
             lowering: Vec::new(),
             errors: Vec::new(),
             env: Vec::new(),
@@ -469,6 +490,8 @@ struct Infer<'a> {
     /// A session's accepted lines.
     frame: Option<&'a Frame>,
     visiting: Vec<String>,
+    file_cache: &'a files::FileCache,
+    indexes: Vec<(&'a Module, index::Index)>,
     /// The session's weak variables, `Var(0)` up to this: free in every
     /// line after the one that left them.
     weak: u32,
@@ -513,6 +536,7 @@ impl Infer<'_> {
                     other,
                 },
                 Mismatch::Occurs { .. } => Reason::Occurs,
+                Mismatch::DepthLimit => Reason::TypeDepth,
             };
             self.error(span, reason);
         }
@@ -591,10 +615,12 @@ impl Infer<'_> {
         for entry in &module.entries {
             if let Entry::Item(item) = entry {
                 if let ItemKind::Impl {
-                    target, members, ..
+                    target,
+                    claim,
+                    members,
                 } = &item.kind
                 {
-                    self.declare_impl(*target, members);
+                    self.declare_impl(*target, *claim, members);
                     let names = self.outside_names(item.span);
                     if let Some(group) = self.groups.last_mut() {
                         group.names = names;
@@ -625,6 +651,7 @@ impl Infer<'_> {
     fn declare_impl(
         &mut self,
         target: crate::ast::TypeId,
+        claim: Option<crate::ast::TypeId>,
         members: &[ImplMember],
     ) {
         let module = self.module;
@@ -632,6 +659,18 @@ impl Infer<'_> {
         let ty = lower::named(module, target).unwrap_or_default();
         let self_type = self.lower_here(target);
         self.self_type = Some(self_type.clone());
+        let class = claim.map(|id| self.lower_here(id));
+        let required = class
+            .as_ref()
+            .map(|class| {
+                self.member_limits(
+                    class,
+                    &self_type,
+                    module.types[target.0].span,
+                    &mut Vec::new(),
+                )
+            })
+            .unwrap_or_default();
         let first = self.items.len();
         let mut constructor = Vec::new();
         for member in members {
@@ -663,6 +702,15 @@ impl Infer<'_> {
                     item.public = *public;
                     item.annotated = annotation.is_some();
                     item.body = Some(Body::Value(*value));
+                    if let Some(class) = &class {
+                        self.constrain_claim_member(
+                            class,
+                            &self_type,
+                            &required,
+                            &item,
+                            module.types[target.0].span,
+                        );
+                    }
                     self.push_item(item, group);
                 }
                 ImplMember::Constructor { arm, .. } => {
@@ -726,6 +774,7 @@ impl Infer<'_> {
         self.check_conversions();
         self.dots();
         self.default_literals(0, &[], &[]);
+        self.finish_dots();
         self.left_members();
         let unsolved = self.settle();
         let (frozen, weak) = self.frozen();
@@ -880,4 +929,94 @@ fn last(name: &Name) -> String {
 
 fn item_span(arms: &[Arm]) -> Span {
     arms.first().map_or_else(Span::default, |arm| arm.span)
+}
+
+impl<'a> Infer<'a> {
+    fn new(
+        module: &'a Module,
+        resolved: &'a Resolved,
+        declarations: &'a Declarations,
+        files: &'a [(String, Module)],
+        frame: Option<&'a Frame>,
+        visiting: &[String],
+        cache: &'a files::FileCache,
+    ) -> Self {
+        let indexes = core::iter::once(module)
+            .chain(core::iter::once(&declarations.prelude.module))
+            .chain(declarations.commands.iter().map(|n| &n.module))
+            .chain(declarations.modules.iter().map(|n| &n.module))
+            .chain(files.iter().map(|(_, m)| m))
+            .map(|m| (m, index::index(m)))
+            .collect();
+        let subst = frame.map_or_else(Subst::default, |f| f.weak.clone());
+        Self {
+            module,
+            resolved,
+            declarations,
+            files,
+            frame,
+            visiting: visiting.to_vec(),
+            file_cache: cache,
+            indexes,
+            weak: subst.count(),
+            state: State::new(subst, module.expressions.len()),
+            items: Vec::new(),
+            groups: Vec::new(),
+            self_type: None,
+        }
+    }
+}
+
+pub(crate) fn check_declarations(
+    declarations: &Declarations,
+    origin: Origin,
+) -> Vec<Error> {
+    let namespace = match &origin {
+        Origin::Prelude => &declarations.prelude,
+        Origin::Commands => declarations.commands.as_ref().unwrap(),
+        Origin::Host(name) => declarations.get_module(name).unwrap(),
+        _ => unreachable!(),
+    };
+    let module = &namespace.module;
+    let (resolved, _) =
+        crate::resolve::resolve_partial(&Module::default(), declarations, &[]);
+    let cache = files::FileCache::default();
+    let mut infer =
+        Infer::new(module, &resolved, declarations, &[], None, &[], &cache);
+    let scope = lower::Scope::Declared { module, origin };
+    for entry in &module.entries {
+        if let Entry::Item(crate::ast::Item {
+            kind:
+                ItemKind::Impl {
+                    target,
+                    claim: Some(claim),
+                    ..
+                },
+            span,
+            ..
+        }) = entry
+        {
+            let mut head = infer.lower(
+                &scope,
+                *target,
+                &mut lower::Vars::new(lower::SelfKind::None),
+            );
+            if let Type::Named { name, arguments } = &mut head {
+                if let Some((parameters, _)) =
+                    infer.type_item(module, &name.name)
+                {
+                    while arguments.len() < parameters.len() {
+                        arguments.push(infer.fresh());
+                    }
+                }
+            }
+            let class = infer.lower(
+                &scope,
+                *claim,
+                &mut lower::Vars::new(lower::SelfKind::Type(head.clone())),
+            );
+            infer.check_supplied_claim(&head, &class, *span);
+        }
+    }
+    infer.state.errors
 }

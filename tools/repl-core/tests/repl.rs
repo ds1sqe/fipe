@@ -45,10 +45,7 @@ fn the_first_feed_prompts() {
 #[test]
 fn a_local_resolves_to_its_site() {
     let text = written(Repl::new().feed(b"x = 1\n:r x\n"));
-    assert_eq!(
-        text,
-        "1:1 0..1 x: Local { site: Span { start: 0, end: 1 } }\nfipe> "
-    );
+    assert_eq!(text, "1:1 0..1 x: binding at line 1\nfipe> ");
 }
 
 #[test]
@@ -72,9 +69,7 @@ fn use_asks_for_the_file_and_resumes() {
     assert_eq!(outs, [Out::File("geometry.fipe".into())]);
     let text = written(repl.file("geometry.fipe", Some(GEOMETRY)));
     assert!(
-        text.contains(
-            "1:1 0..5 Point: Constructor { origin: File(\"geometry\")"
-        ),
+        text.contains("1:1 0..5 Point: constructor geometry.Point.Point"),
         "{text}"
     );
 }
@@ -92,7 +87,7 @@ fn load_asks_for_the_stem() {
     assert!(text.starts_with("geometry.fipe:30:52: "), "{text}");
     assert!(text.ends_with("fipe> "), "{text}");
     let text = written(repl.feed(b":r geometry.Point 1\n"));
-    assert!(text.contains("Constructor"), "{text}");
+    assert!(text.contains("constructor"), "{text}");
 }
 
 #[test]
@@ -125,7 +120,7 @@ fn load_without_a_stem_and_unknown_commands_say_so() {
     let text = written(Repl::new().feed(b":load\n:bogus 1\n:ast x\n"));
     assert_eq!(
         text,
-        "usage: :load <stem>\nunknown command :bogus\n\
+        "usage: :load <stem or path>\nunknown command :bogus\n\
          usage: :ast (the last line that parsed)\nfipe> "
     );
 }
@@ -185,8 +180,8 @@ fn host_loads_the_fixtures_and_keeps_accepted_lines() {
     let outs = repl.feed(b"x = 1\n:host\n");
     assert_eq!(host(&mut repl, outs), "host: tests/fixtures/host\nfipe> ");
     let text = written(repl.feed(b"ls -l /etc\n:r ls\n:r x\n"));
-    assert!(text.contains("ls: Value { origin: Commands"), "{text}");
-    assert!(text.contains("x: Local"), "{text}");
+    assert!(text.contains("ls: value commands.ls"), "{text}");
+    assert!(text.contains("x: binding at line 1"), "{text}");
 }
 
 #[test]
@@ -295,7 +290,7 @@ fn two_types_of_one_name_are_printed_with_their_modules() {
     let text = written(repl.feed(b"next (Prime \"x\")\n"));
     assert_eq!(
         text,
-        "1:7: expected primes.Prime, found Prime\n\
+        "1:7: expected primes.Prime, found session[2].Prime\n\
          next (Prime \"x\")\n      ^^^^^^^^^\nfipe> "
     );
 }
@@ -375,7 +370,7 @@ fn a_leading_operator_typed_later_continues_the_accepted_line() {
     assert!(text.ends_with(": Vec<String>\nfipe> "), "{text}");
     assert_eq!(repl.feed(b"x = 1\n").len(), 1);
     let text = written(repl.feed(b":r ls\n"));
-    assert_eq!(text.matches("ls: Value").count(), 1, "{text}");
+    assert_eq!(text.matches("ls: value").count(), 1, "{text}");
 }
 
 #[test]
@@ -417,9 +412,10 @@ fn a_rejected_join_in_one_read_keeps_the_line_before() {
 }
 
 #[test]
-fn a_query_continues_onto_a_leading_line_in_the_same_read() {
+fn a_complete_query_finishes_before_a_later_leading_operator() {
     let text = written(Repl::new().feed(b":t 1\n  + 2\n"));
-    assert_eq!(text, "1 + 2: Integer\nfipe> ");
+    assert!(text.starts_with("1: Integer\n"), "{text}");
+    assert!(text.contains("expected an expression"), "{text}");
 }
 
 #[test]
@@ -540,7 +536,10 @@ fn member_schemes_and_type_parameter_defaults_are_visible() {
     );
     assert_eq!(text.matches("Default").count(), 2, "{text}");
     let text = written(Repl::new().feed(b"type V: Mul<F64> { x: F64 }\nimpl V: Mul<F64> { mul = k self => Self (self.x * k) }\nv = V 1.0\n:t v * 2.0\n"));
-    assert!(text.contains("V does not claim Literal"), "{text}");
+    assert!(
+        text.contains("V does not have a ready claim for Literal"),
+        "{text}"
+    );
     let text = written(Repl::new().feed(b"n = 1\n:t n.nope\n"));
     assert!(
         text.contains("no such field or member on Integer"),
@@ -617,4 +616,181 @@ fn ast_shows_impl_claim() {
     assert!(text.contains("Claim"), "{text}");
     assert!(text.contains("Mul"), "{text}");
     assert!(text.contains("F64"), "{text}");
+}
+
+#[test]
+fn host_replays_whole_entries() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b"x = 'a\n\nb'\n## Doc.\n\nv = 7\n:host\n");
+    let text = host(&mut repl, outs);
+    assert!(!text.contains("quote") && !text.contains("owner"), "{text}");
+    let text = written(repl.feed(b":t x\n:t v\n"));
+    assert!(
+        text.contains("x: String") && text.contains("Doc.\nv: Integer"),
+        "{text}"
+    );
+}
+
+#[test]
+fn documented_heads_continue() {
+    let text = written(
+        Repl::new().feed(b"## Doubles.\nf: I64 -> I64\n  = x => x * 2\n:t f\n"),
+    );
+    assert!(text.contains("Doubles.\nf: I64 -> I64"), "{text}");
+    for source in [
+        "## Positive.\ntype Pos: I64\nwhere self > 0\n:ast\n",
+        "## Positive.\ntype Pos: I64 where\nself > 0\n:ast\n",
+    ] {
+        let text = written(Repl::new().feed(source.as_bytes()));
+        assert!(text.contains("Binary >"), "{text}");
+        assert!(
+            !text.contains("expected") && !text.contains("group an"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn bad_raw_quote_keeps_its_closing_line() {
+    for bad in ['\u{200b}', '\r'] {
+        let source = format!("x = 'a{bad}c\nb'\ny = 2\n:t y\n");
+        let text = written(Repl::new().feed(source.as_bytes()));
+        assert!(
+            text.contains("unexpected character")
+                && text.contains("y: Integer"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn inline_doc_does_not_hold_next_line() {
+    let text = written(Repl::new().feed(b"x = 1 ## note\ny = 2\n:t y\n"));
+    assert!(
+        text.contains("expected the end") && text.contains("y: Integer"),
+        "{text}"
+    );
+    let text = written(Repl::new().feed(b"x = [## d\n\ny = 1\n]\n:ast\n"));
+    assert!(text.contains("Doc \"d\""), "{text}");
+}
+
+#[test]
+fn raw_quote_scans_new_lines_only() {
+    let mut repl = Repl::new();
+    let start = std::time::Instant::now();
+    repl.feed(b"x = '\n");
+    for _ in 0..2_000 {
+        repl.feed(b"0123456789012345678901234567890123456789\n");
+    }
+    let text = written(repl.feed(b"'\n:t x\n"));
+    assert!(text.contains("x: String"), "{text}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[test]
+fn trailing_join_continues() {
+    let text =
+        written(Repl::new().feed(b"f = a b => a\ng = f 1 \\\n  2\n:t g\n"));
+    assert!(text.contains("g: Integer"), "{text}");
+}
+
+#[test]
+fn type_echo_preserves_quote_bytes() {
+    let text = written(Repl::new().feed(b":t 'a\n  b'\n"));
+    assert!(text.contains("'a\n  b': String"), "{text}");
+}
+
+#[test]
+fn empty_module_doc_has_a_tree() {
+    let text = written(Repl::new().feed(b"##! only a module doc\n\n:ast\n"));
+    assert!(text.contains("Module doc \"only a module doc\""), "{text}");
+}
+
+#[test]
+fn explicit_unit_holds_lines_and_commands() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b":{\nx = 1\n")), "....> ");
+    let text = written(repl.feed(b"y = x\n:}\n:t y\n"));
+    assert!(text.contains("y: Integer"), "{text}");
+    let mut repl = Repl::new();
+    repl.feed(b":{\nx = 1\n");
+    assert_eq!(written(repl.flush()), "\n");
+    assert!(written(repl.feed(b":t x\n")).contains("x: Integer"));
+    let mut repl = Repl::new();
+    let text = written(repl.feed(b":{\n:q\n:}\ny = 2\n:t y\n"));
+    assert!(text.contains("y: Integer"), "{text}");
+}
+
+#[test]
+fn explicit_unit_checks_mutual_claims() {
+    let source = b":{\ntype A: From<B> {}\ntype B: From<A> {}\nimpl A: From<B> { from: B -> Self = b => Self {} }\nimpl B: From<A> { from: A -> Self = a => Self {} }\n:}\na = A {}\nb = a | to<B>\n:t b\n";
+    assert_eq!(written(Repl::new().feed(source)), "b: B\nfipe> ");
+}
+
+#[test]
+fn leading_division_continues() {
+    let text = written(Repl::new().feed(b"8\n/ 2\n:t\n"));
+    assert!(text.contains("8 / 2: Integer"), "{text}");
+}
+
+#[test]
+fn queries_are_independent_of_read_boundaries() {
+    for source in [":t 1\n+ 2\n", ":r 1\n+ 2\n"] {
+        let together = written(Repl::new().feed(source.as_bytes()));
+        let mut repl = Repl::new();
+        let mut separate = String::new();
+        for line in source.split_inclusive('\n') {
+            separate.push_str(&written(repl.feed(line.as_bytes())));
+        }
+        assert_eq!(
+            together.replace("fipe> ", ""),
+            separate.replace("fipe> ", "")
+        );
+    }
+}
+
+#[test]
+fn opaque_head_waits_for_where() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"type Shape\n")), "....> ");
+    let text =
+        written(repl.feed(
+            b"where self.area: F64\nx: Shape -> F64 = s => s.area\n:t x\n",
+        ));
+    assert_eq!(text, "x: Shape -> F64\nfipe> ");
+}
+
+#[test]
+fn signature_does_not_swallow_next_binding() {
+    let text = written(
+        Repl::new()
+            .feed(b"sig: Integer -> Integer\ny = 1\n:t y\nz =\n5\n:t z\n"),
+    );
+    assert!(
+        text.contains("y: Integer") && text.contains("z: Integer"),
+        "{text}"
+    );
+}
+
+#[test]
+fn unknown_impl_has_one_accurate_error() {
+    let text =
+        written(Repl::new().feed(b"impl Unknown { f = self => self }\n"));
+    assert!(
+        text.contains("unknown type") && !text.contains("another module"),
+        "{text}"
+    );
+}
+
+#[test]
+fn commands_use_words() {
+    let text = written(Repl::new().feed(b"x = 1\n:r x\n:load\nSelf\n"));
+    assert!(
+        !text.contains("Local {") && !text.contains("Span {"),
+        "{text}"
+    );
+    assert!(
+        text.contains("<stem or path>") && text.contains("`Self` outside"),
+        "{text}"
+    );
 }

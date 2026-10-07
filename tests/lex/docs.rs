@@ -85,3 +85,37 @@ fn multiline_quotes_keep_bytes_affixes_and_physical_positions() {
     assert_eq!(result.errors[0].span.end, 11);
     assert_eq!(result.tokens[1].kind, name("next"));
 }
+
+#[test]
+fn c3_crlf_docs_drop_only_the_line_end_cr() {
+    tokens(
+        "## d \r\n##! m\r\n",
+        vec![
+            Kind::Doc("d ".into()),
+            Kind::Newline,
+            Kind::InnerDoc("m".into()),
+            Kind::Newline,
+        ],
+    );
+    tokens("## d\r", vec![Kind::Doc("d\r".into())]);
+}
+
+#[test]
+fn banners_are_comments() {
+    let result = lex("### x\n##########\n");
+    assert_eq!(result.comments.len(), 2);
+    assert!(result
+        .tokens
+        .iter()
+        .all(|t| matches!(t.kind, Kind::Newline | Kind::Eof)));
+}
+
+#[test]
+fn crlf_quotes_keep_raw_and_drop_joins() {
+    tokens("'a\r\nb'", vec![string("a\r\nb", true)]);
+    tokens("\"a\\\r\n  b\"", vec![string("ab", false)]);
+    assert_eq!(
+        lex("'a\rb'").errors[0].reason,
+        fipe::lex::Reason::Stray('\r')
+    );
+}

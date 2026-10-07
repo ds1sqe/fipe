@@ -372,6 +372,7 @@ struct Resolver<'a> {
     resolved: Resolved,
     /// The module frame: items and imports.
     frame: Vec<Defined>,
+    frame_index: [alloc::collections::BTreeMap<String, usize>; 2],
     /// A session's accepted lines, after the module frame.
     frame_in: Option<&'a Frame>,
     /// The file-level bindings after the walk.
@@ -390,7 +391,7 @@ struct Resolver<'a> {
     /// The type parameters of the `type` item being walked.
     parameters: Vec<String>,
     /// Every impl member of this module, by (type, name), for coherence.
-    members: Vec<(String, String, Span)>,
+    members: alloc::collections::BTreeMap<(String, String), (Span, bool)>,
     errors: Vec<Error>,
 }
 
@@ -422,6 +423,10 @@ impl<'a> Resolver<'a> {
                 definitions: Vec::new(),
             },
             frame: Vec::new(),
+            frame_index: [
+                alloc::collections::BTreeMap::new(),
+                alloc::collections::BTreeMap::new(),
+            ],
             frame_in: None,
             top: Vec::new(),
             own: None,
@@ -430,7 +435,7 @@ impl<'a> Resolver<'a> {
             scopes: Vec::new(),
             self_type: None,
             parameters: Vec::new(),
-            members: Vec::new(),
+            members: alloc::collections::BTreeMap::new(),
             errors: Vec::new(),
         }
     }
@@ -756,7 +761,8 @@ impl<'a> Resolver<'a> {
                 } = entry
                 {
                     if last(name) == member {
-                        if *visible || !public {
+                        if *visible || !public || module.claim_member(name.span)
+                        {
                             return Membership::Visible;
                         }
                         hidden = true;
@@ -929,7 +935,10 @@ impl<'a> Resolver<'a> {
                 |defined| matches!(defined.target, Target::Type { .. }),
             )
         });
-        if !local {
+        if !local
+            && named(self.module, target)
+                .is_some_and(|name| self.lookup_type(&name).is_some())
+        {
             self.error(span, Reason::ImplOutsideModule);
         }
         let ty = named(self.module, target).unwrap_or_default();
@@ -938,20 +947,38 @@ impl<'a> Resolver<'a> {
                 continue;
             };
             self.case(name, false);
+            if let (
+                Some(frame),
+                Some(Target::Type {
+                    origin: Origin::Line(line),
+                    name: owner,
+                }),
+            ) = (self.frame_in, self.lookup_type(&ty))
+            {
+                if let Some(first) =
+                    frame.members.get(&((line, owner), last(name)))
+                {
+                    let first = Span {
+                        start: first.0,
+                        end: first.1,
+                    };
+                    if !claimed || !self.claim_site(first) {
+                        self.error(name.span, Reason::Duplicate { first });
+                        continue;
+                    }
+                }
+            }
             // One definition per (type, name), owned by the meaning.
             let text = last(name);
-            if let Some((_, _, first)) =
-                self.members.iter().find(|(t, n, first)| {
-                    *t == ty
-                        && *n == text
-                        && !(claimed && self.claim_site(*first))
-                })
-            {
-                let first = *first;
-                self.error(name.span, Reason::Duplicate { first });
-                continue;
+            let key = (ty.clone(), text);
+            if let Some((first, prior_claim)) = self.members.get(&key) {
+                if !(claimed && *prior_claim) {
+                    let first = *first;
+                    self.error(name.span, Reason::Duplicate { first });
+                    continue;
+                }
             }
-            self.members.push((ty.clone(), text, name.span));
+            self.members.entry(key).or_insert((name.span, claimed));
         }
     }
 
@@ -975,11 +1002,7 @@ impl<'a> Resolver<'a> {
         public: bool,
     ) {
         let text = last(name);
-        if let Some(first) = self
-            .frame
-            .iter()
-            .find(|defined| defined.name == text && defined.space == space)
-        {
+        if let Some(first) = self.defined(&text, space) {
             let first = first.site;
             self.error(name.span, Reason::Duplicate { first });
             return;
@@ -991,6 +1014,7 @@ impl<'a> Resolver<'a> {
                 span: name.span,
             });
         }
+        self.frame_index[space as usize].insert(text.clone(), self.frame.len());
         self.frame.push(Defined {
             name: text,
             space,
@@ -1036,9 +1060,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn defined(&self, name: &str, space: Space) -> Option<&Defined> {
-        self.frame
-            .iter()
-            .find(|defined| defined.name == name && defined.space == space)
+        self.frame_index[space as usize]
+            .get(name)
+            .map(|i| &self.frame[*i])
     }
 
     fn lookup_type(&self, name: &str) -> Option<Target> {

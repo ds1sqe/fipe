@@ -17,6 +17,28 @@ impl Infer<'_> {
                 *class = self.claim_type(class, head, true);
             }
         }
+        let claims: Vec<_> = scheme
+            .obligations
+            .iter()
+            .filter_map(|o| match o {
+                Obligation::Claim { head, class, .. } => {
+                    let mut parts = Vec::new();
+                    self.claim_parts(class, head, &mut parts);
+                    Some((head.clone(), class.clone(), parts))
+                }
+                Obligation::Member { .. } => None,
+            })
+            .collect();
+        scheme.obligations.retain(|o| match o {
+            Obligation::Claim { head, class, .. } => {
+                !claims.iter().any(|(h, c, parts)| {
+                    h == head
+                        && c != class
+                        && parts.contains(&self.claim_type(class, head, false))
+                })
+            }
+            Obligation::Member { .. } => true,
+        });
     }
 
     fn claim_type(&mut self, class: &Type, head: &Type, trim: bool) -> Type {
@@ -29,8 +51,7 @@ impl Infer<'_> {
         let Some(scope) = self.scope(&name.origin) else {
             return class.clone();
         };
-        let Some((parameters, _)) = super::lower::type_item(module, &name.name)
-        else {
+        let Some((parameters, _)) = self.type_item(module, &name.name) else {
             return class.clone();
         };
         let mut vars = Vars::new(SelfKind::Type(head.clone()));
@@ -83,7 +104,7 @@ impl Infer<'_> {
         let Some(scope) = self.scope(&name.origin) else {
             return;
         };
-        for entry in &module.entries {
+        for entry in self.type_entries(module, &name.name) {
             let Entry::Item(item) = entry else { continue };
             let ItemKind::Type {
                 name: n,
@@ -144,7 +165,7 @@ impl Infer<'_> {
         };
         let mut listed = Vec::new();
         let mut shaped = false;
-        for entry in &module.entries {
+        for entry in self.type_entries(module, &name.name) {
             let Entry::Item(item) = entry else { continue };
             let ItemKind::Type {
                 name: n,
@@ -188,8 +209,21 @@ impl Infer<'_> {
                 }
             }
         }
-        let blocks = self.written_claims(head);
+        let mut blocks = self.written_claims(head);
         if !shaped {
+            let mut parts = Vec::new();
+            self.claim_parts(head, head, &mut parts);
+            for part in parts {
+                let required = self.member_limits(
+                    &part,
+                    head,
+                    Span::default(),
+                    &mut Vec::new(),
+                );
+                if !required.is_empty() && required.iter().all(|r| matches!(r, Obligation::Member { name, ty, .. } if derived(&part) == Some("eq") || (self.claim_receiver(&part, head, name) && !super::dot::contains_type(ty, head)))) {
+                    blocks.push(part);
+                }
+            }
             self.state
                 .claims
                 .push((head.clone(), ready_only, blocks.clone()));
@@ -214,7 +248,7 @@ impl Infer<'_> {
         };
         let mut blocks = Vec::new();
         for (module, scope) in self.impl_scopes(&name.origin, &name.name) {
-            for entry in &module.entries {
+            for entry in self.type_entries(module, &name.name) {
                 let Entry::Item(item) = entry else { continue };
                 let ItemKind::Impl {
                     target,
@@ -233,10 +267,9 @@ impl Infer<'_> {
                     continue;
                 }
                 let mut vars = Vars::new(SelfKind::Type(head.clone()));
-                if let Some((params, _)) = super::lower::type_item(
-                    self.owner(&name.origin).unwrap(),
-                    &name.name,
-                ) {
+                if let Some((params, _)) = self
+                    .type_item(self.owner(&name.origin).unwrap(), &name.name)
+                {
                     vars.names.extend(
                         params
                             .iter()
@@ -274,7 +307,7 @@ impl Infer<'_> {
         self.claim_parts(class, head, &mut parts);
         let mut count = 0;
         for (module, scope) in self.impl_scopes(&owner.origin, &owner.name) {
-            for entry in &module.entries {
+            for entry in self.type_entries(module, &owner.name) {
                 let Entry::Item(item) = entry else { continue };
                 let ItemKind::Impl {
                     target,
@@ -284,6 +317,11 @@ impl Infer<'_> {
                 else {
                     continue;
                 };
+                if super::lower::named(module, *target).as_deref()
+                    != Some(&owner.name)
+                {
+                    continue;
+                }
                 if !self.impl_owner(&scope, *target, head) {
                     continue;
                 }
@@ -325,6 +363,13 @@ impl Infer<'_> {
     }
 
     pub(super) fn require_claim(&mut self, head: Type, class: Type, dot: Span) {
+        let parts = self.combination_parts(&class, &head);
+        if !parts.is_empty() {
+            for part in parts {
+                self.require_claim(head.clone(), part, dot);
+            }
+            return;
+        }
         self.state.obligations.push(super::Owed::new(
             Obligation::Claim { head, class, dot },
             dot,
@@ -343,6 +388,13 @@ impl Infer<'_> {
         } else {
             *dot
         };
+        let parts = self.combination_parts(&class, &head);
+        if !parts.is_empty() {
+            for part in parts {
+                self.require_claim(head.clone(), part, dot);
+            }
+            return;
+        }
         if derived(&class).is_some() {
             match &head {
                 Type::Array { element, .. } => {
@@ -376,15 +428,17 @@ impl Infer<'_> {
             };
             candidates = alloc::vec![candidates[index].clone()];
         }
-        let mut matches = Vec::new();
-        for candidate in &candidates {
-            let mut subst = self.state.subst.clone();
-            if subst.unify(&class, candidate).is_ok() {
-                matches.push((candidate.clone(), subst));
+        if let [selected] = candidates.as_slice() {
+            if self.state.subst.unify(&class, selected).is_err() {
+                self.error(
+                    dot,
+                    super::Reason::MissingClaim {
+                        ty: head,
+                        claim: class,
+                    },
+                );
+                return;
             }
-        }
-        if let [(selected, subst)] = matches.as_slice() {
-            self.state.subst = subst.clone();
             if let Some(literal) = owed.literal.clone() {
                 if matches!(&head, Type::Named { name, .. } if name.origin == crate::resolve::Origin::Prelude)
                 {
@@ -392,15 +446,15 @@ impl Infer<'_> {
                 }
             }
             if !matches!(head, Type::Rigid(_)) {
-                self.check_supplied_claim(&head, selected, dot);
                 if let Some(member) = derived(selected) {
                     self.derive_claim(&head, selected, member, dot);
                 }
             }
-        } else if matches.len() > 1 {
+        } else if candidates.len() > 1 {
             self.error(
                 dot,
                 super::Reason::Conversion {
+                    source: None,
                     target: head,
                     candidates,
                 },
@@ -498,6 +552,7 @@ impl Infer<'_> {
     pub(super) fn check_claim_blocks(&mut self) {
         for entry in &self.module.entries {
             let Entry::Item(item) = entry else { continue };
+            self.check_alias(&item.kind);
             match &item.kind {
                 ItemKind::Impl {
                     target,
@@ -550,6 +605,11 @@ impl Infer<'_> {
                         }
                     }
                     let listed = self.claims(&head, false);
+                    self.check_listed_members(
+                        &head,
+                        &listed,
+                        self.module.types[base.0].span,
+                    );
                     let ready = self.claims(&head, true);
                     for class in listed {
                         let required = self.member_limits(
@@ -570,7 +630,9 @@ impl Infer<'_> {
                                 &class,
                                 "has no block or derived member",
                             );
-                        } else if let Some(member) = derived(&class) {
+                        } else if let Some(member) =
+                            derived(&class).filter(|_| self.frame.is_none())
+                        {
                             self.derive_claim(
                                 &head,
                                 &class,
@@ -624,8 +686,9 @@ impl Infer<'_> {
         if !self.claims(&head, false).contains(&class) {
             self.block_error(span, &class, "is not listed on the type");
         }
-        if self.claim_block_count(&head, &class) > 1 {
+        if self.claim_block_count(&head, &class, span) > 1 {
             self.block_error(span, &class, "has a second block");
+            return;
         }
         for member in members {
             let crate::ast::ImplMember::Named { name, .. } = member else {
@@ -646,7 +709,16 @@ impl Infer<'_> {
                 continue;
             };
             let count = self.claim_member_count(&head, &class, &name);
-            if count > 1 {
+            if count > 1
+                && self.claim_block_count(
+                    &head,
+                    &class,
+                    Span {
+                        start: usize::MAX,
+                        end: usize::MAX,
+                    },
+                ) == 1
+            {
                 self.block_error(span, &class, "has a member written twice");
             }
             let Some(site) = members.iter().find_map(|m| match m {
@@ -689,14 +761,24 @@ impl Infer<'_> {
         }
     }
 
-    fn claim_block_count(&mut self, head: &Type, class: &Type) -> usize {
+    fn claim_block_count(
+        &mut self,
+        head: &Type,
+        class: &Type,
+        span: Span,
+    ) -> usize {
         let Type::Named { name: owner, .. } = head else {
             return 0;
         };
         let mut count = 0;
         for (module, scope) in self.impl_scopes(&owner.origin, &owner.name) {
-            for other in &module.entries {
+            for other in self.type_entries(module, &owner.name) {
                 let Entry::Item(other) = other else { continue };
+                if core::ptr::eq(module, self.module)
+                    && other.span.start > span.start
+                {
+                    continue;
+                }
                 let ItemKind::Impl {
                     target,
                     claim: Some(c),
@@ -744,6 +826,16 @@ impl Infer<'_> {
             {
                 true
             }
+            Type::Named { name, .. }
+                if matches!(
+                    name.origin,
+                    crate::resolve::Origin::Prelude
+                        | crate::resolve::Origin::Commands
+                        | crate::resolve::Origin::Host(_)
+                ) =>
+            {
+                false
+            }
             Type::Named { name, .. } => {
                 if self.state.lowering.contains(name) {
                     return false;
@@ -776,7 +868,7 @@ impl Infer<'_> {
             return;
         };
         for (module, scope) in self.impl_scopes(&owner.origin, &owner.name) {
-            for entry in &module.entries {
+            for entry in self.type_entries(module, &owner.name) {
                 let Entry::Item(item) = entry else { continue };
                 let ItemKind::Impl {
                     target,
@@ -851,8 +943,7 @@ impl Infer<'_> {
         let Some(scope) = self.scope(&name.origin) else {
             return;
         };
-        let Some((parameters, _)) = super::lower::type_item(module, &name.name)
-        else {
+        let Some((parameters, _)) = self.type_item(module, &name.name) else {
             return;
         };
         let mut bound_vars = Vars::new(SelfKind::Type(ty.clone()));
@@ -883,7 +974,12 @@ impl Infer<'_> {
 }
 
 impl Infer<'_> {
-    fn check_supplied_claim(&mut self, head: &Type, class: &Type, span: Span) {
+    pub(super) fn check_supplied_claim(
+        &mut self,
+        head: &Type,
+        class: &Type,
+        span: Span,
+    ) {
         let Type::Named { name: owner, .. } = head else {
             return;
         };
@@ -895,19 +991,9 @@ impl Infer<'_> {
         ) {
             return;
         }
-        let mut vars = Vec::new();
-        head.variables(&mut vars);
-        class.variables(&mut vars);
-        if vars.is_empty() {
-            let pair = (head.clone(), class.clone());
-            if self.state.checked_claims.contains(&pair) {
-                return;
-            }
-            self.state.checked_claims.push(pair);
-        }
         let required = self.member_limits(class, head, span, &mut Vec::new());
         for (module, scope) in self.impl_scopes(&owner.origin, &owner.name) {
-            for entry in &module.entries {
+            for entry in self.type_entries(module, &owner.name) {
                 let Entry::Item(item) = entry else { continue };
                 let ItemKind::Impl {
                     target,
@@ -955,8 +1041,9 @@ impl Infer<'_> {
                     else {
                         continue;
                     };
+                    let receiver = self.claim_receiver(class, head, &text);
                     let actual = self.supplied_claim_type(
-                        module, &scope, head, *ty, span, &text,
+                        module, &scope, head, *ty, name.span, receiver,
                     );
                     self.check_member_type(expected, &actual, span, span);
                 }
@@ -973,7 +1060,7 @@ impl<'a> Infer<'a> {
         head: &Type,
         ty: crate::ast::TypeId,
         span: Span,
-        text: &str,
+        receiver: bool,
     ) -> Type {
         let Type::Named {
             name: owner,
@@ -983,9 +1070,7 @@ impl<'a> Infer<'a> {
             return self.fresh();
         };
         let mut vars = Vars::new(SelfKind::Type(head.clone()));
-        if let Some((parameters, _)) =
-            super::lower::type_item(module, &owner.name)
-        {
+        if let Some((parameters, _)) = self.type_item(module, &owner.name) {
             vars.names.extend(
                 parameters
                     .iter()
@@ -994,27 +1079,26 @@ impl<'a> Infer<'a> {
             );
         }
         let (slots, result, self_slot) = self.signature(scope, ty, &mut vars);
-        let self_slot = self_slot.or_else(|| {
-            (!matches!(
-                text,
-                "literal" | "read" | "zero" | "default" | "from" | "try_from"
-            ))
-            .then(|| slots.len().checked_sub(1))
-            .flatten()
-        });
-        let mut callee =
-            self.finish_callee(slots, result, self_slot, vars, span);
-        if let Some(slot) = self_slot {
-            callee.supplied = Some((slot, head.clone(), span));
-            self.apply_callee(callee, &[], None, span, None)
-        } else {
-            callee.whole()
+        let self_slot = receiver
+            .then(|| self_slot.or_else(|| slots.len().checked_sub(1)))
+            .flatten();
+        if receiver && self_slot.is_none() {
+            self.error(span, super::Reason::NotAFunction);
         }
+        let mut parameters: Vec<_> = slots.into_iter().map(|s| s.ty).collect();
+        if let Some(slot) = self_slot {
+            let receiver = parameters.remove(slot);
+            self.unify(head, &receiver, span, span);
+        }
+        parameters
+            .into_iter()
+            .rev()
+            .fold(result, |r, p| Type::function(p, r))
     }
 }
 
 impl Infer<'_> {
-    fn check_member_type(
+    pub(super) fn check_member_type(
         &mut self,
         expected: &Type,
         actual: &Type,
@@ -1023,32 +1107,16 @@ impl Infer<'_> {
     ) {
         let expected = self.apply(expected);
         let actual = self.apply(actual);
-        let mut e = &expected;
-        let mut a = &actual;
-        while let (
-            Type::Function {
-                parameter: ep,
-                result: er,
-            },
-            Type::Function {
-                parameter: ap,
-                result: ar,
-            },
-        ) = (e, a)
-        {
-            if matches!(**ap, Type::Limited { .. }) && ap != ep {
-                self.error(
-                    span,
-                    super::Reason::Mismatch {
-                        expected,
-                        actual,
-                        other,
-                    },
-                );
-                return;
-            }
-            e = er;
-            a = ar;
+        if !limits_fit(&actual, &expected) {
+            self.error(
+                span,
+                super::Reason::Mismatch {
+                    expected,
+                    actual,
+                    other,
+                },
+            );
+            return;
         }
         self.unify(&expected, &actual, span, other);
     }
@@ -1064,5 +1132,260 @@ impl<'a> Infer<'a> {
         let mut vars = Vars::new(SelfKind::Type(head.clone()));
         let target = self.lower(scope, target, &mut vars);
         matches!((super::meaning(&target),super::meaning(head)),(Type::Named { name: a, .. },Type::Named { name: b, .. }) if a == b)
+    }
+}
+
+impl Infer<'_> {
+    pub(super) fn claim_receiver(
+        &mut self,
+        class: &Type,
+        head: &Type,
+        member: &str,
+    ) -> bool {
+        let mut parts = Vec::new();
+        self.claim_parts(class, head, &mut parts);
+        parts.iter().any(|part| {
+            let Type::Named { name, .. } = part else { return false };
+            self.owner(&name.origin).is_some_and(|module| module.entries.iter().any(|entry| {
+                matches!(entry, Entry::Item(item) if matches!(&item.kind,
+                    ItemKind::Type { name: n, limits, .. } if super::last(n) == name.name && limits.iter().any(|limit| matches!(limit,
+                        crate::ast::Limit::Member { name, .. } if super::last(name) == member && name.segments.first().is_some_and(|n| n == "self")))))
+            }))
+        })
+    }
+}
+
+impl Infer<'_> {
+    fn combination_parts(&mut self, class: &Type, head: &Type) -> Vec<Type> {
+        let Type::Named { name, arguments } = class else {
+            return Vec::new();
+        };
+        let (Some(module), Some(scope)) =
+            (self.owner(&name.origin), self.scope(&name.origin))
+        else {
+            return Vec::new();
+        };
+        let Some((parameters, base)) =
+            module.entries.iter().find_map(|e| match e {
+                Entry::Item(item) => match &item.kind {
+                    ItemKind::Type {
+                        name: n,
+                        parameters,
+                        base: Some(base),
+                        members: None,
+                        limits,
+                    } if super::last(n) == name.name && limits.is_empty() => {
+                        Some((parameters, base))
+                    }
+                    _ => None,
+                },
+                Entry::Line(_) => None,
+            })
+        else {
+            return Vec::new();
+        };
+        let TypeKind::Both(parts) = &module.types[base.0].kind else {
+            return Vec::new();
+        };
+        let mut vars = Vars::new(SelfKind::Type(head.clone()));
+        vars.names.extend(
+            parameters
+                .iter()
+                .zip(arguments)
+                .map(|(p, a)| (super::last(&p.name), a.clone())),
+        );
+        parts
+            .iter()
+            .map(|p| self.lower(&scope, *p, &mut vars))
+            .collect()
+    }
+}
+
+impl Infer<'_> {
+    pub(super) fn constrain_claim_member(
+        &mut self,
+        class: &Type,
+        head: &Type,
+        required: &[Obligation],
+        item: &super::Item,
+        other: Span,
+    ) {
+        let super::Key::Member(_, name) = &item.key else {
+            return;
+        };
+        let Some(expected) = required.iter().find_map(|r| match r {
+            Obligation::Member { name: n, ty, .. } if n == name => Some(ty),
+            _ => None,
+        }) else {
+            return;
+        };
+        let slot = item.heads.as_ref().and_then(|heads| {
+            heads.iter().position(|h| h.name.as_deref() == Some("self"))
+        });
+        if self.claim_receiver(class, head, name) != slot.is_some() {
+            self.block_error(item.site, class, "has the wrong receiver");
+            return;
+        }
+        let expected = slot.map_or_else(
+            || expected.clone(),
+            |slot| {
+                let (mut parameters, result) = self
+                    .peel(expected, slot)
+                    .unwrap_or_else(|| (Vec::new(), expected.clone()));
+                parameters.push(head.clone());
+                parameters
+                    .into_iter()
+                    .rev()
+                    .fold(result, |r, p| Type::function(p, r))
+            },
+        );
+        self.check_member_type(&expected, &item.ty, item.site, other);
+    }
+}
+
+impl Infer<'_> {
+    fn check_alias(&mut self, kind: &ItemKind) {
+        if let ItemKind::Type { name, .. } = kind {
+            if self.base_cycle(&super::last(name)) {
+                let class = Type::named(
+                    crate::resolve::Origin::This,
+                    &super::last(name),
+                    Vec::new(),
+                );
+                self.block_error(name.span, &class, "has a cyclic base");
+                return;
+            }
+        }
+        if let ItemKind::Type {
+            base: Some(base),
+            members: None,
+            limits,
+            ..
+        } = kind
+        {
+            if limits.is_empty()
+                && !matches!(self.module.types[base.0].kind, TypeKind::Both(_))
+            {
+                let class = self.lower_here(*base);
+                self.block_error(
+                    self.module.types[base.0].span,
+                    &class,
+                    "a single base without limits is not a type alias",
+                );
+            }
+        }
+    }
+}
+
+// A supplied value may promise stronger results, but must accept every
+// parameter admitted by the required member, including nested places.
+fn limits_fit(actual: &Type, expected: &Type) -> bool {
+    match (actual, expected) {
+        (Type::Var(_), _) | (_, Type::Var(_)) => true,
+        (Type::Limited { name: a, .. }, Type::Limited { name: e, .. }) => {
+            a == e
+        }
+        (_, Type::Limited { .. }) => false,
+        (Type::Limited { meaning, .. }, _) => limits_fit(meaning, expected),
+        (
+            Type::Function {
+                parameter: ap,
+                result: ar,
+            },
+            Type::Function {
+                parameter: ep,
+                result: er,
+            },
+        ) => limits_fit(ep, ap) && limits_fit(ar, er),
+        (
+            Type::Named { arguments: a, .. },
+            Type::Named { arguments: e, .. },
+        )
+        | (Type::Either(a), Type::Either(e)) => {
+            a.iter().zip(e).all(|(a, e)| limits_fit(a, e))
+        }
+        (Type::Array { element: a, .. }, Type::Array { element: e, .. }) => {
+            limits_fit(a, e)
+        }
+        _ => true,
+    }
+}
+
+impl Infer<'_> {
+    fn check_listed_members(
+        &mut self,
+        head: &Type,
+        listed: &[Type],
+        span: Span,
+    ) {
+        let mut seen: Vec<(&Type, alloc::string::String, Type)> = Vec::new();
+        for class in listed {
+            for requirement in
+                self.member_limits(class, head, span, &mut Vec::new())
+            {
+                let Obligation::Member { name, ty, .. } = requirement else {
+                    continue;
+                };
+                for (prior, member, other) in &seen {
+                    let same_class = matches!((class,*prior), (Type::Named { name: a, .. }, Type::Named { name: b, .. }) if a == b);
+                    if member == &name
+                        && !same_class
+                        && (!limits_fit(&ty, other)
+                            || !limits_fit(other, &ty)
+                            || self
+                                .state
+                                .subst
+                                .clone()
+                                .unify(&ty, other)
+                                .is_err())
+                    {
+                        self.block_error(
+                            span,
+                            class,
+                            "conflicts with another listed claim's member type",
+                        );
+                    }
+                }
+                seen.push((class, name, ty));
+            }
+        }
+    }
+}
+
+impl Infer<'_> {
+    fn base_cycle(&self, root: &str) -> bool {
+        let mut pending = alloc::vec![alloc::string::String::from(root)];
+        let mut seen = Vec::new();
+        while let Some(name) = pending.pop() {
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.push(name.clone());
+            for entry in self.type_entries(self.module, &name) {
+                let Entry::Item(item) = entry else { continue };
+                let ItemKind::Type {
+                    base: Some(base), ..
+                } = item.kind
+                else {
+                    continue;
+                };
+                let mut parts = alloc::vec![base];
+                while let Some(part) = parts.pop() {
+                    match &self.module.types[part.0].kind {
+                        TypeKind::Both(types) => parts.extend(types),
+                        TypeKind::Named { name, .. }
+                            if name.segments.len() == 1 =>
+                        {
+                            if super::last(name) == root {
+                                return true;
+                            }
+                            pending.push(super::last(name));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
     }
 }

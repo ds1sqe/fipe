@@ -160,7 +160,7 @@ impl Parser {
 
     fn pattern_inner(&mut self, context: Context) -> Result<PatternId, Error> {
         let start = self.here().start;
-        let tuple = self.tuple_at(self.position + 1);
+        let tuple = self.at(Symbol::LParen) && self.tuple_at(self.position + 1);
         let kind = match self.peek() {
             Kind::Name(_) => return self.name_pattern(context),
             Kind::Symbol(Symbol::LParen) if tuple => {

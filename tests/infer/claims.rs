@@ -82,15 +82,9 @@ fn a_right_operand_selects_a_claim_and_unknown_names_candidates() {
 }
 
 #[test]
-fn supplied_claim_member_types_are_checked_at_use() {
+fn supplied_claim_member_types_are_checked_at_load() {
     let mut declarations = fipe::decl::Declarations::new();
-    declarations.commands("pub type Bad\nimpl Bad: Add { add: Self -> (self: Self) -> String }\npub bad: Bad").unwrap();
-    let module = super::module("bad + bad");
-    let resolved = fipe::resolve::resolve(&module, &declarations, &[]).unwrap();
-    assert!(fipe::infer::infer(&module, &resolved, &declarations, &[])
-        .unwrap_err()
-        .iter()
-        .any(|e| matches!(e.reason, Reason::Mismatch { .. })));
+    assert!(declarations.commands("pub type Bad\nimpl Bad: Add { add: Self -> (self: Self) -> String }\npub bad: Bad").is_err());
 }
 
 #[test]

@@ -26,9 +26,6 @@ pub fn entry(module: &Module, entry: &Entry) -> String {
         }
     };
     let mut out = String::new();
-    if let Some(doc) = &module.doc {
-        let _ = writeln!(out, "Module doc {doc:?}");
-    }
     walk(module, root, 0, &mut out);
     out
 }

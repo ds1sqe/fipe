@@ -86,6 +86,7 @@ const fn kind(reason: &Reason) -> &'static str {
     match reason {
         Reason::Mismatch { .. } => "Mismatch",
         Reason::Occurs => "Occurs",
+        Reason::TypeDepth => "TypeDepth",
         Reason::UnknownFamily => "UnknownFamily",
         Reason::ClaimBlock { .. } => "ClaimBlock",
         Reason::MissingClaim { .. } => "MissingClaim",
@@ -107,6 +108,7 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::Ambiguous { .. } => "Ambiguous",
         Reason::ImportCycle => "ImportCycle",
         Reason::PrivateMember { .. } => "PrivateMember",
+        Reason::PrivateField { .. } => "PrivateField",
     }
 }
 
@@ -658,3 +660,9 @@ mod literals;
 
 #[path = "infer/claims.rs"]
 mod claims;
+
+#[path = "infer/claim_cases.rs"]
+mod claim_cases;
+
+#[path = "infer/claim_rules.rs"]
+mod claim_rules;

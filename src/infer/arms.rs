@@ -21,6 +21,10 @@ impl Infer<'_> {
             return self.fresh();
         };
         let count = first.patterns.len();
+        if count > crate::parse::MAX_NESTING {
+            self.error(first.span, Reason::TypeDepth);
+            return self.fresh();
+        }
         let parameters: Vec<Type> = (0..count).map(|_| self.fresh()).collect();
         let result = self.fresh();
         let ty = parameters

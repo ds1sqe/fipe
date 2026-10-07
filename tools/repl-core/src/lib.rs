@@ -15,13 +15,14 @@
 //! and continues it (accepting it again if the joined entry is
 //! rejected), whether the lines arrive together or one at a time. A
 //! command, an empty line or a comment line ends that chance. A `:t` or
-//! `:r` query is held while its next line is read, which continues it
-//! when it starts with an operator. A line that starts with `where`
+//! `:r` query is answered when its entry is complete. A line that starts with `where`
 //! continues an accepted `type` item the same way.
 //!
 //! `:ast` prints the last line that parsed, accepted or not: a tree
 //! never depends on checking. Commands: `:ast`, `:r [line]`, `:t [line]`, `:load <stem or path>`,
 //! `:host [dir]`, `:q`; any other line goes to the session.
+//! `:{` and `:}` on their own lines collect one compilation unit; every
+//! intervening line is source text, including commands. EOF submits it.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -40,7 +41,7 @@ use fipe::{
     ast::{Entry, ExprKind},
     decl::{self, Declarations},
     embed::{Outcome, Reply, Request},
-    lex::lex,
+    lex::{lex, Lexed},
     session::{Diagnostic, Report, Session},
     token::{Keyword, Kind, Source, Span, Symbol, Token},
 };
@@ -65,6 +66,8 @@ pub struct Repl {
     input: Vec<u8>,
     /// The entry's lines so far.
     entry: String,
+    continuation: Continuation,
+    unit: bool,
     wait: Option<Wait>,
     /// Replied file texts by stem, for replays and file diagnostics.
     files: Vec<(String, String)>,
@@ -134,6 +137,8 @@ impl Repl {
             session: Session::new(Declarations::new()),
             input: Vec::new(),
             entry: String::new(),
+            continuation: Continuation::default(),
+            unit: false,
             wait: None,
             files: Vec::new(),
             paths: Vec::new(),
@@ -213,32 +218,36 @@ impl Repl {
 
     fn run(&mut self, out: &mut Outs) {
         while !self.quit && self.wait.is_none() {
-            if !self.entry.is_empty() && !opens(&self.entry) {
-                if !query(&self.entry) {
-                    // Submitted before a leading line is read, so that
-                    // line joins through `continue_last` as if typed
-                    // later.
-                    self.submit(out);
-                    continue;
-                }
-                match self.leads() {
-                    Some(true) => {}
-                    Some(false) => {
-                        self.submit(out);
-                        continue;
-                    }
-                    None => break,
-                }
+            if !self.unit && !self.entry.is_empty() && !self.continuation.open {
+                self.submit(out);
+                continue;
             }
             let Some(end) = self.input.iter().position(|&b| b == b'\n') else {
-                if self.ended && !self.entry.is_empty() {
+                if self.ended && (self.unit || !self.entry.is_empty()) {
                     self.submit(out);
                     continue;
                 }
                 break;
             };
-            if !self.entry.is_empty()
-                && !open_quote(&self.entry)
+            if !self.unit
+                && self.continuation.next.is_some_and(|next| {
+                    let line = String::from_utf8_lossy(&self.input[..end]);
+                    let tokens = lex(&line).tokens;
+                    match next {
+                        NextLine::Assign => !matches!(
+                            tokens[0].kind,
+                            Kind::Symbol(Symbol::Assign)
+                        ),
+                        NextLine::Where => !where_word(&tokens[0].kind),
+                    }
+                })
+            {
+                self.submit(out);
+                continue;
+            }
+            if !self.unit
+                && !self.entry.is_empty()
+                && self.continuation.quote.is_none()
                 && self.input[..end].trim_ascii_start().starts_with(b":")
             {
                 // A command ends the entry before it.
@@ -248,8 +257,19 @@ impl Repl {
             let bytes: Vec<u8> = self.input.drain(..=end).collect();
             let line = String::from_utf8_lossy(&bytes);
             let line = line.trim_end_matches(['\n', '\r']);
+            if self.unit {
+                if line.trim() == ":}" {
+                    self.submit(out);
+                } else {
+                    self.entry.push_str(line);
+                    self.entry.push('\n');
+                }
+                continue;
+            }
             let blank = line.trim().is_empty();
-            if (blank && !open_quote(&self.entry) && !pending_doc(&self.entry))
+            if (blank
+                && self.continuation.quote.is_none()
+                && !self.continuation.doc)
                 || (self.entry.is_empty() && comment(line))
             {
                 if !self.entry.is_empty() {
@@ -259,13 +279,28 @@ impl Repl {
             } else if !self.entry.is_empty() {
                 self.entry.push('\n');
                 self.entry.push_str(line);
+                if self.continuation.quote != Some('\'') || line.contains('\'')
+                {
+                    self.continuation =
+                        continuation(code(&self.entry), lex(code(&self.entry)));
+                }
             } else if continuable(line) {
                 self.entry = line.to_string();
-                let joins = leading(line)
-                    || (limits(line)
-                        && self.retractable.as_deref().is_some_and(type_item));
+                let lexed = lex(code(line));
+                let first = lexed.tokens.first();
+                let joins = !query(line)
+                    && (leading_tokens(&lexed.tokens)
+                        || (first
+                            .is_some_and(|token| where_word(&token.kind))
+                            && self.retractable.as_deref().is_some_and(
+                                |text| type_item(&lex(text).tokens),
+                            )));
                 if joins && self.retractable.take().is_some() {
                     self.continue_last();
+                    self.continuation =
+                        continuation(code(&self.entry), lex(code(&self.entry)));
+                } else {
+                    self.continuation = continuation(code(line), lexed);
                 }
             } else {
                 self.command(line, out);
@@ -276,27 +311,22 @@ impl Repl {
             && self.wait.is_none()
             && self.input.is_empty()
         {
-            out.write(if self.entry.is_empty() { PROMPT } else { MORE });
+            out.write(if self.entry.is_empty() && !self.unit {
+                PROMPT
+            } else {
+                MORE
+            });
         }
-    }
-
-    /// Whether the next line starts with an operator that continues a
-    /// held query; `None` while that line is still arriving.
-    fn leads(&self) -> Option<bool> {
-        if self.input.is_empty() {
-            return Some(false);
-        }
-        let end = self.input.iter().position(|&b| b == b'\n');
-        if end.is_none() && !self.ended {
-            return None;
-        }
-        let next = &self.input[..end.unwrap_or(self.input.len())];
-        Some(leading(&String::from_utf8_lossy(next)))
     }
 
     fn submit(&mut self, out: &mut Outs) {
         let entry = core::mem::take(&mut self.entry);
-        self.command(&entry, out);
+        self.continuation = Continuation::default();
+        if core::mem::take(&mut self.unit) {
+            self.start(&entry, Mode::Accept, out);
+        } else {
+            self.command(&entry, out);
+        }
     }
 
     fn command(&mut self, line: &str, out: &mut Outs) {
@@ -311,6 +341,7 @@ impl Repl {
             .split_once(' ')
             .map_or((command, ""), |(name, arg)| (name, arg.trim()));
         match (name, arg) {
+            ("{", "") => self.unit = true,
             ("q", "") => {
                 self.quit = true;
                 out.0.push(Out::Exit);
@@ -325,11 +356,11 @@ impl Repl {
                 out.write(b"usage: :ast (the last line that parsed)\n");
             }
             ("r", "") => match &self.last {
-                Some((report, text)) => names(report, text, out),
+                Some((report, text)) => names(&self.session, report, text, out),
                 None => out.write(b"no accepted line\n"),
             },
             ("r", line) => self.start(line, Mode::Resolve, out),
-            ("load", "") => out.write(b"usage: :load <stem>\n"),
+            ("load", "") => out.write(b"usage: :load <stem or path>\n"),
             ("load", arg) => self.load(arg, out),
             ("host", dir) => {
                 let dir = if dir.is_empty() { HOST_DIR } else { dir };
@@ -436,7 +467,7 @@ impl Repl {
                     }
                 }
             }
-            Mode::Resolve => names(&report, &text, out),
+            Mode::Resolve => names(&self.session, &report, &text, out),
             Mode::Types => types(&self.session, &report, &text, out),
         }
     }
@@ -497,6 +528,9 @@ impl Repl {
             return out.write(b"no line has parsed\n");
         };
         let Some(module) = &report.module else { return };
+        if let Some(doc) = &module.doc {
+            out.write(format!("Module doc {doc:?}\n").as_bytes());
+        }
         for entry in report.entries() {
             out.write(tree::entry(module, entry).as_bytes());
         }
@@ -525,13 +559,8 @@ impl Repl {
         if failed {
             return;
         }
-        let lines: Vec<String> = self
-            .session
-            .source()
-            .split("\n\n")
-            .filter(|line| !line.is_empty())
-            .map(String::from)
-            .collect();
+        let lines: Vec<String> =
+            self.session.lines().map(String::from).collect();
         self.session = Session::new(declarations);
         self.last = None;
         for line in lines {
@@ -596,7 +625,7 @@ fn located(prefix: &str, text: &str, span: Span, reason: &str, out: &mut Outs) {
 
 /// Each name expression of the line: line:col, span and target, with
 /// spans in the line's text and a `Local` site in the session's source.
-fn names(report: &Report, line: &str, out: &mut Outs) {
+fn names(session: &Session, report: &Report, line: &str, out: &mut Outs) {
     let (Some(module), Some(resolved)) = (&report.module, &report.resolved)
     else {
         return;
@@ -616,7 +645,12 @@ fn names(report: &Report, line: &str, out: &mut Outs) {
     names.sort_by_key(|&(start, ..)| start);
     for (start, end, name, target) in names {
         let (l, c) = Source::new(line).line_col(start);
-        let text = format!("{l}:{c} {start}..{end} {name}: {target:?}\n");
+        let at = Context {
+            source: session.source(),
+            line,
+        };
+        let target = render::target(target, &at);
+        let text = format!("{l}:{c} {start}..{end} {name}: {target}\n");
         out.write(text.as_bytes());
     }
 }
@@ -651,8 +685,11 @@ fn types(session: &Session, report: &Report, line: &str, out: &mut Outs) {
         } else {
             let source =
                 text_of(line, report.offset, expr.span).unwrap_or_default();
-            let source: Vec<&str> = source.lines().map(str::trim).collect();
-            let source = source.join(" ");
+            let source = if source.contains(['\'', '"']) {
+                source.to_string()
+            } else {
+                source.lines().map(str::trim).collect::<Vec<_>>().join(" ")
+            };
             // A query's line has a generalized scheme; an accepted
             // line's expression only its type.
             if let Some(scheme) = typed.binding(*id) {
@@ -685,7 +722,9 @@ const fn from_file(diagnostic: &Diagnostic) -> bool {
 
 /// A comment-only line, which is blank to the grammar.
 fn comment(line: &str) -> bool {
-    line.trim_start().starts_with('#') && !line.trim_start().starts_with("##")
+    line.trim_start().starts_with('#')
+        && (!line.trim_start().starts_with("##")
+            || line.trim_start().starts_with("###"))
 }
 
 /// A `:t` or `:r` entry, held for a next line that continues it.
@@ -707,26 +746,47 @@ fn continuable(line: &str) -> bool {
 /// token that is an operator, `=`, `->`, `=>`, a comma or a type item's
 /// `where`, or a bare signature waiting for its `= value`. A `>`
 /// touching what precedes it closes type arguments, as in `read<I64>`.
-fn opens(entry: &str) -> bool {
-    let code = entry
+#[derive(Default)]
+struct Continuation {
+    open: bool,
+    quote: Option<char>,
+    doc: bool,
+    next: Option<NextLine>,
+}
+
+#[derive(Clone, Copy)]
+enum NextLine {
+    Assign,
+    Where,
+}
+
+fn code(entry: &str) -> &str {
+    entry
         .trim_start()
         .strip_prefix(':')
         .map_or(entry, |command| {
             command.split_once(' ').map_or("", |(_, arg)| arg)
-        });
-    if open_quote(code) || pending_doc(code) {
-        return true;
+        })
+}
+
+fn continuation(code: &str, lexed: Lexed) -> Continuation {
+    let quote = open_quote(code, &lexed);
+    let tokens = &lexed.tokens;
+    let doc = pending_doc(tokens);
+    let mut result = Continuation {
+        open: quote.is_some() || doc,
+        quote,
+        doc,
+        next: None,
+    };
+    if result.open || !lexed.errors.is_empty() {
+        return result;
     }
-    let lexed = lex(code);
-    if !lexed.errors.is_empty() {
-        return false;
-    }
-    let tokens = lexed.tokens;
-    let limited = type_item(code);
+    let limited = type_item(tokens);
     let mut depth = 0_isize;
     let mut trailing = false;
     let mut assigns = false;
-    for token in &tokens {
+    for token in tokens {
         let Kind::Symbol(symbol) = token.kind else {
             if !matches!(token.kind, Kind::Newline | Kind::Eof) {
                 trailing = limited && where_word(&token.kind);
@@ -744,41 +804,75 @@ fn opens(entry: &str) -> bool {
         trailing = (operator(symbol) && !closes)
             || matches!(symbol, Symbol::Assign | Symbol::Arrow | Symbol::Comma);
     }
-    depth > 0 || trailing || (!assigns && signature(&tokens))
+    result.doc = depth > 0
+        && tokens
+            .iter()
+            .rev()
+            .find(|token| !matches!(token.kind, Kind::Newline | Kind::Eof))
+            .is_some_and(|token| {
+                matches!(token.kind, Kind::Doc(_) | Kind::InnerDoc(_))
+            });
+    // A discarded join occupies the source gap after the last token/trivia.
+    let end = tokens
+        .iter()
+        .filter(|t| !matches!(t.kind, Kind::Eof))
+        .map(|t| t.span.end)
+        .chain(lexed.comments.iter().map(|s| s.end))
+        .max()
+        .unwrap_or(0);
+    let joined = code[end..].contains('\\');
+    let bare_type = limited
+        && !tokens.iter().any(|t| {
+            matches!(t.kind, Kind::Symbol(Symbol::LBrace | Symbol::Ampersand))
+                || where_word(&t.kind)
+        });
+    if depth == 0 && !trailing && !joined {
+        result.next = if !assigns && signature(tokens) {
+            Some(NextLine::Assign)
+        } else if bare_type {
+            Some(NextLine::Where)
+        } else {
+            None
+        };
+    }
+    result.open = depth > 0 || trailing || joined || result.next.is_some();
+    result
 }
 
 /// A lexer failure at EOF that another physical line can complete.
-fn open_quote(code: &str) -> bool {
-    let lexed = lex(code);
-    lexed.errors.iter().any(|error| {
+fn open_quote(code: &str, lexed: &Lexed) -> Option<char> {
+    lexed.errors.iter().find_map(|error| {
         if error.span.end != code.len() {
-            return false;
+            return None;
         }
         let written = &code[error.span.start..error.span.end];
-        let quote = written.chars().find(|ch| matches!(ch, '\'' | '"'));
-        (quote == Some('\'')
-            && error.reason == fipe::lex::Reason::UnterminatedQuote)
-            || (quote == Some('"')
-                && written.ends_with('\\')
-                && error.reason == fipe::lex::Reason::BadEscape)
+        let at = written.find(['\'', '"'])?;
+        let quote = written.as_bytes()[at] as char;
+        ((quote == '\'' && !written[at + 1..].contains('\''))
+            || (quote == '"' && written.ends_with('\\')))
+        .then_some(quote)
     })
 }
 
-fn pending_doc(code: &str) -> bool {
-    lex(code)
-        .tokens
+fn pending_doc(tokens: &[Token]) -> bool {
+    let Some(last) = tokens
         .iter()
-        .rev()
-        .find(|token| !matches!(token.kind, Kind::Newline | Kind::Eof))
-        .is_some_and(|token| {
-            matches!(token.kind, Kind::Doc(_) | Kind::InnerDoc(_))
-        })
+        .rposition(|token| !matches!(token.kind, Kind::Newline | Kind::Eof))
+    else {
+        return false;
+    };
+    if !matches!(tokens[last].kind, Kind::Doc(_) | Kind::InnerDoc(_)) {
+        return false;
+    }
+    last == 0 || matches!(tokens[last - 1].kind, Kind::Newline)
 }
 
 /// Whether the entry starts `[pub] NAME :`, a signature's head. Only the
 /// head is scanned; the type after the colon is the parser's.
 fn signature(tokens: &[Token]) -> bool {
-    let mut kinds = tokens.iter().map(|token| &token.kind);
+    let mut kinds = tokens.iter().map(|token| &token.kind).skip_while(|kind| {
+        matches!(kind, Kind::Doc(_) | Kind::InnerDoc(_) | Kind::Newline)
+    });
     let mut first = kinds.next();
     if matches!(first, Some(Kind::Kw(Keyword::Pub))) {
         first = kinds.next();
@@ -788,22 +882,15 @@ fn signature(tokens: &[Token]) -> bool {
 }
 
 /// Whether an entry is a `type` item, which a `where` line continues.
-fn type_item(entry: &str) -> bool {
-    let tokens = lex(entry).tokens;
-    let mut kinds = tokens.iter().map(|token| &token.kind);
+fn type_item(tokens: &[Token]) -> bool {
+    let mut kinds = tokens.iter().map(|token| &token.kind).skip_while(|kind| {
+        matches!(kind, Kind::Doc(_) | Kind::InnerDoc(_) | Kind::Newline)
+    });
     let mut first = kinds.next();
     if matches!(first, Some(Kind::Kw(Keyword::Pub))) {
         first = kinds.next();
     }
     matches!(first, Some(Kind::Kw(Keyword::Type)))
-}
-
-/// Whether a line starts with `where`, a type item's limits.
-fn limits(line: &str) -> bool {
-    lex(line)
-        .tokens
-        .first()
-        .is_some_and(|token| where_word(&token.kind))
 }
 
 fn where_word(kind: &Kind) -> bool {
@@ -813,13 +900,33 @@ fn where_word(kind: &Kind) -> bool {
 /// Whether a line starts with an operator that continues the line
 /// before it: a pipe, `+ - * %`, a comparison, `=>` or `=`, so a
 /// signature may stand above its `= value`.
-fn leading(line: &str) -> bool {
-    lex(line).tokens.first().is_some_and(|token| {
-        matches!(
-            token.kind,
-            Kind::Symbol(symbol) if operator(symbol) || symbol == Symbol::Assign
-        )
-    })
+fn leading_tokens(tokens: &[Token]) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    match first.kind {
+        Kind::Symbol(Symbol::Slash) => tokens.get(1).is_some_and(|next| {
+            matches!(
+                next.kind,
+                Kind::Name(_)
+                    | Kind::Word(_)
+                    | Kind::Path(_)
+                    | Kind::Selector(_)
+                    | Kind::Int { .. }
+                    | Kind::Float(_)
+                    | Kind::Str { .. }
+                    | Kind::Affixed(_)
+                    | Kind::Symbol(
+                        Symbol::LParen
+                            | Symbol::LBracket
+                            | Symbol::LBrace
+                            | Symbol::Slash
+                    )
+            )
+        }),
+        Kind::Symbol(symbol) => operator(symbol) || symbol == Symbol::Assign,
+        _ => false,
+    }
 }
 
 /// The operators that continue a line from either side; `/` does not,

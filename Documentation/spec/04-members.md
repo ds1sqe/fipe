@@ -93,8 +93,8 @@ right. The REPL and a Fault print a value by its structure, whatever
 A type whose limits are all member limits, or an `A | B` of two meanings,
 used as the type of a place, is a meaning of its own: it holds a value of
 any meaning that claims the limits, with its tag. Entering it packs, at a
-place of known type. Its members are those of its limits that take `Self`
-as the receiver alone, and `eq` when `Eq` is among the limits: tags
+place of known type. It claims those of its limits whose members take
+`Self` as the receiver alone, and `Eq` when it is among them: tags
 first, then values. So `Add a => a -> a` is generic and keeps `add`, while
 `Add -> Add` packs and cannot add. `Vec` and `Deque` hold packed
 elements, `Vec<Shape>`, and so may an array; a tuple needs none, since

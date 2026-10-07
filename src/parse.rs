@@ -257,7 +257,14 @@ impl Parser {
     /// (`name: type` with no `=`), or a line; `pub` may precede a `type`,
     /// a `trait`, a binding or a declaration.
     fn entry(&mut self) -> Result<Entry, Error> {
+        let doc_span = self.here();
         let doc = self.docs(false)?;
+        if doc.is_some() && matches!(self.peek(), Kind::Kw(Keyword::Use)) {
+            return Err(Error {
+                span: doc_span,
+                reason: Reason::UnattachedDoc,
+            });
+        }
         if doc.is_some()
             && !(self.item_start()
                 || self.binding_ahead()
@@ -413,7 +420,23 @@ impl Parser {
                 }
                 Kind::Newline if depth == 0 => {
                     let next = tokens.get(index + 1).map(|next| &next.kind);
-                    if next != Some(&Kind::Symbol(Symbol::Assign)) {
+                    let continued_type = annotated
+                        && (self.leading(self.position + index + 1)
+                            || index > 0
+                                && matches!(
+                                    tokens[index - 1].kind,
+                                    Kind::Symbol(
+                                        Symbol::Arrow
+                                            | Symbol::FatArrow
+                                            | Symbol::Ampersand
+                                            | Symbol::Pipe
+                                            | Symbol::Star
+                                            | Symbol::Comma
+                                    )
+                                ));
+                    if next != Some(&Kind::Symbol(Symbol::Assign))
+                        && !continued_type
+                    {
                         return None;
                     }
                 }

@@ -23,12 +23,14 @@ impl Infer<'_> {
         id: ExprId,
         expected: Option<&Expected>,
     ) -> Type {
+        if let Some(expected) = expected.filter(|e| e.spot) {
+            self.argument_span(&expected.ty, self.span(id));
+        }
         if let Some(expected) = expected {
             let target = self.apply(&expected.ty);
             if self.packed(&target) {
-                let mark = self.state.obligations.len();
                 let ty = self.synth(id, None);
-                self.default_literals(mark, &[], &[]);
+                self.default_entering(&ty);
                 self.pack(
                     &target,
                     &self.apply(&ty),
@@ -40,6 +42,10 @@ impl Infer<'_> {
             }
         }
         let ty = self.synth(id, expected);
+        if self.state.subst.too_deep(&ty) {
+            self.error(self.span(id), Reason::TypeDepth);
+            return self.fresh();
+        }
         // A group, block, `with` or `if` checks its own last value, an
         // operator chain each node the expected type reaches.
         let checked = matches!(
@@ -275,6 +281,7 @@ impl Infer<'_> {
             ty,
             site: self.span(id),
             annotated: false,
+            binding: false,
         };
         let scheme = self.generalize(&[part], mark, &[]).remove(0);
         self.state.bindings[id.0] = Some(scheme);
@@ -583,7 +590,7 @@ impl Infer<'_> {
             Target::Type { origin, name } => {
                 let count = self
                     .owner(origin)
-                    .and_then(|m| super::lower::type_item(m, name))
+                    .and_then(|m| self.type_item(m, name))
                     .map_or(0, |(parameters, _)| parameters.len());
                 let arguments = (0..count).map(|_| self.fresh()).collect();
                 Type::named(origin.clone(), name, arguments)

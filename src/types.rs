@@ -333,6 +333,7 @@ pub(crate) fn replace(ty: &Type, fresh: &[(Var, Type)]) -> Type {
 /// Why two types did not unify.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mismatch {
+    DepthLimit,
     Different {
         expected: Type,
         actual: Type,
@@ -418,6 +419,9 @@ impl Subst {
         expected: &Type,
         actual: &Type,
     ) -> Result<(), Box<Mismatch>> {
+        if self.too_deep(expected) || self.too_deep(actual) {
+            return Err(Box::new(Mismatch::DepthLimit));
+        }
         let expected = self.apply(expected);
         let actual = self.apply(actual);
         match (&expected, &actual) {
@@ -673,7 +677,10 @@ fn write(
                     }
                     Origin::Prelude => f.write_str("prelude.")?,
                     Origin::Commands => f.write_str("commands.")?,
-                    Origin::This | Origin::Line(_) => {}
+                    Origin::This => {}
+                    Origin::Line(index) => {
+                        write!(f, "session[{}].", index + 1)?;
+                    }
                 }
             }
             f.write_str(&name.name)?;
@@ -716,5 +723,37 @@ fn write(
             f.write_str(" -> ")?;
             write(result, f, names, clashes)
         }
+    }
+}
+
+impl Subst {
+    pub(crate) fn too_deep(&self, ty: &Type) -> bool {
+        let mut stack = alloc::vec![(ty, 0)];
+        while let Some((ty, depth)) = stack.pop() {
+            if depth > crate::parse::MAX_NESTING {
+                return true;
+            }
+            match ty {
+                Type::Var(var) => {
+                    if let Some(bound) = self.get(*var) {
+                        stack.push((bound, depth));
+                    }
+                }
+                Type::Named { arguments, .. } | Type::Either(arguments) => {
+                    stack.extend(arguments.iter().map(|ty| (ty, depth + 1)));
+                }
+                Type::Function { parameter, result } => {
+                    stack.push((parameter, depth + 1));
+                    stack.push((result, depth + 1));
+                }
+                Type::Limited { name, meaning } => {
+                    stack.push((name, depth + 1));
+                    stack.push((meaning, depth + 1));
+                }
+                Type::Array { element, .. } => stack.push((element, depth + 1)),
+                Type::Unit | Type::Rigid(_) => {}
+            }
+        }
+        false
     }
 }

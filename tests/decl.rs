@@ -319,3 +319,23 @@ fn supplied_claim_blocks_are_validated_at_load() {
     )
     .is_ok());
 }
+
+#[test]
+fn spot_colon_needs_space_or_end() {
+    Namespace::parse("host", "## - https://example.com/manual\n## - missing:text\nf: Integer -> String").unwrap();
+    assert!(
+        Namespace::parse("host", "## - missing:\nf: Integer -> String")
+            .is_err()
+    );
+}
+
+#[test]
+fn bad_supplied_claim_type_is_rejected_at_load() {
+    let mut declarations = Declarations::new();
+    assert!(declarations
+        .module(
+            "text",
+            "pub type Tok\nimpl Tok: Show { show: (self: Self) -> Integer }"
+        )
+        .is_err());
+}

@@ -153,7 +153,8 @@ impl Scanner<'_> {
     fn comment(&mut self) {
         let start = self.offset;
         self.bump();
-        let doc = self.peek() == Some('#');
+        let doc = self.peek() == Some('#')
+            && !self.text[self.offset..].starts_with("##");
         if doc {
             self.bump();
         }
@@ -184,7 +185,14 @@ impl Scanner<'_> {
             end: self.offset,
         };
         if doc && self.output.errors.len() == errors {
-            let text = String::from(&self.text[text..self.offset]);
+            let end = if self.peek() == Some('\n')
+                && self.text[..self.offset].ends_with('\r')
+            {
+                self.offset - 1
+            } else {
+                self.offset
+            };
+            let text = String::from(&self.text[text..end]);
             let kind = if inner {
                 Kind::InnerDoc(text)
             } else {

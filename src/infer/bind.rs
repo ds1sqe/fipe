@@ -1,9 +1,9 @@
 //! Bindings and their schemes ([types.md] §Core judgments, BIND and
 //! Generalization): a binding generalizes over the variables not free
 //! in the environment and carries their obligations; a variable held
-//! only by literals defaults first; an obligation whose variable left
+//! only by literals, or bound as a non-function value, defaults first; an obligation whose variable left
 //! the type is ambiguous at its member; an annotation
-//! quantifies its written names; a `pub` binding ends closed. A member
+//! quantifies its written names; a `pub` binding keeps its scheme. A member
 //! obligation's type stays with its head.
 //!
 //! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/03-types.md
@@ -39,6 +39,7 @@ pub(super) struct Part {
     pub ty: Type,
     pub site: Span,
     pub annotated: bool,
+    pub binding: bool,
 }
 
 impl Infer<'_> {
@@ -96,6 +97,7 @@ impl Infer<'_> {
                         .map_or_else(|| ty.clone(), |e| e.ty.clone()),
                     site: name.span,
                     annotated: annotation.is_some(),
+                    binding: true,
                 };
                 let scheme = self.generalize(&[part], mark, &[]).remove(0);
                 let heads = match &module.expressions[value.0].kind {
@@ -112,6 +114,11 @@ impl Infer<'_> {
             }
             _ => {
                 self.pattern(*pattern, &ty, self.span(*value));
+                self.dots();
+                if !matches!(self.apply(&ty), Type::Function { .. }) {
+                    let env = self.environment(&[]);
+                    self.default_literals(mark.obligations, &env, &[]);
+                }
                 self.state.env.push(ty.clone());
             }
         }
@@ -173,6 +180,10 @@ impl Infer<'_> {
             self.state.obligations.push(owed);
         }
         for obligation in obligations {
+            if matches!(&obligation, Obligation::Claim { head, class, .. } if is_prelude(class, "Literal") && scheme.literals.iter().any(|(h, _, _)| crate::types::replace(h, &fresh) == *head))
+            {
+                continue;
+            }
             self.state.obligations.push(Owed::new(obligation, span));
         }
         ty
@@ -211,7 +222,13 @@ impl Infer<'_> {
     pub(super) fn close(&self, vars: &mut Vec<Var>) {
         loop {
             let before = vars.len();
-            for owed in self.state.obligations.iter().filter(|o| !o.solved) {
+            for owed in self
+                .state
+                .obligations
+                .iter()
+                .skip(self.state.dots_start)
+                .filter(|o| !o.solved)
+            {
                 let head = owed.obligation.subject();
                 let ty = match &owed.obligation {
                     Obligation::Member { ty, .. } => ty,
@@ -229,6 +246,13 @@ impl Infer<'_> {
         }
     }
 
+    fn reachable(&self, ty: &Type) -> Vec<Var> {
+        let mut vars = Vec::new();
+        self.apply(ty).variables(&mut vars);
+        self.close(&mut vars);
+        vars
+    }
+
     /// Generalize `parts`, typed together, over the obligations owed
     /// since `mark`. An error while typing them silences ambiguity.
     pub(super) fn generalize(
@@ -241,16 +265,18 @@ impl Infer<'_> {
         let env = self.environment(group);
         let errors = mark.errors;
         let mark = mark.obligations;
-        let reach: Vec<Vec<Var>> = parts
+        let reach: Vec<Vec<Var>> =
+            parts.iter().map(|part| self.reachable(&part.ty)).collect();
+        let stay: Vec<_> = parts
             .iter()
-            .map(|part| {
-                let mut vars = Vec::new();
-                self.apply(&part.ty).variables(&mut vars);
-                self.close(&mut vars);
-                vars
+            .zip(&reach)
+            .filter(|(part, _)| {
+                !part.binding
+                    || matches!(self.apply(&part.ty), Type::Function { .. })
             })
+            .flat_map(|(_, vars)| vars.iter().copied())
             .collect();
-        self.default_literals(mark, &env, &reach.concat());
+        self.default_literals(mark, &env, &stay);
         let quiet = self.state.errors.len() > errors;
         let types: Vec<Type> =
             parts.iter().map(|p| self.apply(&p.ty)).collect();
@@ -258,7 +284,7 @@ impl Infer<'_> {
         let mut literals = alloc::vec![Vec::new(); parts.len()];
         let mut kept = Vec::new();
         let mut left: Vec<Obligation> = Vec::new();
-        for owed in self.state.obligations.split_off(mark) {
+        for owed in self.split_obligations(mark) {
             if owed.solved {
                 if let Some(form) = &owed.literal {
                     let head = self.apply(owed.obligation.subject());
@@ -412,7 +438,7 @@ impl Infer<'_> {
         self.default_literals(mark.obligations, &env, &[]);
         let quiet = self.state.errors.len() > mark.errors;
         let mut left = Vec::new();
-        for owed in self.state.obligations.split_off(mark.obligations) {
+        for owed in self.split_obligations(mark.obligations) {
             if owed.solved {
                 continue;
             }
@@ -456,28 +482,23 @@ impl Infer<'_> {
     }
 
     /// Literal forms choose one meaning together. A binding retains a
-    /// literal with other member requirements; an escaping one defaults.
+    /// literal with other member requirements in a function; other values
+    /// default to the first meaning that meets their claims.
     pub(super) fn default_literals(
         &mut self,
         mark: usize,
         env: &[Var],
         stay: &[Var],
     ) {
-        let mut vars = Vec::new();
-        for owed in &self.state.obligations[mark..] {
-            if let Type::Var(var) = self.apply(owed.obligation.subject()) {
-                if !owed.solved && !env.contains(&var) && !vars.contains(&var) {
-                    vars.push(var);
-                }
+        let groups = self.literal_groups(mark, env);
+        for (var, indices) in groups {
+            if !matches!(self.apply(&Type::Var(var)), Type::Var(_)) {
+                continue;
             }
-        }
-        for var in vars {
-            let held: Vec<_> = self.state.obligations[mark..]
+            let held: Vec<_> = indices
                 .iter()
-                .filter(|o| {
-                    !o.solved
-                        && self.apply(o.obligation.subject()) == Type::Var(var)
-                })
+                .map(|i| &self.state.obligations[*i])
+                .filter(|o| !o.solved)
                 .collect();
             let literal = held.iter().any(|o| matches!(&o.obligation, Obligation::Claim { class, .. } if is_prelude(class, "Literal")));
             let only = held.iter().all(|o| matches!(&o.obligation, Obligation::Claim { class, .. } if is_prelude(class, "Literal")));
@@ -544,7 +565,22 @@ impl Infer<'_> {
             } else {
                 prelude(name)
             };
-            self.hint(&Type::Var(var), &ty);
+            if name == "Integer" && !only {
+                let before = self.state.clone();
+                self.hint(&Type::Var(var), &ty);
+                self.dots();
+                if self.state.errors.len() > before.errors.len() {
+                    let errors = before.errors.len();
+                    let integer = core::mem::replace(&mut self.state, before);
+                    self.hint(&Type::Var(var), &prelude("F64"));
+                    self.dots();
+                    if self.state.errors.len() > errors {
+                        self.state = integer;
+                    }
+                }
+            } else {
+                self.hint(&Type::Var(var), &ty);
+            }
         }
         self.dots();
     }
@@ -647,6 +683,9 @@ pub(super) fn in_range(
 ) -> Option<bool> {
     const INTEGERS: [&str; 8] =
         ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
+    if is_prelude(ty, "Natural") {
+        return Some(!negative || magnitude == Some(0));
+    }
     let index = INTEGERS.iter().position(|name| is_prelude(ty, name))?;
     let Some(magnitude) = magnitude else {
         return Some(false);
@@ -726,5 +765,50 @@ fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
             Type::function(unrigid(parameter, fresh), unrigid(result, fresh))
         }
         Type::Unit | Type::Var(_) => ty.clone(),
+    }
+}
+
+impl Infer<'_> {
+    fn split_obligations(&mut self, mark: usize) -> Vec<Owed> {
+        self.state.dots_start = self.state.dots_start.min(mark);
+        self.state.obligations.split_off(mark)
+    }
+    fn literal_groups(
+        &self,
+        mark: usize,
+        env: &[Var],
+    ) -> alloc::collections::BTreeMap<Var, Vec<usize>> {
+        let mut groups = alloc::collections::BTreeMap::<Var, Vec<usize>>::new();
+        for (index, owed) in self
+            .state
+            .obligations
+            .iter()
+            .enumerate()
+            .skip(mark.max(self.state.dots_start))
+        {
+            if !owed.solved {
+                if let Type::Var(var) = self.apply(owed.obligation.subject()) {
+                    if !env.contains(&var) {
+                        groups.entry(var).or_default().push(index);
+                    }
+                }
+            }
+        }
+        groups
+    }
+}
+
+impl Infer<'_> {
+    pub(super) fn default_entering(&mut self, actual: &Type) {
+        let mut own = Vec::new();
+        self.apply(actual).variables(&mut own);
+        let mut env = self.environment(&[]);
+        for owed in &self.state.obligations {
+            let mut variables = Vec::new();
+            self.apply(owed.obligation.subject())
+                .variables(&mut variables);
+            env.extend(variables.into_iter().filter(|v| !own.contains(v)));
+        }
+        self.default_literals(0, &env, &[]);
     }
 }

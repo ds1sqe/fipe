@@ -28,12 +28,12 @@ fn a_member_solves_field_first_then_self_function() {
     assert_eq!(ty(&format!("{point}(P 1).dist (P 2)")), "Integer");
     let text = "g = e => e.nope\ng (ls | head)";
     let [error] = errors(text).try_into().unwrap();
-    let Reason::NoField { other, .. } = error.reason else {
+    let Reason::MissingMember { name, .. } = error.reason else {
         panic!("{:?}", error.reason)
     };
     let source = Source::new(text);
-    assert_eq!(source.slice(error.span), Some("e.nope"));
-    assert_eq!(source.slice(other), Some("g"));
+    assert_eq!(source.slice(error.span), Some("ls | head"));
+    assert_eq!(name, "nope");
 }
 
 #[test]

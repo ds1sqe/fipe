@@ -134,7 +134,8 @@ prefix or suffix a decoded quote carries its bytes, which need not be
 UTF-8. A raw quote crosses LF, keeping its bytes and indentation; it
 closes at the next `'` and has no escapes. A decoded quote crosses LF only
 by a `\` right before it: the `\`, the LF and the next line's leading
-spacing are dropped, and `\n` writes an LF to keep. There is no triple
+spacing are dropped, and `\n` writes an LF to keep. A CR right before an
+LF belongs to that line end: a raw quote keeps it, a join drops it. There is no triple
 quote and no interpolation. Decoded literals admit exactly:
 
 | Escape | Byte |
@@ -153,11 +154,13 @@ be valid UTF-8:
 
 ## Comments and logical lines
 
-`#` outside a quote, except `##`, is a comment through the next LF,
-excluding it; it may begin right after a word. Its span is kept as trivia
+`#` outside a quote, except `##` with no third `#` after it, is a comment
+through the next LF, excluding it, so `###` and a banner are comments; it
+may begin right after a word. Its span is kept as trivia
 outside the token stream. Stray scalars inside comments and docs are
 still errors. `##` emits `Doc(text)` and `##!` emits `InnerDoc(text)`
-through LF, excluding it, with one space after the marker stripped.
+through LF, excluding it and a CR right before it, with one space after
+the marker stripped.
 Consecutive lines of one form join with LF in the parser
 ([syntax](02-syntax.md)); runs separated by blank lines join with one empty
 line, a paragraph. A doc line is blank for the logical-line rule, as a

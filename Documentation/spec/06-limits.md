@@ -33,8 +33,9 @@ type is a check error.
 The forms are `type_item` in [syntax.ebnf](02-syntax.ebnf):
 
 - `type N: Base where …` narrows `Base`, a meaning or a limited type, so
-  limits chain. `type N: A & B` names a combination and needs no limit.
-  A single base with no limit would be an alias, and there is none.
+  limits chain. `type N: A & B` names a combination, met by meeting each
+  part, and needs no limit. A single base with no limit would be an alias,
+  and there is none.
 - `type N where …` has limits and no base.
 - `type N { … } where …` is a new meaning with limits; before its braces `:`
   takes holdings and claims, `type Vec2: Zero & Default { … }`. A claim

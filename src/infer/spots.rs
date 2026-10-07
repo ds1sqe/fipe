@@ -218,11 +218,24 @@ impl Infer<'_> {
                 !matches!(kind.as_str(), "from" | "try_from" | "to" | "try");
             let source_slot =
                 usize::from(member && callee.self_slot == Some(0));
-            if filled.get(source_slot).is_some_and(Option::is_some) || member {
+            if filled.get(source_slot).is_some_and(Option::is_some) {
                 self.default_literals(mark, &[], &[]);
                 let source = self.apply(&slots[source_slot].ty);
                 let converted = self.convert(target, kind, &source, stage);
                 self.unify(&result, &converted, stage, stage);
+            } else if member {
+                self.state.obligations.push(super::Owed::new(
+                    crate::types::Obligation::Member {
+                        head: target.clone(),
+                        name: kind.clone(),
+                        ty: Type::function(
+                            slots[source_slot].ty.clone(),
+                            result.clone(),
+                        ),
+                        dot: stage,
+                    },
+                    stage,
+                ));
             }
         }
         if let Some(home) = &callee.home {
@@ -352,7 +365,7 @@ impl Infer<'_> {
     fn enter(&mut self, target: &Type, actual: &Type, span: Span, other: Span) {
         let target = self.apply(target);
         if self.packed(&target) {
-            self.default_literals(0, &[], &[]);
+            self.default_entering(actual);
             self.pack(&target, &self.apply(actual), span, other);
         } else {
             self.unify(&target, actual, span, other);
@@ -371,6 +384,7 @@ impl Infer<'_> {
         for (slot, supply) in slots.iter().zip(filled) {
             match supply {
                 Some(Supply::Typed(ty, span)) => {
+                    self.argument_span(&slot.ty, *span);
                     self.enter(&slot.ty, ty, *span, stage);
                 }
                 Some(Supply::True) => {
@@ -435,6 +449,7 @@ impl Infer<'_> {
         // have entered their spots (including a selector's argument).
         let solving = core::mem::replace(&mut self.state.solving_dots, true);
         if let Some((ty, span)) = pipe {
+            self.argument_span(&parameters[count - 1], span);
             self.enter(&parameters[count - 1], &ty, span, stage);
         }
         for (operand, parameter) in operands.into_iter().zip(parameters) {
@@ -521,6 +536,8 @@ impl Infer<'_> {
             files: self.files,
             frame: self.frame,
             visiting: self.visiting.clone(),
+            file_cache: self.file_cache,
+            indexes: self.indexes.clone(),
             weak: self.weak,
             state: State::new(subst, module.expressions.len()),
             items: Vec::new(),
@@ -545,6 +562,33 @@ impl Infer<'_> {
         for mut owed in inner.state.obligations {
             owed.span = stage;
             self.state.obligations.push(owed);
+        }
+    }
+}
+
+impl Infer<'_> {
+    pub(super) fn argument_span(&mut self, parameter: &Type, span: Span) {
+        let parameter = self.apply(parameter);
+        if !matches!(parameter, Type::Var(_)) {
+            return;
+        }
+        for owed in &mut self.state.obligations {
+            if !owed.solved
+                && matches!(
+                    owed.obligation,
+                    crate::types::Obligation::Member { .. }
+                )
+                && self.state.subst.apply(owed.obligation.subject())
+                    == parameter
+            {
+                owed.span = span;
+                match &mut owed.obligation {
+                    crate::types::Obligation::Member { dot, .. }
+                    | crate::types::Obligation::Claim { dot, .. } => {
+                        *dot = span;
+                    }
+                }
+            }
         }
     }
 }

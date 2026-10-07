@@ -56,7 +56,10 @@ fn spots(
 
 /// Only the ruled Markdown head is meaningful; the rest remains opaque.
 fn spot_head(line: &str) -> Option<&str> {
-    let (name, _) = line.trim_start().strip_prefix("- ")?.split_once(':')?;
+    let (name, text) = line.trim_start().strip_prefix("- ")?.split_once(':')?;
+    if !text.is_empty() && !text.starts_with(' ') {
+        return None;
+    }
     let mut chars = name.chars();
     let first = chars.next()?;
     ((first.is_ascii_lowercase() || first == '_')

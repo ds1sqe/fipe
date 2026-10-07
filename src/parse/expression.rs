@@ -11,14 +11,8 @@ use alloc::{string::String, vec::Vec};
 impl Parser {
     pub(super) fn line(&mut self, context: Context) -> Result<ExprId, Error> {
         self.nested(|parser| {
-            let doc = parser.docs(false)?;
-            if let Some(doc) = doc {
-                if !parser.binding_ahead() {
-                    return Err(parser.error(Reason::UnattachedDoc));
-                }
-                let id = parser.binding(context, false)?;
-                parser.attach_doc(id, doc)?;
-                return Ok(id);
+            if matches!(parser.peek(), Kind::Doc(_)) {
+                return Err(parser.error(Reason::UnattachedDoc));
             }
             if *parser.peek() == Kind::Kw(Keyword::With) {
                 parser.scoped(context)
@@ -28,6 +22,18 @@ impl Parser {
                 parser.pipeline(context)
             }
         })
+    }
+
+    fn documented_line(&mut self, context: Context) -> Result<ExprId, Error> {
+        let doc = self.docs(false)?;
+        if doc.is_some() && !self.binding_ahead() {
+            return Err(self.error(Reason::UnattachedDoc));
+        }
+        let id = self.line(context)?;
+        if let Some(doc) = doc {
+            self.attach_doc(id, doc)?;
+        }
+        Ok(id)
     }
 
     /// `pattern [: type] = line`; `=` always makes a new binding.
@@ -44,6 +50,7 @@ impl Parser {
             None
         };
         self.expect(Symbol::Assign)?;
+        self.skip_newline();
         if let Some(span) = self.assign_ahead() {
             return Err(Error {
                 span,
@@ -209,6 +216,9 @@ impl Parser {
         let mut operators = Vec::new();
         while self.eat(Symbol::Not) {
             operators.push(self.previous);
+            if operators.len() + self.depth >= super::MAX_NESTING {
+                return Err(self.error(Reason::NestingLimit));
+            }
         }
         let mut value = self.operand(context)?;
         for operator in operators.into_iter().rev() {
@@ -315,7 +325,8 @@ impl Parser {
             return self.arm_list(start, Symbol::RParen);
         }
         if self.tuple_at(self.position) {
-            let parts = self.tuple(|parser| parser.line(Context::Element))?;
+            let parts =
+                self.tuple(|parser| parser.documented_line(Context::Element))?;
             return Ok(
                 self.expression(ExprKind::Tuple(parts), self.since(start))
             );
@@ -345,8 +356,9 @@ impl Parser {
                 self.since(start),
             ));
         }
-        let elements = self
-            .list(Symbol::RBracket, |parser| parser.line(Context::Element))?;
+        let elements = self.list(Symbol::RBracket, |parser| {
+            parser.documented_line(Context::Element)
+        })?;
         Ok(self.expression(ExprKind::List(elements), self.since(start)))
     }
 
@@ -397,7 +409,7 @@ impl Parser {
             return self.flag(context);
         }
         let value = if full {
-            self.line(context)?
+            self.documented_line(context)?
         } else {
             self.operand(context)?
         };
@@ -490,7 +502,7 @@ impl Parser {
     fn lines(&mut self, close: Symbol) -> Result<Vec<ExprId>, Error> {
         let mut lines = Vec::new();
         while !self.at(close) && *self.peek() != Kind::Eof {
-            let result = self.line(Context::Line).and_then(|line| {
+            let result = self.documented_line(Context::Line).and_then(|line| {
                 // A stray closer inside the bracket wants this one.
                 if matches!(
                     self.peek(),

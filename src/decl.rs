@@ -158,6 +158,64 @@ impl Namespace {
             }
         }
         if errors.is_empty() {
+            let mut supplied: Vec<Self> = others
+                .iter()
+                .map(|(name, module)| {
+                    let mut ns = Self {
+                        name: String::from(*name),
+                        module: (*module).clone(),
+                        types: Vec::new(),
+                        values: Vec::new(),
+                    };
+                    for i in 0..ns.module.entries.len() {
+                        let _ = ns.collect(i);
+                    }
+                    ns
+                })
+                .collect();
+            supplied.push(namespace.clone());
+            let prelude = supplied.remove(
+                supplied.iter().position(|n| n.name == "prelude").unwrap(),
+            );
+            let commands = supplied
+                .iter()
+                .position(|n| n.name == "commands")
+                .map(|i| supplied.remove(i));
+            let declarations = Declarations {
+                prelude,
+                commands,
+                modules: supplied,
+            };
+            let origin = match name {
+                "prelude" => crate::resolve::Origin::Prelude,
+                "commands" => crate::resolve::Origin::Commands,
+                _ => crate::resolve::Origin::Host(String::from(name)),
+            };
+            errors.extend(
+                crate::infer::check_declarations(&declarations, origin)
+                    .into_iter()
+                    .map(|e| Error {
+                        span: e.span,
+                        reason: Reason::ClaimBlock {
+                            problem: match e.reason {
+                                crate::infer::Reason::Mismatch {
+                                    expected,
+                                    actual,
+                                    ..
+                                } => alloc::format!(
+                                    "expected {}, found {}",
+                                    expected.beside(&actual),
+                                    actual.beside(&expected)
+                                ),
+                                _ => String::from(
+                                    "supplied member type does not meet claim",
+                                ),
+                            },
+                        },
+                    }),
+            );
+        }
+        if errors.is_empty() {
             Ok(namespace)
         } else {
             Err(errors)

@@ -130,6 +130,7 @@ fn deep_sources_return_a_nesting_diagnostic() {
         format!("{}x = value", "Just ".repeat(1_000)),
         format!("f: {}A{} = g", "(".repeat(1_000), " -> B)".repeat(1_000)),
         format!("{}x", "(\n".repeat(5_000)),
+        format!("{}a", "!".repeat(20_000)),
     ] {
         assert!(errors(&input)
             .iter()
@@ -143,7 +144,6 @@ fn long_flat_syntax_parses_and_drops_without_recursive_ownership() {
         format!("a{}", " | a".repeat(20_000)),
         format!("f{}", "()".repeat(20_000)),
         format!("f{}", " a".repeat(20_000)),
-        format!("{}a", "!".repeat(20_000)),
         format!("1{}", " + 1".repeat(20_000)),
     ] {
         let parsed = module(&input);

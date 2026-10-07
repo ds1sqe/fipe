@@ -23,6 +23,10 @@ pub(super) fn check(
         else {
             continue;
         };
+        let Some(shaped) = target_shape(module, *target, others) else {
+            error(errors, module.types[target.0].span, "unknown impl target");
+            continue;
+        };
         let mut required = Vec::new();
         if !asked(module, *claim, others, &mut Vec::new(), &mut required)
             || required.is_empty()
@@ -79,9 +83,13 @@ pub(super) fn check(
             if count > 1 {
                 error(errors, item.span, "member supplied twice");
             } else if count == 0
-                && !derived_member(module, *claim, name, others)
+                && !(shaped && derived_member(module, *claim, name, others))
             {
-                error(errors, item.span, "missing claim member");
+                error(
+                    errors,
+                    item.span,
+                    &alloc::format!("missing claim member {name}"),
+                );
             }
         }
         for other in &module.entries {
@@ -385,4 +393,38 @@ fn derives(
         }
         _ => false,
     }
+}
+
+fn target_shape(
+    module: &Module,
+    target: TypeId,
+    others: &[(&str, &Module)],
+) -> Option<bool> {
+    let TypeKind::Named { name, .. } = &module.types[target.0].kind else {
+        return None;
+    };
+    core::iter::once(module)
+        .chain(
+            others
+                .iter()
+                .filter(|(n, _)| {
+                    name.segments.len() == 1
+                        || name.segments.first().is_some_and(|first| first == n)
+                })
+                .map(|(_, m)| *m),
+        )
+        .find_map(|m| {
+            m.entries.iter().find_map(|e| match e {
+                Entry::Item(crate::ast::Item {
+                    kind:
+                        ItemKind::Type {
+                            name: n, members, ..
+                        },
+                    ..
+                }) if n.segments.last() == name.segments.last() => {
+                    Some(members.is_some())
+                }
+                _ => None,
+            })
+        })
 }

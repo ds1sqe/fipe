@@ -135,6 +135,16 @@ impl<'a> Infer<'a> {
         vars.rigid = true;
         let ty = self.lower(&Scope::This, id, &mut vars);
         for obligation in vars.obligations {
+            if let Obligation::Claim { head, class, dot } = &obligation {
+                if !super::dot::contains_type(&ty, head) {
+                    self.error(
+                        *dot,
+                        super::Reason::Ambiguous {
+                            class: alloc::format!("{class}"),
+                        },
+                    );
+                }
+            }
             let mut owed =
                 super::Owed::new(obligation, self.module.types[id.0].span);
             owed.solved = true;
@@ -156,31 +166,7 @@ impl<'a> Infer<'a> {
         };
         match &node.kind {
             TypeKind::Unit => Type::Unit,
-            TypeKind::Named { name, arguments } => {
-                let arguments = arguments
-                    .iter()
-                    .map(|argument| self.lower(scope, *argument, vars))
-                    .collect();
-                let ty = match scope {
-                    Scope::This => {
-                        let resolved = self.resolved;
-                        self.name_resolved(resolved, None, id, arguments, vars)
-                    }
-                    Scope::Line {
-                        resolved, index, ..
-                    } => self.name_resolved(
-                        resolved,
-                        Some(*index),
-                        id,
-                        arguments,
-                        vars,
-                    ),
-                    Scope::Declared { module, origin } => self
-                        .name_declared(module, origin, name, arguments, vars),
-                };
-                self.parameter_claims(&ty, vars, node.span);
-                self.limited(ty)
-            }
+            TypeKind::Named { .. } => self.lower_name(scope, id, vars),
             TypeKind::Array { element, length } => {
                 let element = self.lower(scope, *element, vars);
                 match module.ty(*length).map(|node| &node.kind) {
@@ -252,19 +238,28 @@ impl<'a> Infer<'a> {
         else {
             return ty;
         };
-        let declaration = module.entries.iter().find_map(|e| match e {
-            Entry::Item(item) => match &item.kind {
-                ItemKind::Type {
-                    name: n,
-                    parameters,
-                    base: Some(base),
-                    members: None,
-                    ..
-                } if super::last(n) == name.name => Some((parameters, *base)),
-                _ => None,
-            },
-            Entry::Line(_) => None,
-        });
+        let declaration = self
+            .type_entries(module, &name.name)
+            .into_iter()
+            .find_map(|e| match e {
+                Entry::Item(item) => match &item.kind {
+                    ItemKind::Type {
+                        name: n,
+                        parameters,
+                        base: Some(base),
+                        members: None,
+                        limits,
+                    } if super::last(n) == name.name
+                        && !limits.iter().any(|l| {
+                            matches!(l, crate::ast::Limit::Member { .. })
+                        }) =>
+                    {
+                        Some((parameters, *base))
+                    }
+                    _ => None,
+                },
+                Entry::Line(_) => None,
+            });
         let Some((parameters, base)) = declaration else {
             return ty;
         };
@@ -319,6 +314,23 @@ impl<'a> Infer<'a> {
                 ConstraintKind::Named { class, variable } => {
                     let head = self.variable(&super::last(variable), vars);
                     let class = self.lower(scope, *class, vars);
+                    if self
+                        .member_limits(
+                            &class,
+                            &head,
+                            constraint.span,
+                            &mut Vec::new(),
+                        )
+                        .is_empty()
+                    {
+                        self.error(
+                            constraint.span,
+                            super::Reason::ClaimBlock {
+                                claim: class.clone(),
+                                problem: String::from("is not a member limit"),
+                            },
+                        );
+                    }
                     vars.obligations.push(Obligation::Claim {
                         head,
                         class,
@@ -357,21 +369,24 @@ impl<'a> Infer<'a> {
         else {
             return Vec::new();
         };
-        let declaration = module.entries.iter().find_map(|entry| match entry {
-            Entry::Item(item) => match &item.kind {
-                ItemKind::Type {
-                    name: n,
-                    parameters,
-                    base,
-                    limits,
-                    members: None,
-                } if super::last(n) == name.name => {
-                    Some((parameters, base, limits))
-                }
-                _ => None,
-            },
-            Entry::Line(_) => None,
-        });
+        let declaration = self
+            .type_entries(module, &name.name)
+            .into_iter()
+            .find_map(|entry| match entry {
+                Entry::Item(item) => match &item.kind {
+                    ItemKind::Type {
+                        name: n,
+                        parameters,
+                        base,
+                        limits,
+                        members: None,
+                    } if super::last(n) == name.name => {
+                        Some((parameters, base, limits))
+                    }
+                    _ => None,
+                },
+                Entry::Line(_) => None,
+            });
         let Some((parameters, base, limits)) = declaration else {
             return Vec::new();
         };
@@ -493,7 +508,7 @@ impl<'a> Infer<'a> {
         if first == "Self" {
             return self.self_type_of(arguments, vars);
         }
-        if type_item(module, first).is_some() {
+        if self.type_item(module, first).is_some() {
             return Type::named(origin.clone(), first, arguments);
         }
         for entry in &module.entries {
@@ -670,7 +685,7 @@ impl<'a> Infer<'a> {
         else {
             return Callee::plain(self.fresh());
         };
-        let Some((parameters, members)) = type_item(module, ty) else {
+        let Some((parameters, members)) = self.type_item(module, ty) else {
             return Callee::plain(self.fresh());
         };
         let mut vars = Vars::new(SelfKind::None);
@@ -780,7 +795,7 @@ impl<'a> Infer<'a> {
         };
         let module = self.owner(&name.origin)?;
         let scope = self.scope(&name.origin)?;
-        let (parameters, members) = type_item(module, &name.name)?;
+        let (parameters, members) = self.type_item(module, &name.name)?;
         let members = members?;
         if members
             .iter()
@@ -893,24 +908,29 @@ pub(super) fn named(module: &Module, id: TypeId) -> Option<String> {
     }
 }
 
-pub(super) fn type_item<'m>(
-    module: &'m Module,
-    name: &str,
-) -> Option<(&'m [TypeParameter], Option<&'m Vec<Member>>)> {
-    module.entries.iter().find_map(|entry| match entry {
-        Entry::Item(item) => match &item.kind {
-            ItemKind::Type {
-                name: n,
-                parameters,
-                members,
-                ..
-            } if super::last(n) == name => {
-                Some((parameters.as_slice(), members.as_ref()))
-            }
-            _ => None,
-        },
-        Entry::Line(_) => None,
-    })
+impl Infer<'_> {
+    pub(super) fn type_item<'m>(
+        &self,
+        module: &'m Module,
+        name: &str,
+    ) -> Option<(&'m [TypeParameter], Option<&'m Vec<Member>>)> {
+        self.type_entries(module, name).into_iter().find_map(
+            |entry| match entry {
+                Entry::Item(item) => match &item.kind {
+                    ItemKind::Type {
+                        name: n,
+                        parameters,
+                        members,
+                        ..
+                    } if super::last(n) == name => {
+                        Some((parameters.as_slice(), members.as_ref()))
+                    }
+                    _ => None,
+                },
+                Entry::Line(_) => None,
+            },
+        )
+    }
 }
 
 fn declare_item(module: &Module, name: &str) -> Option<TypeId> {
@@ -941,4 +961,72 @@ pub(super) fn impls<'m>(
         },
         Entry::Line(_) => None,
     })
+}
+
+impl<'a> Infer<'a> {
+    fn lower_name(
+        &mut self,
+        scope: &Scope<'a>,
+        id: TypeId,
+        vars: &mut Vars,
+    ) -> Type {
+        let module = scope.module(self.module);
+        let node = &module.types[id.0];
+        let TypeKind::Named { name, arguments } = &node.kind else {
+            unreachable!("named type")
+        };
+        let arguments = arguments
+            .iter()
+            .map(|argument| self.lower(scope, *argument, vars))
+            .collect();
+        let ty = match scope {
+            Scope::This => {
+                let resolved = self.resolved;
+                self.name_resolved(resolved, None, id, arguments, vars)
+            }
+            Scope::Line {
+                resolved, index, ..
+            } => {
+                self.name_resolved(resolved, Some(*index), id, arguments, vars)
+            }
+            Scope::Declared { module, origin } => {
+                let cached = if let Origin::File(stem) = origin {
+                    self.cached_file(stem)
+                } else {
+                    None
+                };
+                if let Some(checked) = cached {
+                    self.name_resolved(
+                        &checked.resolved,
+                        None,
+                        id,
+                        arguments,
+                        vars,
+                    )
+                    .rehome(origin)
+                } else {
+                    self.name_declared(module, origin, name, arguments, vars)
+                }
+            }
+        };
+        if let Type::Named { name, arguments } = &ty {
+            if self
+                .owner(&name.origin)
+                .and_then(|m| self.type_item(m, &name.name))
+                .is_some_and(|(parameters, _)| {
+                    arguments.len() > parameters.len()
+                })
+            {
+                self.error(
+                    node.span,
+                    super::Reason::ClaimBlock {
+                        claim: ty.clone(),
+                        problem: String::from("has too many type arguments"),
+                    },
+                );
+            }
+        }
+        self.parameter_claims(&ty, vars, node.span);
+        self.limited(ty)
+    }
 }

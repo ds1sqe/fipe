@@ -72,6 +72,9 @@ impl Scanner<'_> {
     ) -> Result<(), Reason> {
         let ch = self.bump().expect("quoted_char is called before EOF");
         if ch == '\\' && !raw {
+            if self.text[self.offset..].starts_with("\r\n") {
+                self.bump();
+            }
             if self.peek() == Some('\n') {
                 self.bump();
                 while self.peek().is_some_and(spacing) {
@@ -81,7 +84,11 @@ impl Scanner<'_> {
                 out.push(self.escape()?);
             }
         } else if invisible(ch)
-            || (ch.is_control() && ch != '\t' && !(raw && ch == '\n'))
+            || (ch.is_control()
+                && ch != '\t'
+                && !(raw
+                    && (ch == '\n'
+                        || (ch == '\r' && self.peek() == Some('\n')))))
         {
             return Err(Reason::Stray(ch));
         } else {

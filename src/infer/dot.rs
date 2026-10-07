@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     ast::{Entry, ExprKind, ImplMember, Module, Name, PatternKind},
-    resolve::{resolve_partial, Origin, Target},
+    resolve::{Origin, Target},
     token::Span,
     typed::Typed,
     types::{Obligation, Scheme, Subst, Type},
@@ -27,18 +27,38 @@ impl<'a> Infer<'a> {
             let applied = super::meaning(&self.apply(&current)).clone();
             if matches!(applied, Type::Var(_) | Type::Rigid(_)) {
                 current = self.fresh();
-                let obligation = Obligation::Member {
-                    head: applied,
-                    name: member.clone(),
-                    ty: current.clone(),
-                    dot: span,
-                };
-                self.state.obligations.push(Owed::new(obligation, span));
+                let prior =
+                    self.state.obligations.iter().rev().find_map(|o| match &o
+                        .obligation
+                    {
+                        Obligation::Member { head, name, ty, .. }
+                            if !o.solved
+                                && name == member
+                                && self.apply(head) == applied =>
+                        {
+                            Some(ty.clone())
+                        }
+                        _ => None,
+                    });
+                if let Some(prior) = prior {
+                    self.unify(&prior, &current, span, span);
+                } else {
+                    self.require_member(applied, member, current.clone(), span);
+                }
                 continue;
             }
             if let Some(ty) = self.field(&applied, member) {
                 current = ty;
                 continue;
+            }
+            if self.private_field(&applied, member) {
+                self.error(
+                    span,
+                    Reason::PrivateField {
+                        field: member.clone(),
+                    },
+                );
+                return Callee::plain(self.fresh());
             }
             let Some(mut callee) = self.self_function(member, &applied, span)
             else {
@@ -72,16 +92,41 @@ impl<'a> Infer<'a> {
         }
         self.state.solving_dots = true;
         loop {
-            let ready: Vec<usize> = (0..self.state.obligations.len())
-                .filter(|index| {
-                    let owed = &self.state.obligations[*index];
-                    !owed.solved
-                        && !matches!(
-                            self.apply(owed.obligation.subject()),
-                            Type::Var(_)
-                        )
-                })
-                .collect();
+            let mut ready = Vec::new();
+            while self.state.dots_start < self.state.obligations.len()
+                && self.state.obligations[self.state.dots_start].solved
+            {
+                self.state.dots_start += 1;
+            }
+            for index in self.state.dots_start..self.state.obligations.len() {
+                if self.state.obligations[index].solved {
+                    continue;
+                }
+                let owed = self.state.obligations[index].clone();
+                let head = self.apply(owed.obligation.subject());
+                if matches!(head, Type::Var(_)) {
+                    continue;
+                }
+                let waiting = match &owed.obligation {
+                    Obligation::Claim { class, .. } => {
+                        let class = self.apply(class);
+                        matches!(&class, Type::Named { name, arguments } if arguments.first().is_some_and(|a| matches!(a, Type::Var(_))) && self.claims(&head, true).iter().filter(|c| matches!(c, Type::Named { name: n, .. } if n == name)).count() > 1)
+                    }
+                    Obligation::Member { name, ty, .. } => {
+                        self.member_choices(&head, name).len() > 1
+                            && match self.apply(ty) {
+                                Type::Function { parameter, .. } => {
+                                    matches!(*parameter, Type::Var(_))
+                                }
+                                Type::Var(_) => true,
+                                _ => false,
+                            }
+                    }
+                };
+                if !waiting {
+                    ready.push(index);
+                }
+            }
             if ready.is_empty() {
                 self.state.solving_dots = false;
                 return;
@@ -166,6 +211,14 @@ impl<'a> Infer<'a> {
         }
         let value = if let Some(field) = self.field(&head, name) {
             field
+        } else if self.private_field(&head, name) {
+            self.error(
+                dot,
+                Reason::PrivateField {
+                    field: name.clone(),
+                },
+            );
+            return;
         } else if let Some(mut callee) = self.self_function(name, &head, dot) {
             let slot = callee.self_slot.unwrap_or_default();
             callee.supplied = Some((slot, head, dot));
@@ -179,8 +232,13 @@ impl<'a> Infer<'a> {
             );
             return;
         } else {
-            let other = owed.span;
-            self.error(dot, Reason::NoField { ty: head, other });
+            self.error(
+                dot,
+                Reason::MissingMember {
+                    ty: head,
+                    name: name.clone(),
+                },
+            );
             return;
         };
         self.unify(ty, &value, dot, owed.span);
@@ -354,7 +412,7 @@ impl<'a> Infer<'a> {
             Target::Type { origin, name } => {
                 let count = self
                     .owner(origin)
-                    .and_then(|m| super::lower::type_item(m, name))
+                    .and_then(|m| self.type_item(m, name))
                     .map_or(0, |(parameters, _)| parameters.len());
                 let arguments = (0..count).map(|_| self.fresh()).collect();
                 Some(Type::named(origin.clone(), name, arguments))
@@ -451,8 +509,7 @@ impl<'a> Infer<'a> {
         };
         let module = self.owner(&name.origin)?;
         let scope = self.scope(&name.origin)?;
-        let (parameters, members) =
-            super::lower::type_item(module, &name.name)?;
+        let (parameters, members) = self.type_item(module, &name.name)?;
         let mut vars = Vars::new(SelfKind::Type(ty.clone()));
         for (parameter, argument) in parameters.iter().zip(arguments) {
             vars.names
@@ -532,13 +589,12 @@ impl<'a> Infer<'a> {
             };
             for members in super::lower::impls(module, owner) {
                 for entry in members {
-                    let ImplMember::Named {
-                        public: true, name, ..
-                    } = entry
-                    else {
+                    let ImplMember::Named { public, name, .. } = entry else {
                         continue;
                     };
-                    if super::last(name) != member {
+                    if super::last(name) != member
+                        || (!*public && !module.claim_member(name.span))
+                    {
                         continue;
                     }
                     if let Some((_, local)) =
@@ -618,7 +674,7 @@ impl<'a> Infer<'a> {
                     let mut vars = Vars::new(SelfKind::Type(named.clone()));
                     if let Type::Named { arguments, .. } = named {
                         if let Some((parameters, _)) =
-                            super::lower::type_item(module, owner)
+                            self.type_item(module, owner)
                         {
                             for (parameter, argument) in
                                 parameters.iter().zip(arguments)
@@ -762,7 +818,7 @@ impl<'a> Infer<'a> {
             matches!(
                 m,
                 ImplMember::Named { public: false, name, .. }
-                    if super::last(name) == member
+                    if super::last(name) == member && !module.claim_member(name.span)
             )
         })
     }
@@ -782,7 +838,8 @@ impl<'a> Infer<'a> {
             super::lower::impls(module, ty).flatten().find_map(
                 |m| match m {
                     ImplMember::Named { public, name, .. }
-                        if *public && super::last(name) == member =>
+                        if (*public || module.claim_member(name.span))
+                            && super::last(name) == member =>
                     {
                         Some(name.span)
                     }
@@ -811,34 +868,29 @@ impl<'a> Infer<'a> {
         &mut self,
         stem: &str,
         span: Span,
-    ) -> Option<(&'a Module, Typed)> {
+    ) -> Option<(&'a Module, alloc::rc::Rc<Typed>)> {
         let origin = Origin::File(String::from(stem));
         let module = self.owner(&origin)?;
         if self.visiting.iter().any(|s| s == stem) {
             self.error(span, Reason::ImportCycle);
             return None;
         }
-        // A file whose other lines fail still types the ones that resolve;
-        // the session reports its errors where it loads it.
-        let (resolved, _) =
-            resolve_partial(module, self.declarations, self.files);
-        let mut visiting = self.visiting.clone();
-        visiting.push(String::from(stem));
-        let (typed, errors) = super::run(
-            module,
-            &resolved,
+        let checked = super::files::check_file(
+            stem,
             self.declarations,
             self.files,
-            None,
-            &visiting,
-            usize::MAX,
-        );
-        // A cycle below leaves the module's types unknown, not general.
-        if errors.iter().any(|e| e.reason == Reason::ImportCycle) {
+            self.file_cache,
+            &self.visiting,
+        )?;
+        if checked
+            .type_errors
+            .iter()
+            .any(|e| e.reason == Reason::ImportCycle)
+        {
             self.error(span, Reason::ImportCycle);
             return None;
         }
-        Some((module, typed))
+        Some((module, checked.typed))
     }
 
     /// A scheme typed in file module `stem`, instantiated here: its
@@ -857,7 +909,7 @@ impl<'a> Infer<'a> {
     }
 }
 
-fn contains_type(ty: &Type, needle: &Type) -> bool {
+pub(super) fn contains_type(ty: &Type, needle: &Type) -> bool {
     if ty == needle {
         return true;
     }
@@ -871,5 +923,28 @@ fn contains_type(ty: &Type, needle: &Type) -> bool {
         Type::Limited { meaning, .. } => contains_type(meaning, needle),
         Type::Array { element, .. } => contains_type(element, needle),
         _ => false,
+    }
+}
+
+impl Infer<'_> {
+    fn private_field(&mut self, ty: &Type, name: &str) -> bool {
+        self.fields(ty).is_some_and(|fields| {
+            fields.iter().any(|f| f.name == name && !f.public)
+        })
+    }
+    pub(super) fn finish_dots(&mut self) {
+        for index in self.state.dots_start..self.state.obligations.len() {
+            let owed = &self.state.obligations[index];
+            if !owed.solved
+                && !matches!(
+                    self.apply(owed.obligation.subject()),
+                    Type::Var(_) | Type::Rigid(_)
+                )
+            {
+                let owed = owed.clone();
+                self.state.obligations[index].solved = true;
+                self.member(&owed);
+            }
+        }
     }
 }

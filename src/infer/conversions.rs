@@ -90,6 +90,7 @@ impl Infer<'_> {
             self.error(
                 span,
                 Reason::Conversion {
+                    source: Some(source),
                     target: target.clone(),
                     candidates: Vec::new(),
                 },
@@ -221,6 +222,7 @@ impl Infer<'_> {
             self.error(
                 span,
                 Reason::Conversion {
+                    source: Some(source),
                     target: target.clone(),
                     candidates: candidates.to_vec(),
                 },

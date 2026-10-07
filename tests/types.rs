@@ -156,3 +156,10 @@ fn schemes_generalize_over_the_environment_and_instantiate_fresh() {
     );
     assert_eq!(Scheme::mono(i64()).to_string(), "I64");
 }
+
+#[test]
+fn shadowed_type_names_show_their_origins() {
+    let a = Type::named(Origin::Line(0), "A", vec![]);
+    let b = Type::named(Origin::Line(2), "A", vec![]);
+    assert_ne!(a.beside(&b).to_string(), b.beside(&a).to_string());
+}

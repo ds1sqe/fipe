@@ -26,8 +26,8 @@ closer or EOF ends the last line. There is no terminator, layout rule,
 `match`, return, loop or reassignment. Semicolon occurs only in a
 fixed-array type. A line continues across one newline exactly when:
 
-- **After a trailing operator**: a pipe, `+ - * % ++`, a comparison, `->`
-  or `=>`, and `& | *` in a type. A trailing `/` is the root path, not a
+- **After a trailing operator**: a pipe, `+ - * % ++`, a comparison, `=`,
+  `->` or `=>`, and `& | *` in a type. A trailing `/` is the root path, not a
   continuation, so `ls /` ends there.
 - **Before a leading operator**, when no blank line intervenes: a pipe,
   `+ - * % ++`, `/` followed by an operand, a comparison, `=>` or `=`, so

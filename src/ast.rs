@@ -29,6 +29,9 @@ pub struct Module {
 }
 
 impl Module {
+    pub(crate) fn claim_member(&self, site: Span) -> bool {
+        self.entries.iter().any(|e| matches!(e, Entry::Item(item) if matches!(item.kind, ItemKind::Impl { claim: Some(_), .. }) && item.span.start <= site.start && site.end <= item.span.end))
+    }
     #[must_use]
     pub fn expr(&self, id: ExprId) -> Option<&Expr> {
         self.expressions.get(id.0)

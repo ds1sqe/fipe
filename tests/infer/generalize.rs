@@ -88,7 +88,7 @@ fn literals_default_and_the_rest_is_ambiguous() {
     assert_eq!(ty(inc), "Add a, Literal a => a -> a");
     assert_eq!(ty(&format!("{inc}\ninc 2.0")), "F64");
     assert_eq!(ty(&format!("{inc}\ninc 2")), "Integer");
-    assert_eq!(ty(&format!("{inc}\ny = inc 2")), "Add a, Literal a => a");
+    assert_eq!(ty(&format!("{inc}\ny = inc 2")), "Integer");
     let check = "check = n => if n < 0 { fault \"negative\" } else { Ok n }";
     assert_eq!(ty(check), "Ord a, Literal a => a -> Result<a, b>");
     assert_eq!(ty(&format!("{check}\ncheck 5")), "Result<Integer, a>");
@@ -161,4 +161,20 @@ fn an_early_use_of_an_impl_sees_the_bindings_its_members_name() {
     let text = "type P {}\nk = \"s\"\nf = z => P.id z\na = f 1\n\
         b = f \"s\"\nimpl P { id = x => k }\nb";
     assert_eq!(ty(text), "String");
+}
+
+#[test]
+fn value_bindings_default_literal_claims() {
+    assert_eq!(ty("x = [1, 2] | sum"), "Integer");
+    assert_eq!(ty("f = n => n + 1"), "Add a, Literal a => a -> a");
+    assert_eq!(ty("f = n => n + 1\nx = f 2"), "Integer");
+    assert_eq!(ty("x = round 2"), "F64");
+}
+
+#[test]
+fn pattern_binding_defaults_literal_claims() {
+    assert_eq!(
+        kinds("[x] = [1] | map (n => n + 1)\ny: F64 = x"),
+        [("Mismatch", "x")]
+    );
 }

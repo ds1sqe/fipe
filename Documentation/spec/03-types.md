@@ -115,10 +115,10 @@ lowercase names are rigid variables and its value is checked against it. A
 quantified with the member limits it carries, and each use instantiates
 it, so `pub id = x => x` is `a -> a` and `pub add = a b => a + b` is
 `Add<b> a => a -> b -> a`; only a host-callable signature is written out
-([host](09-host.md)). A variable with a `Literal` limit defaults,
-`Integer` first and `F64` next: at its binding when only literals
-constrain it, so `x = 1` is `Integer`, else where it leaves the type.
-Which other member limits it may carry is T5's; a member limit no default
+([host](09-host.md)). A variable with a `Literal` limit defaults, to
+`Integer` or else `F64`, the first that meets its other claims: at a
+binding whose value is not a function, so `x = 1` and `x = [1, 2] | sum`
+are `Integer`, else where it leaves the type. A member limit no default
 covers, whose variable left the type, is the error "ambiguous". Where an
 expected type is known, from an annotation, a spot or a sibling arm,
 inference checks against it; [members](04-members.md) §The dot infers member
@@ -186,7 +186,7 @@ and suppliable only inside its module; outside it is not a spot and takes
 its default, so the derived constructor exists outside exactly when every
 private field defaults. A sum constructor's fields are its payload and are
 always visible. A member of a type is reached from another module only
-when it is `pub`; reaching a hidden one is a check error that says the
+when it is `pub`, a claim's member whenever its type is; reaching a hidden one is a check error that says the
 member is private. `String`'s field has no default, so `utf8` is the only
 way in.
 

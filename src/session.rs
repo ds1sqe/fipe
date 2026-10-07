@@ -9,10 +9,10 @@ use crate::{
     decl::Declarations,
     embed::{Outcome, Reply, Request},
     frame::Frame,
-    infer::{self, infer_in, infer_partial},
+    infer::{self, infer_in},
     lex::{lex, Lexed},
     parse::{self, parse},
-    resolve::{self, resolve_in, resolve_used, Resolved},
+    resolve::{self, resolve_in, Resolved},
     token::Span,
     typed::Typed,
     types::Subst,
@@ -146,6 +146,11 @@ impl Session {
         &self.source
     }
 
+    /// Accepted compilation units in order, preserving embedded blank lines.
+    pub fn lines(&self) -> impl Iterator<Item = &str> {
+        self.lines.iter().map(|(text, _)| text.as_str())
+    }
+
     /// Remove the last accepted line and what it defined, and return its
     /// text. A line awaiting a reply is abandoned.
     pub fn retract(&mut self) -> Option<String> {
@@ -237,9 +242,10 @@ impl Session {
             self.pending = Some(pending);
             return Outcome::Request(Request::File { stem });
         }
+        let cache = infer::files::FileCache::default();
         let mut diagnostics = pending.errors;
         for stem in &pending.loaded {
-            diagnostics.extend(self.check_file(stem));
+            diagnostics.extend(self.check_file(stem, &cache));
         }
         let files = diagnostics.len();
         let (resolved, errors) = resolve_in(
@@ -268,6 +274,7 @@ impl Session {
                 &self.files,
                 &self.frame,
                 query,
+                &cache,
             );
             if errors.is_empty() {
                 return Some(typed);
@@ -299,15 +306,26 @@ impl Session {
 
     /// A loaded file module's own diagnostics. A type error inside an
     /// entry that failed to resolve is a consequence and is dropped.
-    fn check_file(&self, stem: &str) -> Vec<Diagnostic> {
+    fn check_file(
+        &self,
+        stem: &str,
+        cache: &infer::files::FileCache,
+    ) -> Vec<Diagnostic> {
         let Some((_, module)) = self.files.iter().find(|(f, _)| f == stem)
         else {
             return Vec::new();
         };
-        let (resolved, errors) =
-            resolve_used(module, &self.declarations, &self.files, stem);
-        let (_, types) =
-            infer_partial(module, &resolved, &self.declarations, &self.files);
+        let Some(checked) = infer::files::check_file(
+            stem,
+            &self.declarations,
+            &self.files,
+            cache,
+            &[],
+        ) else {
+            return Vec::new();
+        };
+        let errors = checked.resolve_errors;
+        let types = checked.type_errors;
         let failed: Vec<Span> = module
             .entries
             .iter()
@@ -327,7 +345,13 @@ impl Session {
                 stem: String::from(stem),
                 error,
             });
-        resolve.chain(types).collect()
+        let mut diagnostics: Vec<_> = resolve.chain(types).collect();
+        diagnostics.sort_by_key(|d| match d {
+            Diagnostic::FileResolve { error, .. } => error.span.start,
+            Diagnostic::FileType { error, .. } => error.span.start,
+            _ => 0,
+        });
+        diagnostics
     }
 
     /// The first `use`d module that is neither a host module, nor loaded,

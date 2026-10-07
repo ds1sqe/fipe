@@ -126,6 +126,7 @@ impl Infer<'_> {
             ty: item.ty.clone(),
             site: item.site,
             annotated: item.annotated,
+            binding: true,
         };
         let expected = Expected::new(part.ty.clone(), part.site);
         match item.body.clone() {
