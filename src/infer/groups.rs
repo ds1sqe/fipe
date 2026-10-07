@@ -96,7 +96,7 @@ impl Infer<'_> {
             self.groups[group].self_type.clone(),
         );
         for member in &members {
-            self.state.status[*member] = Status::Typing;
+            self.set_status(*member, Status::Typing);
         }
         let mark = self.mark();
         let mut parts = Vec::new();
@@ -106,7 +106,7 @@ impl Infer<'_> {
         self.flush_uses(&members);
         let schemes = self.generalize(&parts, mark, &members);
         for (member, scheme) in members.iter().zip(schemes) {
-            self.state.status[*member] = Status::Done(scheme);
+            self.set_status(*member, Status::Done(scheme));
         }
         self.self_type = outer;
         self.flush_deferred(&members);
@@ -115,6 +115,7 @@ impl Infer<'_> {
     /// Unify each use made before the group was typed with an instance
     /// of its member's scheme, at that use.
     fn flush_deferred(&mut self, members: &[usize]) {
+        self.journal_list(|s| &mut s.deferred);
         let (mine, rest): (Vec<Use>, Vec<Use>) =
             core::mem::take(&mut self.state.deferred)
                 .into_iter()
@@ -127,9 +128,10 @@ impl Infer<'_> {
             };
             let (ty, meanings) =
                 self.instantiate_with_meanings(&scheme, used.span);
-            self.state
-                .meaning_arguments
-                .insert((used.span.start, used.span.end), meanings);
+            self.set_meaning_arguments(
+                (used.span.start, used.span.end),
+                meanings,
+            );
             let site = self.items[used.item].site;
             self.unify(&ty, &used.ty, used.span, site);
         }
@@ -170,6 +172,7 @@ impl Infer<'_> {
     /// Unify each use inside the group with its member's type, in
     /// order; a failure names the use and the one before it.
     fn flush_uses(&mut self, members: &[usize]) {
+        self.journal_list(|s| &mut s.uses);
         let (mine, rest): (Vec<Use>, Vec<Use>) =
             core::mem::take(&mut self.state.uses)
                 .into_iter()

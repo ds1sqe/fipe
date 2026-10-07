@@ -86,9 +86,11 @@ impl Infer<'_> {
                     scheme: Scheme::mono(ty.clone()),
                     heads: Some(self.heads(arms)),
                 };
-                self.state
-                    .locals
-                    .insert((name.span.start, name.span.end), local);
+                self.insert(
+                    |s| &mut s.locals,
+                    (name.span.start, name.span.end),
+                    local,
+                );
                 // Monomorphic in its arms: a binding inside them must not
                 // generalize over it, or recursion would be polymorphic.
                 self.state.env.push(ty.clone());
@@ -119,8 +121,8 @@ impl Infer<'_> {
                     heads,
                 };
                 let key = (name.span.start, name.span.end);
-                self.state.locals.insert(key, local);
-                self.state.bindings[id.0] = Some(scheme);
+                self.insert(|s| &mut s.locals, key, local);
+                self.set_binding(id.0, scheme);
             }
             _ => {
                 self.pattern(*pattern, &ty, self.span(*value));
@@ -444,7 +446,8 @@ impl Infer<'_> {
                 obligation.variables(&mut variables);
             }
             variables.retain(|var| !env.contains(var));
-            self.state.body_parameters.insert(
+            self.insert(
+                |s| &mut s.body_parameters,
                 (part.site.start, part.site.end),
                 variables.iter().map(|var| Type::Var(*var)).collect(),
             );
@@ -462,7 +465,8 @@ impl Infer<'_> {
             .into_iter()
             .map(|name| (name, self.state.subst.fresh()))
             .collect();
-        self.state.body_parameters.insert(
+        self.insert(
+            |s| &mut s.body_parameters,
             (part.site.start, part.site.end),
             variables
                 .iter()
@@ -529,14 +533,14 @@ impl Infer<'_> {
         }
         self.close(&mut stay);
         let mut left = Vec::new();
-        for owed in &mut self.state.obligations {
-            let head = owed.obligation.subject();
-            let head = self.state.subst.apply(head);
+        for index in 0..self.state.obligations.len() {
+            let owed = &self.state.obligations[index];
+            let head = self.state.subst.apply(owed.obligation.subject());
             if !owed.solved
                 && matches!(head, Type::Var(v) if !stay.contains(&v))
             {
-                owed.solved = true;
                 left.push(owed.obligation.clone());
+                self.solve_obligation(index);
             }
         }
         self.left(left, Span::default());
@@ -601,7 +605,7 @@ impl Infer<'_> {
                         self.state.obligations[index].obligation.subject(),
                     ) == Type::Var(var)
                     {
-                        self.state.obligations[index].solved = true;
+                        self.solve_obligation(index);
                     }
                 }
                 self.error(span, Reason::NoCommonMeaning { forms });
@@ -629,18 +633,7 @@ impl Infer<'_> {
             if name == "Vec" {
                 self.state.subst.default_bytes(var, ty);
             } else if name == "Integer" && !only {
-                let before = self.state.clone();
-                self.hint(&Type::Var(var), &ty);
-                self.dots();
-                if self.state.errors.len() > before.errors.len() {
-                    let errors = before.errors.len();
-                    let integer = core::mem::replace(&mut self.state, before);
-                    self.hint(&Type::Var(var), &prelude("F64"));
-                    self.dots();
-                    if self.state.errors.len() > errors {
-                        self.state = integer;
-                    }
-                }
+                self.default_whole(var);
             } else {
                 self.hint(&Type::Var(var), &ty);
             }
@@ -648,8 +641,33 @@ impl Infer<'_> {
         self.dots();
     }
 
+    /// A whole literal's variable is `Integer`, or `F64` when only a
+    /// fraction fits; when neither does, the `Integer` reading reports.
+    fn default_whole(&mut self, var: Var) {
+        let errors = self.state.errors.len();
+        let before = self.snapshot();
+        self.hint(&Type::Var(var), &prelude("Integer"));
+        self.dots();
+        if self.state.errors.len() == errors {
+            self.keep(before);
+            return;
+        }
+        self.restore(before);
+        let float = self.snapshot();
+        self.hint(&Type::Var(var), &prelude("F64"));
+        self.dots();
+        if self.state.errors.len() == errors {
+            self.keep(float);
+            return;
+        }
+        self.restore(float);
+        self.hint(&Type::Var(var), &prelude("Integer"));
+        self.dots();
+    }
+
     pub(super) fn settle(&mut self) -> Vec<Obligation> {
         self.dots();
+        self.journal_list(|s| &mut s.obligations);
         let mut unsolved = Vec::new();
         for owed in core::mem::take(&mut self.state.obligations) {
             if owed.solved {
@@ -817,6 +835,7 @@ fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
 
 impl Infer<'_> {
     fn split_obligations(&mut self, mark: usize) -> Vec<Owed> {
+        self.journal_list(|s| &mut s.obligations);
         self.state.dots_start = self.state.dots_start.min(mark);
         self.state.obligations.split_off(mark)
     }

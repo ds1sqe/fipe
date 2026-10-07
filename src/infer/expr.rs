@@ -53,7 +53,7 @@ impl Infer<'_> {
         if let Some(expected) = expected.filter(|_| !checked) {
             self.unify(&expected.ty, &ty, self.span(id), expected.span);
         }
-        self.state.types[id.0] = Some(ty.clone());
+        self.set_type(id.0, ty.clone());
         ty
     }
 
@@ -220,14 +220,15 @@ impl Infer<'_> {
             Some(e) => self.apply(&e.ty),
             None => self.fresh(),
         };
-        self.state.selected.insert(
+        self.select(
             (span.start, span.end),
             crate::typed::Selected::Static {
                 head: ty.clone(),
                 name: alloc::string::String::from("literal"),
             },
         );
-        self.state.callee_types.insert(
+        self.insert(
+            |s| &mut s.callee_types,
             (span.start, span.end),
             Type::function(prelude("Form"), ty.clone()),
         );
@@ -259,7 +260,7 @@ impl Infer<'_> {
                 if let Some(lift) = self.bind(*line) {
                     lifts.push(lift);
                 }
-                self.state.types[line.0] = Some(Type::Unit);
+                self.set_type(line.0, Type::Unit);
                 ty = Type::Unit;
             } else {
                 let expected = expected.filter(|_| last && lifts.is_empty());
@@ -288,7 +289,7 @@ impl Infer<'_> {
             if let Some(lift) = self.bind(id) {
                 self.state.main_lifts.push(lift);
             }
-            self.state.types[id.0] = Some(Type::Unit);
+            self.set_type(id.0, Type::Unit);
         } else {
             let mark = self.mark();
             self.expr(id, None);
@@ -311,7 +312,7 @@ impl Infer<'_> {
             annotated: false,
         };
         let scheme = self.generalize(&[part], mark, &[]).remove(0);
-        self.state.bindings[id.0] = Some(scheme);
+        self.set_binding(id.0, scheme);
     }
 
     fn branch(
@@ -409,7 +410,7 @@ impl Infer<'_> {
                 self.unify(&expected.ty, &ty, self.span(node), expected.span);
             }
             if index > 0 {
-                self.state.types[node.0] = Some(ty.clone());
+                self.set_type(node.0, ty.clone());
             }
         }
         if literal_run {

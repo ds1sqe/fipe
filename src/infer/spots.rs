@@ -71,7 +71,7 @@ impl Infer<'_> {
             _ => return Callee::plain(self.expr(id, None)),
         };
         self.record_callee(&callee, span);
-        self.state.types[id.0] = Some(callee.whole());
+        self.set_type(id.0, callee.whole());
         callee
     }
 
@@ -111,7 +111,8 @@ impl Infer<'_> {
                 let root = matches!(**head, Target::TypeMember { .. });
                 let head = self.target(head, span);
                 if let (true, Some(selected)) = (root, &head.selected) {
-                    self.state.roots.insert(
+                    self.insert(
+                        |s| &mut s.roots,
                         (span.start, span.end),
                         crate::typed::Root {
                             selected: selected.clone(),
@@ -130,7 +131,8 @@ impl Infer<'_> {
                 let limited =
                     self.limited(Type::named(origin.clone(), name, Vec::new()));
                 let from = super::meaning(&limited).clone();
-                self.state.conversions.insert(
+                self.insert(
+                    |s| &mut s.conversions,
                     (span.start, span.end),
                     crate::typed::Conversion {
                         mode: crate::ir::ConversionMode::Check,
@@ -210,16 +212,17 @@ impl Infer<'_> {
     }
 
     pub(super) fn record_callee(&mut self, callee: &Callee, stage: Span) {
-        self.state
-            .callee_types
-            .insert((stage.start, stage.end), callee.whole());
-        self.state
-            .meaning_arguments
-            .insert((stage.start, stage.end), callee.meanings.clone());
+        self.insert(
+            |s| &mut s.callee_types,
+            (stage.start, stage.end),
+            callee.whole(),
+        );
+        self.set_meaning_arguments(
+            (stage.start, stage.end),
+            callee.meanings.clone(),
+        );
         if let Some(selected) = &callee.selected {
-            self.state
-                .selected
-                .insert((stage.start, stage.end), selected.clone());
+            self.select((stage.start, stage.end), selected.clone());
         }
     }
 
@@ -549,7 +552,7 @@ impl Infer<'_> {
                         .expect("constructor spot")
                 })
                 .collect();
-            let saved = self.state.default_instances.clone();
+            let listing = self.snapshot();
             for (field, slot) in slots.iter().enumerate() {
                 if fields.contains(&field) {
                     continue;
@@ -578,10 +581,10 @@ impl Infer<'_> {
                 bound.spots.push((slot.site, self.apply(&slot.ty)));
                 fields.push(field);
             }
-            self.state.default_instances = saved;
+            self.keep_except(listing, super::trial::Field::DefaultInstances);
             bound.defaults.sort_by_key(|(spot, _)| fields[*spot]);
-            self.state.bound.insert((start, end), bound);
-            self.state.constructor_fields.insert((start, end), fields);
+            self.insert(|s| &mut s.bound, (start, end), bound);
+            self.insert(|s| &mut s.constructor_fields, (start, end), fields);
         }
     }
 
@@ -607,7 +610,7 @@ impl Infer<'_> {
             .collect();
         for ((start, end), ty) in uses {
             let value = self.default_value(&ty, Span { start, end });
-            self.state.derived_defaults.insert((start, end), value);
+            self.insert(|s| &mut s.derived_defaults, (start, end), value);
         }
     }
 
@@ -658,7 +661,7 @@ impl Infer<'_> {
                 );
                 self.unify(&callee.ty, &ty, span, span);
                 let slots = callee.spots.unwrap_or_default();
-                let saved = self.state.default_instances.clone();
+                let listing = self.snapshot();
                 let mut fields = Vec::new();
                 for (index, slot) in slots.iter().enumerate() {
                     let value = if slot.value.is_some() {
@@ -690,7 +693,10 @@ impl Infer<'_> {
                     };
                     fields.push((slot.site, self.apply(&slot.ty), value));
                 }
-                self.state.default_instances = saved;
+                self.keep_except(
+                    listing,
+                    super::trial::Field::DefaultInstances,
+                );
                 return crate::typed::DefaultValue::Record { ty, fields };
             }
             Type::Array { element, .. } => {
@@ -762,7 +768,7 @@ impl Infer<'_> {
             .into_iter()
             .map(|(_, index, source)| (index, source))
             .collect();
-        self.state.bound.insert((stage.start, stage.end), bound);
+        self.insert(|s| &mut s.bound, (stage.start, stage.end), bound);
     }
 
     /// Step 1: named arguments fill their spots.
@@ -995,6 +1001,7 @@ impl Infer<'_> {
             };
             self.expr(*operand, Some(&expected));
         }
+        self.journal_key(|s| &mut s.bound, (stage.start, stage.end));
         if let Some(bound) = self.state.bound.get_mut(&(stage.start, stage.end))
         {
             bound.applied = parameters.into_iter().zip(extra).collect();
@@ -1035,38 +1042,41 @@ impl Infer<'_> {
                 ));
             }
         }
-        let before = self.numeric_var(actual).then(|| self.state.clone());
-        let subst = self.state.subst.clone();
+        let numeric = self.numeric_var(actual);
         let errors = self.state.errors.len();
+        let first = self.snapshot();
         self.unify(&target, actual, span, other);
-        if before.is_some() {
+        if numeric {
             self.dots();
         }
-        if self.state.errors[errors..]
-            .iter()
-            .any(|e| super::bind::decided_literal(&e.reason))
+        if self.state.errors.len() == errors
+            || self.state.errors[errors..]
+                .iter()
+                .any(|e| super::bind::decided_literal(&e.reason))
         {
+            self.keep(first);
             return;
         }
-        if self.state.errors.len() != errors {
-            let failed = self.state.clone();
-            if let Some(before) = before {
-                self.state = before;
-            } else {
-                self.state.subst = subst;
-                self.state.errors.truncate(errors);
+        self.restore(first);
+        let second = self.snapshot();
+        self.default_entering(actual);
+        let source = self.apply(actual);
+        if let Some(row) = self.cast_pair(&target, &source, span, other) {
+            if let Some(index) = self.expression_ids.get(&span).copied() {
+                self.record_cast(ExprId(index), row, source, target);
             }
-            self.default_entering(actual);
-            let source = self.apply(actual);
-            if let Some(row) = self.cast_pair(&target, &source, span, other) {
-                if let Some(index) = self.expression_ids.get(&span).copied() {
-                    self.record_cast(ExprId(index), row, source, target);
-                }
-            } else if !self.state.errors[errors..]
-                .iter()
-                .any(|e| matches!(e.reason, Reason::OutcomeText { .. }))
-            {
-                self.state = failed;
+            self.keep(second);
+        } else if self.state.errors[errors..]
+            .iter()
+            .any(|e| matches!(e.reason, Reason::OutcomeText { .. }))
+        {
+            self.keep(second);
+        } else {
+            // Neither fits: the unification against the place reports.
+            self.restore(second);
+            self.unify(&target, actual, span, other);
+            if numeric {
+                self.dots();
             }
         }
     }
@@ -1120,7 +1130,8 @@ impl Infer<'_> {
                 if !pass {
                     if let Some(Supply::Collected(ids)) = supply {
                         if ids.len() == 1 {
-                            let before = self.state.clone();
+                            let errors = self.state.errors.len();
+                            let whole = self.snapshot();
                             let id = ids[0];
                             self.expr(
                                 id,
@@ -1133,11 +1144,12 @@ impl Infer<'_> {
                                 }),
                             );
                             self.dots();
-                            if self.state.errors.len() == before.errors.len() {
+                            if self.state.errors.len() == errors {
+                                self.keep(whole);
                                 *supply = Some(Supply::Expr(id));
                                 continue;
                             }
-                            self.state = before;
+                            self.restore(whole);
                         }
                         let Type::Named { arguments, .. } =
                             self.apply(&slot.ty)
@@ -1233,7 +1245,7 @@ impl Infer<'_> {
             .fold(result, |result, parameter| {
                 Type::function(parameter.clone(), result)
             });
-        self.state.bound.insert((stage.start, stage.end), bound);
+        self.insert(|s| &mut s.bound, (stage.start, stage.end), bound);
         // An overload can be chosen only after all this call's operands
         // have entered their spots (including a selector's argument).
         let solving = core::mem::replace(&mut self.state.solving_dots, true);
@@ -1298,7 +1310,7 @@ impl Infer<'_> {
         };
         // The stage's call lists the piped value among its supplies, so
         // its node is the stage's result, not a function of the input.
-        self.state.types[id.0] = Some(result.clone());
+        self.set_type(id.0, result.clone());
         result
     }
 
@@ -1332,9 +1344,10 @@ impl Infer<'_> {
                     .get(&(home.clone(), value.0))
                     .cloned()
                 {
-                    self.state
-                        .default_instances
-                        .insert((stage.start, stage.end, index), recorded);
+                    self.set_default_instance(
+                        (stage.start, stage.end, index),
+                        recorded,
+                    );
                 }
             }
         }
@@ -1857,7 +1870,7 @@ impl Infer<'_> {
             bound.defaults.push((index, value));
         }
         self.record_callee(&callee, span);
-        self.state.bound.insert((span.start, span.end), bound);
+        self.insert(|s| &mut s.bound, (span.start, span.end), bound);
     }
 }
 

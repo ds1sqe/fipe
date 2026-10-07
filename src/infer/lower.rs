@@ -356,7 +356,7 @@ impl<'a> Infer<'a> {
                 meaning: alloc::boxed::Box::new(meaning),
             };
             if arguments.is_empty() {
-                self.state.lowered.insert(name.clone(), result.clone());
+                self.insert(|s| &mut s.lowered, name.clone(), result.clone());
             }
             return result;
         }

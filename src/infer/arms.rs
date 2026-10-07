@@ -110,7 +110,7 @@ impl Infer<'_> {
     /// Check a pattern against its input type, which `input` gave, and
     /// bind its names.
     pub(super) fn pattern(&mut self, id: PatternId, ty: &Type, input: Span) {
-        self.state.pattern_types.insert(id.0, ty.clone());
+        self.insert(|s| &mut s.pattern_types, id.0, ty.clone());
         let module = self.module;
         let span = module.patterns[id.0].span;
         match &module.patterns[id.0].kind {
@@ -366,7 +366,7 @@ impl Infer<'_> {
                     }
                 }
             }
-            self.state.pattern_equals.insert(id, comparison);
+            self.insert(|s| &mut s.pattern_equals, id, comparison);
         }
     }
 }

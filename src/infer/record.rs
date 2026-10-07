@@ -619,7 +619,8 @@ impl Infer<'_> {
                     .push((argument, crate::typed::Supply::Expression(right)));
             }
         }
-        self.state.bound.insert(
+        self.insert(
+            |s| &mut s.bound,
             (span.start, span.end),
             crate::typed::Bound {
                 spots: spots

@@ -217,7 +217,8 @@ impl Infer<'_> {
 
             ty => super::outcome::family(ty).is_some_and(|(f, _)| f == family),
         };
-        self.state.rebuilds.insert(
+        self.insert(
+            |s| &mut s.rebuilds,
             (span.start, span.end),
             if same {
                 crate::typed::Rebuild::Direct
@@ -253,7 +254,8 @@ impl Infer<'_> {
         let left_span = self.span(left);
         let applied = self.apply(&left_ty);
         if super::is_prelude(&applied, "Bool") {
-            self.state.modes.insert(
+            self.insert(
+                |s| &mut s.modes,
                 (operator.start, operator.end),
                 crate::typed::Mode::Bool,
             );
@@ -268,18 +270,23 @@ impl Infer<'_> {
             return self.fresh();
         };
         let good = payload(family, arguments, true);
-        let before = self.state.clone();
+        let before = self.snapshot();
+        let errors = self.state.errors.len();
         self.expr(right, Some(&Expected::new(applied.clone(), left_span)));
         self.dots();
-        if self.state.errors.len() == before.errors.len() {
-            self.state.modes.insert(
+        if self.state.errors.len() == errors {
+            self.keep(before);
+            self.insert(
+                |s| &mut s.modes,
                 (operator.start, operator.end),
                 crate::typed::Mode::Family,
             );
             return applied;
         }
-        self.state = before.clone();
-        self.state.modes.insert(
+        self.restore(before);
+        let second = self.snapshot();
+        self.insert(
+            |s| &mut s.modes,
             (operator.start, operator.end),
             crate::typed::Mode::Payload,
         );
@@ -292,6 +299,7 @@ impl Infer<'_> {
             ),
         );
         if self.state.errors.len() == errors {
+            self.keep(second);
             return good;
         }
         // A right of another family is a clash of families, not a
@@ -302,7 +310,7 @@ impl Infer<'_> {
             .as_ref()
             .and_then(|t| self::family(t).map(|(f, _)| f));
         if other.is_some_and(|other| other != family) {
-            self.state = before;
+            self.restore(second);
             let right_ty = self.expr(right, None);
             let right_ty = self.apply(&right_ty);
             self.error(
@@ -314,6 +322,7 @@ impl Infer<'_> {
             );
             return self.fresh();
         }
+        self.keep(second);
         good
     }
 
@@ -328,7 +337,8 @@ impl Infer<'_> {
         let left_span = self.span(left);
         let applied = self.apply(&left_ty);
         if super::is_prelude(&applied, "Bool") {
-            self.state.modes.insert(
+            self.insert(
+                |s| &mut s.modes,
                 (operator.start, operator.end),
                 crate::typed::Mode::Bool,
             );
@@ -344,9 +354,11 @@ impl Infer<'_> {
             return self.fresh();
         }
         let result = self.expr(right, None);
-        self.state
-            .modes
-            .insert((operator.start, operator.end), crate::typed::Mode::Family);
+        self.insert(
+            |s| &mut s.modes,
+            (operator.start, operator.end),
+            crate::typed::Mode::Family,
+        );
         self.rebuild(&applied, true, result, self.span(right), left_span)
     }
 }
@@ -366,6 +378,7 @@ pub(super) struct Pending {
 
 impl Infer<'_> {
     pub(super) fn solve_families(&mut self, finish: bool) {
+        self.journal_list(|s| &mut s.families);
         let pending = core::mem::take(&mut self.state.families);
         for owed in pending {
             let ty = self.apply(&owed.ty);

@@ -28,6 +28,7 @@ mod outcome;
 mod record;
 mod spots;
 mod test;
+mod trial;
 pub(crate) use spots::Supply;
 
 use crate::{
@@ -304,8 +305,8 @@ pub(crate) fn run(
     infer.finish()
 }
 
-/// Everything inference changes, cloned to try one reading of `||`.
-#[derive(Clone)]
+/// Everything inference changes. A trial reading ([`trial`]) journals
+/// its writes and is kept or restored.
 struct State {
     constructor_fields: BTreeMap<(usize, usize), Vec<usize>>,
     derived_defaults: BTreeMap<(usize, usize), crate::typed::DefaultValue>,
@@ -356,6 +357,10 @@ struct State {
     /// Uses of impl members before their group could be typed, held
     /// monomorphic until it is and then unified with its scheme.
     deferred: Vec<Use>,
+    /// Writes to undo for the open trials, newest last; empty when none.
+    journal: Vec<trial::Undo>,
+    /// How many trials are open.
+    trials: usize,
 }
 
 impl State {
@@ -403,6 +408,8 @@ impl State {
             status: Vec::new(),
             uses: Vec::new(),
             deferred: Vec::new(),
+            journal: Vec::new(),
+            trials: 0,
         }
     }
 }

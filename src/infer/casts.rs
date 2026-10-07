@@ -128,12 +128,15 @@ impl Infer<'_> {
         from: Type,
         to: Type,
     ) {
-        self.state.casts[id.0] = Some(Cast {
-            operation: None,
-            row,
-            from,
-            to,
-        });
+        self.set_cast(
+            id.0,
+            Cast {
+                operation: None,
+                row,
+                from,
+                to,
+            },
+        );
     }
 
     pub(super) fn record_cast_operations(&mut self) {
@@ -231,8 +234,9 @@ impl Infer<'_> {
         receiverless: bool,
         span: Span,
     ) -> Option<super::Callee> {
-        let selected = self.state.selected.clone();
-        let arguments = self.state.meaning_arguments.clone();
+        // The lookup selects at the cast's span; the expression's own
+        // selection stands.
+        let lookup = self.snapshot();
         let callee = if receiverless {
             if let Type::Named { name: owner, .. } = head {
                 Some(self.type_member(
@@ -249,8 +253,7 @@ impl Infer<'_> {
         } else {
             self.self_function(name, head, span)
         };
-        self.state.selected = selected;
-        self.state.meaning_arguments = arguments;
+        self.keep_except(lookup, super::trial::Field::Selection);
         callee
     }
 
@@ -312,18 +315,20 @@ impl Infer<'_> {
             }
             return target;
         }
-        // ponytail: snapshots cost O(state); use an undo log if place checking dominates.
-        let before = self.state.clone();
+        let errors = self.state.errors.len();
+        let first = self.snapshot();
         let ty = self.check_expr(id, Some(expected));
         self.dots();
-        if self.state.errors.len() == before.errors.len()
-            || self.state.errors[before.errors.len()..]
+        if self.state.errors.len() == errors
+            || self.state.errors[errors..]
                 .iter()
                 .any(|e| super::bind::decided_literal(&e.reason))
         {
+            self.keep(first);
             return ty;
         }
-        let failed = core::mem::replace(&mut self.state, before);
+        self.restore(first);
+        let second = self.snapshot();
         let source = self.check_expr(id, None);
         self.default_entering(&source);
         self.dots();
@@ -350,15 +355,20 @@ impl Infer<'_> {
                 expected.span,
                 expected.place_kind.clone(),
             ));
+            self.keep(second);
             return target;
         }
         if self.state.errors[errors..]
             .iter()
             .any(|e| matches!(e.reason, Reason::OutcomeText { .. }))
         {
+            self.keep(second);
             return target;
         }
-        self.state = failed;
+        // Neither reading fits: the first, against the place, reports.
+        self.restore(second);
+        let ty = self.check_expr(id, Some(expected));
+        self.dots();
         ty
     }
 }

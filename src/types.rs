@@ -495,6 +495,17 @@ pub enum Mismatch {
 pub struct Subst {
     bindings: Vec<Option<Type>>,
     lengths: Vec<(Type, Type)>,
+    /// The variables solved since the outermost open mark, oldest first,
+    /// so a trial can be undone without a copy of the bindings.
+    trail: Vec<Var>,
+    marks: usize,
+}
+
+/// Where a trial of a [`Subst`] began ([`Subst::mark`]).
+pub(crate) struct SubstMark {
+    count: usize,
+    trail: usize,
+    lengths: Vec<(Type, Type)>,
 }
 
 impl Subst {
@@ -504,7 +515,51 @@ impl Subst {
         Self {
             bindings,
             lengths: Vec::new(),
+            trail: Vec::new(),
+            marks: 0,
         }
+    }
+
+    /// Begin a trial: what is solved or made from here can be undone by
+    /// [`Self::restore`] or kept by [`Self::keep`], in nesting order.
+    pub(crate) fn mark(&mut self) -> SubstMark {
+        self.marks += 1;
+        SubstMark {
+            count: self.bindings.len(),
+            trail: self.trail.len(),
+            lengths: self.lengths.clone(),
+        }
+    }
+
+    /// Keep what a trial solved.
+    pub(crate) fn keep(&mut self, _mark: SubstMark) {
+        self.marks -= 1;
+        if self.marks == 0 {
+            self.trail.clear();
+        }
+    }
+
+    /// Undo what a trial solved and made.
+    pub(crate) fn restore(&mut self, mark: SubstMark) {
+        for var in self.trail.drain(mark.trail..) {
+            if let Some(binding) = self.bindings.get_mut(var.0 as usize) {
+                *binding = None;
+            }
+        }
+        self.bindings.truncate(mark.count);
+        self.lengths = mark.lengths;
+        self.marks -= 1;
+        if self.marks == 0 {
+            self.trail.clear();
+        }
+    }
+
+    /// Solve `var`, unsolved so far, as `ty`.
+    fn bind(&mut self, var: Var, ty: Type) {
+        if self.marks > 0 {
+            self.trail.push(var);
+        }
+        self.bindings[var.0 as usize] = Some(ty);
     }
 
     /// Each variable's solution, from `Var(0)`.
@@ -637,7 +692,7 @@ impl Subst {
                             ty,
                         }));
                     }
-                    self.bindings[var.0 as usize] = Some(ty);
+                    self.bind(*var, ty);
                     return Ok(());
                 }
                 if others.is_empty() {
@@ -691,7 +746,7 @@ impl Subst {
     /// Ordinary variable binding still erases limits.
     pub(crate) fn default_bytes(&mut self, var: Var, ty: Type) {
         debug_assert_eq!(self.apply(&Type::Var(var)), Type::Var(var));
-        self.bindings[var.0 as usize] = Some(ty);
+        self.bind(var, ty);
     }
 
     fn get(&self, var: Var) -> Option<&Type> {
@@ -725,8 +780,10 @@ impl Subst {
             (Type::Var(a), Type::Var(b)) => {
                 // Keep fresh operands attached to the existing variable,
                 // rather than growing a chain for every literal in a sum.
-                self.bindings[core::cmp::max(a, b).0 as usize] =
-                    Some(Type::Var(*core::cmp::min(a, b)));
+                self.bind(
+                    *core::cmp::max(a, b),
+                    Type::Var(*core::cmp::min(a, b)),
+                );
                 Ok(())
             }
             (Type::Var(var), other) | (other, Type::Var(var)) => {
@@ -736,7 +793,7 @@ impl Subst {
                         ty: other.clone(),
                     }));
                 }
-                self.bindings[var.0 as usize] = Some(other.without_limits());
+                self.bind(*var, other.without_limits());
                 Ok(())
             }
             (Type::Limited { meaning, .. }, other)

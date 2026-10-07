@@ -154,11 +154,10 @@ impl Infer<'_> {
         receiverless: bool,
     ) -> Vec<crate::typed::DispatchRow> {
         // Candidate checks must not add obligations to the checked program.
-        // ponytail: clone checker state per candidate; isolate a smaller trial state if large rowsets make it costly.
-        let saved = self.state.clone();
+        let saved = self.snapshot();
         let rows = self.dispatch_candidates(receiver, name, receiverless);
         let count = self.state.subst.count();
-        self.state = saved;
+        self.restore(saved);
         while self.state.subst.count() < count {
             self.state.subst.fresh();
         }

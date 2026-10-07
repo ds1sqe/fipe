@@ -105,7 +105,8 @@ impl Infer<'_> {
             };
         }
         if let Some(result) = limited_conversion(&target, &source, kind) {
-            self.state.conversions.insert(
+            self.insert(
+                |s| &mut s.conversions,
                 (span.start, span.end),
                 crate::typed::Conversion {
                     result: result.clone(),
@@ -200,7 +201,8 @@ impl Infer<'_> {
         let Type::Function { parameter, .. } = callee.whole() else {
             unreachable!("conversion input")
         };
-        self.state.conversions.insert(
+        self.insert(
+            |s| &mut s.conversions,
             (span.start, span.end),
             crate::typed::Conversion {
                 result: if kind == "to" {

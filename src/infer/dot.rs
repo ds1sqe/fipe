@@ -97,6 +97,7 @@ impl<'a> Infer<'a> {
             }
             current = self.apply_callee(callee, &[], None, span, None);
             let key = (span.start, span.end);
+            self.journal_key(|s| &mut s.accesses, key);
             if let Some(step) = self
                 .state
                 .accesses
@@ -151,6 +152,7 @@ impl<'a> Infer<'a> {
         selected: crate::typed::Selected,
         callee: Option<&Callee>,
     ) {
+        self.journal_key(|s| &mut s.accesses, (span.start, span.end));
         self.state
             .accesses
             .entry((span.start, span.end))
@@ -214,10 +216,9 @@ impl<'a> Infer<'a> {
             }
             for index in ready {
                 // Solving applies callees, which may solve this one first.
-                let owed = &mut self.state.obligations[index];
-                if !owed.solved {
-                    owed.solved = true;
-                    let owed = owed.clone();
+                if !self.state.obligations[index].solved {
+                    self.solve_obligation(index);
+                    let owed = self.state.obligations[index].clone();
                     self.member(&owed);
                 }
             }
@@ -365,9 +366,8 @@ impl<'a> Infer<'a> {
         name: &str,
         selected: &crate::typed::Selected,
     ) {
-        self.state
-            .selected
-            .insert((dot.start, dot.end), selected.clone());
+        self.select((dot.start, dot.end), selected.clone());
+        self.journal_key(|s| &mut s.accesses, (dot.start, dot.end));
         let subst = &self.state.subst;
         if let Some(steps) = self.state.accesses.get_mut(&(dot.start, dot.end))
         {
@@ -1161,7 +1161,7 @@ impl Infer<'_> {
                 )
             {
                 let owed = owed.clone();
-                self.state.obligations[index].solved = true;
+                self.solve_obligation(index);
                 self.member(&owed);
             }
         }
