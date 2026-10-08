@@ -26,6 +26,32 @@ const STRAIGHT_LINES: &[&str] = &[
     "\"text\"",
     "(x => x + 2) 2",
     "k = 1\n(k, k)",
+    "Just 1 |: (_ => Just 2)",
+    "Just [1, 2] |: map (n => n + 1)",
+    "Ok 1 |! (e => 3)",
+    "Nothing |! 1",
+    "Nothing |! Just 2",
+    "Just 1 || Nothing",
+    "Just 1 || 2",
+    "Just 1 && Just 2",
+    "Just 1 && 2",
+    "(1 == 1) || (2 == 2)",
+    "(1 == 1) && (2 == 2)",
+    "{\n    [:v] = Just 1\n    v\n}",
+    "{\n    [:v] = Ok 1\n    Just v\n}",
+    "{\n    Just x = Just 1\n    x + 1\n}",
+    "Just x = Just 1",
+    "1 | to<U8>",
+    "1 | try<U8>",
+    "\"3\" | read<I64>",
+    "1 < 2",
+    "Nothing",
+    "g: Integer -> F64 = n => n\ng 1",
+    "f = n => {\n    x: U8 = n\n    x\n}\nf 1",
+    "p: Integer | String = 1",
+    "type Box: From<Integer> { value: Integer }\nimpl Box: From<Integer> { from = n => Self n }\n1 | to<Box>",
+    "type Box: From<Integer> { value: Integer }\nimpl Box: From<Integer> { from = n => Self n }\n1 | try<Box>",
+    "type Box: TryFrom<Integer, String> { value: Integer }\nimpl Box: TryFrom<Integer, String> { try_from = n => Ok (Self n) }\n1 | to<Box>",
 ];
 
 fn program(source: &str) -> (ir::Unit, mir::Program) {
@@ -53,5 +79,7 @@ fn an_operand_is_sixteen_bytes() {
 
 #[path = "mir/calls.rs"]
 mod calls;
+#[path = "mir/outcomes.rs"]
+mod outcomes;
 #[path = "mir/walk.rs"]
 mod walk;

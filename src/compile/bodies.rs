@@ -17,6 +17,11 @@ impl Builder<'_, '_> {
         node: usize,
         dest: Option<usize>,
     ) -> Operand {
+        // The node was evaluated before the switch; this read is not an
+        // evaluation, so it charges nothing.
+        if let Some(operand) = self.substituted.get(&node).copied() {
+            return self.place(operand, dest, node);
+        }
         let tables = self.tables();
         let ir::Node { ty, kind, .. } = &tables.nodes[node];
         match kind {
@@ -48,6 +53,9 @@ impl Builder<'_, '_> {
             }
             ir::Kind::Declared(_) | ir::Kind::Constructor { .. } => {
                 self.count();
+                if let Some(value) = self.nullary(node, dest) {
+                    return value;
+                }
                 let closure = self.thunk_of(node);
                 self.materialize(closure, dest, ty, node)
             }
@@ -140,9 +148,7 @@ impl Builder<'_, '_> {
             | ir::Kind::Cast { .. }
             | ir::Kind::Pack { .. }
             | ir::Kind::Enter { .. }
-            | ir::Kind::Convert { .. } => {
-                todo!("08.1 phase 3: outcomes, orderings, casts and entries")
-            }
+            | ir::Kind::Convert { .. } => self.outcome(node, kind, dest),
             other => unreachable!("a value of {other:?}"),
         }
     }

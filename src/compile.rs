@@ -4,10 +4,14 @@
 //! only on a checker invariant, a crate defect. Every body reachable
 //! from the unit's main is lowered once; a definition's body is shared
 //! by every reference and every row that targets it.
+mod adapters;
 mod bodies;
 mod builder;
 mod calls;
 mod constants;
+mod meanings;
+mod outcomes;
+mod thunks;
 
 use crate::{ir, mir, mir::Terminator, value::Value};
 use alloc::{rc::Rc, vec::Vec};
@@ -33,7 +37,10 @@ pub fn compile(unit: &ir::Unit) -> mir::Program {
         definitions: alloc::vec![None; tables.definitions.len()],
         pending: Vec::new(),
     };
-    let main = lowering.main(&unit.main);
+    let main = lowering.lines(&unit.main);
+    let inits = (0..tables.modules.len())
+        .map(|module| (module, lowering.lines(&tables.modules[module].lines)))
+        .collect();
     while let Some((definition, body)) = lowering.pending.pop() {
         lowering.definition(definition, body);
     }
@@ -42,7 +49,7 @@ pub fn compile(unit: &ir::Unit) -> mir::Program {
         bodies: lowering.bodies,
         constants: lowering.constants,
         definitions: lowering.definitions,
-        inits: Vec::new(),
+        inits,
         main,
     }
 }
@@ -139,8 +146,9 @@ fn same(a: &Value, b: &Value) -> bool {
 }
 
 impl Lowering<'_> {
-    /// The main body: the unit's lines in order, `_0` the last value.
-    pub(super) fn main(&mut self, lines: &[usize]) -> usize {
+    /// The main body or a module's init body: its lines in order, `_0`
+    /// the last value.
+    pub(super) fn lines(&mut self, lines: &[usize]) -> usize {
         let node = lines.last().copied().unwrap_or(0);
         let result = lines
             .last()

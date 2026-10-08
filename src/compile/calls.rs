@@ -23,6 +23,8 @@ pub(super) enum Target {
     },
     /// A function value.
     Value(Operand),
+    /// A conversion adapter, by its node.
+    Convert(usize),
 }
 
 /// A call node's recorded parts.
@@ -121,13 +123,17 @@ impl Builder<'_, '_> {
             ir::Kind::Derived { .. } => {
                 todo!("08.1 phase 2: a derived operation as a callee")
             }
+            ir::Kind::Convert { .. } => {
+                self.count();
+                Target::Convert(node)
+            }
             _ => Target::Value(self.lower(node)),
         }
     }
 
     /// The prelude's declarations are native; any other namespace's are
     /// the host's.
-    fn declared(&self, declaration: usize) -> Callee {
+    pub(super) fn declared(&self, declaration: usize) -> Callee {
         if self.lowering.native(declaration) {
             Callee::Native(declaration)
         } else {
@@ -135,8 +141,9 @@ impl Builder<'_, '_> {
         }
     }
 
-    /// A call with every spot in hand: the terminator or the construction.
-    fn apply(
+    /// A call with every spot in hand: the terminator, the construction
+    /// or the conversion.
+    pub(super) fn apply(
         &mut self,
         target: Target,
         args: Vec<Operand>,
@@ -184,6 +191,12 @@ impl Builder<'_, '_> {
                 (Callee::Dispatch { member, witness }, Vec::new())
             }
             Target::Value(operand) => (Callee::Value(operand), Vec::new()),
+            Target::Convert(conversion) => {
+                let [value] = args.as_slice() else {
+                    unreachable!("a conversion takes one value")
+                };
+                return self.convert(conversion, *value, dest);
+            }
         };
         let target = self.open(node);
         self.terminate(
@@ -329,55 +342,6 @@ impl Builder<'_, '_> {
         Rvalue::Closure {
             body,
             captures,
-            meanings: self.inherited(),
-        }
-    }
-
-    /// A declaration or constructor as a value: a thunk of its arity.
-    pub(super) fn thunk_of(&mut self, node: usize) -> Rvalue {
-        let tables = self.tables();
-        let (arity, target) = match &tables.nodes[node].kind {
-            ir::Kind::Declared(index) => (
-                super::Lowering::arity(&tables.nodes[node].ty),
-                Target::Static(self.declared(*index), Vec::new()),
-            ),
-            ir::Kind::Constructor {
-                meaning,
-                constructor,
-                fields,
-            } => (
-                fields.len(),
-                Target::Construct {
-                    meaning: *meaning,
-                    constructor: *constructor,
-                    fields: fields.clone(),
-                },
-            ),
-            other => unreachable!("a thunk of {other:?}"),
-        };
-        let mut ty = &tables.nodes[node].ty;
-        let mut parameters = Vec::with_capacity(arity);
-        for _ in 0..arity {
-            let ir::Type::Function { parameter, result } = ty else {
-                unreachable!("a callable of {arity} spots")
-            };
-            parameters.push((**parameter).clone());
-            ty = result;
-        }
-        let hidden = self.hidden.clone();
-        let mut builder =
-            Builder::new(self.lowering, node, ty.clone(), hidden, Vec::new());
-        builder.count();
-        for ty in parameters {
-            builder.spot(None, ty, node);
-        }
-        let args = (1..=arity).map(Operand::Local).collect();
-        builder.apply(target, args, None, 0, node);
-        builder.terminate(Terminator::Return, node);
-        let body = builder.finish(None);
-        Rvalue::Closure {
-            body,
-            captures: Vec::new(),
             meanings: self.inherited(),
         }
     }

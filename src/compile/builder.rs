@@ -31,6 +31,9 @@ pub(super) struct Builder<'l, 'a> {
     pub(super) captures: usize,
     /// IR slot to local.
     pub(super) slots: BTreeMap<usize, usize>,
+    /// Nodes read as another operand while a marked stage is lowered:
+    /// the stage's supply of the left reads the payload.
+    pub(super) substituted: BTreeMap<usize, Operand>,
     pub(super) locals: Vec<mir::Local>,
     pub(super) blocks: Vec<Open>,
     pub(super) current: usize,
@@ -53,6 +56,7 @@ impl<'l, 'a> Builder<'l, 'a> {
             captures: captured.len(),
             captured,
             slots: BTreeMap::new(),
+            substituted: BTreeMap::new(),
             locals: alloc::vec![mir::Local {
                 ty: result,
                 node: None

@@ -53,6 +53,10 @@ pub fn check_program(program: &Program) {
                     }
                     Statement::Enter { entry, value } => {
                         assert!(*entry < tables.entries.len());
+                        check_predicate(
+                            &tables,
+                            &tables.entries[*entry].predicate,
+                        );
                         check_operand(program, body, value);
                         push(&mut lowered, block.nodes[index]);
                     }
@@ -166,14 +170,16 @@ fn check_rvalue(
             check_operand(program, body, value);
         }
         Rvalue::Cast {
-            operation: callee,
-            value,
-            ..
+            from, to, value, ..
+        } => {
+            check_type(tables, from);
+            check_type(tables, to);
+            check_operand(program, body, value);
         }
-        | Rvalue::Convert { callee, value, .. } => {
-            if let Some(index) = callee {
-                assert!(*index < tables.declarations.len());
-            }
+        Rvalue::Convert {
+            predicate, value, ..
+        } => {
+            check_predicate(tables, predicate);
             check_operand(program, body, value);
         }
         Rvalue::Pack { tag, value } => {
@@ -308,6 +314,29 @@ fn check_result_paths(body: &fipe::mir::Body) {
                 assert!(assigned, "block {index} returns without a result");
             }
         }
+    }
+}
+
+fn check_predicate(tables: &ir::Tables, predicate: &ir::Predicate) {
+    match predicate {
+        ir::Predicate::All(parts) | ir::Predicate::Any(parts) => {
+            for part in parts {
+                check_predicate(tables, part);
+            }
+        }
+        ir::Predicate::Not(part) => check_predicate(tables, part),
+        ir::Predicate::Test { index, meanings } => {
+            assert!(*index < tables.tests.len());
+            assert_eq!(meanings.len(), tables.tests[*index].parameters.len());
+            for ty in meanings {
+                check_type(tables, ty);
+            }
+        }
+        ir::Predicate::Function { parameter, result } => {
+            check_predicate(tables, parameter);
+            check_predicate(tables, result);
+        }
+        ir::Predicate::Nonzero { .. } => (),
     }
 }
 

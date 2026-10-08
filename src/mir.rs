@@ -130,16 +130,19 @@ pub enum Rvalue {
         constructor: usize,
         value: Operand,
     },
-    /// `operation` indexes `tables.declarations`.
+    /// A cast of `value` by its row; a selected reader or shower was
+    /// called before, so the Read row unwraps and the Show row passes.
     Cast {
         row: ir::CastRow,
-        operation: Option<usize>,
+        from: ir::Type,
+        to: ir::Type,
         value: Operand,
     },
-    /// `callee` indexes `tables.declarations`.
+    /// A conversion's adaptation of `value`; a selected member was
+    /// called before. `Check` and `TryCheck` test `predicate`.
     Convert {
         mode: ir::ConversionMode,
-        callee: Option<usize>,
+        predicate: ir::Predicate,
         value: Operand,
     },
     Pack {

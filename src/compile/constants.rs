@@ -83,7 +83,9 @@ impl Builder<'_, '_> {
                 );
                 self.switch_to(target);
             }
-            Target::Construct { .. } | Target::Value(_) => {
+            Target::Construct { .. }
+            | Target::Value(_)
+            | Target::Convert(_) => {
                 unreachable!("a literal reader is a member or a declaration")
             }
         }

@@ -74,6 +74,11 @@ fn role(program: &Program, body: usize, tables: &Tables) -> String {
     {
         return format!("definition {}", tables.definitions[definition].label);
     }
+    if let Some((module, _)) =
+        program.inits.iter().find(|(_, init)| *init == body)
+    {
+        return format!("init {}", tables.modules[*module].label);
+    }
     match &tables.nodes[program.bodies[body].node].kind {
         Kind::Function { .. } => String::from("function"),
         Kind::Call { .. } => String::from("partial call"),
@@ -178,25 +183,25 @@ fn rvalue(rvalue: &Rvalue, tables: &Tables) -> String {
         ),
         Rvalue::Cast {
             row,
-            operation,
+            from,
+            to,
             value,
         } => format!(
-            "cast {} by the {} row{}",
+            "cast {} from {} to {} by the {} row",
             operand(value, tables),
+            meaning(from, tables),
+            meaning(to, tables),
             match row {
                 fipe::ir::CastRow::Number => "number",
                 fipe::ir::CastRow::Read => "read",
                 fipe::ir::CastRow::Show => "show",
                 fipe::ir::CastRow::Codec => "codec",
                 fipe::ir::CastRow::Bytes => "bytes",
-            },
-            operation.map_or_else(String::new, |index| {
-                format!(" using {}", declared(index, tables))
-            })
+            }
         ),
         Rvalue::Convert {
             mode,
-            callee,
+            predicate,
             value,
         } => format!(
             "convert {} by {}{}",
@@ -208,9 +213,7 @@ fn rvalue(rvalue: &Rvalue, tables: &Tables) -> String {
                 fipe::ir::ConversionMode::Check => "check",
                 fipe::ir::ConversionMode::TryCheck => "try check",
             },
-            callee.map_or_else(String::new, |index| {
-                format!(" using {}", declared(index, tables))
-            })
+            self::predicate(predicate, tables)
         ),
         Rvalue::Pack { tag, value } => format!(
             "pack {} tagged {}",
@@ -223,6 +226,45 @@ fn rvalue(rvalue: &Rvalue, tables: &Tables) -> String {
             operands(args, tables)
         ),
     }
+}
+
+/// The tests a predicate composes, in words; nothing for one every
+/// value passes.
+fn predicate(predicate: &fipe::ir::Predicate, tables: &Tables) -> String {
+    use fipe::ir::Predicate;
+    fn words(predicate: &Predicate, tables: &Tables) -> Option<String> {
+        match predicate {
+            Predicate::All(parts) | Predicate::Any(parts) => {
+                let parts: Vec<_> = parts
+                    .iter()
+                    .filter_map(|part| words(part, tables))
+                    .collect();
+                if parts.is_empty() {
+                    return None;
+                }
+                let glue = if matches!(predicate, Predicate::All(_)) {
+                    " and "
+                } else {
+                    " or "
+                };
+                Some(parts.join(glue))
+            }
+            Predicate::Not(part) => {
+                words(part, tables).map(|part| format!("not {part}"))
+            }
+            Predicate::Test { index, .. } => {
+                let test = &tables.tests[*index];
+                Some(format!(
+                    "test {index} of {}",
+                    tables.namespaces[test.namespace]
+                ))
+            }
+            Predicate::Function { .. } => Some(String::from("a function")),
+            Predicate::Nonzero { .. } => Some(String::from("nonzero")),
+        }
+    }
+    words(predicate, tables)
+        .map_or_else(String::new, |text| format!(" testing {text}"))
 }
 
 fn statement(statement: &Statement, tables: &Tables) -> String {
