@@ -47,43 +47,5 @@ pub(super) fn replace(
     parameters: &[usize],
     arguments: &[ir::Type],
 ) -> ir::Type {
-    let each = |parts: &[ir::Type]| {
-        parts
-            .iter()
-            .map(|part| replace(part, parameters, arguments))
-            .collect()
-    };
-    let one = |part: &ir::Type| {
-        alloc::boxed::Box::new(replace(part, parameters, arguments))
-    };
-    match ty {
-        ir::Type::Parameter(parameter) => parameters
-            .iter()
-            .position(|known| known == parameter)
-            .and_then(|position| arguments.get(position))
-            .map_or_else(|| ty.clone(), Clone::clone),
-        ir::Type::Unit | ir::Type::Session(_) | ir::Type::Number(_) => {
-            ty.clone()
-        }
-        ir::Type::Meaning {
-            index,
-            arguments: inner,
-        } => ir::Type::Meaning {
-            index: *index,
-            arguments: each(inner),
-        },
-        ir::Type::Tuple(parts) => ir::Type::Tuple(each(parts)),
-        ir::Type::Packed(parts) => ir::Type::Packed(each(parts)),
-        ir::Type::All(parts) => ir::Type::All(each(parts)),
-        ir::Type::Sum(parts) => ir::Type::Sum(each(parts)),
-        ir::Type::Array { element, length } => ir::Type::Array {
-            element: one(element),
-            length: one(length),
-        },
-        ir::Type::Function { parameter, result } => ir::Type::Function {
-            parameter: one(parameter),
-            result: one(result),
-        },
-        ir::Type::Not(inner) => ir::Type::Not(one(inner)),
-    }
+    ty.substituted(parameters, arguments)
 }

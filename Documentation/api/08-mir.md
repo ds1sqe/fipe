@@ -164,13 +164,16 @@ of the checker owns it.
 bytes, a tag and one eight-byte payload, immutable and shared by
 reference. It is the unit, an `Int` that fits `i64`, a `Big` integer that
 does not (never one that fits), an always finite `F32` or `F64`, text,
-bytes, a sequence (a `Vec` or an array), a tuple, a record by meaning and
+a sequence (a `Vec`, a `Deque` or an array; `Vec<U8>` is a sequence of
+integers, with no second layout), a tuple, a record by meaning and
 constructor index with its fields (every sum and product, `Bool` and
 `Maybe` included), a closure, a meaning witness, or a packed value with
 the meaning index of its tag. A closure holds its body, its captured
 values, its meanings and the prefix of spots a run-time partial
-application filled. Operations on values, big-integer arithmetic and
-float functions are the machine's.
+application filled. The operations are `value`'s, by module: `arith` on
+integers, `float` on both widths, `text`, and `structural` for equality,
+order, display and defaults by a value's tag; each Faults by a
+`value::Reason` the machine spans.
 
 `:mir` displays a checked line's program in words on both REPL builds,
 and `:mir <line>` a queried one, without internal byte offsets.

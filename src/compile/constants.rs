@@ -137,7 +137,7 @@ fn prelude(form: &ir::Form, label: &str) -> Option<Value> {
             Value::F32(value.is_finite().then_some(value)?)
         }
         ("String", ir::Form::Text(text)) => Value::Text(Rc::new(text.clone())),
-        (_, ir::Form::Bytes(bytes)) => Value::Bytes(Rc::new(bytes.clone())),
+        (_, ir::Form::Bytes(bytes)) => Value::bytes(bytes),
         (_, ir::Form::Unit) => Value::Unit,
         (label, form) => unreachable!("the prelude reads {form:?} as {label}"),
     })
@@ -228,11 +228,7 @@ fn form_record(form: &ir::Form, meaning: usize, tables: &ir::Tables) -> Value {
         ),
         ir::Form::Bytes(bytes) => (
             constructor("Bytes"),
-            alloc::vec![
-                Value::Bytes(Rc::new(bytes.clone())),
-                text(""),
-                text("")
-            ],
+            alloc::vec![Value::bytes(bytes), text(""), text("")],
         ),
         ir::Form::Unit => unreachable!("the unit has no reader"),
     };

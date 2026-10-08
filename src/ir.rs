@@ -73,6 +73,54 @@ pub enum Type {
     Sum(Vec<Self>),
 }
 
+impl Type {
+    /// This type with each of `parameters` replaced by the argument at
+    /// its position; a parameter without an argument stays.
+    #[must_use]
+    pub fn substituted(
+        &self,
+        parameters: &[usize],
+        arguments: &[Self],
+    ) -> Self {
+        let each = |parts: &[Self]| {
+            parts
+                .iter()
+                .map(|part| part.substituted(parameters, arguments))
+                .collect()
+        };
+        let one =
+            |part: &Self| Box::new(part.substituted(parameters, arguments));
+        match self {
+            Self::Parameter(parameter) => parameters
+                .iter()
+                .position(|known| known == parameter)
+                .and_then(|position| arguments.get(position))
+                .map_or_else(|| self.clone(), Clone::clone),
+            Self::Unit | Self::Session(_) | Self::Number(_) => self.clone(),
+            Self::Meaning {
+                index,
+                arguments: inner,
+            } => Self::Meaning {
+                index: *index,
+                arguments: each(inner),
+            },
+            Self::Tuple(parts) => Self::Tuple(each(parts)),
+            Self::Packed(parts) => Self::Packed(each(parts)),
+            Self::All(parts) => Self::All(each(parts)),
+            Self::Sum(parts) => Self::Sum(each(parts)),
+            Self::Array { element, length } => Self::Array {
+                element: one(element),
+                length: one(length),
+            },
+            Self::Function { parameter, result } => Self::Function {
+                parameter: one(parameter),
+                result: one(result),
+            },
+            Self::Not(inner) => Self::Not(one(inner)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Meaning {
     pub label: String,

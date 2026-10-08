@@ -434,14 +434,6 @@ fn value(value: &Value, tables: &Tables) -> String {
         Value::F32(value) => float(f64::from(*value)),
         Value::F64(value) => float(*value),
         Value::Text(text) => quoted(text),
-        Value::Bytes(bytes) => format!(
-            "bytes [{}]",
-            bytes
-                .iter()
-                .map(|byte| format!("{byte}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
         Value::Seq(parts) => format!("[{}]", values(parts, tables)),
         Value::Tuple(parts) => format!("({})", values(parts, tables)),
         Value::Record(record) => {
