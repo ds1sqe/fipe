@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 impl Infer<'_> {
     pub(super) fn record_operations(&mut self) {
         self.record_implementations();
+        self.record_operator_operands();
         self.record_readers();
         self.record_pattern_equals();
         self.record_cast_operations();
@@ -589,6 +590,42 @@ pub(super) fn apply_recorded(
 }
 
 impl Infer<'_> {
+    /// An operator supplies both its operands. A literal operand's member
+    /// resolution can record the operator's site as a member access with
+    /// its argument open, as `"a" ++ "b"` did; the right operand fills
+    /// that spot here.
+    fn record_operator_operands(&mut self) {
+        use crate::ast::ExprKind;
+        let operators: Vec<_> = self
+            .module
+            .expressions
+            .iter()
+            .filter_map(|expr| match expr.kind {
+                ExprKind::Binary {
+                    operator, right, ..
+                } => Some(((operator.start, operator.end), right)),
+                _ => None,
+            })
+            .collect();
+        for (site, right) in operators {
+            let Some(bound) = self.state.bound.get(&site) else {
+                continue;
+            };
+            let [spot] = bound.open.as_slice() else {
+                continue;
+            };
+            if bound.supplies.len() != 1 {
+                continue;
+            }
+            let mut bound = bound.clone();
+            bound
+                .supplies
+                .push((*spot, crate::typed::Supply::Expression(right)));
+            bound.open.clear();
+            self.insert(|s| &mut s.bound, site, bound);
+        }
+    }
+
     fn record_operator_binding(
         &mut self,
         callee: &super::Callee,

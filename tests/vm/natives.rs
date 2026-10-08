@@ -108,6 +108,8 @@ fn sequence_natives_fold_filter_and_sum() {
     assert_eq!(shown("len [1, 2, 3]"), "3");
     assert_eq!(shown("len \"abc\""), "3");
     assert_eq!(shown("[1] ++ [2]"), "[1, 2]");
+    assert_eq!(shown("\"a\" ++ \"b\""), "\"ab\"");
+    assert_eq!(shown("x = \"a\"\nx ++ \"b\""), "\"ab\"");
 }
 
 #[test]

@@ -113,10 +113,42 @@ impl Infer<'_> {
             let request = match selected {
                 Selected::Member { name, .. } => (name.clone(), false),
                 Selected::Static { name, .. } => (name.clone(), true),
+                Selected::Derived { kind, .. } => derived_member(*kind),
                 _ => continue,
             };
             if !requests.contains(&request) {
                 requests.push(request);
+            }
+        }
+        // A prelude word that walks its argument (`show`, `sort`, `sum`)
+        // performs a member of each value it meets; a backend finds a
+        // written one through these rows, never by a label.
+        for (site, selected) in &self.state.selected {
+            let Selected::Declared {
+                origin: crate::resolve::Origin::Prelude,
+                ..
+            } = selected
+            else {
+                continue;
+            };
+            let Some(word) = self.module.expressions.iter().find_map(|expr| {
+                match &expr.kind {
+                    crate::ast::ExprKind::Name(name)
+                        if (expr.span.start, expr.span.end) == *site =>
+                    {
+                        name.segments.last()
+                    }
+                    _ => None,
+                }
+            }) else {
+                continue;
+            };
+            for request in walked_members(word) {
+                let request =
+                    (alloc::string::String::from(request.0), request.1);
+                if !requests.contains(&request) {
+                    requests.push(request);
+                }
             }
         }
         for dispatch in self
@@ -312,4 +344,30 @@ fn renamed(ty: &Type, weak: u32) -> Type {
         })
         .collect();
     crate::types::replace(ty, &names)
+}
+
+/// The member a derived operation performs on each part it meets.
+fn derived_member(kind: crate::ir::Derived) -> (alloc::string::String, bool) {
+    let (name, receiverless) = match kind {
+        crate::ir::Derived::Eq => ("eq", false),
+        crate::ir::Derived::Cmp => ("cmp", false),
+        crate::ir::Derived::Show => ("show", false),
+        crate::ir::Derived::Default => ("default", true),
+    };
+    (alloc::string::String::from(name), receiverless)
+}
+
+/// The members a prelude word performs on the values it walks, by the
+/// claims of its declaration in `prelude/prelude.fipe`.
+fn walked_members(word: &str) -> &'static [(&'static str, bool)] {
+    match word {
+        "show" => &[("show", false)],
+        "len" => &[("len", false)],
+        "read" => &[("read", true)],
+        "concat" => &[("concat", false)],
+        "sum" => &[("add", false), ("zero", true)],
+        "count" => &[("eq", false)],
+        "sort" => &[("cmp", false)],
+        _ => &[],
+    }
 }

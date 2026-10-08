@@ -14,13 +14,12 @@ fn show_is_structural_or_the_written_member() {
         shown("type Point: Show { x: Integer, y: Integer }\nshow (Point 1 2)"),
         "\"Point 1 2\""
     );
-    // A written member spelled as a member runs its body; the word
-    // `show` on such a value reaches the prelude's generic declaration
-    // with no dispatch rows in the unit (a checker gap the report names).
-    assert_eq!(
-        shown("type Point: Show { x: Integer, y: Integer }\nimpl Point: Show { show = self => show (self.x * 10) }\np = Point 1 2\np.show"),
-        "\"10\""
-    );
+    // A written member runs its body, spelled as a member or reached
+    // through the prelude's word, alone or inside a container.
+    let written = "type Point: Show { x: Integer, y: Integer }\nimpl Point: Show { show = self => show (self.x * 10) }\np = Point 1 2\n";
+    assert_eq!(shown(&format!("{written}p.show")), "\"10\"");
+    assert_eq!(shown(&format!("{written}show p")), "\"10\"");
+    assert_eq!(shown(&format!("{written}show [p, p]")), "\"[10, 10]\"");
     assert_eq!(shown("show (Just 2)"), "\"Just 2\"");
     assert_eq!(shown("show 1.5"), "\"1.5\"");
     assert_eq!(shown("show \"a\""), "\"\\\"a\\\"\"");

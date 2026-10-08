@@ -216,7 +216,6 @@ fn a_callee_or_a_member_is_held_once_in_the_unit() {
             &field,
             1,
         ),
-        ("len [1, 2]", &declared, 1),
     ] {
         let module = parse(lex(source)).unwrap();
         let unit = check::check(
@@ -237,6 +236,27 @@ fn a_callee_or_a_member_is_held_once_in_the_unit() {
             .count();
         assert_eq!(count, expected, "{source}");
     }
+    // A word's dispatch rows hold their own target nodes; the call's
+    // callee is still one node.
+    let module = parse(lex("len [1, 2]")).unwrap();
+    let unit = check::check(
+        &module,
+        &Declarations::new(),
+        &[],
+        check::Options::default(),
+    )
+    .unwrap();
+    let tables = unit.tables();
+    let callees = tables
+        .nodes
+        .iter()
+        .filter_map(|node| match node.kind {
+            ir::Kind::Call { callee, .. } => Some(callee),
+            _ => None,
+        })
+        .filter(|callee| declared(&tables.nodes[*callee].kind, &tables))
+        .count();
+    assert_eq!(callees, 1);
 }
 
 #[test]
