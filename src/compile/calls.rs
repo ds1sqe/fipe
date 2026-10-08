@@ -1,8 +1,10 @@
-//! Calls: supplies, defaults, element supplies, open spots as thunks.
-use super::builder::Builder;
+//! Calls: supplies, defaults, element supplies, and the callee a call
+//! hands its arguments to; open spots and bare members are thunks in
+//! `thunks`, a known receiver's row is selected in `dispatch`.
+use super::{builder::Builder, thunks::argument_spot};
 use crate::{
     ir,
-    mir::{self, Callee, Operand, Rvalue, Terminator},
+    mir::{Callee, Operand, Rvalue, Terminator},
 };
 use alloc::vec::Vec;
 
@@ -16,7 +18,8 @@ pub(super) enum Target {
         constructor: usize,
         fields: Vec<usize>,
     },
-    /// A member resolved at run time by its receiver.
+    /// A member resolved by its receiver: at compile time when the
+    /// receiver is concrete, else at run time.
     Dispatch {
         member: usize,
         receiver: ir::Receiver,
@@ -25,6 +28,14 @@ pub(super) enum Target {
     Value(Operand),
     /// A conversion adapter, by its node.
     Convert(usize),
+}
+
+/// What a call hands its callee: the spots in order, the receiver's
+/// operand for a value dispatch, and the overload argument's type.
+pub(super) struct Arguments {
+    pub(super) args: Vec<Operand>,
+    pub(super) receiver: Option<Operand>,
+    pub(super) argument: Option<ir::Type>,
 }
 
 /// A call node's recorded parts.
@@ -39,7 +50,7 @@ pub(super) struct Site<'a> {
 
 impl Site<'_> {
     /// The spots filled by a supply: not a default and not left open.
-    fn supplied(&self) -> Vec<usize> {
+    pub(super) fn supplied(&self) -> Vec<usize> {
         (0..self.slots.len())
             .filter(|spot| {
                 !self.open.contains(spot)
@@ -69,7 +80,10 @@ impl Site<'_> {
     }
 
     /// The types of the open spots in order, then the result.
-    fn open_signature(&self, ty: &ir::Type) -> (Vec<ir::Type>, ir::Type) {
+    pub(super) fn open_signature(
+        &self,
+        ty: &ir::Type,
+    ) -> (Vec<ir::Type>, ir::Type) {
         let mut ty = ty;
         let mut parameters = Vec::with_capacity(self.open.len());
         for _ in self.open {
@@ -101,6 +115,11 @@ impl Builder<'_, '_> {
                 self.count();
                 Target::Static(self.declared(*index), Vec::new())
             }
+            ir::Kind::Derived { kind, ty } => {
+                self.count();
+                let ty = self.lowering.fixed(ty);
+                Target::Static(Callee::Derived { kind: *kind, ty }, Vec::new())
+            }
             ir::Kind::Constructor {
                 meaning,
                 constructor,
@@ -119,9 +138,6 @@ impl Builder<'_, '_> {
                     member: *member,
                     receiver: receiver.clone(),
                 }
-            }
-            ir::Kind::Derived { .. } => {
-                todo!("08.1 phase 2: a derived operation as a callee")
             }
             ir::Kind::Convert { .. } => {
                 self.count();
@@ -146,8 +162,7 @@ impl Builder<'_, '_> {
     pub(super) fn apply(
         &mut self,
         target: Target,
-        args: Vec<Operand>,
-        receiver: Option<Operand>,
+        arguments: Arguments,
         dest: usize,
         node: usize,
     ) -> Operand {
@@ -163,7 +178,7 @@ impl Builder<'_, '_> {
                     .fields
                     .len();
                 let mut placed: Vec<Option<Operand>> = alloc::vec![None; count];
-                for (spot, arg) in args.into_iter().enumerate() {
+                for (spot, arg) in arguments.args.into_iter().enumerate() {
                     placed[fields[spot]] = Some(arg);
                 }
                 let fields = placed
@@ -182,17 +197,16 @@ impl Builder<'_, '_> {
                 member,
                 receiver: by,
             } => {
-                let witness = match by {
-                    ir::Receiver::Value(_) => mir::Witness::Value(
-                        receiver.expect("a value receiver is supplied"),
-                    ),
-                    ir::Receiver::Meaning(ty) => mir::Witness::Meaning(ty),
+                let resolved =
+                    self.dispatched(member, &by, &arguments, dest, node);
+                let Some(resolved) = resolved else {
+                    return Operand::Local(dest);
                 };
-                (Callee::Dispatch { member, witness }, Vec::new())
+                resolved
             }
             Target::Value(operand) => (Callee::Value(operand), Vec::new()),
             Target::Convert(conversion) => {
-                let [value] = args.as_slice() else {
+                let [value] = arguments.args.as_slice() else {
                     unreachable!("a conversion takes one value")
                 };
                 return self.convert(conversion, *value, dest);
@@ -202,7 +216,7 @@ impl Builder<'_, '_> {
         self.terminate(
             Terminator::Call {
                 callee,
-                args,
+                args: arguments.args,
                 meanings,
                 dest,
                 target,
@@ -229,8 +243,8 @@ impl Builder<'_, '_> {
             open,
             ..
         } = *site;
-        self.count();
         if slots.is_empty() {
+            self.count();
             return self.lower_to(callee, dest);
         }
         let ty = &self.tables().nodes[node].ty;
@@ -264,85 +278,30 @@ impl Builder<'_, '_> {
             }
         }
         let receiver_spot = site.receiver_spot(&target);
+        let argument = argument_spot(slots.len(), receiver_spot).map(|spot| {
+            self.lowering.fixed(&self.tables().slots[slots[spot]].ty)
+        });
         if open.is_empty() {
             for (spot, default) in site.defaults {
                 self.lower_to(*default, Some(local(*spot)));
             }
+            self.count();
             let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
             let args = (0..slots.len())
                 .map(|spot| Operand::Local(local(spot)))
                 .collect();
             let receiver =
                 receiver_spot.map(|spot| Operand::Local(local(spot)));
-            return self.apply(target, args, receiver, dest, node);
+            let arguments = Arguments {
+                args,
+                receiver,
+                argument,
+            };
+            return self.apply(target, arguments, dest, node);
         }
-        let closure = self.thunk(site, &locals, target, receiver_spot);
+        let closure =
+            self.thunk(site, &locals, target, receiver_spot, argument);
+        self.count();
         self.materialize(closure, dest, ty, node)
-    }
-
-    /// The function of a call's open spots: its captures are the
-    /// supplied values, its spots the open ones in recorded order; the
-    /// defaults run when it is called, reading both.
-    fn thunk(
-        &mut self,
-        site: &Site<'_>,
-        locals: &[Option<usize>],
-        target: Target,
-        receiver_spot: Option<usize>,
-    ) -> Rvalue {
-        let Site {
-            node, slots, open, ..
-        } = *site;
-        let supplied = site.supplied();
-        let mut captures: Vec<Operand> = supplied
-            .iter()
-            .map(|spot| Operand::Local(locals[*spot].expect("a supplied spot")))
-            .collect();
-        let (target, callee_capture) = match target {
-            Target::Value(operand) => {
-                captures.push(operand);
-                (None, Some(captures.len() - 1))
-            }
-            target => (Some(target), None),
-        };
-        let (parameters, result) =
-            site.open_signature(&self.tables().nodes[node].ty);
-        let hidden = self.hidden.clone();
-        let mut builder =
-            Builder::new(self.lowering, node, result, hidden, Vec::new());
-        builder.captures = captures.len();
-        builder.count();
-        for (spot, ty) in open.iter().zip(parameters) {
-            builder.spot(Some(slots[*spot]), ty, node);
-        }
-        let inner: Vec<usize> = slots
-            .iter()
-            .map(|slot| builder.slot_local(*slot, node))
-            .collect();
-        for (position, spot) in supplied.iter().enumerate() {
-            builder.assign(
-                inner[*spot],
-                Rvalue::Use(Operand::Capture(position)),
-                node,
-            );
-        }
-        for (spot, default) in site.defaults {
-            builder.lower_to(*default, Some(inner[*spot]));
-        }
-        let target = target.unwrap_or_else(|| {
-            Target::Value(Operand::Capture(
-                callee_capture.expect("a value callee is captured"),
-            ))
-        });
-        let args = inner.iter().copied().map(Operand::Local).collect();
-        let receiver = receiver_spot.map(|spot| Operand::Local(inner[spot]));
-        builder.apply(target, args, receiver, 0, node);
-        builder.terminate(Terminator::Return, node);
-        let body = builder.finish(None);
-        Rvalue::Closure {
-            body,
-            captures,
-            meanings: self.inherited(),
-        }
     }
 }

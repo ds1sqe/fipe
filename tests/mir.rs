@@ -79,7 +79,11 @@ fn an_operand_is_sixteen_bytes() {
 
 #[path = "mir/calls.rs"]
 mod calls;
+#[path = "mir/examples.rs"]
+mod examples;
 #[path = "mir/outcomes.rs"]
 mod outcomes;
+#[path = "mir/patterns.rs"]
+mod patterns;
 #[path = "mir/walk.rs"]
 mod walk;

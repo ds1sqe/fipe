@@ -1,13 +1,17 @@
 //! Literals: a prelude reader's value is prepared now; another reader
 //! runs on the written form.
-use super::{builder::Builder, calls::Target};
+use super::{
+    builder::Builder,
+    calls::{Arguments, Target},
+    dispatch,
+};
 use crate::{
     ir,
-    mir::{Operand, Terminator},
+    mir::Operand,
     token::Magnitude,
     value::{BigInt, Record, Value},
 };
-use alloc::{format, rc::Rc, string::String, vec::Vec};
+use alloc::{format, rc::Rc, string::String};
 
 impl Builder<'_, '_> {
     /// A literal node, counted by the caller.
@@ -19,17 +23,10 @@ impl Builder<'_, '_> {
         dest: Option<usize>,
     ) -> Operand {
         let tables = self.tables();
-        let prepared = match reader {
-            None => Some(plain(form)),
-            Some(reader) => match &tables.nodes[reader].kind {
-                ir::Kind::Declared(index) if self.lowering.native(*index) => {
-                    let label =
-                        result_label(&tables.declarations[*index].ty, tables);
-                    prelude(form, label)
-                }
-                _ => None,
-            },
-        };
+        let prepared = reader.map_or_else(
+            || Some(plain(form)),
+            |reader| self.prepared(reader, form),
+        );
         if let Some(value) = prepared {
             let constant = self.lowering.constant(value);
             return self.place(Operand::Const(constant), dest, node);
@@ -46,50 +43,52 @@ impl Builder<'_, '_> {
         let constant = self.lowering.constant(record);
         let ty = tables.nodes[node].ty.clone();
         let dest = dest.unwrap_or_else(|| self.local(ty, None));
-        let args = alloc::vec![Operand::Const(constant)];
-        match self.callee(reader) {
-            Target::Static(callee, meanings) => {
-                let target = self.open(node);
-                self.terminate(
-                    Terminator::Call {
-                        callee,
-                        args,
-                        meanings,
-                        dest,
-                        target,
-                    },
-                    node,
-                );
-                self.switch_to(target);
-            }
-            Target::Dispatch { member, receiver } => {
-                let ir::Receiver::Meaning(ty) = receiver else {
-                    unreachable!("a literal reader dispatches on its meaning")
+        let target = self.callee(reader);
+        assert!(
+            !matches!(target, Target::Construct { .. } | Target::Value(_)),
+            "a literal reader is a member or a declaration"
+        );
+        let arguments = Arguments {
+            args: alloc::vec![Operand::Const(constant)],
+            receiver: None,
+            argument: Some((**parameter).clone()),
+        };
+        self.apply(target, arguments, dest, node)
+    }
+
+    /// The value a reader prepares now: the prelude's reader, named or
+    /// selected by a concrete meaning.
+    fn prepared(&self, reader: usize, form: &ir::Form) -> Option<Value> {
+        let tables = self.tables();
+        let declaration = match &tables.nodes[reader].kind {
+            ir::Kind::Declared(index) => *index,
+            ir::Kind::Dispatch {
+                receiver: ir::Receiver::Meaning(ty),
+                member,
+            } => {
+                let ty = self.lowering.fixed(ty);
+                if !dispatch::concrete(&ty) {
+                    return None;
+                }
+                let ir::Type::Function { parameter, .. } =
+                    &tables.nodes[reader].ty
+                else {
+                    unreachable!("a reader takes the form")
                 };
-                let callee = crate::mir::Callee::Dispatch {
-                    member,
-                    witness: crate::mir::Witness::Meaning(ty),
-                };
-                let target = self.open(node);
-                self.terminate(
-                    Terminator::Call {
-                        callee,
-                        args,
-                        meanings: Vec::new(),
-                        dest,
-                        target,
-                    },
-                    node,
-                );
-                self.switch_to(target);
+                let selected =
+                    dispatch::select(tables, *member, &ty, Some(parameter))?;
+                match tables.dispatch[*member].rows[selected.row].target {
+                    ir::Implementation::Declared(index) => index,
+                    _ => return None,
+                }
             }
-            Target::Construct { .. }
-            | Target::Value(_)
-            | Target::Convert(_) => {
-                unreachable!("a literal reader is a member or a declaration")
-            }
+            _ => return None,
+        };
+        if !self.lowering.native(declaration) {
+            return None;
         }
-        Operand::Local(dest)
+        let label = result_label(&tables.declarations[declaration].ty, tables);
+        prelude(form, label)
     }
 }
 

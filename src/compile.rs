@@ -8,16 +8,20 @@ mod adapters;
 mod bodies;
 mod builder;
 mod calls;
+mod cases;
+mod columns;
 mod constants;
+pub(crate) mod dispatch;
 mod meanings;
 mod outcomes;
+mod patterns;
 mod thunks;
 
 use crate::{ir, mir, mir::Terminator, value::Value};
 use alloc::{rc::Rc, vec::Vec};
-use bodies::build_function;
 use builder::Builder;
 use core::cell::Ref;
+use patterns::build_function;
 
 /// Lower a checked unit to the program every backend consumes.
 ///
@@ -35,23 +39,36 @@ pub fn compile(unit: &ir::Unit) -> mir::Program {
         bodies: Vec::new(),
         constants: Vec::new(),
         definitions: alloc::vec![None; tables.definitions.len()],
+        tests: alloc::vec![None; tables.tests.len()],
         pending: Vec::new(),
     };
     let main = lowering.lines(&unit.main);
     let inits = (0..tables.modules.len())
         .map(|module| (module, lowering.lines(&tables.modules[module].lines)))
         .collect();
-    while let Some((definition, body)) = lowering.pending.pop() {
-        lowering.definition(definition, body);
+    while let Some(pending) = lowering.pending.pop() {
+        match pending {
+            Pending::Definition(definition, body) => {
+                lowering.definition(definition, body);
+            }
+            Pending::Test(test, body) => lowering.test(test, body),
+        }
     }
     mir::Program {
         tables: Rc::clone(&unit.tables),
         bodies: lowering.bodies,
         constants: lowering.constants,
         definitions: lowering.definitions,
+        tests: lowering.tests,
         inits,
         main,
     }
+}
+
+/// A body reserved but not yet lowered.
+enum Pending {
+    Definition(usize, usize),
+    Test(usize, usize),
 }
 
 /// The program under construction.
@@ -62,8 +79,9 @@ struct Lowering<'a> {
     bodies: Vec<mir::Body>,
     constants: Vec<Value>,
     definitions: Vec<Option<usize>>,
-    /// Definitions whose body index is reserved but not yet lowered.
-    pending: Vec<(usize, usize)>,
+    tests: Vec<Option<usize>>,
+    /// Bodies whose index is reserved but not yet lowered.
+    pending: Vec<Pending>,
 }
 
 impl Lowering<'_> {
@@ -79,8 +97,44 @@ impl Lowering<'_> {
         }
         let body = self.reserve(node);
         self.definitions[definition] = Some(body);
-        self.pending.push((definition, body));
+        self.pending.push(Pending::Definition(definition, body));
         Some(body)
+    }
+
+    /// The body of a limit test, reserved on first use.
+    fn test_body(&mut self, test: usize) -> usize {
+        if let Some(body) = self.tests[test] {
+            return body;
+        }
+        let body = self.reserve(self.tables.tests[test].body);
+        self.tests[test] = Some(body);
+        self.pending.push(Pending::Test(test, body));
+        body
+    }
+
+    /// Lower every test a predicate composes, so a backend finds them.
+    pub(super) fn reach_predicate(&mut self, predicate: &ir::Predicate) {
+        match predicate {
+            ir::Predicate::Nonzero { .. } => (),
+            ir::Predicate::Function { parameter, result } => {
+                self.reach_predicate(parameter);
+                self.reach_predicate(result);
+            }
+            ir::Predicate::All(parts) | ir::Predicate::Any(parts) => {
+                for part in parts {
+                    self.reach_predicate(part);
+                }
+            }
+            ir::Predicate::Not(inner) => self.reach_predicate(inner),
+            ir::Predicate::Test { index, .. } => {
+                self.test_body(*index);
+            }
+        }
+    }
+
+    /// A type with every fixed session meaning substituted.
+    pub(super) fn fixed(&self, ty: &ir::Type) -> ir::Type {
+        dispatch::fixed(self.tables, ty)
     }
 
     /// A body index with a placeholder, filled when it is lowered, so a
@@ -173,5 +227,24 @@ impl Lowering<'_> {
             unreachable!("a reserved body is a function")
         };
         build_function(self, node, hidden, captures, arms, Some(body));
+    }
+
+    /// A limit test's reserved body: one spot, the self slot.
+    pub(super) fn test(&mut self, test: usize, body: usize) {
+        let ir::Test {
+            parameters,
+            body: node,
+            self_slot,
+            ..
+        } = &self.tables.tests[test];
+        let (node, self_slot) = (*node, *self_slot);
+        let hidden = parameters.clone();
+        let result = self.tables.nodes[node].ty.clone();
+        let self_ty = self.tables.slots[self_slot].ty.clone();
+        let mut builder = Builder::new(self, node, result, hidden, Vec::new());
+        builder.spot(Some(self_slot), self_ty, node);
+        builder.lower_to(node, Some(0));
+        builder.terminate(Terminator::Return, node);
+        builder.finish(Some(body));
     }
 }

@@ -1,12 +1,12 @@
 //! The expression walk: one IR node to statements and blocks.
-use super::{builder::Builder, Lowering};
+use super::{builder::Builder, patterns::build_function};
 use crate::{
     ir,
     mir::{self, Operand, Rvalue, Statement, Terminator},
 };
 use alloc::vec::Vec;
 
-impl Builder<'_, '_> {
+impl<'a> Builder<'_, 'a> {
     pub(super) fn lower(&mut self, node: usize) -> Operand {
         self.lower_to(node, None)
     }
@@ -51,7 +51,14 @@ impl Builder<'_, '_> {
             ir::Kind::Definition { index, meanings } => {
                 self.definition(*index, meanings, ty, node, dest)
             }
-            ir::Kind::Declared(_) | ir::Kind::Constructor { .. } => {
+            ir::Kind::Dispatch {
+                receiver: ir::Receiver::Value(value),
+                member,
+            } => self.member(node, *member, *value, dest),
+            ir::Kind::Declared(_)
+            | ir::Kind::Constructor { .. }
+            | ir::Kind::Derived { .. }
+            | ir::Kind::Dispatch { .. } => {
                 self.count();
                 if let Some(value) = self.nullary(node, dest) {
                     return value;
@@ -59,16 +66,13 @@ impl Builder<'_, '_> {
                 let closure = self.thunk_of(node);
                 self.materialize(closure, dest, ty, node)
             }
-            ir::Kind::Derived { .. } | ir::Kind::Dispatch { .. } => {
-                todo!("08.1 phase 2: a member or derived operation as a value")
-            }
             ir::Kind::Construct { .. }
             | ir::Kind::Field { .. }
             | ir::Kind::Tuple(_)
             | ir::Kind::Array(_)
             | ir::Kind::Repeat { .. } => {
-                self.count();
                 let rvalue = self.container(kind);
+                self.count();
                 self.materialize(rvalue, dest, ty, node)
             }
             ir::Kind::Call {
@@ -106,7 +110,7 @@ impl Builder<'_, '_> {
     fn control(
         &mut self,
         node: usize,
-        kind: &ir::Kind,
+        kind: &'a ir::Kind,
         dest: Option<usize>,
     ) -> Operand {
         match kind {
@@ -115,7 +119,6 @@ impl Builder<'_, '_> {
                 then_body,
                 else_body,
             } => {
-                self.count();
                 self.conditional(node, *condition, *then_body, *else_body, dest)
             }
             ir::Kind::Block(parts) => {
@@ -123,14 +126,14 @@ impl Builder<'_, '_> {
                 self.sequence(node, parts, dest)
             }
             ir::Kind::Bind { pattern, value } => {
-                self.count();
                 self.bind(node, pattern, *value);
+                self.count();
                 let unit = self.lowering.constant(crate::value::Value::Unit);
                 self.place(Operand::Const(unit), dest, node)
             }
             ir::Kind::With { key, value, body } => {
-                self.count();
                 let value = self.lower(*value);
+                self.count();
                 self.emit(Statement::Push { key: *key, value }, node);
                 let result = self.lower_to(*body, dest);
                 self.emit(Statement::Pop, node);
@@ -199,7 +202,7 @@ impl Builder<'_, '_> {
         node: usize,
         hidden: &[usize],
         captures: &[usize],
-        arms: &[ir::Arm],
+        arms: &'a [ir::Arm],
     ) -> Rvalue {
         assert!(
             hidden.is_empty(),
@@ -260,14 +263,9 @@ impl Builder<'_, '_> {
         else {
             unreachable!("a condition is a Bool")
         };
-        let constructor = |label: &str| {
-            tables.meanings[*bool]
-                .constructors
-                .iter()
-                .position(|constructor| constructor.label == label)
-                .expect("Bool's constructors")
-        };
+        let (yes, no) = super::patterns::true_false(tables, *bool);
         let value = self.lower(condition);
+        self.count();
         let dest = dest
             .unwrap_or_else(|| self.local(tables.nodes[node].ty.clone(), None));
         let then_block = self.open(node);
@@ -276,10 +274,7 @@ impl Builder<'_, '_> {
         self.terminate(
             Terminator::Switch {
                 value,
-                cases: alloc::vec![
-                    (constructor("True"), then_block),
-                    (constructor("False"), else_block),
-                ],
+                cases: alloc::vec![(yes, then_block), (no, else_block)],
                 otherwise: None,
             },
             node,
@@ -311,7 +306,7 @@ impl Builder<'_, '_> {
         self.lower_to(*last, dest)
     }
 
-    fn bind(&mut self, node: usize, pattern: &ir::Pattern, value: usize) {
+    fn bind(&mut self, node: usize, pattern: &'a ir::Pattern, value: usize) {
         match &pattern.kind {
             ir::PatternKind::Any => {
                 self.lower(value);
@@ -330,56 +325,10 @@ impl Builder<'_, '_> {
                     self.lower_to(value, Some(local));
                 }
             }
-            _ => todo!("08.1 phase 2: a binding pattern with parts"),
+            _ => {
+                let value = self.lower(value);
+                self.bind_pattern(pattern, value, node);
+            }
         }
     }
-}
-
-/// The spot types of a function type, in order, then its result.
-fn signature(ty: &ir::Type, arity: usize) -> (Vec<ir::Type>, ir::Type) {
-    let mut spots = Vec::with_capacity(arity);
-    let mut ty = ty;
-    while spots.len() < arity {
-        let ir::Type::Function { parameter, result } = ty else {
-            unreachable!("a function of {arity} spots")
-        };
-        spots.push((**parameter).clone());
-        ty = result;
-    }
-    (spots, ty.clone())
-}
-
-/// Build a function body from its arms; into `reserved` for a definition.
-pub(super) fn build_function(
-    lowering: &mut Lowering<'_>,
-    node: usize,
-    hidden: &[usize],
-    captures: &[usize],
-    arms: &[ir::Arm],
-    reserved: Option<usize>,
-) -> usize {
-    let [arm] = arms else {
-        todo!("08.1 phase 2: a function with several arms")
-    };
-    assert!(arm.guard.is_none(), "08.1 phase 2: a guarded arm");
-    let (spots, result) =
-        signature(&lowering.tables.nodes[node].ty, arm.patterns.len());
-    let mut builder = Builder::new(
-        lowering,
-        node,
-        result,
-        hidden.to_vec(),
-        captures.to_vec(),
-    );
-    for (pattern, ty) in arm.patterns.iter().zip(spots) {
-        let slot = match &pattern.kind {
-            ir::PatternKind::Slot(slot) => Some(*slot),
-            ir::PatternKind::Any => None,
-            _ => todo!("08.1 phase 2: a spot pattern with parts"),
-        };
-        builder.spot(slot, ty, node);
-    }
-    builder.lower_to(arm.body, Some(0));
-    builder.terminate(Terminator::Return, node);
-    builder.finish(reserved)
 }

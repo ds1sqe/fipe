@@ -21,6 +21,9 @@ pub struct Program {
     /// `tables.definitions`; `None` for a value definition (a global)
     /// or one this program does not reach.
     pub definitions: Vec<Option<usize>>,
+    /// The body of each limit test a gate or an entry reaches, sized to
+    /// `tables.tests`; arity one, the self slot.
+    pub tests: Vec<Option<usize>>,
     /// A module index with its init body, in file order; a backend runs
     /// each not yet initialized before `main`.
     pub inits: Vec<(usize, usize)>,
@@ -117,7 +120,11 @@ pub enum Rvalue {
         value: Operand,
         length: Length,
     },
+    /// A record's field, a tuple's part, a sequence's element, or a
+    /// packed value's payload at `0`.
     Field(Operand, usize),
+    /// The element count of a sequence, as an integer.
+    Length(Operand),
     /// `meanings` are substituted by the creating frame.
     Closure {
         body: usize,
@@ -168,7 +175,8 @@ pub enum Length {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Terminator {
     Goto(usize),
-    /// Constructor index to block.
+    /// Constructor index to block; on a packed value the cases are
+    /// meaning indices, on an integer the numbers.
     Switch {
         value: Operand,
         cases: Vec<(usize, usize)>,
@@ -191,6 +199,9 @@ pub enum Terminator {
         target: usize,
     },
     Return,
+    /// A block coverage proves no run reaches; reaching it is a crate
+    /// defect.
+    Unreachable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -201,6 +212,12 @@ pub enum Callee {
     /// A declaration of another namespace, by `tables.declarations`;
     /// the backend hands the call to the host.
     Host(usize),
+    /// A derived operation the backend performs structurally on the
+    /// type, substituted by the frame when it holds a parameter.
+    Derived {
+        kind: ir::Derived,
+        ty: ir::Type,
+    },
     /// Resolved at run time by the witness.
     Dispatch {
         member: usize,

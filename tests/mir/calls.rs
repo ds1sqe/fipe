@@ -64,10 +64,12 @@ fn supplies_then_defaults_then_the_call() {
             matches!(statement, Statement::Assign(_, Rvalue::Use(Operand::Const(index))) if *index == sixteen)
         })
         .expect("16 is evaluated into the spot");
+    let tables = program.tables.borrow();
     let default = call_block(body, |callee| {
-        matches!(callee, Callee::Dispatch { member, .. } if label(&program, *member) == "div")
+        matches!(callee, Callee::Native(index) if tables.declarations[*index].label == "div")
     })
-    .expect("the default divides");
+    .expect("the default divides by the prelude's row");
+    drop(tables);
     let call = call_block(body, |callee| matches!(callee, Callee::Body(_)))
         .expect("the body is called");
     assert!(default < call, "the default runs before the call");

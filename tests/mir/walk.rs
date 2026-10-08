@@ -12,6 +12,11 @@ pub fn check_program(program: &Program) {
     for body in program.definitions.iter().flatten() {
         assert!(*body < program.bodies.len());
     }
+    assert_eq!(program.tests.len(), tables.tests.len());
+    for body in program.tests.iter().flatten() {
+        assert!(*body < program.bodies.len());
+        assert_eq!(program.bodies[*body].arity, 1, "a test takes its self");
+    }
     for (module, body) in &program.inits {
         assert!(*module < tables.modules.len());
         assert!(*body < program.bodies.len());
@@ -71,7 +76,9 @@ pub fn check_program(program: &Program) {
             if let Some(Statement::Charge(count)) = block.statements.first() {
                 assert!(
                     *count >= lowered.len(),
-                    "a charge covers every node with a statement"
+                    "a charge covers every node with a statement: body of \
+                     node {} charges {count} for {lowered:?} in {block:?}",
+                    body.node
                 );
             }
             check_terminator(program, &tables, body, &block.terminator);
@@ -127,7 +134,9 @@ fn check_rvalue(
     rvalue: &Rvalue,
 ) {
     match rvalue {
-        Rvalue::Use(value) | Rvalue::Field(value, _) => {
+        Rvalue::Use(value)
+        | Rvalue::Field(value, _)
+        | Rvalue::Length(value) => {
             check_operand(program, body, value);
         }
         Rvalue::Construct {
@@ -258,6 +267,7 @@ fn check_terminator(
                     let namespace = tables.declarations[*index].namespace;
                     assert_ne!(tables.namespaces[namespace], "prelude");
                 }
+                Callee::Derived { ty, .. } => check_type(tables, ty),
                 Callee::Dispatch { member, witness } => {
                     assert!(*member < tables.dispatch.len());
                     match witness {
@@ -272,7 +282,7 @@ fn check_terminator(
                 Callee::Value(value) => check_operand(program, body, value),
             }
         }
-        Terminator::Return => (),
+        Terminator::Return | Terminator::Unreachable => (),
     }
 }
 
@@ -313,6 +323,7 @@ fn check_result_paths(body: &fipe::mir::Body) {
             Terminator::Return => {
                 assert!(assigned, "block {index} returns without a result");
             }
+            Terminator::Unreachable => (),
         }
     }
 }
@@ -375,6 +386,14 @@ fn check_type(tables: &ir::Tables, ty: &ir::Type) {
 #[test]
 fn straight_line_programs_walk() {
     for source in super::STRAIGHT_LINES {
+        let (_, program) = super::program(source);
+        check_program(&program);
+    }
+}
+
+#[test]
+fn arm_list_programs_walk() {
+    for source in super::patterns::ARM_LISTS {
         let (_, program) = super::program(source);
         check_program(&program);
     }

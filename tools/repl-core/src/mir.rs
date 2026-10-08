@@ -1,7 +1,7 @@
 use super::{ir::meaning, Outs};
 use alloc::{format, string::String, vec::Vec};
 use fipe::{
-    ir::{Kind, Tables, Unit},
+    ir::{Derived, Kind, Predicate, Tables, Unit},
     mir::{Callee, Operand, Program, Rvalue, Statement, Terminator, Witness},
     value::Value,
 };
@@ -79,6 +79,18 @@ fn role(program: &Program, body: usize, tables: &Tables) -> String {
     {
         return format!("init {}", tables.modules[*module].label);
     }
+    if let Some(test) =
+        program.tests.iter().position(|known| *known == Some(body))
+    {
+        return tables
+            .entries
+            .iter()
+            .find(|entry| mentions(&entry.predicate, test))
+            .map_or_else(
+                || format!("test {test}"),
+                |entry| format!("test {}", entry.label),
+            );
+    }
     match &tables.nodes[program.bodies[body].node].kind {
         Kind::Function { .. } => String::from("function"),
         Kind::Call { .. } => String::from("partial call"),
@@ -91,6 +103,30 @@ fn role(program: &Program, body: usize, tables: &Tables) -> String {
             ..
         } => format!("constructor {}", label(*meaning, *constructor, tables)),
         _ => String::from("body"),
+    }
+}
+
+/// Whether a predicate composes the test.
+fn mentions(predicate: &Predicate, test: usize) -> bool {
+    match predicate {
+        Predicate::Nonzero { .. } => false,
+        Predicate::Function { parameter, result } => {
+            mentions(parameter, test) || mentions(result, test)
+        }
+        Predicate::All(parts) | Predicate::Any(parts) => {
+            parts.iter().any(|part| mentions(part, test))
+        }
+        Predicate::Not(inner) => mentions(inner, test),
+        Predicate::Test { index, .. } => *index == test,
+    }
+}
+
+const fn derived(kind: Derived) -> &'static str {
+    match kind {
+        Derived::Eq => "equality",
+        Derived::Cmp => "comparison",
+        Derived::Show => "display",
+        Derived::Default => "default",
     }
 }
 
@@ -162,6 +198,9 @@ fn rvalue(rvalue: &Rvalue, tables: &Tables) -> String {
         ),
         Rvalue::Field(value, index) => {
             format!("field {index} of {}", operand(value, tables))
+        }
+        Rvalue::Length(value) => {
+            format!("length of {}", operand(value, tables))
         }
         Rvalue::Closure {
             body,
@@ -295,6 +334,9 @@ fn callee(callee: &Callee, tables: &Tables) -> String {
         Callee::Body(body) => format!("body {body}"),
         Callee::Native(index) => format!("native {}", declared(*index, tables)),
         Callee::Host(index) => format!("host {}", declared(*index, tables)),
+        Callee::Derived { kind, ty } => {
+            format!("derived {} of {}", derived(*kind), meaning(ty, tables))
+        }
         Callee::Dispatch { member, witness } => format!(
             "dispatch {} by {}",
             tables.dispatch[*member].label,
@@ -322,24 +364,32 @@ fn terminator(
             cases,
             otherwise,
         } => {
-            let meaning = match value {
-                Operand::Local(index) => match &body.locals[*index].ty {
-                    fipe::ir::Type::Meaning { index, .. } => Some(*index),
-                    _ => None,
-                },
+            let ty = match value {
+                Operand::Local(index) => Some(&body.locals[*index].ty),
                 _ => None,
             };
             let cases: Vec<_> = cases
                 .iter()
-                .map(|(constructor, block)| {
-                    let name = meaning.map_or_else(
-                        || format!("constructor {constructor}"),
-                        |meaning| {
-                            tables.meanings[meaning].constructors[*constructor]
-                                .label
-                                .clone()
-                        },
-                    );
+                .map(|(key, block)| {
+                    let name = match ty {
+                        Some(fipe::ir::Type::Meaning { index, .. })
+                            if tables.meanings[*index].label == "Integer" =>
+                        {
+                            format!("{key}")
+                        }
+                        Some(fipe::ir::Type::Meaning { index, .. }) => tables
+                            .meanings[*index]
+                            .constructors
+                            .get(*key)
+                            .map_or_else(
+                                || format!("case {key}"),
+                                |constructor| constructor.label.clone(),
+                            ),
+                        Some(fipe::ir::Type::Packed(_)) => {
+                            tables.meanings[*key].label.clone()
+                        }
+                        _ => format!("case {key}"),
+                    };
                     format!("{name} to block {block}")
                 })
                 .chain(
@@ -369,6 +419,7 @@ fn terminator(
             meanings(hidden, tables)
         ),
         Terminator::Return => String::from("return"),
+        Terminator::Unreachable => String::from("unreachable"),
     }
 }
 
@@ -417,6 +468,11 @@ fn value(value: &Value, tables: &Tables) -> String {
             format!("function of body {}", closure.body)
         }
         Value::Meaning(ty) => meaning(ty, tables),
+        Value::Packed(packed) => format!(
+            "{} {}",
+            tables.meanings[packed.meaning].label,
+            self::value(&packed.value, tables)
+        ),
     }
 }
 

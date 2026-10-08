@@ -221,7 +221,6 @@ impl Builder<'_, '_> {
         self.assign(dest, Rvalue::Use(outcome), node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(hit);
-        self.count();
         match payload.map(|payload| &payload.kind) {
             None | Some(ir::PatternKind::Any) => (),
             Some(ir::PatternKind::Slot(slot)) => {
@@ -233,6 +232,7 @@ impl Builder<'_, '_> {
             }
         }
         let result = self.lower(body);
+        self.count();
         self.rebuild(rebuild, constructor, ty, result, dest, node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(join);
@@ -277,8 +277,8 @@ impl Builder<'_, '_> {
         self.assign(dest, rvalue, node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(taken);
-        self.count();
         self.lower_to(right, Some(dest));
+        self.count();
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(join);
         Operand::Local(dest)
@@ -319,13 +319,14 @@ impl Builder<'_, '_> {
         self.assign(dest, Rvalue::Use(value), node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(taken);
-        self.count();
         match rebuild {
             None => {
                 self.lower_to(right, Some(dest));
+                self.count();
             }
             Some(rebuild) => {
                 let result = self.lower(right);
+                self.count();
                 self.rebuild(rebuild, GOOD, ty, result, dest, node);
             }
         }

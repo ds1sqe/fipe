@@ -1104,7 +1104,7 @@ fn mir_shows_bodies_locals_blocks_and_charges_in_words() {
     assert!(text.contains("body 0: definition f"), "{text}");
     assert!(text.contains("constant 0 = 16"), "{text}");
     assert!(text.contains("_1 = constant 0"), "{text}");
-    assert!(text.contains("dispatch div by value"), "{text}");
+    assert!(text.contains("call native prelude.div"), "{text}");
     assert!(
         text.contains("call body 0 (_1, _2) with meanings (Integer) into _0"),
         "{text}"

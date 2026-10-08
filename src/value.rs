@@ -27,6 +27,15 @@ pub enum Value {
     Function(Rc<Closure>),
     /// A hidden meaning: the witness a generic body dispatches on.
     Meaning(Rc<ir::Type>),
+    /// A value of a packed type with the meaning index of its tag.
+    Packed(Rc<Packed>),
+}
+
+/// A packed value: the meaning it was packed as, and the value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Packed {
+    pub meaning: usize,
+    pub value: Value,
 }
 
 /// A constructed value of a meaning, by constructor index.
