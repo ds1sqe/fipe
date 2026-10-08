@@ -14,6 +14,7 @@ mod constants;
 pub(crate) mod dispatch;
 mod meanings;
 mod outcomes;
+mod parts;
 mod patterns;
 mod thunks;
 

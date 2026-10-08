@@ -2,7 +2,8 @@
 //! column split into one branch per key, each row specialized to it.
 use super::{
     builder::Builder,
-    patterns::{replace, result_meaning, Cases, Match, Row, Shape},
+    parts::Shape,
+    patterns::{replace, result_meaning, Cases, Match, Row},
 };
 use crate::{
     ir::{Pattern, PatternKind, Type},
