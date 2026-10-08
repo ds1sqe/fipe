@@ -18,7 +18,10 @@ file sources through the [embedding API](../api/09-embed.md).
 `use module` runs a module once per unit, where its first `use` stands:
 its bindings in order, effects included; a later `use` of it only brings
 names into scope. `use module n` requests a host-declared API version;
-`use module.name …` brings names into scope. A used module holds items and
+`use module.name …` brings names into scope. A session line whose unit
+dispatches on a session meaning no earlier line fixed is the check error
+naming it; any other line runs, and a value once computed is never
+recomputed when a later line fixes the meaning. A used module holds items and
 bindings only; another top-level line in it is the check error "a used
 module has no main", and a `use` that reaches its own module is the check
 error "import cycle" at that `use`. What `pub` exports is
@@ -107,9 +110,15 @@ are compared under one host contract.
 
 The host supplies a finite budget before a run; a script cannot raise it.
 Exhaustion is a Fault before the chargeable action that cannot be paid,
-and no backend, runtime check or dictionary call bypasses charging. H1
-defines the semantic charge points and byte count; raw VM instructions are
-not an accepted measure, since parity would then depend on optimization.
+and no backend, runtime check or dictionary call bypasses charging. The
+charge is one unit per node of the checked unit's intermediate form that
+is evaluated, plus size terms: an `Integer` operation one per 64-bit limb
+of the larger operand for `add`, `sub`, `eq` and `cmp` and the product of
+the limb counts for `mul`, `div` and `rem`; a container operation one per
+element visited; a test the evaluation of its limit; a skipped side,
+branch or arm nothing; a host call one plus its bytes (H1). The nodes are
+the checker's and every backend evaluates the same, so raw instructions
+never measure: parity would then depend on optimization.
 The host also sets the compile budget and the strict session
 ([checks](07-checks.md) §Modes); both are inputs of the observation, and the
 compile budget is part of the checked unit, as host constants are.
@@ -130,4 +139,4 @@ Addresses, allocation and instruction layout are not observations; a
 backend may optimize only while preserving the observation. The checker
 emits one typed intermediate form. The VM is the first backend and the
 oracle for a later native one; an LLVM backend would be a separate crate.
-Float observations and host nondeterminism await E2 and H1.
+Host nondeterminism awaits H1.

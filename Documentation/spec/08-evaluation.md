@@ -1,8 +1,8 @@
 # Evaluation
 
 `e ⇓ v` denotes a value, `e ⇑ F` a Fault; a demanded subexpression that
-Faults ends the run. E1, E2 and T5 in [open decisions](11-open.md) hold the
-proposals cited here.
+Faults ends the run. E1 and E2 are ruled; T5 in [open decisions](11-open.md)
+holds the proposals cited here.
 
 ## Order
 
@@ -137,5 +137,14 @@ is a host command with a value-last spot, in [embedding](09-host.md).
 `Integer`'s members never wrap and nothing overflows. `div` truncates
 toward zero and `rem` takes the dividend's sign; division by zero is a
 Fault. A width is a limit of the place ([members](04-members.md) §Number
-types). E2 specifies float division and overflow, NaNs and ordering;
-constant evaluation obeys the same rules.
+types). `F32` and `F64` are IEEE 754 binary32 and binary64, rounded to
+nearest, ties to even. No non-finite value exists: an operation whose
+result would be an infinity or a NaN Faults, so `1.0 / 0.0`, `0.0 / 0.0`,
+`1e308 * 10.0` and `sqrt -1.0` Fault; underflow and inexact results
+round. `-0.0` is a value, equal to `0.0` under `eq` and `cmp`, shown as
+`-0.0`. `show` writes the shortest decimal that reads back to the value,
+with a fraction part and no exponent; `round` is ties to even, `floor`,
+`ceil` and `trunc` the other roundings. A fraction literal at a float
+place is the nearest float of its width, by the literal member; the
+number row between meanings stays exact or Fault. Constant evaluation
+obeys the same rules.

@@ -180,8 +180,8 @@ all are `Integer`. Only the way down can fail, at the place, by
 followed by the way down. Each width names `Bits<n>` beside its range,
 signed when the range holds a negative.
 
-`F32` and `F64` are two meanings with IEEE 754 members (E2). They have no
-ranges: NaN is unordered.
+`F32` and `F64` are two meanings with IEEE 754 members ([evaluation](08-evaluation.md)
+§Arithmetic): no value is infinite or NaN, so both are ordered.
 
 ## Prelude
 

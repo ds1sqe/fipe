@@ -85,40 +85,45 @@ parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays
 - A bracket pattern for a program's own type; arrays and `Vec` only now.
 - Marked pipes on a user meaning through `then`, `pure`, `or`, `empty`.
 
-## E1 — Evaluation and outcome rebuilding
+## E1 — Evaluation and outcome rebuilding (ruled)
 
-**Proposed:** strict left-to-right evaluation, each supplied expression once,
-defaults in parameter order. When a marked pipe's return could be either a
-payload or the same outcome family, prefer the latter; use an explicit
-constructor for nesting. Keep Bool to `||`/`&&` until `Bool |:`/`|!` has a
-defined payload. Until failing non-success patterns are defined, a binding
-pattern neither total nor a good side is a check error; a good-side miss
-ends the implicit main as it ends any body.
-Test cases: `Just 1 |: (_ => Just 2)` yields `Just 2`; an inactive branch does
-not call the host; `[x] = []` must have a defined rejection or outcome.
+Ruled 2026-10-08 as [evaluation](08-evaluation.md) §Order and §Marked
+pipes state: strict left to right, each supplied expression once, defaults
+in parameter order, the same-family reading of a marked pipe's return
+preferred and recorded by the checker. Still check errors, not runtime
+rules: `|:` and `|!` on Bool; a binding pattern neither total nor a good
+side (`[x] = []`); a default naming a local of an enclosing function or
+its own binding. Letting a default capture is open.
 
-A default that names a local of an enclosing function is a check error
-today; letting it capture is open.
+## E2 — Arithmetic (ruled)
 
-## E2 — Arithmetic
+Ruled 2026-10-08: [evaluation](08-evaluation.md) §Arithmetic. The default
+is a panic: a float operation with a non-finite result Faults, a Fault is
+uncatchable, and the language has no exception type and no NaN or
+infinity value. Open: words under a width for machine arithmetic,
+generated for a finite range, the one code a limited type's name holds
+(`U8.wrap 256` is 0, `U8.sat 300` is 255); bit operations on `Integer`.
 
-`Integer` arithmetic is ruled in [evaluation](08-evaluation.md) §Arithmetic
-and the number row in [members](04-members.md) §Conversions. **Proposed:**
-float operations use their declared IEEE binary width and ties-to-even;
-float division by zero and overflow Fault. Specify NaN/infinity
-introduction, comparison, float equality, signed zero and stable
-formatting before backend equivalence. Also open: words under a width for
-machine arithmetic, generated for a finite range, the one code a limited
-type's name holds: `U8.wrap 256` is 0, `U8.sat 300` is 255; bit
-operations on `Integer`.
+## E3 — Effects, state, laziness, parallelism, async
+
+A direction, not a rule; nothing here becomes syntax or a type in the
+core. Purity is one static bit per scheme ([checks](07-checks.md)
+§Phases). Mutation is never in the language; state is a host resource.
+Evaluation is strict; delay is `() => …`; a host `Stream<T>` is pulled on
+demand. `map f` with pure `f` may run in parallel without syntax; impure
+stages stay in order. No coloring: a host call suspends the run and the
+host's reply resumes it (ruled 2026-10-08, [embedding](../api/09-embed.md)),
+so a `Task<T>` is a suspended pipeline. `Stream`, `Task` and `Cell` are
+declared by the host (09).
 
 ## H1 — Host and backend observables
 
 Ruled 2026-09-29: `use` runs a module once where it stands and a cycle is a
 check error, and the compile budget and the strict session are host inputs
-([host](09-host.md)). **Proposed:** identify modules by host-provided stable
-identity and fix a semantic charging schedule shared by backends, including
-`Integer` by operand size. Ruled 2026-09-30: the lexer has no bound on a
+([host](09-host.md)). Ruled 2026-10-08: the charge schedule, nodes of the
+intermediate form plus size terms ([host](09-host.md) §Budget).
+**Proposed:** identify modules by host-provided stable identity; the byte
+charge of a host call. Ruled 2026-09-30: the lexer has no bound on a
 number ([lexical](01-lexical.md) §Numbers). Specify closure environment
 capture, cancellation, cleanup failure, external byte charging, declaration
 validation and codec/formatter failure in the embedding contract. Every
