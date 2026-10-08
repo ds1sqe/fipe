@@ -237,17 +237,16 @@ impl<'a> Builder<'_, 'a> {
         dest: Option<usize>,
     ) -> Operand {
         self.count();
-        match self.lowering.function_body(index) {
-            Some(body) => {
-                let closure = Rvalue::Closure {
-                    body,
-                    captures: Vec::new(),
-                    meanings: meanings.to_vec(),
-                };
-                self.materialize(closure, dest, ty, node)
-            }
-            None => self.place(Operand::Global(index), dest, node),
+        if let Some(body) = self.lowering.function_body(index) {
+            let closure = Rvalue::Closure {
+                body,
+                captures: Vec::new(),
+                meanings: meanings.to_vec(),
+            };
+            return self.materialize(closure, dest, ty, node);
         }
+        self.lowering.reach_global(index);
+        self.place(Operand::Global(index), dest, node)
     }
 
     fn conditional(

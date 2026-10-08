@@ -41,6 +41,8 @@ pub fn compile(unit: &ir::Unit) -> mir::Program {
         constants: Vec::new(),
         definitions: alloc::vec![None; tables.definitions.len()],
         tests: alloc::vec![None; tables.tests.len()],
+        globals: alloc::vec![None; tables.definitions.len()],
+        stored: stored(&tables),
         pending: Vec::new(),
     };
     let main = lowering.lines(&unit.main);
@@ -53,6 +55,9 @@ pub fn compile(unit: &ir::Unit) -> mir::Program {
                 lowering.definition(definition, body);
             }
             Pending::Test(test, body) => lowering.test(test, body),
+            Pending::Global(definition, body) => {
+                lowering.global(definition, body);
+            }
         }
     }
     mir::Program {
@@ -61,15 +66,38 @@ pub fn compile(unit: &ir::Unit) -> mir::Program {
         constants: lowering.constants,
         definitions: lowering.definitions,
         tests: lowering.tests,
+        globals: lowering.globals,
         inits,
         main,
     }
+}
+
+/// Which definitions a line stores: those bound by a slot pattern.
+fn stored(tables: &ir::Tables) -> Vec<bool> {
+    let mut stored = alloc::vec![false; tables.definitions.len()];
+    for node in &tables.nodes {
+        if let ir::Kind::Bind {
+            pattern:
+                ir::Pattern {
+                    kind: ir::PatternKind::Slot(slot),
+                    ..
+                },
+            ..
+        } = &node.kind
+        {
+            if let Some(definition) = tables.slots[*slot].definition {
+                stored[definition] = true;
+            }
+        }
+    }
+    stored
 }
 
 /// A body reserved but not yet lowered.
 enum Pending {
     Definition(usize, usize),
     Test(usize, usize),
+    Global(usize, usize),
 }
 
 /// The program under construction.
@@ -81,6 +109,10 @@ struct Lowering<'a> {
     constants: Vec<Value>,
     definitions: Vec<Option<usize>>,
     tests: Vec<Option<usize>>,
+    /// The body of each value definition no line stores.
+    globals: Vec<Option<usize>>,
+    /// Which value definitions a line stores.
+    stored: Vec<bool>,
     /// Bodies whose index is reserved but not yet lowered.
     pending: Vec<Pending>,
 }
@@ -261,6 +293,28 @@ impl Lowering<'_> {
             unreachable!("a reserved body is a function")
         };
         build_function(self, node, hidden, captures, arms, Some(body));
+    }
+
+    /// A value definition read as a global: when no line stores it, a
+    /// body computing it, reserved on first read.
+    pub(super) fn reach_global(&mut self, definition: usize) {
+        if self.stored[definition] || self.globals[definition].is_some() {
+            return;
+        }
+        let body = self.reserve(self.tables.definitions[definition].body);
+        self.globals[definition] = Some(body);
+        self.pending.push(Pending::Global(definition, body));
+    }
+
+    /// A global's reserved body: the definition's value into `_0`.
+    pub(super) fn global(&mut self, definition: usize, body: usize) {
+        let node = self.tables.definitions[definition].body;
+        let result = self.tables.nodes[node].ty.clone();
+        let mut builder =
+            Builder::new(self, node, result, Vec::new(), Vec::new());
+        builder.lower_to(node, Some(0));
+        builder.terminate(Terminator::Return, node);
+        builder.finish(Some(body));
     }
 
     /// A limit test's reserved body: one spot, the self slot.

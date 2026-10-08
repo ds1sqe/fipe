@@ -46,3 +46,12 @@ fn a_derived_comparison_orders_by_constructor_then_fields() {
     assert_eq!(shown("(Just 1) < Nothing"), "True");
     assert_eq!(shown("(1, \"b\") < (1, \"a\")"), "False");
 }
+
+#[test]
+fn an_impl_value_member_is_computed_on_its_first_read() {
+    let source =
+        "type P { x: Integer }\nimpl P { origin = Self 1 }\nP.origin.x";
+    assert_eq!(shown(source), "1");
+    let source = "type P { x: Integer }\nimpl P { origin = Self 2 }\n(P.origin.x, P.origin.x + 1)";
+    assert_eq!(shown(source), "(2, 3)");
+}

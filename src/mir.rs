@@ -27,6 +27,10 @@ pub struct Program {
     /// A module index with its init body, in file order; a backend runs
     /// each not yet initialized before `main`.
     pub inits: Vec<(usize, usize)>,
+    /// The body computing a value definition that no line stores, such
+    /// as an `impl` block's value member, by definition index; a backend
+    /// runs it on the first read of the unset global and stores it.
+    pub globals: Vec<Option<usize>>,
     /// The body of the unit's main lines.
     pub main: usize,
 }

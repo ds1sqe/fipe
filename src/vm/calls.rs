@@ -27,6 +27,8 @@ pub(super) enum Invoke {
     },
     /// A value already in hand.
     Value(Value),
+    /// A native in its own frame, answering to the one that asked.
+    Native(alloc::boxed::Box<super::pending::Pending>),
 }
 
 impl Machine {

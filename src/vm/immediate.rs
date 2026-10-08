@@ -2,6 +2,7 @@
 //! call back: the value, or the state their frame starts in.
 use super::{
     natives::{Ctx, Native, Of, Step},
+    order::{Count, Sort},
     pending::Pending,
     walk::Walk,
 };
@@ -209,10 +210,44 @@ pub(super) fn immediate(
             };
             Err(Reason::Message(String::clone(&message)))
         }
-        Native::Log | Native::Sequence => done(arg(0)),
-        Native::Conversion => {
-            unreachable!("a conversion is lowered, never called as a native")
+        Native::Log | Native::Sequence | Native::To => done(arg(0)),
+        Native::Try => done(prelude.ok(arg(0))),
+        Native::Bytes => done(text::bytes(&arg(0))),
+        Native::Utf8 => done(text::utf8(&arg(0), prelude)),
+        Native::Lines => done(text::lines(&arg(0))),
+        Native::Words => done(text::words(&arg(0))),
+        Native::Split => done(text::split(&arg(0), &arg(1))),
+        Native::Join => done(text::join(&arg(0), &arg(1))),
+        Native::Lower => done(text::lower(&arg(0))),
+        Native::Upper => done(text::upper(&arg(0))),
+        Native::Flatten => {
+            let over = arg(0);
+            let joined = seq(&over)
+                .iter()
+                .flat_map(|inner| seq(inner).iter().cloned())
+                .collect();
+            done(Value::seq(joined))
         }
-        Native::Pending(label) => todo!("08.2 phase 3: {label}"),
+        Native::Collect => done(collect(&arg(0), prelude)),
+        Native::Count => Ok(Count::start(&arg(0))),
+        Native::Sort => {
+            let (by, desc, over) = (arg(0), arg(1), arg(2));
+            Ok(Sort::start(by, prelude.is_true(&desc), &over))
+        }
     }
+}
+
+/// The first `Err` of a sequence of results, else `Ok` of the payloads.
+fn collect(over: &Value, prelude: &crate::value::Prelude) -> Value {
+    let mut payloads = Vec::with_capacity(seq(over).len());
+    for item in seq(over).iter() {
+        match item {
+            Value::Record(record) if record.constructor == 0 => {
+                payloads.push(record.fields[0].clone());
+            }
+            Value::Record(_) => return item.clone(),
+            other => unreachable!("a result, not {other:?}"),
+        }
+    }
+    prelude.ok(Value::seq(payloads))
 }

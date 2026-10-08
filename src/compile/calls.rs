@@ -105,11 +105,12 @@ impl Builder<'_, '_> {
         match &tables.nodes[node].kind {
             ir::Kind::Definition { index, meanings } => {
                 self.count();
-                self.lowering
-                    .function_body(*index)
-                    .map_or(Target::Value(Operand::Global(*index)), |body| {
-                        Target::Static(Callee::Body(body), meanings.clone())
-                    })
+                if let Some(body) = self.lowering.function_body(*index) {
+                    Target::Static(Callee::Body(body), meanings.clone())
+                } else {
+                    self.lowering.reach_global(*index);
+                    Target::Value(Operand::Global(*index))
+                }
             }
             ir::Kind::Declared(index) => {
                 self.count();

@@ -6,11 +6,18 @@ use alloc::{
     string::{String, ToString},
 };
 use fipe::{
-    decl, infer,
+    decl, infer, ir,
     parse::{self, Expected},
     resolve,
     token::{Source, Span},
+    value::{structural, Value},
 };
+
+/// A value in the language's spelling (`6`, `Just 2`, `[1, 2]`, `"a"`,
+/// `Point 1 2`, `(1, "a")`, `<function>`), never through a `show` member.
+pub fn value(value: &Value, tables: &ir::Tables) -> String {
+    structural::show(value, tables)
+}
 
 /// The text a reason's own spans index: the session's accepted lines,
 /// each followed by a blank line, then the entry from `source.len()`.

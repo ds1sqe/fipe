@@ -37,6 +37,33 @@ impl Machine {
         let body = &program.bodies[frame.body];
         let block = &body.blocks[frame.block];
         let index = frame.statement;
+        // A global no line stored runs its body first; the step then
+        // runs again with the value in place.
+        let reads = block.statements.get(index).map_or_else(
+            || super::globals::in_terminator(&block.terminator),
+            super::globals::in_statement,
+        );
+        if let Some(definition) = reads
+            .into_iter()
+            .find(|definition| self.globals[*definition].is_none())
+        {
+            let body = program.globals[definition].unwrap_or_else(|| {
+                panic!("global {definition} is stored first")
+            });
+            let frame = BodyFrame::new(
+                program,
+                body,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Return::Store(definition),
+            );
+            self.frames.push(Frame::Body(frame));
+            return Ok(Flow::Continue);
+        }
+        let frame = self.top();
+        let body = &program.bodies[frame.body];
+        let block = &body.blocks[frame.block];
         if index < block.statements.len() {
             let node = block.nodes[index];
             frame.statement += 1;

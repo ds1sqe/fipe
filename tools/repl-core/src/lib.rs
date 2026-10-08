@@ -45,10 +45,15 @@ use fipe::{
     lex::{lex, Lexed},
     session::{Diagnostic, Report, Session},
     token::{Kind, Source, Span, Symbol, Token},
+    value::Value,
+    vm::{Fault, Machine},
 };
 use render::Context;
 
 const PROMPT: &[u8] = b"fipe> ";
+/// The REPL's own budget per line when the driver names none: a surface
+/// constant, not the language's.
+pub const BUDGET: u64 = 1 << 20;
 const MORE: &[u8] = b"....> ";
 const HOST_DIR: &str = "tests/fixtures/host";
 /// The command namespace first, then the host modules by name.
@@ -82,6 +87,11 @@ pub struct Repl {
     last: Option<(Report, String)>,
     /// The last line that parsed, accepted or not, for `:ast`.
     parsed: Option<Report>,
+    /// The machine every accepted line runs on; its globals are the
+    /// session's values.
+    machine: Machine,
+    /// Accepted lines replayed after a host reload run without output.
+    replaying: bool,
     quit: bool,
     ended: bool,
 }
@@ -146,9 +156,16 @@ impl Repl {
             prompted: false,
             last: None,
             parsed: None,
+            machine: Machine::new(BUDGET),
+            replaying: false,
             quit: false,
             ended: false,
         }
+    }
+
+    /// The charge budget each accepted line runs under.
+    pub const fn budget(&mut self, budget: u64) {
+        self.machine.set_budget(budget);
     }
 
     /// Reject open implicit checks, including after a host reload.
@@ -524,6 +541,7 @@ impl Repl {
         match mode {
             Mode::Accept | Mode::Load => {
                 if report.diagnostics.iter().all(from_file) {
+                    self.execute(&report, &text, out);
                     self.last = Some((report, text));
                 }
             }
@@ -532,6 +550,61 @@ impl Repl {
             Mode::Ir => ir::render(report.unit.as_ref(), out),
             Mode::Mir => mir::render(report.unit.as_ref(), out),
         }
+    }
+
+    /// Run an accepted line on the machine: its value in the language's
+    /// spelling, nothing for `()`, or the Fault where it happened.
+    fn execute(&mut self, report: &Report, text: &str, out: &mut Outs) {
+        let Some(unit) = &report.unit else { return };
+        let program = fipe::compile::compile(unit);
+        let outcome = self.machine.run(&program);
+        if self.replaying {
+            return;
+        }
+        match outcome {
+            Outcome::Done(Ok(Value::Unit)) => (),
+            Outcome::Done(Ok(value)) => {
+                let shown = render::value(&value, &program.tables.borrow());
+                out.write(format!("{}\n", visible(&shown)).as_bytes());
+            }
+            Outcome::Done(Err(fault)) => {
+                self.fault(&fault, report.offset, text, out);
+            }
+            Outcome::Request(_) => {
+                out.write(b"the run asked the host, which is not wired\n");
+            }
+        }
+    }
+
+    /// `fault at L:C: reason` in the line, or in the earlier accepted
+    /// line the span falls in, with its source line and a caret.
+    fn fault(&self, fault: &Fault, offset: usize, text: &str, out: &mut Outs) {
+        let reason = fault.reason.to_string();
+        let Span { start, end } = fault.span;
+        if start >= offset && end - offset <= text.len() {
+            let span = Span {
+                start: start - offset,
+                end: end - offset,
+            };
+            return located("fault at ", text, span, &reason, out);
+        }
+        let source = self.session.source();
+        if end > source.len() {
+            return out
+                .write(format!("fault: {}\n", visible(&reason)).as_bytes());
+        }
+        let before = &source[..start];
+        let number = before.matches("\n\n").count() + 1;
+        let first = before.rfind("\n\n").map_or(0, |at| at + 2);
+        let last = source[first..]
+            .find("\n\n")
+            .map_or(source.len(), |at| first + at);
+        let span = Span {
+            start: start - first,
+            end: end.min(last) - first,
+        };
+        let prefix = format!("fault at line {number}, ");
+        located(&prefix, &source[first..last], span, &reason, out);
     }
 
     fn diagnostic(&self, diagnostic: &Diagnostic, line: &str, out: &mut Outs) {
@@ -627,10 +700,15 @@ impl Repl {
         self.session = Session::new(declarations);
         self.session.strict(self.strict);
         self.last = None;
+        // New tables, so a new machine; the replayed lines rebuild its
+        // globals without printing again.
+        self.machine = Machine::new(self.machine.budget());
+        self.replaying = true;
         for line in lines {
             let report = self.replay(&line);
             self.done(report, line, Mode::Accept, out);
         }
+        self.replaying = false;
         out.write(format!("host: {dir}\n").as_bytes());
     }
 

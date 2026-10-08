@@ -85,10 +85,23 @@ pub(super) enum Native {
     Fault,
     Log,
     Sequence,
-    /// `to` and `try` are lowered as conversions; a call is a defect.
-    Conversion,
-    /// A native of the next phase, by its label.
-    Pending(&'static str),
+    /// `to` and `try` written as function values (`map to<U8>`): the
+    /// value passes, or passes in `Ok`; the target's limits ride on the
+    /// function entry the checker attaches, checked at each call.
+    To,
+    Try,
+    Bytes,
+    Utf8,
+    Lines,
+    Words,
+    Split,
+    Join,
+    Lower,
+    Upper,
+    Flatten,
+    Collect,
+    Count,
+    Sort,
 }
 
 /// The dispatch members a walk by tag consults, by index.
@@ -147,20 +160,7 @@ impl Natives {
         }
     }
 
-    /// The labels of the prelude's declarations whose native is the
-    /// next phase's, for the coverage test.
-    #[must_use]
-    pub fn pending(&self) -> Vec<&'static str> {
-        self.table
-            .iter()
-            .filter_map(|native| match native {
-                Some(Native::Pending(label)) => Some(*label),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Whether every prelude declaration has a native, pending or not.
+    /// Whether every prelude declaration has a native.
     #[must_use]
     pub fn covers(&self, tables: &ir::Tables) -> bool {
         let prelude = tables
@@ -232,8 +232,8 @@ fn choose(declaration: &ir::Declaration, tables: &ir::Tables) -> Native {
 }
 
 impl Natives {
-    /// Whether a prelude label has a native, pending or not; the
-    /// coverage test asks for every label the prelude declares.
+    /// Whether a prelude label has a native; the coverage test asks
+    /// for every label the prelude declares.
     #[must_use]
     pub fn known(label: &str) -> bool {
         by_label(label, Of::Other).is_some()
@@ -281,19 +281,20 @@ fn by_label(label: &str, of: Of) -> Option<Native> {
         "fault" => Native::Fault,
         "log" => Native::Log,
         "sequence" | "from" => Native::Sequence,
-        "to" | "try" => Native::Conversion,
-        "bytes" => Native::Pending("bytes"),
-        "utf8" => Native::Pending("utf8"),
-        "lines" => Native::Pending("lines"),
-        "words" => Native::Pending("words"),
-        "split" => Native::Pending("split"),
-        "join" => Native::Pending("join"),
-        "lower" => Native::Pending("lower"),
-        "upper" => Native::Pending("upper"),
-        "flatten" => Native::Pending("flatten"),
-        "collect" => Native::Pending("collect"),
-        "count" => Native::Pending("count"),
-        "sort" => Native::Pending("sort"),
+        "to" => Native::To,
+        "try" => Native::Try,
+        "bytes" => Native::Bytes,
+        "utf8" => Native::Utf8,
+        "lines" => Native::Lines,
+        "words" => Native::Words,
+        "split" => Native::Split,
+        "join" => Native::Join,
+        "lower" => Native::Lower,
+        "upper" => Native::Upper,
+        "flatten" => Native::Flatten,
+        "collect" => Native::Collect,
+        "count" => Native::Count,
+        "sort" => Native::Sort,
         _ => return None,
     })
 }

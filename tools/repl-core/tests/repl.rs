@@ -194,9 +194,11 @@ fn a_vertical_pipeline_is_one_entry() {
     let text = written(repl.feed(
         b"ls -l /var/log\n    | filter (e => e.size > 1)\n    | map .name\n:t\n",
     ));
+    // The line runs and asks the host, which the REPL does not wire yet.
     assert_eq!(
         text,
-        "ls -l /var/log | filter (e => e.size > 1) | map .name: \
+        "fault at 1:7: host: no host for commands.read\nls -l /var/log\n      \
+         ^^^^^^^^\nls -l /var/log | filter (e => e.size > 1) | map .name: \
          Vec<String>\nfipe> "
     );
 }
@@ -1132,4 +1134,51 @@ fn mir_without_an_argument_shows_the_last_accepted_line() {
     let text = written(repl.feed(b":mir (x, \"a\")\n"));
     assert!(text.contains("constant 0 = \"a\""), "{text}");
     assert!(text.contains("tuple (global x, constant 0)"), "{text}");
+}
+
+#[test]
+fn an_accepted_line_prints_its_value() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"1 + 2\n\n")), "3\nfipe> ");
+    assert_eq!(
+        written(repl.feed(b"[1, 2] | map (n => n + 1)\n\n")),
+        "[2, 3]\nfipe> "
+    );
+    assert_eq!(written(repl.feed(b"\"a\" ++ \"b\"\n\n")), "\"ab\"\nfipe> ");
+    assert_eq!(
+        written(repl.feed(b"Just 1 |: (n => Just (n + 1))\n\n")),
+        "Just 2\nfipe> "
+    );
+    assert_eq!(written(repl.feed(b"x => x\n\n")), "<function>\nfipe> ");
+}
+
+#[test]
+fn a_binding_prints_nothing_and_its_value_serves_later_lines() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"x = 1\n\n")), "fipe> ");
+    assert_eq!(written(repl.feed(b"add2 = n => n + 2\n\n")), "fipe> ");
+    assert_eq!(written(repl.feed(b"add2 x\n\n")), "3\nfipe> ");
+}
+
+#[test]
+fn a_fault_names_its_line_and_column() {
+    let mut repl = Repl::new();
+    assert_eq!(
+        written(repl.feed(b"1 / ([0] | head)\n\n")),
+        "fault at 1:1: division by zero\n1 / ([0] | head)\n\
+         ^^^^^^^^^^^^^^^^\nfipe> "
+    );
+    let text = written(repl.feed(b"f = n => 10 / n\n\nf 0\n\n"));
+    assert!(
+        text.contains("fault at line 2, 1:10: division by zero"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_budget_reaches_the_machine() {
+    let mut repl = Repl::new();
+    repl.budget(10);
+    // The budget is enforced from the next minor; the line still runs.
+    assert_eq!(written(repl.feed(b"1 + 2\n\n")), "3\nfipe> ");
 }

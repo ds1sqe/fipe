@@ -39,6 +39,10 @@ impl Machine {
                 Ok(Flow::Continue)
             }
             Return::Resume => self.resume(program, Some(value)),
+            Return::Store(definition) => {
+                self.globals[definition] = Some(value);
+                Ok(Flow::Continue)
+            }
         }
     }
 
@@ -129,6 +133,9 @@ impl Machine {
                 Ok(Flow::Continue)
             }
             Invoke::Value(value) => self.deliver(program, value, back),
+            Invoke::Native(pending) => {
+                self.start(program, *pending, back, node)
+            }
         }
     }
 }

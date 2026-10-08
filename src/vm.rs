@@ -16,8 +16,10 @@ mod defaults;
 mod dispatch;
 mod drive;
 mod frames;
+mod globals;
 mod immediate;
 mod natives;
+mod order;
 mod pending;
 mod predicates;
 mod step;
@@ -69,6 +71,9 @@ pub(crate) enum Return {
     Branch { pass: usize, fail: usize },
     /// Resume the native frame below with the value.
     Resume,
+    /// Store a global the body frame below read unset, then let it
+    /// retry the step that read it.
+    Store(usize),
     /// The run's result.
     Finish,
 }
@@ -106,6 +111,11 @@ impl Machine {
     #[must_use]
     pub const fn budget(&self) -> u64 {
         self.budget
+    }
+
+    /// The budget of the runs to come.
+    pub const fn set_budget(&mut self, budget: u64) {
+        self.budget = budget;
     }
 
     /// The frames of the run in progress, the innermost last; empty

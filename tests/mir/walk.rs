@@ -17,6 +17,11 @@ pub fn check_program(program: &Program) {
         assert!(*body < program.bodies.len());
         assert_eq!(program.bodies[*body].arity, 1, "a test takes its self");
     }
+    assert_eq!(program.globals.len(), tables.definitions.len());
+    for body in program.globals.iter().flatten() {
+        assert!(*body < program.bodies.len());
+        assert_eq!(program.bodies[*body].arity, 0, "a value has no spots");
+    }
     for (module, body) in &program.inits {
         assert!(*module < tables.modules.len());
         assert!(*body < program.bodies.len());

@@ -31,6 +31,8 @@ pub(super) enum Pending {
     Sum(Sum),
     Walk(Walk),
     Predicate(Run),
+    Sort(super::order::Sort),
+    Count(super::order::Count),
 }
 
 /// `map` over a sequence, a `Maybe` or a `Result`.
@@ -200,6 +202,8 @@ impl Pending {
             Self::Sum(sum) => sum.step(ctx, returned),
             Self::Walk(walk) => walk.step(ctx, returned),
             Self::Predicate(run) => run.step(ctx, returned),
+            Self::Sort(sort) => sort.step(ctx, returned),
+            Self::Count(count) => count.step(ctx, returned),
         }
     }
 }

@@ -3,7 +3,6 @@ use alloc::{format, string::String, vec::Vec};
 use fipe::{
     ir::{Derived, Kind, Predicate, Tables, Unit},
     mir::{Callee, Operand, Program, Rvalue, Statement, Terminator, Witness},
-    value::Value,
 };
 
 pub(super) fn render(unit: Option<&Unit>, out: &mut Outs) {
@@ -22,7 +21,10 @@ pub(super) fn render(unit: Option<&Unit>, out: &mut Outs) {
         .as_bytes(),
     );
     for (index, constant) in program.constants.iter().enumerate() {
-        let text = format!("constant {index} = {}\n", value(constant, &tables));
+        let text = format!(
+            "constant {index} = {}\n",
+            super::render::value(constant, &tables)
+        );
         out.write(text.as_bytes());
     }
     for (index, body) in program.bodies.iter().enumerate() {
@@ -78,6 +80,13 @@ fn role(program: &Program, body: usize, tables: &Tables) -> String {
         program.inits.iter().find(|(_, init)| *init == body)
     {
         return format!("init {}", tables.modules[*module].label);
+    }
+    if let Some(definition) = program
+        .globals
+        .iter()
+        .position(|known| *known == Some(body))
+    {
+        return format!("value {}", tables.definitions[definition].label);
     }
     if let Some(test) =
         program.tests.iter().position(|known| *known == Some(body))
@@ -421,82 +430,4 @@ fn terminator(
         Terminator::Return => String::from("return"),
         Terminator::Unreachable => String::from("unreachable"),
     }
-}
-
-/// A constant in the language's spelling.
-fn value(value: &Value, tables: &Tables) -> String {
-    match value {
-        Value::Unit => String::from("()"),
-        Value::Int(value) => format!("{value}"),
-        Value::Big(big) => {
-            format!("{}{}", if big.negative { "-" } else { "" }, big.magnitude)
-        }
-        Value::F32(value) => float(f64::from(*value)),
-        Value::F64(value) => float(*value),
-        Value::Text(text) => quoted(text),
-        Value::Seq(parts) => format!("[{}]", values(parts, tables)),
-        Value::Tuple(parts) => format!("({})", values(parts, tables)),
-        Value::Record(record) => {
-            let name = label(record.meaning, record.constructor, tables);
-            if record.fields.is_empty() {
-                name
-            } else {
-                let fields: Vec<_> = record
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let text = self::value(field, tables);
-                        if text.contains(' ') {
-                            format!("({text})")
-                        } else {
-                            text
-                        }
-                    })
-                    .collect();
-                format!("{name} {}", fields.join(" "))
-            }
-        }
-        Value::Function(closure) => {
-            format!("function of body {}", closure.body)
-        }
-        Value::Meaning(ty) => meaning(ty, tables),
-        Value::Packed(packed) => format!(
-            "{} {}",
-            tables.meanings[packed.meaning].label,
-            self::value(&packed.value, tables)
-        ),
-    }
-}
-
-fn values(parts: &[Value], tables: &Tables) -> String {
-    parts
-        .iter()
-        .map(|part| value(part, tables))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// The shortest spelling that reads back, always with a fraction part.
-fn float(value: f64) -> String {
-    let text = format!("{value}");
-    if text.contains('.') {
-        text
-    } else {
-        format!("{text}.0")
-    }
-}
-
-fn quoted(text: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in text.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
 }

@@ -141,7 +141,9 @@ rounded parse of its decimal spelling. A literal whose nearest float is
 not finite is left to the reader at run time, where it Faults. Any other
 reader is called with the written form as a `Form` record constant until
 the compile phase runs it. A value definition is stored once, by the
-main or the module's init body; a definition with spots is a body and a
+main or the module's init body; one no line stores, such as an `impl`
+block's value member, has a body a backend runs on the first read of
+the unset global. A definition with spots is a body and a
 reference to it is a closure with the node's meanings. Captures copy the
 outer slots' values at creation. A module's init body runs the module's
 lines; a backend runs each not yet initialized before the main.

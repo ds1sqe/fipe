@@ -1,10 +1,12 @@
 //! The Fipe REPL: one pump over `fipe-repl-core`, with I/O from the
 //! platform chosen by feature.
 //!
-//! `fipe-repl [--cwd <dir>] [--host <dir>] [--strict]`: the working directory
-//! changes first, so a relative host directory is found from it; with
-//! `--host` the session starts as after `:host <dir>`. `--strict` rejects
-//! open implicit checks; explicit gates remain allowed.
+//! `fipe-repl [--cwd <dir>] [--host <dir>] [--strict] [--budget <n>]`: the
+//! working directory changes first, so a relative host directory is found
+//! from it; with `--host` the session starts as after `:host <dir>`.
+//! `--strict` rejects open implicit checks; explicit gates remain allowed.
+//! `--budget` sets the charge units each line runs under, the REPL's own
+//! default otherwise.
 
 #![cfg_attr(feature = "linux", no_std, no_main)]
 #![deny(unsafe_code)]
@@ -25,10 +27,17 @@ mod platform;
 mod platform;
 
 use alloc::{collections::VecDeque, format, string::String};
-use fipe_repl_core::{Out, Repl};
+use fipe_repl_core::{Out, Repl, BUDGET};
 
 const USAGE: &str =
-    "usage: fipe-repl [--cwd <dir>] [--host <dir>] [--strict]\n";
+    "usage: fipe-repl [--cwd <dir>] [--host <dir>] [--strict] [--budget <n>]\n";
+
+/// What the command line asks for.
+struct Options {
+    host: Option<String>,
+    strict: bool,
+    budget: u64,
+}
 
 #[cfg(feature = "std")]
 fn main() {
@@ -38,7 +47,11 @@ fn main() {
 /// Read, feed, act on every output; stop at `Out::Exit` or end of input.
 /// File paths are relative to the working directory.
 fn run() {
-    let (host, strict) = match arguments() {
+    let Options {
+        host,
+        strict,
+        budget,
+    } = match arguments() {
         Ok(options) => options,
         Err(message) => {
             platform::write(message.as_bytes());
@@ -47,6 +60,7 @@ fn run() {
     };
     let mut repl = Repl::new();
     repl.strict(strict);
+    repl.budget(budget);
     let mut outs = VecDeque::from(match host {
         Some(dir) => repl.host_directory(&dir),
         None => repl.feed(&[]),
@@ -88,11 +102,12 @@ fn run() {
     }
 }
 
-/// The host directory and strict mode, after acting on `--cwd`.
-fn arguments() -> Result<(Option<String>, bool), String> {
+/// The options, after acting on `--cwd`.
+fn arguments() -> Result<Options, String> {
     let mut args = platform::args().into_iter();
     let mut host = None;
     let mut strict = false;
+    let mut budget = BUDGET;
     while let Some(arg) = args.next() {
         if arg == "--strict" {
             strict = true;
@@ -100,6 +115,10 @@ fn arguments() -> Result<(Option<String>, bool), String> {
         }
         match (arg.as_str(), args.next()) {
             ("--host", Some(dir)) => host = Some(dir),
+            ("--budget", Some(units)) => match units.parse() {
+                Ok(units) => budget = units,
+                Err(_) => return Err(USAGE.into()),
+            },
             ("--cwd", Some(dir)) if platform::chdir(&dir) => {}
             ("--cwd", Some(dir)) => {
                 return Err(format!("{dir}: no such directory\n"))
@@ -107,5 +126,9 @@ fn arguments() -> Result<(Option<String>, bool), String> {
             _ => return Err(USAGE.into()),
         }
     }
-    Ok((host, strict))
+    Ok(Options {
+        host,
+        strict,
+        budget,
+    })
 }

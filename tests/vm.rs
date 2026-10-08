@@ -20,7 +20,11 @@ mod arith;
 mod calls;
 #[path = "vm/closures.rs"]
 mod closures;
+#[path = "vm/containers.rs"]
+mod containers;
 #[path = "vm/dispatch.rs"]
 mod dispatch;
 #[path = "vm/natives.rs"]
 mod natives;
+#[path = "vm/text.rs"]
+mod text;

@@ -56,7 +56,7 @@ fn prelude_labels() -> Vec<String> {
 }
 
 #[test]
-fn every_prelude_declaration_has_a_native_or_a_named_pending_one() {
+fn every_prelude_declaration_has_a_native() {
     let labels = prelude_labels();
     assert!(labels.len() > 50, "{labels:?}");
     for label in &labels {
@@ -82,7 +82,7 @@ fn every_prelude_declaration_has_a_native_or_a_named_pending_one() {
     )
     .unwrap();
     let tables = unit.tables();
-    assert_eq!(Natives::new(&tables).pending(), ["words"]);
+    assert!(Natives::new(&tables).covers(&tables));
 }
 
 #[test]
@@ -123,4 +123,12 @@ fn text_numbers_and_words() {
     assert_eq!(shown("fault \"stop\""), "fault: stop");
     assert_eq!(shown("log 1"), "1");
     assert_eq!(shown("sqrt 4.0"), "2.0");
+}
+
+#[test]
+fn conversion_words_as_function_values_pass_their_values() {
+    // The limits of the target ride on the function's entry, checked at
+    // each call once entries run.
+    assert_eq!(shown("[1, 2] | map to<U8>"), "[1, 2]");
+    assert_eq!(shown("[1, 2] | map try<U8>"), "[Ok 1, Ok 2]");
 }
