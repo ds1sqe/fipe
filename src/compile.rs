@@ -1,0 +1,169 @@
+//! Lowering a checked unit to its MIR program.
+//!
+//! The checker recorded every choice, so lowering cannot fail: it panics
+//! only on a checker invariant, a crate defect. Every body reachable
+//! from the unit's main is lowered once; a definition's body is shared
+//! by every reference and every row that targets it.
+mod bodies;
+mod builder;
+mod calls;
+mod constants;
+
+use crate::{ir, mir, mir::Terminator, value::Value};
+use alloc::{rc::Rc, vec::Vec};
+use bodies::build_function;
+use builder::Builder;
+use core::cell::Ref;
+
+/// Lower a checked unit to the program every backend consumes.
+///
+/// # Panics
+/// Panics only if a checker invariant is broken, a crate defect.
+#[must_use]
+pub fn compile(unit: &ir::Unit) -> mir::Program {
+    let tables = unit.tables();
+    let mut lowering = Lowering {
+        prelude: tables
+            .namespaces
+            .iter()
+            .position(|label| label == "prelude"),
+        tables: &tables,
+        bodies: Vec::new(),
+        constants: Vec::new(),
+        definitions: alloc::vec![None; tables.definitions.len()],
+        pending: Vec::new(),
+    };
+    let main = lowering.main(&unit.main);
+    while let Some((definition, body)) = lowering.pending.pop() {
+        lowering.definition(definition, body);
+    }
+    mir::Program {
+        tables: Rc::clone(&unit.tables),
+        bodies: lowering.bodies,
+        constants: lowering.constants,
+        definitions: lowering.definitions,
+        inits: Vec::new(),
+        main,
+    }
+}
+
+/// The program under construction.
+struct Lowering<'a> {
+    tables: &'a Ref<'a, ir::Tables>,
+    /// The prelude's namespace, whose declarations are native.
+    prelude: Option<usize>,
+    bodies: Vec<mir::Body>,
+    constants: Vec<Value>,
+    definitions: Vec<Option<usize>>,
+    /// Definitions whose body index is reserved but not yet lowered.
+    pending: Vec<(usize, usize)>,
+}
+
+impl Lowering<'_> {
+    /// The body lowered for a definition with spots, reserved on first
+    /// use; `None` for a value definition, a global.
+    fn function_body(&mut self, definition: usize) -> Option<usize> {
+        if let Some(body) = self.definitions[definition] {
+            return Some(body);
+        }
+        let node = self.unwrapped(self.tables.definitions[definition].body);
+        if !matches!(self.tables.nodes[node].kind, ir::Kind::Function { .. }) {
+            return None;
+        }
+        let body = self.reserve(node);
+        self.definitions[definition] = Some(body);
+        self.pending.push((definition, body));
+        Some(body)
+    }
+
+    /// A body index with a placeholder, filled when it is lowered, so a
+    /// recursive reference finds it.
+    fn reserve(&mut self, node: usize) -> usize {
+        self.bodies.push(mir::Body {
+            node,
+            arity: 0,
+            captures: 0,
+            hidden: Vec::new(),
+            locals: Vec::new(),
+            blocks: Vec::new(),
+        });
+        self.bodies.len() - 1
+    }
+
+    /// A definition's body is the function below its single-part blocks.
+    fn unwrapped(&self, mut node: usize) -> usize {
+        while let ir::Kind::Block(parts) = &self.tables.nodes[node].kind {
+            let [part] = parts.as_slice() else { break };
+            node = *part;
+        }
+        node
+    }
+
+    /// Whether a declaration is the prelude's, hence native.
+    fn native(&self, declaration: usize) -> bool {
+        Some(self.tables.declarations[declaration].namespace) == self.prelude
+    }
+
+    /// A constant's index, shared when an equal one exists; floats are
+    /// equal by their bits, so `-0.0` keeps its sign.
+    fn constant(&mut self, value: Value) -> usize {
+        if let Some(index) =
+            self.constants.iter().position(|known| same(known, &value))
+        {
+            return index;
+        }
+        self.constants.push(value);
+        self.constants.len() - 1
+    }
+
+    /// The number of spots a declaration's type takes.
+    fn arity(ty: &ir::Type) -> usize {
+        let mut count = 0;
+        let mut ty = ty;
+        while let ir::Type::Function { result, .. } = ty {
+            count += 1;
+            ty = result;
+        }
+        count
+    }
+}
+
+fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::F32(a), Value::F32(b)) => a.to_bits() == b.to_bits(),
+        (Value::F64(a), Value::F64(b)) => a.to_bits() == b.to_bits(),
+        (Value::F32(_) | Value::F64(_), _)
+        | (_, Value::F32(_) | Value::F64(_)) => false,
+        _ => a == b,
+    }
+}
+
+impl Lowering<'_> {
+    /// The main body: the unit's lines in order, `_0` the last value.
+    pub(super) fn main(&mut self, lines: &[usize]) -> usize {
+        let node = lines.last().copied().unwrap_or(0);
+        let result = lines
+            .last()
+            .map_or(ir::Type::Unit, |last| self.tables.nodes[*last].ty.clone());
+        let mut builder =
+            Builder::new(self, node, result, Vec::new(), Vec::new());
+        builder.sequence(node, lines, Some(0));
+        builder.terminate(Terminator::Return, node);
+        builder.finish(None)
+    }
+
+    /// A definition's reserved body, from its function node.
+    pub(super) fn definition(&mut self, definition: usize, body: usize) {
+        let node = self.unwrapped(self.tables.definitions[definition].body);
+        let ir::Kind::Function {
+            hidden,
+            captures,
+            arms,
+            ..
+        } = &self.tables.nodes[node].kind
+        else {
+            unreachable!("a reserved body is a function")
+        };
+        build_function(self, node, hidden, captures, arms, Some(body));
+    }
+}

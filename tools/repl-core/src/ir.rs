@@ -132,7 +132,7 @@ const fn rebuilt(rebuild: fipe::ir::Rebuild) -> &'static str {
     }
 }
 
-fn meaning(ty: &Type, tables: &Tables) -> String {
+pub(super) fn meaning(ty: &Type, tables: &Tables) -> String {
     match ty {
         Type::Unit => String::from("()"),
         Type::Meaning { index, arguments } => {

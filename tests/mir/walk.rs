@@ -1,0 +1,352 @@
+use fipe::{
+    ir,
+    mir::{Callee, Operand, Program, Rvalue, Statement, Terminator},
+};
+
+/// Every index of a program in range, every block terminated, every
+/// charge first, every path to `Return` assigning `_0`.
+pub fn check_program(program: &Program) {
+    let tables = program.tables.borrow();
+    assert!(program.main < program.bodies.len());
+    assert_eq!(program.definitions.len(), tables.definitions.len());
+    for body in program.definitions.iter().flatten() {
+        assert!(*body < program.bodies.len());
+    }
+    for (module, body) in &program.inits {
+        assert!(*module < tables.modules.len());
+        assert!(*body < program.bodies.len());
+    }
+    for body in &program.bodies {
+        assert!(body.node < tables.nodes.len());
+        assert!(
+            body.arity < body.locals.len(),
+            "a body has _0 and its spots"
+        );
+        assert_ne!(body.blocks.len(), 0, "a body has blocks");
+        for local in &body.locals {
+            check_type(&tables, &local.ty);
+            if let Some(node) = local.node {
+                assert!(node < tables.nodes.len());
+            }
+        }
+        for block in &body.blocks {
+            assert_eq!(block.nodes.len(), block.statements.len() + 1);
+            for node in &block.nodes {
+                assert!(*node < tables.nodes.len());
+            }
+            let mut lowered = Vec::new();
+            for (index, statement) in block.statements.iter().enumerate() {
+                match statement {
+                    Statement::Charge(count) => {
+                        assert_eq!(index, 0, "a charge opens its block");
+                        assert!(*count > 0, "a charge is never zero");
+                    }
+                    Statement::Assign(dest, rvalue) => {
+                        assert!(*dest < body.locals.len());
+                        check_rvalue(program, &tables, body, rvalue);
+                        push(&mut lowered, block.nodes[index]);
+                    }
+                    Statement::Store { definition, value } => {
+                        assert!(*definition < tables.definitions.len());
+                        check_operand(program, body, value);
+                        push(&mut lowered, block.nodes[index]);
+                    }
+                    Statement::Enter { entry, value } => {
+                        assert!(*entry < tables.entries.len());
+                        check_operand(program, body, value);
+                        push(&mut lowered, block.nodes[index]);
+                    }
+                    Statement::Push { key, value } => {
+                        assert!(*key < tables.keys.len());
+                        check_operand(program, body, value);
+                        push(&mut lowered, block.nodes[index]);
+                    }
+                    Statement::Pop => push(&mut lowered, block.nodes[index]),
+                }
+            }
+            if let Some(Statement::Charge(count)) = block.statements.first() {
+                assert!(
+                    *count >= lowered.len(),
+                    "a charge covers every node with a statement"
+                );
+            }
+            check_terminator(program, &tables, body, &block.terminator);
+        }
+        check_result_paths(body);
+    }
+}
+
+fn push(lowered: &mut Vec<usize>, node: usize) {
+    if !lowered.contains(&node) {
+        lowered.push(node);
+    }
+}
+
+fn check_operand(program: &Program, body: &fipe::mir::Body, operand: &Operand) {
+    match operand {
+        Operand::Local(index) => assert!(*index < body.locals.len()),
+        Operand::Const(index) => assert!(*index < program.constants.len()),
+        Operand::Capture(index) => assert!(*index < body.captures),
+        Operand::Global(index) => {
+            assert!(*index < program.tables.borrow().definitions.len());
+        }
+        Operand::Hidden(index) => assert!(*index < body.hidden.len()),
+    }
+}
+
+fn check_operands(
+    program: &Program,
+    body: &fipe::mir::Body,
+    operands: &[Operand],
+) {
+    for operand in operands {
+        check_operand(program, body, operand);
+    }
+}
+
+fn check_constructor(
+    tables: &ir::Tables,
+    meaning: usize,
+    constructor: usize,
+    fields: usize,
+) {
+    assert!(meaning < tables.meanings.len());
+    let layout = &tables.meanings[meaning].constructors;
+    assert!(constructor < layout.len());
+    assert_eq!(layout[constructor].fields.len(), fields);
+}
+
+fn check_rvalue(
+    program: &Program,
+    tables: &ir::Tables,
+    body: &fipe::mir::Body,
+    rvalue: &Rvalue,
+) {
+    match rvalue {
+        Rvalue::Use(value) | Rvalue::Field(value, _) => {
+            check_operand(program, body, value);
+        }
+        Rvalue::Construct {
+            meaning,
+            constructor,
+            fields,
+        } => {
+            check_constructor(tables, *meaning, *constructor, fields.len());
+            check_operands(program, body, fields);
+        }
+        Rvalue::Tuple(parts) | Rvalue::Array(parts) => {
+            check_operands(program, body, parts);
+        }
+        Rvalue::Repeat { value, length } => {
+            check_operand(program, body, value);
+            if let fipe::mir::Length::Hidden(index) = length {
+                assert!(*index < body.hidden.len());
+            }
+        }
+        Rvalue::Closure {
+            body: target,
+            captures,
+            meanings,
+        } => {
+            assert!(*target < program.bodies.len());
+            let callee = &program.bodies[*target];
+            assert_eq!(captures.len(), callee.captures);
+            assert_eq!(meanings.len(), callee.hidden.len());
+            check_operands(program, body, captures);
+            for ty in meanings {
+                check_type(tables, ty);
+            }
+        }
+        Rvalue::Wrap {
+            meaning,
+            constructor,
+            value,
+        } => {
+            check_constructor(tables, *meaning, *constructor, 1);
+            check_operand(program, body, value);
+        }
+        Rvalue::Cast {
+            operation: callee,
+            value,
+            ..
+        }
+        | Rvalue::Convert { callee, value, .. } => {
+            if let Some(index) = callee {
+                assert!(*index < tables.declarations.len());
+            }
+            check_operand(program, body, value);
+        }
+        Rvalue::Pack { tag, value } => {
+            check_type(tables, tag);
+            check_operand(program, body, value);
+        }
+        Rvalue::Native { op, args } => {
+            assert!(*op < tables.declarations.len());
+            check_operands(program, body, args);
+        }
+    }
+}
+
+fn check_terminator(
+    program: &Program,
+    tables: &ir::Tables,
+    body: &fipe::mir::Body,
+    terminator: &Terminator,
+) {
+    let block =
+        |index: usize| assert!(index < body.blocks.len(), "block {index}");
+    match terminator {
+        Terminator::Goto(target) => block(*target),
+        Terminator::Switch {
+            value,
+            cases,
+            otherwise,
+        } => {
+            check_operand(program, body, value);
+            assert!(!cases.is_empty() || otherwise.is_some());
+            for (_, target) in cases {
+                block(*target);
+            }
+            if let Some(target) = otherwise {
+                block(*target);
+            }
+        }
+        Terminator::Test {
+            value, pass, fail, ..
+        } => {
+            check_operand(program, body, value);
+            block(*pass);
+            block(*fail);
+        }
+        Terminator::Call {
+            callee,
+            args,
+            meanings,
+            dest,
+            target,
+        } => {
+            check_operands(program, body, args);
+            assert!(*dest < body.locals.len());
+            block(*target);
+            for ty in meanings {
+                check_type(tables, ty);
+            }
+            match callee {
+                Callee::Body(index) => {
+                    assert!(*index < program.bodies.len());
+                    let target = &program.bodies[*index];
+                    assert_eq!(
+                        args.len(),
+                        target.arity,
+                        "a body takes its spots"
+                    );
+                    assert_eq!(meanings.len(), target.hidden.len());
+                }
+                Callee::Native(index) => {
+                    assert!(*index < tables.declarations.len());
+                    let namespace = tables.declarations[*index].namespace;
+                    assert_eq!(tables.namespaces[namespace], "prelude");
+                }
+                Callee::Host(index) => {
+                    assert!(*index < tables.declarations.len());
+                    let namespace = tables.declarations[*index].namespace;
+                    assert_ne!(tables.namespaces[namespace], "prelude");
+                }
+                Callee::Dispatch { member, witness } => {
+                    assert!(*member < tables.dispatch.len());
+                    match witness {
+                        fipe::mir::Witness::Value(value) => {
+                            check_operand(program, body, value);
+                        }
+                        fipe::mir::Witness::Meaning(ty) => {
+                            check_type(tables, ty);
+                        }
+                    }
+                }
+                Callee::Value(value) => check_operand(program, body, value),
+            }
+        }
+        Terminator::Return => (),
+    }
+}
+
+/// Every path from the entry to a `Return` assigns `_0` on the way.
+fn check_result_paths(body: &fipe::mir::Body) {
+    let mut seen = vec![[false; 2]; body.blocks.len()];
+    let mut stack = vec![(0, false)];
+    while let Some((index, assigned)) = stack.pop() {
+        if seen[index][usize::from(assigned)] {
+            continue;
+        }
+        seen[index][usize::from(assigned)] = true;
+        let block = &body.blocks[index];
+        let assigned = assigned
+            || block
+                .statements
+                .iter()
+                .any(|statement| matches!(statement, Statement::Assign(0, _)));
+        match &block.terminator {
+            Terminator::Goto(target) => stack.push((*target, assigned)),
+            Terminator::Switch {
+                cases, otherwise, ..
+            } => {
+                for (_, target) in cases {
+                    stack.push((*target, assigned));
+                }
+                if let Some(target) = otherwise {
+                    stack.push((*target, assigned));
+                }
+            }
+            Terminator::Test { pass, fail, .. } => {
+                stack.push((*pass, assigned));
+                stack.push((*fail, assigned));
+            }
+            Terminator::Call { dest, target, .. } => {
+                stack.push((*target, assigned || *dest == 0));
+            }
+            Terminator::Return => {
+                assert!(assigned, "block {index} returns without a result");
+            }
+        }
+    }
+}
+
+fn check_type(tables: &ir::Tables, ty: &ir::Type) {
+    match ty {
+        ir::Type::Unit | ir::Type::Parameter(_) | ir::Type::Number(_) => (),
+        ir::Type::Session(index) => {
+            assert!(*index < tables.session_meanings.len());
+        }
+        ir::Type::Meaning { index, arguments } => {
+            assert!(*index < tables.meanings.len());
+            for ty in arguments {
+                check_type(tables, ty);
+            }
+        }
+        ir::Type::Tuple(parts)
+        | ir::Type::Packed(parts)
+        | ir::Type::All(parts)
+        | ir::Type::Sum(parts) => {
+            for ty in parts {
+                check_type(tables, ty);
+            }
+        }
+        ir::Type::Array { element, length } => {
+            check_type(tables, element);
+            check_type(tables, length);
+        }
+        ir::Type::Function { parameter, result } => {
+            check_type(tables, parameter);
+            check_type(tables, result);
+        }
+        ir::Type::Not(inner) => check_type(tables, inner),
+    }
+}
+
+#[test]
+fn straight_line_programs_walk() {
+    for source in super::STRAIGHT_LINES {
+        let (_, program) = super::program(source);
+        check_program(&program);
+    }
+}

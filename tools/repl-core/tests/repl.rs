@@ -1095,3 +1095,41 @@ fn a_conversion_without_candidates_ends_its_message() {
         "{text}"
     );
 }
+
+#[test]
+fn mir_shows_bodies_locals_blocks_and_charges_in_words() {
+    let mut repl = Repl::new();
+    let text =
+        written(repl.feed(b"f = (w = 80) (c = (w / 8)) => c\n\n:mir f 16\n"));
+    assert!(text.contains("body 0: definition f"), "{text}");
+    assert!(text.contains("constant 0 = 16"), "{text}");
+    assert!(text.contains("_1 = constant 0"), "{text}");
+    assert!(text.contains("dispatch div by value"), "{text}");
+    assert!(
+        text.contains("call body 0 (_1, _2) with meanings (Integer) into _0"),
+        "{text}"
+    );
+    assert!(text.contains("block 0 charges"), "{text}");
+    assert!(!text.contains("Span"), "{text}");
+    let text = written(repl.feed(b":mir if 1 == 1 { 2 } else { 3 }\n"));
+    assert!(
+        text.contains("switch _3: True to block 2, False to block 3"),
+        "{text}"
+    );
+    assert!(text.contains("call native prelude.eq"), "{text}");
+    let text = written(repl.feed(b":mir with cwd /tmp { 1 }\n"));
+    assert!(text.contains("push cwd = constant 0"), "{text}");
+    assert!(text.contains("    pop\n"), "{text}");
+}
+
+#[test]
+fn mir_without_an_argument_shows_the_last_accepted_line() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b":mir\n")), "no accepted line\nfipe> ");
+    let text = written(repl.feed(b"x = 2.5\n:mir\n"));
+    assert!(text.contains("constant 0 = 2.5"), "{text}");
+    assert!(text.contains("global x = constant 0"), "{text}");
+    let text = written(repl.feed(b":mir (x, \"a\")\n"));
+    assert!(text.contains("constant 0 = \"a\""), "{text}");
+    assert!(text.contains("tuple (global x, constant 0)"), "{text}");
+}
