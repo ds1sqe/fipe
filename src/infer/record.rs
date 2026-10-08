@@ -36,6 +36,14 @@ impl Infer<'_> {
         );
         pending
             .extend(self.state.callee_types.values().map(|ty| self.apply(ty)));
+        // A literal pattern's equality is no expression, yet a backend
+        // switches on its Bool, so the unit carries that layout too.
+        pending.extend(
+            self.state
+                .pattern_equals
+                .values()
+                .map(|comparison| self.apply(&comparison.ty)),
+        );
         for cast in self.state.casts.iter().flatten() {
             pending.push(self.apply(&cast.from));
             pending.push(self.apply(&cast.to));

@@ -1347,3 +1347,29 @@ fn operands_past_the_spot_list_lower_to_a_call_of_the_bound_call() {
         ir::Kind::Call { supplies, .. } if supplies.len() == 1
     ));
 }
+
+#[test]
+fn a_literal_pattern_lays_out_the_bool_its_equality_yields() {
+    let module =
+        parse(lex("f: Integer -> String = { 0 => \"a\", _ => \"b\" }"))
+            .unwrap();
+    let unit = check::check(
+        &module,
+        &Declarations::new(),
+        &[],
+        check::Options::default(),
+    )
+    .unwrap();
+    let tables = unit.tables();
+    let bool = tables
+        .meanings
+        .iter()
+        .find(|meaning| meaning.label == "Bool")
+        .expect("the equality yields a Bool");
+    let labels: Vec<_> = bool
+        .constructors
+        .iter()
+        .map(|constructor| constructor.label.as_str())
+        .collect();
+    assert_eq!(labels, ["True", "False"]);
+}
