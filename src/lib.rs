@@ -22,3 +22,4 @@ pub mod token;
 pub mod typed;
 pub mod types;
 pub mod value;
+pub mod vm;

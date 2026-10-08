@@ -138,6 +138,39 @@ impl Lowering<'_> {
         dispatch::fixed(self.tables, ty)
     }
 
+    /// Lower every written row of the members a native or derived
+    /// operation may call while it walks a value (`show` of a record
+    /// whose field has a written `show`), so the machine finds the
+    /// bodies. The labels name the members by the words of the prelude.
+    pub(super) fn reach_members(&mut self, labels: &[&str]) {
+        let rows: Vec<usize> = self
+            .tables
+            .dispatch
+            .iter()
+            .filter(|member| labels.contains(&member.label.as_str()))
+            .flat_map(|member| member.rows.iter())
+            .filter_map(|row| match row.target {
+                ir::Implementation::Definition { index, .. } => Some(index),
+                _ => None,
+            })
+            .collect();
+        for definition in rows {
+            self.function_body(definition);
+        }
+    }
+
+    /// The members a prelude word walks by tag at run time, if any.
+    pub(super) fn walked_members(label: &str) -> &'static [&'static str] {
+        match label {
+            "show" => &["show"],
+            "eq" | "count" => &["eq"],
+            "cmp" | "sort" => &["cmp"],
+            "default" => &["default"],
+            "sum" => &["add", "zero"],
+            _ => &[],
+        }
+    }
+
     /// A body index with a placeholder, filled when it is lowered, so a
     /// recursive reference finds it.
     fn reserve(&mut self, node: usize) -> usize {

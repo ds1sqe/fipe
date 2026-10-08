@@ -119,6 +119,36 @@ fn all(
             .all(|(pattern, actual)| unify(pattern, actual, bindings))
 }
 
+/// The row of `member` for a value known only by its tag, the head
+/// meaning of its type: the first row whose receiver is that meaning,
+/// a field row winning; the row's parameters stay unbound.
+#[must_use]
+pub fn select_by_head(
+    tables: &ir::Tables,
+    member: usize,
+    meaning: usize,
+) -> Option<Selected> {
+    let mut found = None;
+    for (index, row) in tables.dispatch[member].rows.iter().enumerate() {
+        let head = match &row.receiver {
+            Type::Meaning { index, .. } => *index,
+            _ => continue,
+        };
+        if head != meaning {
+            continue;
+        }
+        let selected = Selected {
+            row: index,
+            bindings: Vec::new(),
+        };
+        if matches!(row.target, ir::Implementation::Field(_)) {
+            return Some(selected);
+        }
+        found.get_or_insert(selected);
+    }
+    found
+}
+
 /// Whether a type names no parameter and no unfixed session meaning,
 /// so a dispatch on it is decided at compile time.
 pub fn concrete(ty: &Type) -> bool {
@@ -276,13 +306,10 @@ impl Builder<'_, '_> {
             ir::Implementation::Declared(index) => {
                 (self.declared(*index), Vec::new())
             }
-            ir::Implementation::Derived { kind, ty } => (
-                Callee::Derived {
-                    kind: *kind,
-                    ty: substitute(ty, &selected.bindings),
-                },
-                Vec::new(),
-            ),
+            ir::Implementation::Derived { kind, ty } => {
+                let ty = substitute(ty, &selected.bindings);
+                (self.derived(*kind, ty), Vec::new())
+            }
         })
     }
 }

@@ -185,9 +185,12 @@ pub fn show<'a>(value: &'a Value, tables: &'a ir::Tables) -> String {
                     work.push(Piece::Value(field, true));
                     work.push(Piece::Text(" "));
                 }
-                let label = &tables.meanings[record.meaning].constructors
-                    [record.constructor]
-                    .label;
+                // An opaque type, `LimitError`, has no constructors.
+                let meaning = &tables.meanings[record.meaning];
+                let label = meaning
+                    .constructors
+                    .get(record.constructor)
+                    .map_or(&meaning.label, |constructor| &constructor.label);
                 work.push(Piece::Text(label));
                 if parenthesize {
                     work.push(Piece::Text("("));

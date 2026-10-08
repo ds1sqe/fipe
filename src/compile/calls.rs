@@ -118,7 +118,7 @@ impl Builder<'_, '_> {
             ir::Kind::Derived { kind, ty } => {
                 self.count();
                 let ty = self.lowering.fixed(ty);
-                Target::Static(Callee::Derived { kind: *kind, ty }, Vec::new())
+                Target::Static(self.derived(*kind, ty), Vec::new())
             }
             ir::Kind::Constructor {
                 meaning,
@@ -149,12 +149,32 @@ impl Builder<'_, '_> {
 
     /// The prelude's declarations are native; any other namespace's are
     /// the host's.
-    pub(super) fn declared(&self, declaration: usize) -> Callee {
+    pub(super) fn declared(&mut self, declaration: usize) -> Callee {
         if self.lowering.native(declaration) {
+            let label = &self.tables().declarations[declaration].label;
+            let walked = super::Lowering::walked_members(label);
+            self.lowering.reach_members(walked);
             Callee::Native(declaration)
         } else {
             Callee::Host(declaration)
         }
+    }
+
+    /// A derived operation walks its value by tag, so the written rows
+    /// of its member are reached.
+    pub(super) fn derived(
+        &mut self,
+        kind: ir::Derived,
+        ty: ir::Type,
+    ) -> Callee {
+        let member = match kind {
+            ir::Derived::Eq => "eq",
+            ir::Derived::Cmp => "cmp",
+            ir::Derived::Show => "show",
+            ir::Derived::Default => "default",
+        };
+        self.lowering.reach_members(&[member]);
+        Callee::Derived { kind, ty }
     }
 
     /// A call with every spot in hand: the terminator, the construction

@@ -56,6 +56,8 @@ impl Builder<'_, '_> {
             }
             ir::Kind::Enter { entry, value } => {
                 let value = self.lower_to(*value, dest);
+                self.lowering
+                    .reach_predicate(&tables.entries[*entry].predicate);
                 self.count();
                 self.emit(
                     Statement::Enter {
@@ -114,6 +116,9 @@ impl Builder<'_, '_> {
         else {
             unreachable!("a conversion")
         };
+        // The machine runs the limits' tests; their bodies are reached.
+        self.lowering.reach_predicate(parameter);
+        self.lowering.reach_predicate(target);
         let mut value = value;
         if let Some(callee) = callee {
             if !trivial(parameter) {

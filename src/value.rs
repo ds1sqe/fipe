@@ -165,6 +165,7 @@ pub struct Prelude {
     pub string: Option<usize>,
     pub vec: Option<usize>,
     pub deque: Option<usize>,
+    pub limit_error: Option<usize>,
 }
 
 impl Prelude {
@@ -195,6 +196,7 @@ impl Prelude {
             string: find("String"),
             vec: find("Vec"),
             deque: find("Deque"),
+            limit_error: find("LimitError"),
         }
     }
 
@@ -283,6 +285,12 @@ impl Prelude {
     pub fn count(&self, item: Value, n: usize) -> Value {
         let n = i64::try_from(n).unwrap_or(i64::MAX);
         Self::record(self.count, 0, alloc::vec![item, Value::Int(n)])
+    }
+
+    /// `Err LimitError`, the failure of a checked conversion.
+    #[must_use]
+    pub fn limit_error(&self) -> Value {
+        self.err(Self::record(self.limit_error, 0, Vec::new()))
     }
 
     /// Whether a value is the record `True`.

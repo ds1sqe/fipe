@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     ir,
-    mir::{Callee, Operand, Rvalue, Terminator},
+    mir::{Operand, Rvalue, Terminator},
 };
 use alloc::vec::Vec;
 
@@ -214,16 +214,13 @@ impl Builder<'_, '_> {
                 super::Lowering::arity(ty),
                 Target::Static(self.declared(*index), Vec::new()),
             ),
-            ir::Kind::Derived { kind, ty: on } => (
-                super::Lowering::arity(ty),
-                Target::Static(
-                    Callee::Derived {
-                        kind: *kind,
-                        ty: self.lowering.fixed(on),
-                    },
-                    Vec::new(),
-                ),
-            ),
+            ir::Kind::Derived { kind, ty: on } => {
+                let on = self.lowering.fixed(on);
+                (
+                    super::Lowering::arity(ty),
+                    Target::Static(self.derived(*kind, on), Vec::new()),
+                )
+            }
             ir::Kind::Dispatch { receiver, member } => (
                 super::Lowering::arity(ty),
                 Target::Dispatch {

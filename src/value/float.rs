@@ -18,7 +18,8 @@ pub enum Float {
 }
 
 impl Float {
-    fn of(value: &Value) -> Self {
+    #[must_use]
+    pub fn of(value: &Value) -> Self {
         match value {
             Value::F32(float) => Self::F32(*float),
             Value::F64(float) => Self::F64(*float),
@@ -27,7 +28,9 @@ impl Float {
     }
 
     /// The value when finite, else `NotFinite`.
-    const fn finite(self) -> Result<Value, Reason> {
+    /// # Errors
+    /// `NotFinite` for an infinity or a NaN.
+    pub const fn finite(self) -> Result<Value, Reason> {
         match self {
             Self::F32(float) if float.is_finite() => Ok(Value::F32(float)),
             Self::F64(float) if float.is_finite() => Ok(Value::F64(float)),
@@ -35,7 +38,8 @@ impl Float {
         }
     }
 
-    fn wide(self) -> f64 {
+    #[must_use]
+    pub fn wide(self) -> f64 {
         match self {
             Self::F32(float) => f64::from(float),
             Self::F64(float) => float,
