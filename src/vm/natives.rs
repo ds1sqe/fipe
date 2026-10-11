@@ -174,6 +174,11 @@ impl Natives {
         )
     }
 
+    /// The native of a declaration; `None` for a host's.
+    pub(super) fn get(&self, op: usize) -> Option<Native> {
+        self.table.get(op).copied().flatten()
+    }
+
     pub(super) fn of(&self, op: usize) -> Native {
         self.table[op].expect("a prelude declaration")
     }

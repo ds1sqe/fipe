@@ -32,11 +32,15 @@ mod entries;
 mod fallback;
 #[path = "vm/faults.rs"]
 mod faults;
+#[path = "vm/host.rs"]
+mod host;
 #[path = "vm/lifts.rs"]
 mod lifts;
 #[path = "vm/natives.rs"]
 mod natives;
 #[path = "vm/outcomes.rs"]
 mod outcomes;
+#[path = "vm/suspend.rs"]
+mod suspend;
 #[path = "vm/text.rs"]
 mod text;

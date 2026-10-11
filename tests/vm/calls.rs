@@ -57,7 +57,7 @@ fn a_recursive_definition_grows_the_frames_not_the_stack() {
 }
 
 #[test]
-fn a_host_call_faults_until_the_host_is_wired() {
+fn a_host_call_is_a_request_and_a_failed_reply_faults() {
     let module = fipe::parse::parse(fipe::lex::lex("\"a\" | put ./f")).unwrap();
     let mut declarations = fipe::decl::Declarations::new();
     declarations
@@ -72,19 +72,22 @@ fn a_host_call_faults_until_the_host_is_wired() {
     .unwrap();
     let program = fipe::compile::compile(&unit);
     let mut machine = fipe::vm::Machine::new(super::run::BUDGET);
-    match machine.run(&program) {
+    let fipe::embed::Outcome::Request(fipe::embed::Request::Call { .. }) =
+        machine.run(&program)
+    else {
+        panic!("the sink literal's reader is a host call")
+    };
+    let reply = fipe::embed::Reply::Value(Err("no host".into()));
+    match machine.reply(&program, reply) {
         fipe::embed::Outcome::Done(Err(fault)) => {
-            assert!(
-                matches!(fault.reason, Reason::Host(ref message) if message.starts_with("no host for commands.")),
-                "{fault:?}"
-            );
+            assert_eq!(fault.reason, Reason::Host("no host".into()));
         }
         other => panic!("{other:?}"),
     }
 }
 
 #[test]
-fn charges_accumulate_on_the_machine() {
+fn a_run_charges_the_machine() {
     let module = fipe::parse::parse(fipe::lex::lex("1 + 2")).unwrap();
     let unit = fipe::check::check(
         &module,

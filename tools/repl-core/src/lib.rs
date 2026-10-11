@@ -514,6 +514,9 @@ impl Repl {
                 out.0.push(Out::File(self.path(&stem)));
                 self.wait = Some(Wait::Line { stem, text, mode });
             }
+            Outcome::Request(Request::Call { .. }) => {
+                unreachable!("a session asks only for files")
+            }
             Outcome::Done(report) => self.done(report, text, mode, out),
         }
     }
@@ -557,7 +560,23 @@ impl Repl {
     fn execute(&mut self, report: &Report, text: &str, out: &mut Outs) {
         let Some(unit) = &report.unit else { return };
         let program = fipe::compile::compile(unit);
-        let outcome = self.machine.run(&program);
+        let mut outcome = self.machine.run(&program);
+        // No host is wired yet: each host call fails, naming its
+        // declaration, and the run Faults there.
+        while let Outcome::Request(request) = outcome {
+            let Request::Call { declaration, .. } = request else {
+                unreachable!("a run asks only for host calls")
+            };
+            let message = {
+                let tables = program.tables.borrow();
+                let declaration = &tables.declarations[declaration];
+                format!(
+                    "no host for {}.{}",
+                    tables.namespaces[declaration.namespace], declaration.label
+                )
+            };
+            outcome = self.machine.reply(&program, Reply::Value(Err(message)));
+        }
         if self.replaying {
             return;
         }
@@ -572,9 +591,7 @@ impl Repl {
                     render::fault(&fault.reason, &program.tables.borrow());
                 self.fault(&fault, &reason, report.offset, text, out);
             }
-            Outcome::Request(_) => {
-                out.write(b"the run asked the host, which is not wired\n");
-            }
+            Outcome::Request(_) => unreachable!("every request was answered"),
         }
     }
 
@@ -728,6 +745,9 @@ impl Repl {
                 Outcome::Request(Request::File { stem }) => {
                     let text = self.cached(&stem).map(String::from);
                     outcome = self.session.reply(Reply::File(text));
+                }
+                Outcome::Request(Request::Call { .. }) => {
+                    unreachable!("a session asks only for files")
                 }
                 Outcome::Done(report) => return report,
             }

@@ -65,12 +65,7 @@ impl Machine {
                 self.native(program, *op, args, Some(result), back, node)
             }
             Callee::Host(declaration) => {
-                let tables = program.tables.borrow();
-                let declaration = &tables.declarations[*declaration];
-                Err(fault(Reason::Host(format!(
-                    "no host for {}.{}",
-                    tables.namespaces[declaration.namespace], declaration.label
-                ))))
+                Ok(self.host(*declaration, args, back, node))
             }
             Callee::Derived { kind, ty } => {
                 let ty = {
@@ -141,7 +136,11 @@ impl Machine {
         node: usize,
     ) -> Result<Flow, Fault> {
         let natives = self.natives();
-        let units = super::budget::size(natives.of(op), &args);
+        // A declared row of a host's namespace is a host call.
+        let Some(native) = natives.get(op) else {
+            return Ok(self.host(op, args, back, node));
+        };
+        let units = super::budget::size(native, &args);
         self.pay(units).map_err(|reason| Fault {
             span: Self::span(program, node),
             reason,

@@ -305,6 +305,7 @@ impl Session {
                 }
             },
             Reply::File(None) => pending.absent.push(stem),
+            Reply::Value(_) => panic!("a file request takes a file reply"),
         }
         for stem in &pending.absent {
             if !self.absent.contains(stem) {

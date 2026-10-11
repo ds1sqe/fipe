@@ -28,7 +28,7 @@ mod step;
 mod walk;
 
 use crate::{
-    embed::{Outcome, Reply},
+    embed::{Outcome, Reply, Request},
     ir, mir,
     token::Span,
     value::{Prelude, Reason, Value},
@@ -42,6 +42,27 @@ pub use natives::Natives;
 pub struct Fault {
     pub span: Span,
     pub reason: Reason,
+}
+
+/// What a run observably did.
+///
+/// Every backend must reproduce it from the same unit, host replies and
+/// budget (`09-host.md` §Backend equivalence). A host driver assembles
+/// it; `output` stays empty until the host's output exists.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Observation {
+    pub result: Result<Value, Fault>,
+    pub trace: Vec<(Request, Reply)>,
+    pub output: Vec<u8>,
+    pub charged: u64,
+}
+
+/// Which body of a run is in progress: a module's init, by its
+/// position in `Program.inits`, or the main.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stage {
+    Init(usize),
+    Main,
 }
 
 /// The machine of one session.
@@ -58,6 +79,12 @@ pub struct Machine {
     natives: Option<(usize, Rc<Natives>)>,
     /// The prelude's meanings, found once per tables.
     prelude: Option<(usize, Rc<Prelude>)>,
+    /// The body of the run in progress; `None` between runs.
+    stage: Option<Stage>,
+    /// Where an owed host reply goes, and the call's node.
+    waiting: Option<(Return, usize)>,
+    /// The `with` keys and values open, outermost first.
+    environment: Vec<(usize, Value)>,
 }
 
 /// What a frame's caller does with the returned value.
@@ -89,6 +116,8 @@ pub(crate) enum Flow {
     Continue,
     /// The last frame returned this value.
     Done(Value),
+    /// A host call: the run waits for its reply.
+    Request(Request),
 }
 
 impl Machine {
@@ -104,6 +133,9 @@ impl Machine {
             frames: Vec::new(),
             natives: None,
             prelude: None,
+            stage: None,
+            waiting: None,
+            environment: Vec::new(),
         }
     }
 
@@ -131,7 +163,8 @@ impl Machine {
     }
 
     /// Run a program: each module's init body not yet run, then the
-    /// main; its value, or the Fault that ended it.
+    /// main; its value, the Fault that ended it, or the host request it
+    /// waits on.
     ///
     /// # Panics
     /// On a checker or compiler invariant broken by the program, a
@@ -142,26 +175,128 @@ impl Machine {
     ) -> Outcome<Result<Value, Fault>> {
         self.prepare(program);
         self.charged = 0;
-        for (module, body) in program.inits.clone() {
-            if self.initialized[module] {
-                continue;
-            }
-            if let Err(fault) = self.execute(program, body) {
-                return Outcome::Done(Err(fault));
-            }
-            self.initialized[module] = true;
-        }
-        Outcome::Done(self.execute(program, program.main))
+        self.frames.clear();
+        self.environment.clear();
+        self.waiting = None;
+        self.stage = Some(Stage::Init(0));
+        self.advance(program)
     }
 
-    /// Answer a host request and continue the run; no request is made
-    /// until the host callee is wired (08.3), so none can be answered.
+    /// Answer the owed host request and continue the run, with the
+    /// program `run` was given: the value goes where the call wanted
+    /// it; a failure Faults `Host` at the call.
     ///
     /// # Panics
-    /// Always, until then.
-    #[allow(clippy::needless_pass_by_value)] // the reply is consumed once wired
-    pub fn reply(&mut self, reply: Reply) -> Outcome<Result<Value, Fault>> {
-        unreachable!("no host request was made: {reply:?}")
+    /// When no host request is owed, or on a reply of another kind.
+    pub fn reply(
+        &mut self,
+        program: &mir::Program,
+        reply: Reply,
+    ) -> Outcome<Result<Value, Fault>> {
+        let (back, node) = self.waiting.take().expect("a host request is owed");
+        let flow = match reply {
+            Reply::Value(Ok(value)) => self.deliver(program, value, back),
+            Reply::Value(Err(message)) => Err(Fault {
+                span: Self::span(program, node),
+                reason: Reason::Host(message),
+            }),
+            Reply::File(_) => panic!("a host call takes a value reply"),
+        };
+        self.settle(program, flow)
+            .unwrap_or_else(|| self.advance(program))
+    }
+
+    /// Step the run until it ends or asks the host; each body of the
+    /// stage in turn, from an empty frame stack.
+    fn advance(
+        &mut self,
+        program: &mir::Program,
+    ) -> Outcome<Result<Value, Fault>> {
+        loop {
+            if self.frames.is_empty() {
+                let body = self.next_body(program);
+                let frame = BodyFrame::new(
+                    program,
+                    body,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Return::Finish,
+                );
+                self.frames.push(Frame::Body(frame));
+            }
+            let flow = self.step(program);
+            if let Some(outcome) = self.settle(program, flow) {
+                return outcome;
+            }
+        }
+    }
+
+    /// The body the stage runs next: the first init not yet run from
+    /// the stage's position, else the main.
+    fn next_body(&mut self, program: &mir::Program) -> usize {
+        if let Some(Stage::Init(position)) = self.stage {
+            let next = program.inits[position..]
+                .iter()
+                .position(|(module, _)| !self.initialized[*module]);
+            if let Some(offset) = next {
+                self.stage = Some(Stage::Init(position + offset));
+                return program.inits[position + offset].1;
+            }
+            self.stage = Some(Stage::Main);
+        }
+        program.main
+    }
+
+    /// What a step means for the run: keep going (`None`), or the
+    /// outcome to return.
+    fn settle(
+        &mut self,
+        program: &mir::Program,
+        flow: Result<Flow, Fault>,
+    ) -> Option<Outcome<Result<Value, Fault>>> {
+        match flow {
+            Ok(Flow::Continue) => None,
+            Ok(Flow::Request(request)) => Some(Outcome::Request(request)),
+            Ok(Flow::Done(value)) => {
+                self.frames.clear();
+                if let Some(Stage::Init(position)) = self.stage {
+                    let (module, _) = program.inits[position];
+                    self.initialized[module] = true;
+                    self.stage = Some(Stage::Init(position + 1));
+                    return None;
+                }
+                self.end();
+                Some(Outcome::Done(Ok(value)))
+            }
+            Err(fault) => {
+                self.end();
+                Some(Outcome::Done(Err(fault)))
+            }
+        }
+    }
+
+    fn end(&mut self) {
+        self.frames.clear();
+        self.environment.clear();
+        self.waiting = None;
+        self.stage = None;
+    }
+
+    /// Hand a host call to the driver; the run waits for `reply`.
+    pub(crate) fn host(
+        &mut self,
+        declaration: usize,
+        arguments: Vec<Value>,
+        back: Return,
+        node: usize,
+    ) -> Flow {
+        self.waiting = Some((back, node));
+        Flow::Request(Request::Call {
+            declaration,
+            arguments,
+            environment: self.environment.clone(),
+        })
     }
 
     /// Size the globals and modules to the tables; refresh the natives
@@ -182,33 +317,6 @@ impl Machine {
         if self.prelude.as_ref().map(|(len, _)| *len) != Some(meanings) {
             self.prelude = Some((meanings, Rc::new(Prelude::new(&tables))));
         }
-    }
-
-    /// Run one body with no arguments to its end.
-    fn execute(
-        &mut self,
-        program: &mir::Program,
-        body: usize,
-    ) -> Result<Value, Fault> {
-        debug_assert!(self.frames.is_empty());
-        let frame = BodyFrame::new(
-            program,
-            body,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Return::Finish,
-        );
-        self.frames.push(Frame::Body(frame));
-        let result = loop {
-            match self.step(program) {
-                Ok(Flow::Continue) => (),
-                Ok(Flow::Done(value)) => break Ok(value),
-                Err(fault) => break Err(fault),
-            }
-        };
-        self.frames.clear();
-        result
     }
 
     pub(crate) fn natives(&self) -> Rc<Natives> {

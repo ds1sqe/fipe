@@ -102,8 +102,12 @@ impl Machine {
                 let value = self.operand(program, *value);
                 return Ok(self.enter(program, *entry, value, node));
             }
-            Statement::Push { .. } | Statement::Pop => {
-                // The environment is the host's, with the suspension.
+            Statement::Push { key, value } => {
+                let value = self.operand(program, *value);
+                self.environment.push((*key, value));
+            }
+            Statement::Pop => {
+                self.environment.pop();
             }
         }
         Ok(Flow::Continue)

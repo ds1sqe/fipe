@@ -183,11 +183,54 @@ order, display and defaults by a value's tag; each Faults by a
 `:mir` displays a checked line's program in words on both REPL builds,
 and `:mir <line>` a queried one, without internal byte offsets.
 
+## Running
+
+~~~text
+vm::Machine::new(budget: u64) -> Machine
+run(&mut self, program: &mir::Program) -> Outcome<Result<Value, Fault>>
+reply(&mut self, program: &mir::Program, reply: Reply)
+    -> Outcome<Result<Value, Fault>>
+charged(&self) -> u64
+vm::Fault { span: token::Span, reason: value::Reason }
+vm::Observation { result: Result<Value, Fault>,
+                  trace: Vec<(Request, Reply)>, output: Vec<u8>, charged: u64 }
+~~~
+
+One machine serves a session: its globals are the accepted lines'
+values. `run` runs each module's init body not yet run, then the main,
+with frames on the heap, never on the Rust stack. A `Host` callee, or a
+dispatch row naming a host's declaration, is the one place a run
+returns `Request::Call` with the arguments in spot order and the `with`
+environment open at the call; `reply` with the same program continues
+it, a value going where the call wanted it and a failure Faulting
+`Host` at the call. A Fault ends the run where it happens; the host's
+prior effects stand.
+
+The budget is per run, and `charged` reports the run in progress or the
+last one. A block pays its `Charge` nodes when it opens: with `r` units
+left and more nodes, the run Faults `Budget` at the span of node `r`
+before any statement of the block runs. A call's node is paid in the
+block whose terminator makes it, so a host call that cannot be paid is
+never requested. A native pays its size term before it acts: an
+`Integer` `add`, `sub`, `eq` or `cmp` one per 64-bit limb of the larger
+operand, `mul`, `div` and `rem` the product of the limb counts; a
+container operation one per element of its input, `take` and `head`
+only those they reach; a structural `eq`, `cmp`, `show` or `default`
+one per value below the receiver. A test costs the nodes of its limit's
+body, the division test one unit; a proved entry has no `Enter` and
+costs nothing. A host call's bytes are not charged until H1.
+
+An `Enter` tests every component its entry's path reaches from the
+value, in order; the first failure is `Reason::Failed { entry, value }`,
+the value in the language's spelling. `Observation` is what every
+backend must reproduce from the same unit, replies and budget; a
+driver assembles it from its trace, and `output` stays empty until the
+host chapter's output exists.
+
 ## What follows
 
-The machine interprets the program, charges the budget, Faults at the
-exact node, suspends on a host callee and resumes on the reply. The
-compile phase of the checker runs the same machine on `Compile` entries,
-program-reader literals and demands, turning them into constants. The
-deque's representation, a repeated length read from a witness, and a
-debugger's step granularity are not fixed by this chapter.
+The compile phase of the checker runs the same machine on `Compile`
+entries, program-reader literals and demands, turning them into
+constants. The deque's representation, a repeated length read from a
+witness, and a debugger's step granularity are not fixed by this
+chapter.

@@ -8,7 +8,9 @@ boundary through which a driver supplies it.
 ~~~text
 embed::Outcome<T> = Request(Request) | Done(T)
 embed::Request    = File { stem: String }
-embed::Reply      = File(Option<String>)
+                  | Call { declaration: usize, arguments: Vec<Value>,
+                           environment: Vec<(usize, Value)> }
+embed::Reply      = File(Option<String>) | Value(Result<Value, String>)
 ~~~
 
 The crate calls nothing: no trait object, callback or I/O. Every effect is
@@ -18,6 +20,7 @@ a returned `Request`; the driver performs it and passes the answer to
 | Request | Reply |
 | --- | --- |
 | `File { stem }`: the source of file module `stem`; the driver maps the stem to a path | the text, or `None` when absent |
+| `Call { declaration, arguments, environment }`: a run calls the host declaration `tables.declarations[declaration]` with its arguments in spot order, under the `with` keys (`tables.keys`) and values open, outermost first | `Value(Ok(value))`, or `Value(Err(message))`, which Faults the run with `Host` at the call |
 
 ## Session
 
