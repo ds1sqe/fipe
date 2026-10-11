@@ -47,9 +47,12 @@ pub fn check_program(program: &Program) {
             let mut lowered = Vec::new();
             for (index, statement) in block.statements.iter().enumerate() {
                 match statement {
-                    Statement::Charge(count) => {
+                    Statement::Charge(nodes) => {
                         assert_eq!(index, 0, "a charge opens its block");
-                        assert!(*count > 0, "a charge is never zero");
+                        assert!(!nodes.is_empty(), "a charge is never empty");
+                        for node in nodes {
+                            assert!(*node < tables.nodes.len());
+                        }
                     }
                     Statement::Assign(dest, rvalue) => {
                         assert!(*dest < body.locals.len());
@@ -78,11 +81,11 @@ pub fn check_program(program: &Program) {
                     Statement::Pop => push(&mut lowered, block.nodes[index]),
                 }
             }
-            if let Some(Statement::Charge(count)) = block.statements.first() {
+            if let Some(Statement::Charge(nodes)) = block.statements.first() {
                 assert!(
-                    *count >= lowered.len(),
+                    nodes.len() >= lowered.len(),
                     "a charge covers every node with a statement: body of \
-                     node {} charges {count} for {lowered:?} in {block:?}",
+                     node {} charges {nodes:?} for {lowered:?} in {block:?}",
                     body.node
                 );
             }

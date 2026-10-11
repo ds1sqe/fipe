@@ -1165,12 +1165,12 @@ fn a_fault_names_its_line_and_column() {
     let mut repl = Repl::new();
     assert_eq!(
         written(repl.feed(b"1 / ([0] | head)\n\n")),
-        "fault at 1:1: division by zero\n1 / ([0] | head)\n\
-         ^^^^^^^^^^^^^^^^\nfipe> "
+        "fault at 1:5: division by zero: divisor is 0\n\
+         1 / ([0] | head)\n    ^^^^^^^^^^^^\nfipe> "
     );
     let text = written(repl.feed(b"f = n => 10 / n\n\nf 0\n\n"));
     assert!(
-        text.contains("fault at line 2, 1:10: division by zero"),
+        text.contains("fault at line 2, 1:15: division by zero: divisor is 0"),
         "{text}"
     );
 }
@@ -1178,7 +1178,23 @@ fn a_fault_names_its_line_and_column() {
 #[test]
 fn the_budget_reaches_the_machine() {
     let mut repl = Repl::new();
-    repl.budget(10);
-    // The budget is enforced from the next minor; the line still runs.
+    repl.budget(5);
     assert_eq!(written(repl.feed(b"1 + 2\n\n")), "3\nfipe> ");
+    // `1 + 2` costs five: its operator, two literals, the call, one limb.
+    repl.budget(4);
+    let text = written(repl.feed(b"1 + 2\n\n"));
+    assert!(
+        text.starts_with("fault at 1:1: the budget is exhausted"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_refuted_entry_names_its_limit_and_value_at_its_place() {
+    let mut repl = Repl::new();
+    let text = written(repl.feed(b"big = _ => 300\n\nx: U8 = big ()\n\n"));
+    assert!(
+        text.contains("fault at 1:9: refuted entry against U8: 300"),
+        "{text}"
+    );
 }

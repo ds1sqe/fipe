@@ -104,7 +104,7 @@ impl Builder<'_, '_> {
         let tables = self.tables();
         match &tables.nodes[node].kind {
             ir::Kind::Definition { index, meanings } => {
-                self.count();
+                self.count(node);
                 if let Some(body) = self.lowering.function_body(*index) {
                     Target::Static(Callee::Body(body), meanings.clone())
                 } else {
@@ -113,11 +113,11 @@ impl Builder<'_, '_> {
                 }
             }
             ir::Kind::Declared(index) => {
-                self.count();
+                self.count(node);
                 Target::Static(self.declared(*index), Vec::new())
             }
             ir::Kind::Derived { kind, ty } => {
-                self.count();
+                self.count(node);
                 let ty = self.lowering.fixed(ty);
                 Target::Static(self.derived(*kind, ty), Vec::new())
             }
@@ -126,7 +126,7 @@ impl Builder<'_, '_> {
                 constructor,
                 fields,
             } => {
-                self.count();
+                self.count(node);
                 Target::Construct {
                     meaning: *meaning,
                     constructor: *constructor,
@@ -134,14 +134,14 @@ impl Builder<'_, '_> {
                 }
             }
             ir::Kind::Dispatch { receiver, member } => {
-                self.count();
+                self.count(node);
                 Target::Dispatch {
                     member: *member,
                     receiver: receiver.clone(),
                 }
             }
             ir::Kind::Convert { .. } => {
-                self.count();
+                self.count(node);
                 Target::Convert(node)
             }
             _ => Target::Value(self.lower(node)),
@@ -265,7 +265,7 @@ impl Builder<'_, '_> {
             ..
         } = *site;
         if slots.is_empty() {
-            self.count();
+            self.count(node);
             return self.lower_to(callee, dest);
         }
         let ty = &self.tables().nodes[node].ty;
@@ -306,7 +306,7 @@ impl Builder<'_, '_> {
             for (spot, default) in site.defaults {
                 self.lower_to(*default, Some(local(*spot)));
             }
-            self.count();
+            self.count(node);
             let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
             let args = (0..slots.len())
                 .map(|spot| Operand::Local(local(spot)))
@@ -322,7 +322,7 @@ impl Builder<'_, '_> {
         }
         let closure =
             self.thunk(site, &locals, target, receiver_spot, argument);
-        self.count();
+        self.count(node);
         self.materialize(closure, dest, ty, node)
     }
 }

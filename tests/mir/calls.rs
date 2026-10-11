@@ -39,12 +39,14 @@ fn a_literal_is_one_constant_used_once() {
     assert_eq!(program.constants, [Value::Int(16)]);
     let body = main_body(&program);
     assert_eq!(body.blocks.len(), 1);
+    let statements = &body.blocks[0].statements;
+    assert!(matches!(
+        &statements[0],
+        Statement::Charge(nodes) if nodes.len() == 1
+    ));
     assert_eq!(
-        body.blocks[0].statements,
-        [
-            Statement::Charge(1),
-            Statement::Assign(0, Rvalue::Use(Operand::Const(0)))
-        ]
+        statements[1..],
+        [Statement::Assign(0, Rvalue::Use(Operand::Const(0)))]
     );
     assert_eq!(body.blocks[0].terminator, Terminator::Return);
 }
@@ -236,10 +238,14 @@ fn with_pushes_then_pops_around_its_body() {
 fn a_block_binds_a_local_and_reads_it() {
     let (_, program) = super::program("{\n    x = 1\n    x\n}");
     let body = main_body(&program);
+    let statements = &body.blocks[0].statements;
+    assert!(matches!(
+        &statements[0],
+        Statement::Charge(nodes) if nodes.len() == 4
+    ));
     assert_eq!(
-        body.blocks[0].statements,
+        statements[1..],
         [
-            Statement::Charge(4),
             Statement::Assign(1, Rvalue::Use(Operand::Const(0))),
             Statement::Assign(0, Rvalue::Use(Operand::Local(1))),
         ]
@@ -254,12 +260,14 @@ fn a_block_binds_a_local_and_reads_it() {
 fn a_timing_is_a_use_of_its_value() {
     let (_, program) = super::program("Compile 1");
     let body = main_body(&program);
+    let statements = &body.blocks[0].statements;
+    assert!(matches!(
+        &statements[0],
+        Statement::Charge(nodes) if nodes.len() == 2
+    ));
     assert_eq!(
-        body.blocks[0].statements,
-        [
-            Statement::Charge(2),
-            Statement::Assign(0, Rvalue::Use(Operand::Const(0)))
-        ]
+        statements[1..],
+        [Statement::Assign(0, Rvalue::Use(Operand::Const(0)))]
     );
 }
 

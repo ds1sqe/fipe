@@ -19,11 +19,14 @@ fn division_rounds_toward_zero_and_the_remainder_keeps_the_dividend_sign() {
 }
 
 #[test]
-fn a_zero_divisor_faults_at_the_node() {
+fn a_zero_divisor_faults_at_the_divisor_by_the_division_test() {
     let source = "d = x => 1 / x\nd 0";
     let fault = run(source).unwrap_err();
-    assert_eq!(fault.reason, Reason::DivideByZero);
-    assert_eq!(&source[fault.span.start..fault.span.end], "1 / x");
+    // The divisor's open entry runs before the division can.
+    assert!(
+        matches!(&fault.reason, Reason::Failed { value, .. } if value == "0")
+    );
+    assert_eq!(&source[fault.span.start..fault.span.end], "x");
 }
 
 #[test]
@@ -57,6 +60,7 @@ fn literals_read_by_a_program_reader_run_its_body() {
 fn the_span_of_a_fault_is_in_the_unit() {
     let source = "f = x => x / 0\nf 1";
     let fault = run(source).unwrap_err();
-    assert_eq!(&source[fault.span.start..fault.span.end], "x / 0");
+    // The divisor's division test Faults first, at the divisor.
+    assert_eq!(&source[fault.span.start..fault.span.end], "0");
     let _ = ir::Phase::Eval;
 }

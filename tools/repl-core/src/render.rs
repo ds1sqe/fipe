@@ -10,13 +10,29 @@ use fipe::{
     parse::{self, Expected},
     resolve,
     token::{Source, Span},
-    value::{structural, Value},
+    value::{structural, Reason, Value},
 };
 
 /// A value in the language's spelling (`6`, `Just 2`, `[1, 2]`, `"a"`,
 /// `Point 1 2`, `(1, "a")`, `<function>`), never through a `show` member.
 pub fn value(value: &Value, tables: &ir::Tables) -> String {
     structural::show(value, tables)
+}
+
+/// A Fault's reason in words; a refuted entry names its limit and the
+/// value, as the checker's refutation does, the caret giving the place.
+pub fn fault(reason: &Reason, tables: &ir::Tables) -> String {
+    match reason {
+        Reason::Failed { entry, value } => {
+            let entry = &tables.entries[*entry];
+            if matches!(entry.predicate, ir::Predicate::Nonzero { .. }) {
+                format!("division by zero: divisor is {value}")
+            } else {
+                format!("refuted entry against {}: {value}", entry.label)
+            }
+        }
+        other => other.to_string(),
+    }
 }
 
 /// The text a reason's own spans index: the session's accepted lines,

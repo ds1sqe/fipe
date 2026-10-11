@@ -16,6 +16,8 @@ mod run;
 
 #[path = "vm/arith.rs"]
 mod arith;
+#[path = "vm/budget.rs"]
+mod budget;
 #[path = "vm/calls.rs"]
 mod calls;
 #[path = "vm/closures.rs"]
@@ -24,6 +26,8 @@ mod closures;
 mod containers;
 #[path = "vm/dispatch.rs"]
 mod dispatch;
+#[path = "vm/entries.rs"]
+mod entries;
 #[path = "vm/fallback.rs"]
 mod fallback;
 #[path = "vm/faults.rs"]

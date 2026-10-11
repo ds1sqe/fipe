@@ -10,11 +10,13 @@
 //! are the accepted lines' values and each line's program indexes the
 //! shared tables.
 mod assign;
+mod budget;
 mod calls;
 mod casts;
 mod defaults;
 mod dispatch;
 mod drive;
+mod entries;
 mod frames;
 mod globals;
 mod immediate;
@@ -71,6 +73,9 @@ pub(crate) enum Return {
     Branch { pass: usize, fail: usize },
     /// Resume the native frame below with the value.
     Resume,
+    /// Continue the body frame below where it stands; the value is
+    /// dropped (a passed entry).
+    Continue,
     /// Store a global the body frame below read unset, then let it
     /// retry the step that read it.
     Store(usize),
@@ -87,8 +92,8 @@ pub(crate) enum Flow {
 }
 
 impl Machine {
-    /// A machine with a budget of charge units for every run it makes
-    /// (the budget's exhaustion Faults once the budget is enforced).
+    /// A machine with a budget of charge units for each run it makes;
+    /// a run that cannot pay Faults `Budget` at the first unpaid node.
     #[must_use]
     pub const fn new(budget: u64) -> Self {
         Self {
@@ -102,7 +107,7 @@ impl Machine {
         }
     }
 
-    /// The charge units counted so far across every run.
+    /// The charge units of the run in progress, or of the last run.
     #[must_use]
     pub const fn charged(&self) -> u64 {
         self.charged
@@ -136,6 +141,7 @@ impl Machine {
         program: &mir::Program,
     ) -> Outcome<Result<Value, Fault>> {
         self.prepare(program);
+        self.charged = 0;
         for (module, body) in program.inits.clone() {
             if self.initialized[module] {
                 continue;

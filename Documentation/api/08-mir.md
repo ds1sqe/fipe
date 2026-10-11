@@ -46,7 +46,8 @@ has its span and a debugger steps by node or by block without a second
 table. Statements assign an rvalue to a local, store a value definition's
 global, enter an `Eval` or `Init` entry with the value it checks, push
 a `with` key and value onto the environment a host call receives, or pop
-it. A block whose lowering charged anything opens with `Charge(n)`.
+it. A block whose lowering charged anything opens with `Charge`, the
+nodes it pays in the order their lowering completed.
 
 Charges follow the charge schedule of [the host chapter](../spec/09-host.md):
 one unit per IR node evaluated, the size terms living inside the natives

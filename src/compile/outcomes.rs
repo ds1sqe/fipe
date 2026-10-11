@@ -85,12 +85,12 @@ impl<'a> Builder<'_, 'a> {
             node,
         );
         self.switch_to(kept);
-        self.count();
+        self.count(node);
         self.assign(dest, Rvalue::Use(value), node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(marked);
         let result = self.stage(left, value, side, stage);
-        self.count();
+        self.count(node);
         self.rebuild(rebuild, side, ty, result, dest, node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(join);
@@ -220,7 +220,7 @@ impl<'a> Builder<'_, 'a> {
             node,
         );
         self.switch_to(miss);
-        self.count();
+        self.count(node);
         self.assign(dest, Rvalue::Use(outcome), node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(hit);
@@ -250,7 +250,7 @@ impl<'a> Builder<'_, 'a> {
             }
         }
         let result = self.lower(body);
-        self.count();
+        self.count(node);
         self.rebuild(rebuild, constructor, ty, result, dest, node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(join);
@@ -289,7 +289,7 @@ impl<'a> Builder<'_, 'a> {
             node,
         );
         self.switch_to(kept);
-        self.count();
+        self.count(node);
         let rvalue = match mode {
             ir::Mode::Payload => Rvalue::Field(value, 0),
             ir::Mode::Bool | ir::Mode::Family => Rvalue::Use(value),
@@ -298,7 +298,7 @@ impl<'a> Builder<'_, 'a> {
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(taken);
         self.lower_to(right, Some(dest));
-        self.count();
+        self.count(node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(join);
         Operand::Local(dest)
@@ -337,18 +337,18 @@ impl<'a> Builder<'_, 'a> {
             node,
         );
         self.switch_to(kept);
-        self.count();
+        self.count(node);
         self.assign(dest, Rvalue::Use(value), node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(taken);
         match rebuild {
             None => {
                 self.lower_to(right, Some(dest));
-                self.count();
+                self.count(node);
             }
             Some(rebuild) => {
                 let result = self.lower(right);
-                self.count();
+                self.count(node);
                 self.rebuild(rebuild, take, ty, result, dest, node);
             }
         }
@@ -388,7 +388,7 @@ impl<'a> Builder<'_, 'a> {
         );
         for (block, constructor) in [(accepted_block, yes), (refused, no)] {
             self.switch_to(block);
-            self.count();
+            self.count(node);
             let rvalue = Rvalue::Construct {
                 meaning: bool,
                 constructor,

@@ -140,8 +140,13 @@ impl Machine {
         back: Return,
         node: usize,
     ) -> Result<Flow, Fault> {
+        let natives = self.natives();
+        let units = super::budget::size(natives.of(op), &args);
+        self.pay(units).map_err(|reason| Fault {
+            span: Self::span(program, node),
+            reason,
+        })?;
         let step = {
-            let natives = self.natives();
             let prelude = self.prelude();
             let tables = program.tables.borrow();
             let ctx = Ctx {

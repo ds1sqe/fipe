@@ -11,8 +11,9 @@ pub(super) struct Open {
     statements: Vec<Statement>,
     nodes: Vec<usize>,
     terminator: Option<(Terminator, usize)>,
-    /// IR nodes lowered into this block, the charge.
-    count: usize,
+    /// IR nodes lowered into this block, the charge, in the order
+    /// their lowering completed.
+    charged: Vec<usize>,
     /// The node that opened the block, the charge's node.
     opener: usize,
 }
@@ -65,7 +66,7 @@ impl<'l, 'a> Builder<'l, 'a> {
                 statements: Vec::new(),
                 nodes: Vec::new(),
                 terminator: None,
-                count: 0,
+                charged: Vec::new(),
                 opener: node,
             }],
             current: 0,
@@ -142,8 +143,8 @@ impl<'l, 'a> Builder<'l, 'a> {
     }
 
     /// One more IR node lowered into the current block.
-    pub(super) fn count(&mut self) {
-        self.blocks[self.current].count += 1;
+    pub(super) fn count(&mut self, node: usize) {
+        self.blocks[self.current].charged.push(node);
     }
 
     pub(super) fn emit(&mut self, statement: Statement, node: usize) {
@@ -162,7 +163,7 @@ impl<'l, 'a> Builder<'l, 'a> {
             statements: Vec::new(),
             nodes: Vec::new(),
             terminator: None,
-            count: 0,
+            charged: Vec::new(),
             opener,
         });
         self.blocks.len() - 1
@@ -228,8 +229,8 @@ impl<'l, 'a> Builder<'l, 'a> {
                 let mut statements =
                     Vec::with_capacity(open.statements.len() + 1);
                 let mut nodes = Vec::with_capacity(open.nodes.len() + 2);
-                if open.count > 0 {
-                    statements.push(Statement::Charge(open.count));
+                if !open.charged.is_empty() {
+                    statements.push(Statement::Charge(open.charged));
                     nodes.push(open.opener);
                 }
                 statements.extend(open.statements);

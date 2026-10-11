@@ -18,6 +18,8 @@ pub(super) enum After {
     /// The value on a pass; a `Cast` Fault or an `Err LimitError` on a
     /// failure, by the mode.
     Convert(ir::ConversionMode),
+    /// Nothing on a pass; a Fault naming the entry on a failure.
+    Enter(usize),
 }
 
 /// A composite predicate in progress: the stack of combinators above
@@ -29,6 +31,11 @@ pub(super) struct Run {
     after: After,
     /// Set once the verdict is known and nothing waits on a call.
     verdict: Option<bool>,
+    /// Units the run's own leaves cost since the machine last paid.
+    owed: u64,
+    /// The values still to test after this one, the next last.
+    rest: Vec<Value>,
+    predicate: Predicate,
 }
 
 #[derive(Debug)]
@@ -51,16 +58,55 @@ impl Run {
         value: Value,
         after: After,
     ) -> Self {
+        Self::over(predicate, alloc::vec![value], after)
+    }
+
+    /// A run testing each value in order, stopping at the first that
+    /// fails; `values` is not empty.
+    pub(super) fn over(
+        predicate: Predicate,
+        mut values: Vec<Value>,
+        after: After,
+    ) -> Self {
+        values.reverse();
+        let value = values.pop().expect("a value to test");
         Self {
             stack: alloc::vec![Node {
                 kind: Kind::All,
-                parts: alloc::vec![predicate],
+                parts: alloc::vec![predicate.clone()],
                 next: 0,
             }],
             value,
             after,
             verdict: None,
+            owed: 0,
+            rest: values,
+            predicate,
         }
+    }
+
+    /// The verdict on one value: the next value's run begins when it
+    /// passed and more remain, else the run ends.
+    fn conclude(&mut self, verdict: bool, ctx: &Ctx<'_>) -> Option<Step> {
+        if verdict {
+            if let Some(next) = self.rest.pop() {
+                self.value = next;
+                self.stack = alloc::vec![Node {
+                    kind: Kind::All,
+                    parts: alloc::vec![self.predicate.clone()],
+                    next: 0,
+                }];
+                return None;
+            }
+        }
+        Some(self.finish(verdict, ctx))
+    }
+
+    /// The units owed since the last call, now paid by the machine.
+    pub(super) const fn take_owed(&mut self) -> u64 {
+        let owed = self.owed;
+        self.owed = 0;
+        owed
     }
 
     /// One move: fold a returned Bool into the combinators, then descend
@@ -74,7 +120,10 @@ impl Run {
         loop {
             if let Some(decided) = result.take() {
                 match self.settle(decided) {
-                    Some(verdict) => return self.finish(verdict, ctx),
+                    Some(verdict) => match self.conclude(verdict, ctx) {
+                        Some(step) => return step,
+                        None => continue,
+                    },
                     None => continue,
                 }
             }
@@ -90,7 +139,10 @@ impl Run {
                 };
                 self.stack.pop();
                 if self.stack.is_empty() {
-                    return self.finish(exhausted, ctx);
+                    match self.conclude(exhausted, ctx) {
+                        Some(step) => return step,
+                        None => continue,
+                    }
                 }
                 result = Some(exhausted);
                 continue;
@@ -113,7 +165,9 @@ impl Run {
                     parts: alloc::vec![*inner],
                     next: 0,
                 }),
+                // The division test is charged as one comparison.
                 Predicate::Nonzero { .. } => {
+                    self.owed += 1;
                     result = Some(nonzero(&self.value));
                 }
                 // A function value is not tested; its calls are.
@@ -159,6 +213,11 @@ impl Run {
         let value = core::mem::replace(&mut self.value, Value::Unit);
         match self.after {
             After::Branch => Step::Done(ctx.prelude.bool(verdict)),
+            After::Enter(_) if verdict => Step::Done(Value::Unit),
+            After::Enter(entry) => Step::Fault(Reason::Failed {
+                entry,
+                value: crate::value::structural::show(&value, ctx.tables),
+            }),
             After::Convert(ir::ConversionMode::TryCheck) => {
                 Step::Done(if verdict {
                     ctx.prelude.ok(value)

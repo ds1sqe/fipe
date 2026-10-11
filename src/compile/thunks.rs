@@ -105,7 +105,7 @@ impl Builder<'_, '_> {
         let mut builder =
             Builder::new(self.lowering, node, result, hidden, Vec::new());
         builder.captures = captures.len();
-        builder.count();
+        builder.count(node);
         for (spot, ty) in open.iter().zip(parameters) {
             builder.spot(Some(slots[*spot]), ty, node);
         }
@@ -153,7 +153,7 @@ impl Builder<'_, '_> {
         dest: Option<usize>,
     ) -> Operand {
         let receiver = self.lower(value);
-        self.count();
+        self.count(node);
         let tables = self.tables();
         let ty = &tables.nodes[node].ty;
         let receiver_spot = tables.dispatch[member]
@@ -181,7 +181,7 @@ impl Builder<'_, '_> {
         let mut builder =
             Builder::new(self.lowering, node, result, hidden, Vec::new());
         builder.captures = 1;
-        builder.count();
+        builder.count(node);
         for ty in parameters {
             builder.spot(None, ty, node);
         }
@@ -258,7 +258,7 @@ impl Builder<'_, '_> {
         let hidden = self.hidden.clone();
         let mut builder =
             Builder::new(self.lowering, node, result, hidden, Vec::new());
-        builder.count();
+        builder.count(node);
         for ty in parameters {
             builder.spot(None, ty, node);
         }

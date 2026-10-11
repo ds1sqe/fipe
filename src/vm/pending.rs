@@ -122,6 +122,15 @@ impl Pending {
         }))
     }
 
+    /// Units the native's own moves cost beyond its start, owed since
+    /// the machine last paid.
+    pub(super) const fn take_owed(&mut self) -> u64 {
+        match self {
+            Self::Predicate(run) => run.take_owed(),
+            _ => 0,
+        }
+    }
+
     /// One move: with the value a call returned, or none to begin.
     pub(super) fn step(
         &mut self,

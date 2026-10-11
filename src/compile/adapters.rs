@@ -31,7 +31,7 @@ impl Builder<'_, '_> {
                 if let Some(operation) = operation {
                     operand = self.operate(*operation, operand, node);
                 }
-                self.count();
+                self.count(node);
                 let rvalue = Rvalue::Cast {
                     row: *row,
                     from: from.clone(),
@@ -42,12 +42,12 @@ impl Builder<'_, '_> {
             }
             ir::Kind::Convert { .. } => {
                 let closure = self.convert_thunk(node);
-                self.count();
+                self.count(node);
                 self.materialize(closure, dest, ty, node)
             }
             ir::Kind::Pack { tag, value } => {
                 let value = self.lower(*value);
-                self.count();
+                self.count(node);
                 let rvalue = Rvalue::Pack {
                     tag: tag.clone(),
                     value,
@@ -58,7 +58,7 @@ impl Builder<'_, '_> {
                 let value = self.lower_to(*value, dest);
                 self.lowering
                     .reach_predicate(&tables.entries[*entry].predicate);
-                self.count();
+                self.count(node);
                 self.emit(
                     Statement::Enter {
                         entry: *entry,
@@ -157,7 +157,7 @@ impl Builder<'_, '_> {
             hidden,
             Vec::new(),
         );
-        builder.count();
+        builder.count(node);
         builder.spot(None, (**parameter).clone(), node);
         builder.convert(node, Operand::Local(1), 0);
         builder.terminate(Terminator::Return, node);

@@ -75,8 +75,8 @@ pub fn session(lines: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// The charge units a unit's run counted on a fresh machine.
-pub fn charged(source: &str) -> u64 {
+/// A unit's checked program, for runs under several budgets.
+pub fn program(source: &str) -> fipe::mir::Program {
     let module = parse(lex(source)).unwrap();
     let unit = check::check(
         &module,
@@ -85,10 +85,27 @@ pub fn charged(source: &str) -> u64 {
         check::Options::default(),
     )
     .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
-    let program = compile::compile(&unit);
-    let mut machine = Machine::new(BUDGET);
-    match machine.run(&program) {
-        Outcome::Done(_) => machine.charged(),
-        Outcome::Request(request) => panic!("{source}: {request:?}"),
+    compile::compile(&unit)
+}
+
+/// A program run under a budget: its result and the units it charged.
+pub fn budgeted(
+    program: &fipe::mir::Program,
+    budget: u64,
+) -> (Result<Value, Fault>, u64) {
+    let mut machine = Machine::new(budget);
+    match machine.run(program) {
+        Outcome::Done(result) => (result, machine.charged()),
+        Outcome::Request(request) => panic!("{request:?}"),
     }
+}
+
+/// The source text a Fault's span covers.
+pub fn spanned<'a>(source: &'a str, fault: &Fault) -> &'a str {
+    &source[fault.span.start..fault.span.end]
+}
+
+/// The charge units a unit's run counted on a fresh machine.
+pub fn charged(source: &str) -> u64 {
+    budgeted(&program(source), BUDGET).1
 }

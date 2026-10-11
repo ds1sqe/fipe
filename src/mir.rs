@@ -75,9 +75,10 @@ pub struct Block {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Statement {
     Assign(usize, Rvalue),
-    /// The count of IR nodes lowered into this block; opens the block
-    /// when nonzero, and exhaustion Faults at the first unpaid.
-    Charge(usize),
+    /// The IR nodes this block pays, in the order their lowering
+    /// completed; opens the block when any, and exhaustion Faults at
+    /// the span of the first node that cannot be paid.
+    Charge(Vec<usize>),
     /// Write a value definition's global.
     Store {
         definition: usize,

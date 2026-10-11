@@ -158,7 +158,7 @@ fn fallback_keeps_the_left_or_runs_the_right_on_its_own_edge() {
     assert!(nothing(taken), "the right runs on its edge");
     assert!(!nothing(0) && !nothing(kept), "and nowhere else");
     let charge = |block: usize| match main.blocks[block].statements.first() {
-        Some(Statement::Charge(count)) => *count,
+        Some(Statement::Charge(nodes)) => nodes.len(),
         _ => 0,
     };
     // `Just 1`: the literal, the call and its constructor; `||` on each

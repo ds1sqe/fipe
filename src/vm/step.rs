@@ -67,6 +67,9 @@ impl Machine {
         if index < block.statements.len() {
             let node = block.nodes[index];
             frame.statement += 1;
+            if let Statement::Charge(nodes) = &block.statements[index] {
+                return self.pay_nodes(program, nodes).map(|()| Flow::Continue);
+            }
             return self
                 .statement(program, &block.statements[index], node)
                 .map_err(|reason| Fault {
@@ -87,9 +90,7 @@ impl Machine {
         node: usize,
     ) -> Result<Flow, Reason> {
         match statement {
-            Statement::Charge(count) => {
-                self.charged += *count as u64;
-            }
+            Statement::Charge(_) => unreachable!("paid by the step"),
             Statement::Assign(dest, rvalue) => {
                 return self.assign(program, *dest, rvalue, node);
             }
@@ -97,10 +98,12 @@ impl Machine {
                 let value = self.operand(program, *value);
                 self.globals[*definition] = Some(value);
             }
-            Statement::Enter { .. }
-            | Statement::Push { .. }
-            | Statement::Pop => {
-                // Entries and the environment are the next minor's.
+            Statement::Enter { entry, value } => {
+                let value = self.operand(program, *value);
+                return Ok(self.enter(program, *entry, value, node));
+            }
+            Statement::Push { .. } | Statement::Pop => {
+                // The environment is the host's, with the suspension.
             }
         }
         Ok(Flow::Continue)

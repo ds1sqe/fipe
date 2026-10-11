@@ -174,7 +174,7 @@ impl Natives {
         )
     }
 
-    fn of(&self, op: usize) -> Native {
+    pub(super) fn of(&self, op: usize) -> Native {
         self.table[op].expect("a prelude declaration")
     }
 

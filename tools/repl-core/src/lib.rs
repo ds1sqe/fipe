@@ -568,7 +568,9 @@ impl Repl {
                 out.write(format!("{}\n", visible(&shown)).as_bytes());
             }
             Outcome::Done(Err(fault)) => {
-                self.fault(&fault, report.offset, text, out);
+                let reason =
+                    render::fault(&fault.reason, &program.tables.borrow());
+                self.fault(&fault, &reason, report.offset, text, out);
             }
             Outcome::Request(_) => {
                 out.write(b"the run asked the host, which is not wired\n");
@@ -578,20 +580,26 @@ impl Repl {
 
     /// `fault at L:C: reason` in the line, or in the earlier accepted
     /// line the span falls in, with its source line and a caret.
-    fn fault(&self, fault: &Fault, offset: usize, text: &str, out: &mut Outs) {
-        let reason = fault.reason.to_string();
+    fn fault(
+        &self,
+        fault: &Fault,
+        reason: &str,
+        offset: usize,
+        text: &str,
+        out: &mut Outs,
+    ) {
         let Span { start, end } = fault.span;
         if start >= offset && end - offset <= text.len() {
             let span = Span {
                 start: start - offset,
                 end: end - offset,
             };
-            return located("fault at ", text, span, &reason, out);
+            return located("fault at ", text, span, reason, out);
         }
         let source = self.session.source();
         if end > source.len() {
             return out
-                .write(format!("fault: {}\n", visible(&reason)).as_bytes());
+                .write(format!("fault: {}\n", visible(reason)).as_bytes());
         }
         let before = &source[..start];
         let number = before.matches("\n\n").count() + 1;
@@ -604,7 +612,7 @@ impl Repl {
             end: end.min(last) - first,
         };
         let prefix = format!("fault at line {number}, ");
-        located(&prefix, &source[first..last], span, &reason, out);
+        located(&prefix, &source[first..last], span, reason, out);
     }
 
     fn diagnostic(&self, diagnostic: &Diagnostic, line: &str, out: &mut Outs) {

@@ -26,11 +26,11 @@ impl<'a> Builder<'_, 'a> {
         let ir::Node { ty, kind, .. } = &tables.nodes[node];
         match kind {
             ir::Kind::Timing { value, .. } => {
-                self.count();
+                self.count(node);
                 self.lower_to(*value, dest)
             }
             ir::Kind::Literal { form, reader } => {
-                self.count();
+                self.count(node);
                 self.literal(node, form, *reader, dest)
             }
             // A member root names a definition by its slot.
@@ -44,7 +44,7 @@ impl<'a> Builder<'_, 'a> {
                 self.definition(index, meanings, ty, node, dest)
             }
             ir::Kind::Local { slot, .. } | ir::Kind::Capture { slot, .. } => {
-                self.count();
+                self.count(node);
                 let operand = self.operand_of_slot(*slot);
                 self.place(operand, dest, node)
             }
@@ -59,7 +59,7 @@ impl<'a> Builder<'_, 'a> {
             | ir::Kind::Constructor { .. }
             | ir::Kind::Derived { .. }
             | ir::Kind::Dispatch { .. } => {
-                self.count();
+                self.count(node);
                 if let Some(value) = self.nullary(node, dest) {
                     return value;
                 }
@@ -72,7 +72,7 @@ impl<'a> Builder<'_, 'a> {
             | ir::Kind::Array(_)
             | ir::Kind::Repeat { .. } => {
                 let rvalue = self.container(kind);
-                self.count();
+                self.count(node);
                 self.materialize(rvalue, dest, ty, node)
             }
             ir::Kind::Call {
@@ -98,7 +98,7 @@ impl<'a> Builder<'_, 'a> {
                 arms,
                 ..
             } => {
-                self.count();
+                self.count(node);
                 let closure = self.function(node, hidden, captures, arms);
                 self.materialize(closure, dest, ty, node)
             }
@@ -122,25 +122,25 @@ impl<'a> Builder<'_, 'a> {
                 self.conditional(node, *condition, *then_body, *else_body, dest)
             }
             ir::Kind::Block(parts) => {
-                self.count();
+                self.count(node);
                 self.sequence(node, parts, dest)
             }
             ir::Kind::Bind { pattern, value } => {
                 self.bind(node, pattern, *value);
-                self.count();
+                self.count(node);
                 let unit = self.lowering.constant(crate::value::Value::Unit);
                 self.place(Operand::Const(unit), dest, node)
             }
             ir::Kind::With { key, value, body } => {
                 let value = self.lower(*value);
-                self.count();
+                self.count(node);
                 self.emit(Statement::Push { key: *key, value }, node);
                 let result = self.lower_to(*body, dest);
                 self.emit(Statement::Pop, node);
                 result
             }
             ir::Kind::Pipe { stage, .. } => {
-                self.count();
+                self.count(node);
                 self.lower_to(*stage, dest)
             }
             ir::Kind::Ordering { .. }
@@ -236,7 +236,7 @@ impl<'a> Builder<'_, 'a> {
         node: usize,
         dest: Option<usize>,
     ) -> Operand {
-        self.count();
+        self.count(node);
         if let Some(body) = self.lowering.function_body(index) {
             let closure = Rvalue::Closure {
                 body,
@@ -264,7 +264,7 @@ impl<'a> Builder<'_, 'a> {
         };
         let (yes, no) = super::patterns::true_false(tables, *bool);
         let value = self.lower(condition);
-        self.count();
+        self.count(node);
         let dest = dest
             .unwrap_or_else(|| self.local(tables.nodes[node].ty.clone(), None));
         let then_block = self.open(node);

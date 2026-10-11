@@ -120,6 +120,8 @@ pub enum Reason {
     /// An entry of the plan refuted at run time.
     Failed {
         entry: usize,
+        /// The refuted value, in the language's spelling.
+        value: String,
     },
     Cast,
     /// A block coverage excluded was reached: a crate defect.
@@ -136,7 +138,9 @@ impl fmt::Display for Reason {
             Self::DivideByZero => f.write_str("division by zero"),
             Self::NotFinite => f.write_str("the result is not finite"),
             Self::NotExact => f.write_str("the value is not exact"),
-            Self::Failed { entry } => write!(f, "entry {entry} failed"),
+            Self::Failed { entry, value } => {
+                write!(f, "entry {entry} refutes {value}")
+            }
             Self::Cast => f.write_str("the cast failed"),
             Self::Unreachable => f.write_str("an excluded block was reached"),
             Self::Host(message) => write!(f, "host: {message}"),

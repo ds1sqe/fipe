@@ -160,7 +160,7 @@ impl Machine {
 
     /// A native as an rvalue, which computes at once.
     fn native_rvalue(
-        &self,
+        &mut self,
         program: &mir::Program,
         dest: usize,
         op: usize,
@@ -169,6 +169,7 @@ impl Machine {
         let args = self.operands(program, args);
         let result = self.local_type(program, dest);
         let natives = self.natives();
+        self.pay(super::budget::size(natives.of(op), &args))?;
         let prelude = self.prelude();
         let tables = program.tables.borrow();
         let ctx = Ctx {

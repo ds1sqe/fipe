@@ -39,6 +39,7 @@ impl Machine {
                 Ok(Flow::Continue)
             }
             Return::Resume => self.resume(program, Some(value)),
+            Return::Continue => Ok(Flow::Continue),
             Return::Store(definition) => {
                 self.globals[definition] = Some(value);
                 Ok(Flow::Continue)
@@ -53,7 +54,7 @@ impl Machine {
         program: &mir::Program,
         returned: Option<Value>,
     ) -> Result<Flow, Fault> {
-        let (node, step) = {
+        let (node, step, owed) = {
             let natives = self.natives();
             let prelude = self.prelude();
             let tables = program.tables.borrow();
@@ -68,8 +69,15 @@ impl Machine {
                 globals: &self.globals,
                 result: None,
             };
-            (frame.node, frame.pending.step(&ctx, returned))
+            let step = frame.pending.step(&ctx, returned);
+            (frame.node, step, frame.pending.take_owed())
         };
+        if let Err(reason) = self.pay(owed) {
+            return Err(Fault {
+                span: Self::span(program, node),
+                reason,
+            });
+        }
         match step {
             Step::Call(invoke) => {
                 self.invoke(program, invoke, Return::Resume, node)

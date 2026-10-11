@@ -50,7 +50,7 @@ pub(super) fn render(unit: Option<&Unit>, out: &mut Outs) {
             let mut head = format!("  block {index}");
             let mut statements = block.statements.iter();
             if let Some(Statement::Charge(count)) = block.statements.first() {
-                head.push_str(&format!(" charges {count}"));
+                head.push_str(&format!(" charges {}", count.len()));
                 statements.next();
             }
             out.write(format!("{head}\n").as_bytes());
@@ -320,7 +320,7 @@ fn statement(statement: &Statement, tables: &Tables) -> String {
         Statement::Assign(dest, value) => {
             format!("_{dest} = {}", rvalue(value, tables))
         }
-        Statement::Charge(count) => format!("charge {count}"),
+        Statement::Charge(nodes) => format!("charge {}", nodes.len()),
         Statement::Store { definition, value } => format!(
             "global {} = {}",
             tables.definitions[*definition].label,
