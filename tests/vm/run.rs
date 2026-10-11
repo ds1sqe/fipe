@@ -74,3 +74,21 @@ pub fn session(lines: &[&str]) -> Vec<String> {
         })
         .collect()
 }
+
+/// The charge units a unit's run counted on a fresh machine.
+pub fn charged(source: &str) -> u64 {
+    let module = parse(lex(source)).unwrap();
+    let unit = check::check(
+        &module,
+        &Declarations::new(),
+        &[],
+        check::Options::default(),
+    )
+    .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
+    let program = compile::compile(&unit);
+    let mut machine = Machine::new(BUDGET);
+    match machine.run(&program) {
+        Outcome::Done(_) => machine.charged(),
+        Outcome::Request(request) => panic!("{source}: {request:?}"),
+    }
+}

@@ -29,6 +29,22 @@ pub(super) fn bool_cases(tables: &ir::Tables, ty: &ir::Type) -> (usize, usize) {
     (position("True"), position("False"))
 }
 
+/// An outcome's good and bad constructors, by label: `Just`, `Ok` and
+/// `Right` are good; `Either` declares its bad side, `Left`, first.
+pub(super) fn sides(tables: &ir::Tables, ty: &ir::Type) -> (usize, usize) {
+    let constructors = &tables.meanings[meaning_of(tables, ty)].constructors;
+    let position = |labels: [&str; 3]| {
+        constructors
+            .iter()
+            .position(|constructor| labels.contains(&&*constructor.label))
+            .expect("an outcome's sides")
+    };
+    (
+        position(["Just", "Ok", "Right"]),
+        position(["Nothing", "Err", "Left"]),
+    )
+}
+
 /// A field's type with the meaning's parameters replaced by the
 /// outcome's arguments.
 pub(super) fn instantiate(

@@ -112,8 +112,7 @@ impl<'a> Builder<'_, 'a> {
             match &pattern.kind {
                 PatternKind::Any => return,
                 PatternKind::Slot(slot) => {
-                    let local = self.slot_local(*slot, node);
-                    self.assign(local, Rvalue::Use(place), node);
+                    self.bind_slot(*slot, place, node);
                     return;
                 }
                 PatternKind::Tuple(parts) => {
@@ -157,6 +156,22 @@ impl<'a> Builder<'_, 'a> {
             }
             let operand = self.part(place, &ty, shape, index, &mut read, node);
             self.bind_pattern(part, operand, node);
+        }
+    }
+
+    /// A pattern's slot takes a part: a line's name stores its global,
+    /// any other slot its local.
+    pub(super) fn bind_slot(
+        &mut self,
+        slot: usize,
+        value: Operand,
+        node: usize,
+    ) {
+        if let Some(definition) = self.tables().slots[slot].definition {
+            self.emit(crate::mir::Statement::Store { definition, value }, node);
+        } else {
+            let local = self.slot_local(slot, node);
+            self.assign(local, Rvalue::Use(value), node);
         }
     }
 }

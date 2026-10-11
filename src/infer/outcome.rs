@@ -212,34 +212,119 @@ impl Infer<'_> {
             return result;
         };
         let applied = self.apply(&result);
-        let same = match &applied {
-            Type::Var(_) => !self.numeric_var(&applied),
-
-            ty => super::outcome::family(ty).is_some_and(|(f, _)| f == family),
-        };
-        self.insert(
-            |s| &mut s.rebuilds,
-            (span.start, span.end),
-            if same {
-                crate::typed::Rebuild::Direct
-            } else if family == Family::Maybe && !good {
-                crate::typed::Rebuild::Discard
-            } else {
-                crate::typed::Rebuild::Wrap
-            },
+        let site = (span.start, span.end);
+        if matches!(applied, Type::Var(_)) && !self.numeric_var(&applied) {
+            // Which reading holds waits for the result: a stage whose
+            // result a literal's meaning fixes later is plain.
+            let payload = self.fresh();
+            let rebuilt = with_side(family, arguments, good, payload.clone());
+            self.state.rebuilding.push(Rebuilding {
+                site,
+                family,
+                good,
+                result,
+                rebuilt: rebuilt.clone(),
+                payload,
+                span,
+                other,
+            });
+            self.state.rebuild_types.insert(site, rebuilt.clone());
+            return rebuilt;
+        }
+        let same =
+            super::outcome::family(&applied).is_some_and(|(f, _)| f == family);
+        let reading = Self::reading(family, good, same);
+        let payload = self.fresh();
+        let rebuilt = with_side(family, arguments, good, payload.clone());
+        self.settle_rebuild(
+            site,
+            reading,
+            (&rebuilt, &payload, &result),
+            span,
+            other,
         );
-        let rebuilt = if same {
-            let fresh = self.fresh();
-            let shape = with_side(family, arguments, good, fresh);
-            self.unify(&shape, &result, span, other);
-            shape
-        } else {
-            with_side(family, arguments, good, result)
-        };
-        self.state
-            .rebuild_types
-            .insert((span.start, span.end), rebuilt.clone());
+        self.state.rebuild_types.insert(site, rebuilt.clone());
         rebuilt
+    }
+
+    /// A return of the same family is used directly; a plain one is
+    /// wrapped, or discarded by `Maybe`'s `|!`.
+    const fn reading(
+        family: Family,
+        good: bool,
+        same: bool,
+    ) -> crate::typed::Rebuild {
+        if same {
+            crate::typed::Rebuild::Direct
+        } else if matches!(family, Family::Maybe) && !good {
+            crate::typed::Rebuild::Discard
+        } else {
+            crate::typed::Rebuild::Wrap
+        }
+    }
+
+    /// Record a rebuild and unify its result with the rebuilt type, whole
+    /// or as the selected payload.
+    fn settle_rebuild(
+        &mut self,
+        site: (usize, usize),
+        reading: crate::typed::Rebuild,
+        (rebuilt, payload, result): (&Type, &Type, &Type),
+        span: Span,
+        other: Span,
+    ) {
+        self.insert(|s| &mut s.rebuilds, site, reading);
+        match reading {
+            crate::typed::Rebuild::Direct => {
+                self.unify(rebuilt, result, span, other);
+            }
+            crate::typed::Rebuild::Wrap => {
+                self.unify(payload, result, span, other);
+            }
+            crate::typed::Rebuild::Discard => {}
+        }
+    }
+
+    /// Decide the rebuilds whose stage result is now known.
+    pub(super) fn solve_rebuilds(&mut self, finish: bool) {
+        if self.state.rebuilding.is_empty() {
+            return;
+        }
+        self.journal_list(|s| &mut s.rebuilding);
+        let pending = core::mem::take(&mut self.state.rebuilding);
+        for owed in pending {
+            let applied = self.apply(&owed.result);
+            let unknown = matches!(applied, Type::Var(_));
+            let numeric = unknown && self.numeric_var(&applied);
+            if unknown && !numeric && !finish {
+                self.state.rebuilding.push(owed);
+                continue;
+            }
+            // E1 prefers the family reading while both unify.
+            let same = if unknown {
+                !numeric
+            } else {
+                family(&applied).is_some_and(|(f, _)| f == owed.family)
+            };
+            let reading = Self::reading(owed.family, owed.good, same);
+            self.settle_rebuild(
+                owed.site,
+                reading,
+                (&owed.rebuilt, &owed.payload, &owed.result),
+                owed.span,
+                owed.other,
+            );
+        }
+    }
+
+    /// Decide every pending rebuild, the unknown ones by the family
+    /// reading, then resolve what that fixed.
+    pub(super) fn finish_rebuilds(&mut self) {
+        if self.state.rebuilding.is_empty() {
+            return;
+        }
+        self.solve_rebuilds(true);
+        self.dots();
     }
 
     /// `left || right`: `Bool`, or the fallback of a `Maybe` or
@@ -372,6 +457,20 @@ pub(super) struct Pending {
     /// A pattern's bracket matches its side whole; a value's bracket
     /// without a payload needs the side to be `()`.
     pattern: bool,
+    span: Span,
+    other: Span,
+}
+
+/// A marked-pipe rebuild waiting for its stage's result type.
+#[derive(Clone)]
+pub(super) struct Rebuilding {
+    site: (usize, usize),
+    family: Family,
+    good: bool,
+    result: Type,
+    /// The outcome rebuilt, its selected side's payload `payload`.
+    rebuilt: Type,
+    payload: Type,
     span: Span,
     other: Span,
 }

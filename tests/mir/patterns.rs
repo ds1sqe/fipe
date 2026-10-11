@@ -343,14 +343,35 @@ fn a_binding_with_parts_reads_its_parts() {
             })
             .collect();
         assert_eq!(fields, [0, 1], "{source}");
+        // A line's names are its globals, stored for later lines.
+        let stored = body
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter(|statement| matches!(statement, Statement::Store { .. }))
+            .count();
+        assert_eq!(stored, 2, "{source}");
         assert!(
             matches!(
                 body.blocks.last().unwrap().statements.last(),
-                Some(Statement::Assign(0, Rvalue::Use(Operand::Local(_))))
+                Some(Statement::Assign(0, Rvalue::Use(Operand::Global(_))))
             ),
             "{source}: {body:?}"
         );
     }
+}
+
+#[test]
+fn a_binding_with_parts_in_a_body_binds_locals() {
+    let (_, program) = super::program(
+        "f: Integer * Integer -> Integer = p => {\n    (a, b) = p\n    a\n}",
+    );
+    assert!(program
+        .bodies
+        .iter()
+        .flat_map(|body| &body.blocks)
+        .flat_map(|block| &block.statements)
+        .all(|statement| !matches!(statement, Statement::Store { .. })));
 }
 
 #[test]

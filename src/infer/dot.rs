@@ -174,6 +174,7 @@ impl<'a> Infer<'a> {
         }
         self.state.solving_dots = true;
         self.solve_families(false);
+        self.solve_rebuilds(false);
         loop {
             let mut ready = Vec::new();
             while self.state.dots_start < self.state.obligations.len()

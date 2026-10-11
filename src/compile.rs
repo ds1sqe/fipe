@@ -76,21 +76,48 @@ pub fn compile(unit: &ir::Unit) -> mir::Program {
 fn stored(tables: &ir::Tables) -> Vec<bool> {
     let mut stored = alloc::vec![false; tables.definitions.len()];
     for node in &tables.nodes {
-        if let ir::Kind::Bind {
-            pattern:
-                ir::Pattern {
-                    kind: ir::PatternKind::Slot(slot),
-                    ..
-                },
-            ..
-        } = &node.kind
+        if let ir::Kind::Bind { pattern, .. } | ir::Kind::Lift { pattern, .. } =
+            &node.kind
         {
+            mark_stored(tables, pattern, &mut stored);
+        }
+    }
+    stored
+}
+
+/// The definitions a binding pattern's slots hold: a line's names.
+fn mark_stored(
+    tables: &ir::Tables,
+    pattern: &ir::Pattern,
+    stored: &mut [bool],
+) {
+    use ir::PatternKind as P;
+    match &pattern.kind {
+        P::Slot(slot) => {
             if let Some(definition) = tables.slots[*slot].definition {
                 stored[definition] = true;
             }
         }
+        P::Any | P::Literal { .. } => (),
+        P::Constructor { parts, .. } | P::List(parts) | P::Tuple(parts) => {
+            for part in parts {
+                mark_stored(tables, part, stored);
+            }
+        }
+        P::Record { fields, .. } => {
+            for (_, part) in fields {
+                mark_stored(tables, part, stored);
+            }
+        }
+        P::Side { payload, .. } => {
+            if let Some(payload) = payload {
+                mark_stored(tables, payload, stored);
+            }
+        }
+        P::Gate { payload, .. } | P::Tag { payload, .. } => {
+            mark_stored(tables, payload, stored);
+        }
     }
-    stored
 }
 
 /// A body reserved but not yet lowered.

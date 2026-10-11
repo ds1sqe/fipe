@@ -1,7 +1,7 @@
 //! Outcomes, fallbacks and orderings: switches on a side or a `Bool`.
 use super::{
     builder::Builder,
-    meanings::{bool_cases, instantiate, meaning_of},
+    meanings::{bool_cases, instantiate, meaning_of, sides},
 };
 use crate::{
     ir,
@@ -9,19 +9,14 @@ use crate::{
 };
 use alloc::{vec, vec::Vec};
 
-/// The good side's constructor; the prelude declares it first.
-const GOOD: usize = 0;
-/// The bad side's constructor, declared second.
-const BAD: usize = 1;
-
-impl Builder<'_, '_> {
+impl<'a> Builder<'_, 'a> {
     /// An outcome operation or a comparison, or an adapter. A branching
     /// node is counted once on each path, in the branch, so every
     /// evaluation pays it once.
     pub(super) fn outcome(
         &mut self,
         node: usize,
-        kind: &ir::Kind,
+        kind: &'a ir::Kind,
         dest: Option<usize>,
     ) -> Operand {
         match kind {
@@ -71,14 +66,20 @@ impl Builder<'_, '_> {
         let ty = &self.tables().nodes[node].ty;
         let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
         let value = self.lower(left);
-        let side = if good { GOOD } else { BAD };
+        let (good_side, bad_side) =
+            sides(self.tables(), &self.tables().nodes[left].ty);
+        let (side, other) = if good {
+            (good_side, bad_side)
+        } else {
+            (bad_side, good_side)
+        };
         let marked = self.open(node);
         let kept = self.open(node);
         let join = self.open(node);
         self.terminate(
             Terminator::Switch {
                 value,
-                cases: vec![(side, marked), (1 - side, kept)],
+                cases: vec![(side, marked), (other, kept)],
                 otherwise: None,
             },
             node,
@@ -171,7 +172,7 @@ impl Builder<'_, '_> {
             },
             ir::Rebuild::Discard => Rvalue::Construct {
                 meaning: meaning_of(self.tables(), ty),
-                constructor: BAD,
+                constructor: sides(self.tables(), ty).1,
                 fields: Vec::new(),
             },
         };
@@ -183,7 +184,7 @@ impl Builder<'_, '_> {
     fn lift(
         &mut self,
         node: usize,
-        pattern: &ir::Pattern,
+        pattern: &'a ir::Pattern,
         value: usize,
         body: usize,
         rebuild: ir::Rebuild,
@@ -194,7 +195,9 @@ impl Builder<'_, '_> {
         let outcome = self.lower(value);
         let (constructor, payload) = match &pattern.kind {
             ir::PatternKind::Side { good, payload } => {
-                (if *good { GOOD } else { BAD }, payload.as_deref())
+                let (good_side, bad_side) =
+                    sides(self.tables(), &self.tables().nodes[value].ty);
+                (if *good { good_side } else { bad_side }, payload.as_deref())
             }
             ir::PatternKind::Constructor {
                 constructor, parts, ..
@@ -223,12 +226,27 @@ impl Builder<'_, '_> {
         self.switch_to(hit);
         match payload.map(|payload| &payload.kind) {
             None | Some(ir::PatternKind::Any) => (),
-            Some(ir::PatternKind::Slot(slot)) => {
+            Some(ir::PatternKind::Slot(slot))
+                if self.tables().slots[*slot].definition.is_none() =>
+            {
                 let local = self.slot_local(*slot, node);
                 self.assign(local, Rvalue::Field(outcome, 0), node);
             }
-            Some(other) => {
-                todo!("08.1 phase 2: a lift payload with parts {other:?}")
+            Some(_) => {
+                let payload = payload.expect("a payload pattern");
+                let tables = self.tables();
+                let outcome_ty = &tables.nodes[value].ty;
+                let meaning = meaning_of(tables, outcome_ty);
+                let field = &tables.meanings[meaning].constructors[constructor]
+                    .fields[0];
+                let payload_ty = instantiate(
+                    &field.ty,
+                    &tables.meanings[meaning].parameters,
+                    outcome_ty,
+                );
+                let local = self.local(payload_ty, None);
+                self.assign(local, Rvalue::Field(outcome, 0), node);
+                self.bind_pattern(payload, Operand::Local(local), node);
             }
         }
         let result = self.lower(body);
@@ -255,7 +273,9 @@ impl Builder<'_, '_> {
         let value = self.lower(left);
         let (keep, take) = match mode {
             ir::Mode::Bool => bool_cases(tables, &tables.nodes[left].ty),
-            ir::Mode::Family | ir::Mode::Payload => (GOOD, BAD),
+            ir::Mode::Family | ir::Mode::Payload => {
+                sides(tables, &tables.nodes[left].ty)
+            }
         };
         let kept = self.open(node);
         let taken = self.open(node);
@@ -301,7 +321,9 @@ impl Builder<'_, '_> {
         let value = self.lower(left);
         let (take, keep) = match mode {
             ir::Mode::Bool => bool_cases(tables, &tables.nodes[left].ty),
-            ir::Mode::Family | ir::Mode::Payload => (GOOD, BAD),
+            ir::Mode::Family | ir::Mode::Payload => {
+                sides(tables, &tables.nodes[left].ty)
+            }
         };
         let taken = self.open(node);
         let kept = self.open(node);
@@ -327,7 +349,7 @@ impl Builder<'_, '_> {
             Some(rebuild) => {
                 let result = self.lower(right);
                 self.count();
-                self.rebuild(rebuild, GOOD, ty, result, dest, node);
+                self.rebuild(rebuild, take, ty, result, dest, node);
             }
         }
         self.terminate(Terminator::Goto(join), node);

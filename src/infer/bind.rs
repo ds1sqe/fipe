@@ -303,6 +303,7 @@ impl Infer<'_> {
             .flat_map(|(_, vars)| vars.iter().copied())
             .collect();
         self.default_literals(mark, &env, &stay);
+        self.finish_rebuilds();
         let quiet = self.state.errors.len() > errors;
         let types: Vec<Type> =
             parts.iter().map(|p| self.apply(&p.ty)).collect();
@@ -501,6 +502,7 @@ impl Infer<'_> {
         self.dots();
         let env = self.environment(&[]);
         self.default_literals(mark.obligations, &env, &[]);
+        self.finish_rebuilds();
         let quiet = self.state.errors.len() > mark.errors;
         let mut left = Vec::new();
         for owed in self.split_obligations(mark.obligations) {

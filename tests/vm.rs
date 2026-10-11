@@ -24,7 +24,15 @@ mod closures;
 mod containers;
 #[path = "vm/dispatch.rs"]
 mod dispatch;
+#[path = "vm/fallback.rs"]
+mod fallback;
+#[path = "vm/faults.rs"]
+mod faults;
+#[path = "vm/lifts.rs"]
+mod lifts;
 #[path = "vm/natives.rs"]
 mod natives;
+#[path = "vm/outcomes.rs"]
+mod outcomes;
 #[path = "vm/text.rs"]
 mod text;

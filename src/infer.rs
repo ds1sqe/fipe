@@ -332,6 +332,8 @@ struct State {
     checks: Vec<crate::typed::Check>,
     casts: Vec<Option<crate::typed::Cast>>,
     families: Vec<outcome::Pending>,
+    /// Marked-pipe rebuilds whose stage result is not known yet.
+    rebuilding: Vec<outcome::Rebuilding>,
     supplied: BTreeMap<(usize, usize), Vec<(String, Supply)>>,
     bound: BTreeMap<(usize, usize), crate::typed::Bound>,
     defaults: Vec<(Origin, Span)>,
@@ -390,6 +392,7 @@ impl State {
             checks: Vec::new(),
             casts: vec![None; size],
             families: Vec::new(),
+            rebuilding: Vec::new(),
             supplied: BTreeMap::new(),
             bound: BTreeMap::new(),
             defaults: Vec::new(),
@@ -1104,7 +1107,9 @@ impl Infer<'_> {
         self.default_literals(0, &[], &[]);
         self.finish_dots();
         self.solve_families(true);
+        self.finish_rebuilds();
         let main = self.main_type();
+        self.finish_rebuilds();
         self.left_members();
         self.record_supplied_tests();
         self.record_operations();

@@ -323,6 +323,24 @@ impl Index {
                     let PatternKind::Name(name) =
                         &source.module.patterns[pattern.0].kind
                     else {
+                        // A line's pattern binds names later lines read,
+                        // so each is a value definition its main stores.
+                        let Some(body) = scope.nodes[value.0] else {
+                            continue;
+                        };
+                        let mut names = Vec::new();
+                        pattern_names(&source.module, pattern, &mut names);
+                        for name in names {
+                            if scope.slots.contains_key(&name.span) {
+                                self.definition(
+                                    source,
+                                    scope,
+                                    name.span,
+                                    name.segments.join("."),
+                                    body,
+                                );
+                            }
+                        }
                         continue;
                     };
                     if !scope.slots.contains_key(&name.span) {
@@ -490,6 +508,40 @@ impl Index {
             parts.push(scope.expression(*id));
         }
         ir::Kind::Block(parts)
+    }
+}
+
+/// The names a pattern binds, in written order.
+fn pattern_names<'m>(
+    module: &'m crate::ast::Module,
+    pattern: crate::ast::PatternId,
+    names: &mut Vec<&'m crate::ast::Name>,
+) {
+    use crate::ast::PatternKind as P;
+    match &module.patterns[pattern.0].kind {
+        P::Name(name) => names.push(name),
+        P::Wildcard | P::Literal(_) | P::Default { .. } => (),
+        P::Constructor { payload, .. } | P::Group(payload) => {
+            pattern_names(module, *payload, names);
+        }
+        P::Tuple(parts) | P::List(parts) => {
+            for part in parts {
+                pattern_names(module, *part, names);
+            }
+        }
+        P::Outcome { payload, .. } => {
+            if let Some(payload) = payload {
+                pattern_names(module, *payload, names);
+            }
+        }
+        P::Record { fields, .. } => {
+            for field in fields {
+                match field.pattern {
+                    Some(part) => pattern_names(module, part, names),
+                    None => names.push(&field.name),
+                }
+            }
+        }
     }
 }
 

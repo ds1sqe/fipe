@@ -75,3 +75,22 @@ fn outcome_readings_are_recorded_for_lowering() {
         assert!(typed.modes.values().any(|v| *v == expected));
     }
 }
+
+#[test]
+fn a_stage_result_a_literal_fixes_later_reads_plain_or_whole() {
+    use fipe::typed::Rebuild;
+    for (text, expected) in [
+        ("Err \"e\" |! (e => e ++ \"!\")", Rebuild::Wrap),
+        ("Err \"e\" |! (e => Err (e ++ \"!\"))", Rebuild::Direct),
+        ("Just \"a\" |: (s => s ++ \"b\")", Rebuild::Wrap),
+    ] {
+        let (_, typed, errors) = super::check(text, &Declarations::new());
+        assert_eq!(errors, [], "{text}");
+        assert!(
+            typed.rebuilds.values().any(|v| *v == expected),
+            "{text}: {:?}",
+            typed.rebuilds
+        );
+    }
+    assert_eq!(ty("Just \"a\" |: (s => s ++ \"b\")"), "Maybe<String>");
+}

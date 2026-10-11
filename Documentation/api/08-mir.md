@@ -117,9 +117,9 @@ its arity, except that one of no spots is its value. A bare member on a
 value, `p.x`, reads a field row in place or calls the member.
 
 An arm list is a decision tree over the spots: a switch for a constructor,
-a side (the prelude declares the good side first, so it is constructor
-zero and the bad side one), a packed tag, or a list on a `Vec` by its
-length; a test for a gate; the recorded equality for a literal, feeding
+a side, taken by label (`Just`, `Ok` and `Right` are good; `Either`
+declares its bad `Left` first), a packed tag, or a list on a `Vec` by
+its length; a test for a gate; the recorded equality for a literal, feeding
 a switch on `Bool`; parts read once per branch into locals; binds and
 guards per path; each arm's body lowered once. Coverage is proved, so no
 switch has an `otherwise` it cannot take. A tuple, an array, a record of
@@ -141,7 +141,9 @@ rounded parse of its decimal spelling. A literal whose nearest float is
 not finite is left to the reader at run time, where it Faults. Any other
 reader is called with the written form as a `Form` record constant until
 the compile phase runs it. A value definition is stored once, by the
-main or the module's init body; one no line stores, such as an `impl`
+main or the module's init body, and so is each name a line's pattern
+binds, a lift's included, stored where the pattern binds it; one no
+line stores, such as an `impl`
 block's value member, has a body a backend runs on the first read of
 the unset global. A definition with spots is a body and a
 reference to it is a closure with the node's meanings. Captures copy the

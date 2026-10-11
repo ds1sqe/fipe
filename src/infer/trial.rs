@@ -38,6 +38,7 @@ pub(super) struct Snapshot {
     obligations: usize,
     tests: usize,
     families: usize,
+    rebuilding: usize,
     defaults: usize,
     main_lifts: usize,
     claims: usize,
@@ -116,6 +117,7 @@ impl Infer<'_> {
             obligations: state.obligations.len(),
             tests: state.tests.len(),
             families: state.families.len(),
+            rebuilding: state.rebuilding.len(),
             defaults: state.defaults.len(),
             main_lifts: state.main_lifts.len(),
             claims: state.claims.len(),
@@ -153,6 +155,7 @@ impl Infer<'_> {
         state.obligations.truncate(snapshot.obligations);
         state.tests.truncate(snapshot.tests);
         state.families.truncate(snapshot.families);
+        state.rebuilding.truncate(snapshot.rebuilding);
         state.defaults.truncate(snapshot.defaults);
         state.main_lifts.truncate(snapshot.main_lifts);
         state.claims.truncate(snapshot.claims);
