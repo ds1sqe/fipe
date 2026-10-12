@@ -25,10 +25,11 @@ Lowering cannot fail: checking has already recorded every choice.
 
 After lowering, the checker runs pure code on the machine
 ([MIR](08-mir.md)), each evaluation a node of the unit lowered alone as
-the main of a program, on a fresh `vm::Machine::new(compile_budget)`:
-the budget is an allowance per evaluation. `Options::default()` takes
-`COMPILE_BUDGET`, provisional until the language fixes a default. In
-order:
+the main of a program, on a fresh
+`vm::Machine::new(Some(compile_budget))`: the budget is an allowance per
+evaluation, counted in the checker's own steps, which are this machine's
+units ([MIR](08-mir.md) §Running), and part of the checked unit.
+`Options::default()` takes `COMPILE_BUDGET`, 2^20. In order:
 
 1. Each literal whose reader runs, a program's `literal` or a prelude
    reader whose value is not finite, and each read or number cast of a

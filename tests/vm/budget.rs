@@ -1,7 +1,28 @@
-//! The budget: one unit per node evaluated plus the size terms; the
-//! first node that cannot be paid Faults with its span (H1).
+//! The VM's budget: one unit per node evaluated plus the size terms; the
+//! first node that cannot be paid Faults with its span. The unit is the
+//! VM's own (`09-host.md` §Budget); without a budget a run is unbounded.
 use super::run::{budgeted, program, spanned};
-use fipe::value::Reason;
+use fipe::{embed::Outcome, value::Reason, vm::Machine};
+
+#[test]
+fn a_machine_without_a_budget_runs_what_a_budget_stops() {
+    let program = program(
+        "count = n => if n == 0 { 0 } else { 1 + (count (n - 1)) }\n\
+         count 2000",
+    );
+    let (bounded, full) = budgeted(&program, 1 << 20);
+    let (stopped, _) = budgeted(&program, full / 2);
+    assert_eq!(stopped.unwrap_err().reason, Reason::Budget);
+    let mut machine = Machine::new(None);
+    let Outcome::Done(unbounded) = machine.run(&program) else {
+        panic!("no host call")
+    };
+    assert_eq!(unbounded, bounded);
+    assert!(unbounded.is_ok());
+    // The machine still meters an unbounded run.
+    assert_eq!(machine.charged(), full);
+    assert_eq!(machine.budget(), None);
+}
 
 /// Every budget below the full cost Faults `Budget` and spends it; the
 /// span of each, in budget order; the full cost returns the value.

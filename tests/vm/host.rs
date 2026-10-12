@@ -68,12 +68,22 @@ pub fn key(program: &Program, request: &Request) -> String {
     )
 }
 
-/// Run a program under a budget against the script.
+/// Run a program under a budget, or none, against the script.
 pub fn observe(
     program: &Program,
-    budget: u64,
-    mut script: Script,
+    budget: Option<u64>,
+    script: Script,
 ) -> Observation {
+    observe_charged(program, budget, script).0
+}
+
+/// [`observe`], with the units the run charged, which are the VM's
+/// metering and not part of the observation.
+pub fn observe_charged(
+    program: &Program,
+    budget: Option<u64>,
+    mut script: Script,
+) -> (Observation, u64) {
     let mut machine = Machine::new(budget);
     let mut trace = Vec::new();
     let mut outcome = machine.run(program);
@@ -88,10 +98,10 @@ pub fn observe(
             }
         }
     };
-    Observation {
+    let observation = Observation {
         result,
         trace,
         output: Vec::new(),
-        charged: machine.charged(),
-    }
+    };
+    (observation, machine.charged())
 }

@@ -57,7 +57,7 @@ fn an_init_entry_is_refuted_when_the_module_runs() {
     )
     .unwrap();
     let program = compile::compile(&unit);
-    let mut machine = Machine::new(1 << 20);
+    let mut machine = Machine::new(Some(1 << 20));
     let Outcome::Done(Err(fault)) = machine.run(&program) else {
         panic!("the module's init Faults")
     };

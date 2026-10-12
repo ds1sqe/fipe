@@ -160,7 +160,7 @@ impl Repl {
             prompted: false,
             last: None,
             parsed: None,
-            machine: Machine::new(BUDGET),
+            machine: Machine::new(Some(BUDGET)),
             replaying: false,
             quit: false,
             ended: false,
@@ -169,7 +169,7 @@ impl Repl {
 
     /// The charge budget each accepted line runs under.
     pub const fn budget(&mut self, budget: u64) {
-        self.machine.set_budget(budget);
+        self.machine.set_budget(Some(budget));
     }
 
     /// Reject open implicit checks, including after a host reload.

@@ -46,15 +46,16 @@ pub struct Fault {
 
 /// What a run observably did.
 ///
-/// Every backend must reproduce it from the same unit, host replies and
-/// budget (`09-host.md` §Backend equivalence). A host driver assembles
-/// it; `output` stays empty until the host's output exists.
+/// Every backend must reproduce it from the same unit and host replies
+/// on a run no budget stops (`09-host.md` §Backend equivalence); where
+/// a budget stops a run, and what it charged, are not part of it. A
+/// host driver assembles it; `output` stays empty until the host's
+/// output exists.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Observation {
     pub result: Result<Value, Fault>,
     pub trace: Vec<(Request, Reply)>,
     pub output: Vec<u8>,
-    pub charged: u64,
 }
 
 /// Which body of a run is in progress: a module's init, by its
@@ -72,7 +73,8 @@ pub struct Machine {
     globals: Vec<Option<Value>>,
     /// Which modules ran their init body, by module index.
     initialized: Vec<bool>,
-    budget: u64,
+    /// The units each run may spend; `None` is unbounded.
+    budget: Option<u64>,
     charged: u64,
     frames: Vec<Frame>,
     /// The natives, chosen once per tables; rebuilt when the tables grew.
@@ -121,10 +123,11 @@ pub(crate) enum Flow {
 }
 
 impl Machine {
-    /// A machine with a budget of charge units for each run it makes;
-    /// a run that cannot pay Faults `Budget` at the first unpaid node.
+    /// A machine with a budget of charge units for each run it makes,
+    /// or none for unbounded runs; a run that cannot pay Faults
+    /// `Budget` at the first unpaid node.
     #[must_use]
-    pub const fn new(budget: u64) -> Self {
+    pub const fn new(budget: Option<u64>) -> Self {
         Self {
             globals: Vec::new(),
             initialized: Vec::new(),
@@ -145,13 +148,14 @@ impl Machine {
         self.charged
     }
 
+    /// The budget of each run; `None` is unbounded.
     #[must_use]
-    pub const fn budget(&self) -> u64 {
+    pub const fn budget(&self) -> Option<u64> {
         self.budget
     }
 
-    /// The budget of the runs to come.
-    pub const fn set_budget(&mut self, budget: u64) {
+    /// The budget of the runs to come; `None` is unbounded.
+    pub const fn set_budget(&mut self, budget: Option<u64>) {
         self.budget = budget;
     }
 

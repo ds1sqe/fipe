@@ -2,8 +2,8 @@
 
 Fipe means Functional Pipeline Language. Five goals govern its design:
 
-1. Embedded: a host supplies declarations, environment, execution budget and
-   input/output. The language owns no runtime beyond its prelude.
+1. Embedded: a host supplies declarations, environment, an optional budget
+   and input/output. The language owns no runtime beyond its prelude.
 2. Extensible: files are modules, `pub` exports bindings and types, and a
    meaning's `impl` holds its members. Host APIs are ordinary modules.
 3. Functional: functions are values, application curries, and every line has

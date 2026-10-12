@@ -19,7 +19,7 @@ pub fn run(source: &str) -> Result<Value, Fault> {
     )
     .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
     let program = compile::compile(&unit);
-    let mut machine = Machine::new(BUDGET);
+    let mut machine = Machine::new(Some(BUDGET));
     match machine.run(&program) {
         Outcome::Done(result) => result,
         Outcome::Request(request) => panic!("{source}: {request:?}"),
@@ -38,7 +38,7 @@ pub fn shown(source: &str) -> String {
     )
     .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
     let program = compile::compile(&unit);
-    let mut machine = Machine::new(BUDGET);
+    let mut machine = Machine::new(Some(BUDGET));
     match machine.run(&program) {
         Outcome::Done(Ok(value)) => {
             structural::show(&value, &program.tables.borrow())
@@ -52,7 +52,7 @@ pub fn shown(source: &str) -> String {
 /// machine: each line's value or Fault, rendered.
 pub fn session(lines: &[&str]) -> Vec<String> {
     let mut session = Session::new(Declarations::new());
-    let mut machine = Machine::new(BUDGET);
+    let mut machine = Machine::new(Some(BUDGET));
     lines
         .iter()
         .map(|line| {
@@ -93,7 +93,7 @@ pub fn budgeted(
     program: &fipe::mir::Program,
     budget: u64,
 ) -> (Result<Value, Fault>, u64) {
-    let mut machine = Machine::new(budget);
+    let mut machine = Machine::new(Some(budget));
     match machine.run(program) {
         Outcome::Done(result) => (result, machine.charged()),
         Outcome::Request(request) => panic!("{request:?}"),

@@ -50,7 +50,7 @@ where `line` defaults it, so its scheme is the line's `typed.binding`.
 An accepted line is never taken back: a host that edits one starts a
 new session over the lines before it, from `lines`. `strict(true)` makes each open implicit entry a check error in
 the line and its file modules; explicit gates remain allowed. It defaults
-to false. `compile_budget(units)` sets the charge units each compile-time
+to false. `compile_budget(units)` sets the checker's steps each compile-time
 evaluation of later lines may spend ([checking](07-check.md) §The compile
 phase); it defaults to `check::COMPILE_BUDGET`. A line the compile phase
 refutes is refused like any line with a diagnostic: the session is as

@@ -71,7 +71,7 @@ fn a_host_call_is_a_request_and_a_failed_reply_faults() {
     )
     .unwrap();
     let program = fipe::compile::compile(&unit);
-    let mut machine = fipe::vm::Machine::new(super::run::BUDGET);
+    let mut machine = fipe::vm::Machine::new(Some(super::run::BUDGET));
     let fipe::embed::Outcome::Request(fipe::embed::Request::Call { .. }) =
         machine.run(&program)
     else {
@@ -97,10 +97,10 @@ fn a_run_charges_the_machine() {
     )
     .unwrap();
     let program = fipe::compile::compile(&unit);
-    let mut machine = fipe::vm::Machine::new(super::run::BUDGET);
+    let mut machine = fipe::vm::Machine::new(Some(super::run::BUDGET));
     let _ = machine.run(&program);
     assert!(machine.charged() > 0);
-    assert_eq!(machine.budget(), super::run::BUDGET);
+    assert_eq!(machine.budget(), Some(super::run::BUDGET));
     assert!(machine.frames().is_empty());
     let _ = run("1");
 }

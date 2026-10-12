@@ -6,9 +6,9 @@
 //! working directory changes first, so a relative host directory is found
 //! from it; with `--host` the session starts as after `:host <dir>`.
 //! `--strict` rejects open implicit checks; explicit gates remain allowed.
-//! `--budget` sets the charge units each line runs under, the REPL's own
-//! default otherwise; `--compile-budget` the units each compile-time
-//! evaluation may spend, the crate's provisional default otherwise.
+//! `--budget` sets the VM's charge units each line runs under, the REPL's
+//! own default otherwise; `--compile-budget` the checker's steps each
+//! compile-time evaluation may spend, the crate's default otherwise.
 
 #![cfg_attr(feature = "linux", no_std, no_main)]
 #![deny(unsafe_code)]

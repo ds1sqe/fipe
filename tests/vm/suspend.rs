@@ -1,7 +1,7 @@
 //! The host suspension: a host call is a request with its arguments in
 //! spot order, the run resumes on the reply, and the observation is the
-//! value or Fault, the trace and the charges (E1, H1).
-use super::host::{key, observe, program, Script};
+//! value or Fault and the trace; the charges are not part of it (E1, H1).
+use super::host::{key, observe, observe_charged, program, Script};
 use super::Value;
 use fipe::{
     embed::{Reply, Request},
@@ -64,7 +64,7 @@ fn a_host_call_suspends_with_its_arguments_in_spot_order() {
             entry(&program, "b.log"),
         ])),
     );
-    let observation = observe(&program, 1 << 20, script);
+    let observation = observe(&program, Some(1 << 20), script);
     // The path literal's reader is the host's own, a host call at run
     // time; then the listing, with every spot in order.
     assert_eq!(
@@ -95,7 +95,7 @@ fn named_arguments_evaluate_once_in_source_order() {
     let script = read(&program, Script::default(), "./etc")
         .reply("commands.Rd", Ok(Value::text("rd 7")))
         .reply("fs.list", Ok(Value::seq(Vec::new())));
-    let observation = observe(&program, 1 << 20, script);
+    let observation = observe(&program, Some(1 << 20), script);
     assert_eq!(
         keys(&program, &observation.trace),
         ["commands.read", "commands.Rd", "fs.list"]
@@ -116,7 +116,7 @@ fn a_skipped_side_has_no_host_effects() {
     let program = program(source);
     let missed = read(&program, Script::default(), "./x")
         .reply("commands.find", Ok(prelude(&program).nothing()));
-    let observation = observe(&program, 1 << 20, missed);
+    let observation = observe(&program, Some(1 << 20), missed);
     assert_eq!(
         keys(&program, &observation.trace),
         ["commands.read", "commands.find"]
@@ -128,7 +128,7 @@ fn a_skipped_side_has_no_host_effects() {
             Ok(prelude(&program).just(entry(&program, "x"))),
         )
         .reply("commands.cat", Ok(Value::text("text of x")));
-    let observation = observe(&program, 1 << 20, found);
+    let observation = observe(&program, Some(1 << 20), found);
     assert_eq!(
         keys(&program, &observation.trace),
         ["commands.read", "commands.find", "commands.cat"]
@@ -142,7 +142,7 @@ fn a_fault_leaves_the_prior_effects() {
     let program = program(source);
     let script = read(&program, Script::default(), "./a")
         .reply("commands.find", Ok(prelude(&program).nothing()));
-    let observation = observe(&program, 1 << 20, script);
+    let observation = observe(&program, Some(1 << 20), script);
     assert_eq!(
         keys(&program, &observation.trace),
         ["commands.read", "commands.find"]
@@ -159,7 +159,7 @@ fn a_host_failure_faults_at_the_call() {
     let program = program(source);
     let script = read(&program, Script::default(), "./a")
         .reply("commands.find", Err("disk on fire".into()));
-    let observation = observe(&program, 1 << 20, script);
+    let observation = observe(&program, Some(1 << 20), script);
     let fault = observation.result.unwrap_err();
     assert_eq!(fault.reason, Reason::Host("disk on fire".into()));
     assert_eq!(&source[fault.span.start..fault.span.end], "find ./a");
@@ -172,10 +172,12 @@ fn replaying_one_script_twice_gives_equal_observations() {
     let program = program(source);
     let script = read(&program, Script::default(), "./x")
         .reply("commands.find", Ok(prelude(&program).nothing()));
-    let first = observe(&program, 1 << 20, script.clone());
-    assert_eq!(first, observe(&program, 1 << 20, script));
-    assert!(first.charged > 0);
+    let first = observe(&program, Some(1 << 20), script.clone());
+    assert_eq!(first, observe(&program, Some(1 << 20), script.clone()));
     assert_eq!(first.output, Vec::<u8>::new());
+    // Charges are the VM's metering, not an observation: an unbounded
+    // run observes the same.
+    assert_eq!(first, observe(&program, None, script));
 }
 
 #[test]
@@ -186,10 +188,10 @@ fn a_host_call_the_budget_cannot_pay_makes_no_request() {
         read(&program, Script::default(), "./x")
             .reply("commands.find", Ok(prelude(&program).nothing()))
     };
-    let full = observe(&program, 1 << 20, script()).charged;
+    let (_, full) = observe_charged(&program, None, script());
     let mut seen = 0;
     for budget in 0..full {
-        let observation = observe(&program, budget, script());
+        let observation = observe(&program, Some(budget), script());
         let fault = observation.result.unwrap_err();
         assert_eq!(fault.reason, Reason::Budget);
         let at = &source[fault.span.start..fault.span.end];
@@ -212,7 +214,7 @@ fn with_puts_its_key_in_the_environment_of_a_host_call() {
         .reply("commands.find", Ok(prelude(&program).nothing()));
     let script = read(&program, script, "./y")
         .reply("commands.find", Ok(prelude(&program).nothing()));
-    let observation = observe(&program, 1 << 20, script);
+    let observation = observe(&program, Some(1 << 20), script);
     let environments: Vec<_> = observation
         .trace
         .iter()

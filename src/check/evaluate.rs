@@ -540,7 +540,7 @@ fn evaluate(unit: &ir::Unit, node: usize, budget: u64) -> Evaluation {
         Ok(program) => program,
         Err(what) => return Evaluation::Unavailable(what),
     };
-    let mut machine = Machine::new(budget);
+    let mut machine = Machine::new(Some(budget));
     match machine.run(&program) {
         Outcome::Done(Ok(value)) => Evaluation::Value(value),
         Outcome::Done(Err(fault)) => Evaluation::Fault(fault),

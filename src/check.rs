@@ -15,12 +15,12 @@ use alloc::{string::String, vec::Vec};
 pub struct Options {
     /// Reject open implicit entries; explicit gates remain allowed.
     pub strict: bool,
-    /// The charge units each compile-time evaluation may spend, set by
-    /// the host (`07-checks.md` §Phases); exhausted means open.
+    /// The checker's steps each compile-time evaluation may spend, set
+    /// by the host (`09-host.md` §Budget); exhausted means open.
     pub compile_budget: u64,
 }
 
-/// The compile budget until the host names one: a provisional value.
+/// The compile budget when the host names none (`09-host.md` §Budget).
 pub const COMPILE_BUDGET: u64 = 1 << 20;
 
 impl Default for Options {

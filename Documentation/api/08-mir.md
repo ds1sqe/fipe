@@ -10,9 +10,8 @@ compile::compile(&unit) -> mir::Program
 The input is a checked unit, as `check::check` or a session returns it.
 Lowering is pure and cannot fail: the checker recorded every choice, so
 the compiler panics only on a broken checker invariant, a crate defect.
-The VM, the native backend and an LLVM backend consume the same program;
-backend equivalence is structural, since they share the graph, its
-charges and the runtime's values.
+The VM, the native backend and an LLVM backend consume the same program
+and the runtime's values; each meters its own budget.
 
 ## Programs
 
@@ -49,9 +48,10 @@ a `with` key and value onto the environment a host call receives, or pop
 it. A block whose lowering charged anything opens with `Charge`, the
 nodes it pays in the order their lowering completed.
 
-Charges follow the charge schedule of [the host chapter](../spec/09-host.md):
-one unit per IR node evaluated, the size terms living inside the natives
-and the arithmetic. A node is charged in the block where its lowering
+The charges are the VM's metering, which [the host
+chapter](../spec/09-host.md) §Budget leaves to each backend: one unit
+per IR node evaluated, the size terms living inside the natives and the
+arithmetic. A node is charged in the block where its lowering
 completes, so a block's charge covers every node that leaves a statement
 in it; a node a backend evaluates again, such as a callee or a shared
 constant, is charged at each site. A branch's own node is charged on each
@@ -187,14 +187,16 @@ and `:mir <line>` a queried one, without internal byte offsets.
 ## Running
 
 ~~~text
-vm::Machine::new(budget: u64) -> Machine
+vm::Machine::new(budget: Option<u64>) -> Machine
 run(&mut self, program: &mir::Program) -> Outcome<Result<Value, Fault>>
 reply(&mut self, program: &mir::Program, reply: Reply)
     -> Outcome<Result<Value, Fault>>
 charged(&self) -> u64
+budget(&self) -> Option<u64>
+set_budget(&mut self, budget: Option<u64>)
 vm::Fault { span: token::Span, reason: value::Reason }
 vm::Observation { result: Result<Value, Fault>,
-                  trace: Vec<(Request, Reply)>, output: Vec<u8>, charged: u64 }
+                  trace: Vec<(Request, Reply)>, output: Vec<u8> }
 ~~~
 
 One machine serves a session: its globals are the accepted lines'
@@ -207,8 +209,9 @@ it, a value going where the call wanted it and a failure Faulting
 `Host` at the call. A Fault ends the run where it happens; the host's
 prior effects stand.
 
-The budget is per run, and `charged` reports the run in progress or the
-last one. A block pays its `Charge` nodes when it opens: with `r` units
+The budget is per run, `None` for an unbounded one; `charged` reports
+the units of the run in progress or of the last one, bounded or not. A
+block pays its `Charge` nodes when it opens: with `r` units
 left and more nodes, the run Faults `Budget` at the span of node `r`
 before any statement of the block runs. A call's node is paid in the
 block whose terminator makes it, so a host call that cannot be paid is
@@ -219,14 +222,15 @@ container operation one per element of its input, `take` and `head`
 only those they reach; a structural `eq`, `cmp`, `show` or `default`
 one per value below the receiver. A test costs the nodes of its limit's
 body, the division test one unit; a proved entry has no `Enter` and
-costs nothing. A host call's bytes are not charged until H1.
+costs nothing. A host call's bytes are not charged.
 
 An `Enter` tests every component its entry's path reaches from the
 value, in order; the first failure is `Reason::Failed { entry, value }`,
 the value in the language's spelling. `Observation` is what every
-backend must reproduce from the same unit, replies and budget; a
-driver assembles it from its trace, and `output` stays empty until the
-host chapter's output exists.
+backend must reproduce from the same unit and replies on a run no
+budget stops; where a budget stops a run, and the units charged, are
+the VM's and not part of it. A driver assembles it from its trace, and
+`output` stays empty until the host chapter's output exists.
 
 ## What follows
 

@@ -16,13 +16,13 @@ impl Machine {
         program: &mir::Program,
         nodes: &[usize],
     ) -> Result<(), Fault> {
-        let left = self.budget.saturating_sub(self.charged);
+        let left = self.left();
         let count = nodes.len() as u64;
         if count <= left {
-            self.charged += count;
+            self.charged = self.charged.saturating_add(count);
             return Ok(());
         }
-        self.charged = self.budget;
+        self.charged = self.charged.saturating_add(left);
         let unpaid = usize::try_from(left).expect("below the node count");
         Err(Fault {
             span: Self::span(program, nodes[unpaid]),
@@ -32,13 +32,21 @@ impl Machine {
 
     /// Pay `units`, or Fault `Budget` (at the caller's node).
     pub(super) const fn pay(&mut self, units: u64) -> Result<(), Reason> {
-        let left = self.budget.saturating_sub(self.charged);
+        let left = self.left();
         if units <= left {
-            self.charged += units;
+            self.charged = self.charged.saturating_add(units);
             return Ok(());
         }
-        self.charged = self.budget;
+        self.charged = self.charged.saturating_add(left);
         Err(Reason::Budget)
+    }
+
+    /// The units the run may still spend; without a budget, all.
+    const fn left(&self) -> u64 {
+        match self.budget {
+            Some(budget) => budget.saturating_sub(self.charged),
+            None => u64::MAX,
+        }
     }
 }
 

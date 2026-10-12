@@ -142,7 +142,7 @@ fn an_exhausted_compile_budget_leaves_the_entry_open() {
     assert_eq!(unit.plan[0].reason, ir::Reason::CompileBudget);
     // Open, so it is tested when it runs.
     let program = fipe::compile::compile(&unit);
-    let mut machine = fipe::vm::Machine::new(1 << 20);
+    let mut machine = fipe::vm::Machine::new(Some(1 << 20));
     assert!(matches!(machine.run(&program), Outcome::Done(Ok(_))));
 }
 
@@ -212,7 +212,7 @@ const SIEVE: [&str; 2] = [
 
 fn run(unit: &ir::Unit) -> fipe::value::Value {
     let program = fipe::compile::compile(unit);
-    match fipe::vm::Machine::new(1 << 20).run(&program) {
+    match fipe::vm::Machine::new(Some(1 << 20)).run(&program) {
         Outcome::Done(Ok(value)) => value,
         other => panic!("{other:?}"),
     }
@@ -275,7 +275,7 @@ fn a_compile_demand_is_prepared_and_exact_for_later_lines() {
     assert_eq!(report.diagnostics, []);
     let unit = report.unit.unwrap();
     // One machine runs a session's lines; its globals are their values.
-    let mut machine = fipe::vm::Machine::new(1 << 20);
+    let mut machine = fipe::vm::Machine::new(Some(1 << 20));
     let program = fipe::compile::compile(&unit);
     assert!(matches!(machine.run(&program), Outcome::Done(Ok(_))));
     assert!(unit.tables().prepared.values().any(|constant| matches!(
@@ -388,7 +388,7 @@ fn a_float_demanded_at_compile_keeps_its_holding() {
 /// Run each line's unit on one machine, as a session's driver does; the
 /// value of the last.
 fn run_lines(session: &mut Session, lines: &[&str]) -> fipe::value::Value {
-    let mut machine = fipe::vm::Machine::new(1 << 20);
+    let mut machine = fipe::vm::Machine::new(Some(1 << 20));
     let mut last = fipe::value::Value::Unit;
     for text in lines {
         let report = line(session, text);
