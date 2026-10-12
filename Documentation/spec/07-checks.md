@@ -63,7 +63,7 @@ a `Vec<U8>`, the payload of a `Maybe<U8>`.
 | `Compile (test)` | the test is settled at compile time, else a check error | the limit's author |
 | `Init (test)` | the test is settled when the module runs; an entry inside a function must be proved | the limit's author |
 | strict session | an open entry is a check error, in every module the unit checks; a gate still tests | the host |
-| compile budget | how far a compile-time evaluation may run; exhausted means open | the host |
+| compile budget | how far each compile-time evaluation may run; exhausted means open, and a check error for a `Compile (test)` or a demanded value | the host |
 
 No mode skips a test; a trusted entry belongs to a hatch (T4).
 
@@ -83,7 +83,9 @@ neither takes any value, and the way up is free. Every expression has an
 earliest phase, the latest of its inputs; a host call is no earlier than
 where it runs. A binding's place, or a timing form, may demand an earlier
 phase: the value is then prepared in that phase, pure and within the
-budget, and is exact; a value that cannot be ready is a check error. The
+budget, and is exact; a prepared value stays exact for what follows,
+later session lines included; a value that cannot be ready is a check
+error. The
 demand is read before anything is evaluated, and an effect is never moved
 out of the function that holds it. A parameter's phase is eval: a timing
 limits only a binding annotation, never another place, since a body is
@@ -104,9 +106,12 @@ The checker lists every entry left open: its place, its limit, its phase,
 the reason (an unknown input, no rule, the budget) and how often it runs:
 once, per call, per element. An open test is init at a module-level binding,
 eval inside an arm or on a bare expression line, and compile on an exact
-value or a value demanded at compile. Until evaluation is available, tests
-needing it stay open as "compile-time evaluation"; an open `Compile (test)`
-on any other value is a check error. The REPL shows it with `:checks`, and
+value or a value demanded at compile. Such a test runs in the compile
+phase: proved, it leaves the plan; refuted, or Faulting, it is a check
+error. It stays open as "compile budget exhausted" when the budget runs
+out, and as "compile-time evaluation" when its value reads a local or a
+parameter, which a single expression cannot be evaluated without. An
+open `Compile (test)` is a check error. The REPL shows it with `:checks`, and
 the [embedding API](../api/09-embed.md) returns it with the checked unit.
 
 ```text

@@ -64,7 +64,7 @@ opening says how a row is read and what a mark means.
 | a member without `pub` reached from another module | check error: the member is private |
 | `pl | Point.from`, `pl | to<Point>`, `"3,4" | try<Point>` / `pl | Point` | conversions / `Point pl`: check error at an `I64` spot |
 | `from` and `try_from` on one target for one source / `Point.from x`, `x` of unknown meaning | check error: never both / check error naming the candidates |
-| `"42" | read<I64>` / `n: I64 = "42"` / `n: I64 = "x"` | `Result` / read cast recorded / admitted read, literal verdict *evaluation* |
+| `"42" | read<I64>` / `n: I64 = "42"` / `n: I64 = "x"` | `Result` / read cast recorded, read at compile time / check error: the literal's read Faults |
 | `read p | { [!e] => … }` with `read p : Maybe<T>` | check error: `Nothing` has no payload |
 | `Either<(),Integer> || 0` | check error preserving outcome identity (T1) |
 | `older = d e => e.age > d` / `filter (older 7)` | `b.age: a, Ord a => a -> b -> Bool` / solved at `Entry` |
@@ -85,14 +85,14 @@ opening says how a row is read and what a mark means.
 | `diff = p q => p - q`, `p => p - p` / `diff: Point -> Point -> Vector = p q => p - q` | `Sub<b> a => a -> b -> a`, `Sub a => a -> a` / `Point`'s `Sub<Point, Vector>` |
 | `(Vec2 1.0 2.0) + (Vec2 3.0 4.0)` / written `show` / `impl Maybe { map: … }` in the prelude | `Vec2`'s `Add` claim / a `Show` block replaces the derived member / a supplied member |
 | `m: Mask = 0b0000_1111` | typed through `Mask.literal` |
-| `k: Mask = 15` | check error: the literal Faults *evaluation* |
+| `k: Mask = 15` | check error: the literal Faults |
 | `who: Name = "fipe"` | `String`'s literal, then `Name`'s limits |
 | `total: Vec<Shape> -> F64` / `Add -> Add` / `| area` for a member | packed elements / packs and cannot add / unknown name |
 | `id: Integer | String = 3` then `id | { Integer n => n.show, String s => s }` | packed; the gate pattern tells which |
 | a gate and a constructor of one name / a test entering its own type / `!Shape` | check error, each |
 | `U8 2.0` / `U8 300` / `try<U8> 300` / `U8 x` with `x` open | check error: no conversion / refuted / `Err` / Fault when the test fails |
-| `n: U8 & Prime = 13` / `type Handy: U8 | Prime` | U8 proved, Prime open (compile-time evaluation) / either |
-| `p: Prime = 7` / `Seed` with `Compile (is_prime self)` | named test settled at compile time *evaluation* |
+| `n: U8 & Prime = 13` / `type Handy: U8 | Prime` | U8 proved, Prime proved at compile time / either |
+| `p: Prime = 7` / `Seed` with `Compile (is_prime self)` | named test settled at compile time |
 | `kind` over `Prime` and `NonPrime` / `classify` with `_` | covered by a gate and its `!` / gates tried in order |
 | `c: U8 = (a + b) / 2` / `d: U8 = a + b` with `a: U8 = 200`, `b: U8 = 100` | proved: 150 / refuted: 300 |
 | `h: U8 = half 200` / `clamp` / `m: U8 = max a b` / `next` over `Odd` | proved: by the body / by branches / at one variable / by the declared result *narrowing* |
@@ -103,8 +103,8 @@ opening says how a row is read and what a mark means.
 | `a + b` with `a: U8`, `b: U16` / `w: U16 = a` / `n: U8 = b` | `Integer`, known 1200 / proved / refuted |
 | `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open *narrowing* |
 | `f: F64 = 2` | `2.0` by the literal member |
-| `k: I64 = round 2.5` | numeric cast recorded, then open `I64` entry; evaluates to `2` *evaluation* |
-| `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / compile demand met; preparation awaits *evaluation* |
+| `k: I64 = round 2.5` | numeric cast recorded, then open `I64` entry; evaluates to `2` |
+| `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / compile demand met, prepared and exact for later lines |
 | `Compile` alone, as a value or in a pattern | check error |
 | `x: Init & Integer = cli.port` / a parameter with `Init & Integer` | known at init / check error |
 | `Init (cli.port)` in a module binding / inside an arm | demand met / check error |
@@ -119,7 +119,7 @@ opening says how a row is read and what a mark means.
 | `shapes: Vec<Shape> = [Circle 1.0, Square 2.0]` | each element packed before unification, then `sequence` |
 | `xs = [1, 2, 3]` / `zs = xs ++ [4, 5]` / `v = [1, 2.5]` | `[Integer; 3]` / `[Integer; 5]`: `concat` adds the lengths / `[F64; 2]` |
 | `impl Ring<T, n>: Sequence<T> { sequence = … }` | a program's claimed `sequence` |
-| `s: Sorted<Integer> = [1, 2, 3]` / a `sequence` that Faults on exact elements | open here: compile-time evaluation / check error *evaluation* |
+| `s: Sorted<Integer> = [1, 2, 3]` / a `sequence` that Faults on exact elements | proved at compile time / check error |
 | `total xs` with `total` taking a `Vec` / `total (xs | to<Vec<Integer>>)` | check error: a bound array enters by `to<Vec<T>>` / accepted |
 | `map` / `filter` on an array | keeps its length / a `Vec` |
 | plain `impl V { add = … }` / `impl V: Add { add = … }` with `Add` listed | dot works, `+` rejected / `+` accepted |
@@ -129,7 +129,7 @@ opening says how a row is read and what a mark means.
 | supplied claim block with an unknown limit, extra or missing member, duplicate block, or plain-member conflict | declaration error at load |
 | `type V: Zero { x: F64 }` with no `zero` / with `impl V: Zero { zero = Self 0.0 }` / `impl V: Show { … }` unlisted, or a member `Zero` does not ask | check error at the claim / accepted / check error at the block |
 | `type V: Default { x: F64 = 0.0 }` / `type V: a.Zero & b.Zero` whose `zero` differ in type | met by the fields, no block / check error: one member per name |
-| `[] | sum` at `Vec2` claiming `Zero` / a field `n: Integer` with no value / `impl Vec2: Default { default = Self.zero }` | checks by `Add & Zero` (value awaits compile-time evaluation) / a spot: a zero is not a default / the default is the zero |
+| `[] | sum` at `Vec2` claiming `Zero` / a field `n: Integer` with no value / `impl Vec2: Default { default = Self.zero }` | checks by `Add & Zero`; its value is `Vec2`'s zero / a spot: a zero is not a default / the default is the zero |
 | `[T; n + m]` / `[T; m + n]` | one type: sums are equal in any order |
 
 The [corpus](02-syntax.fipe) follows the grammar; check AST shape, inferred

@@ -118,7 +118,8 @@ common to every backend, and limits on memory or time, are open (H1).
 
 The host also sets the compile budget and the strict session
 ([checks](07-checks.md) §Modes). The compile budget bounds each
-compile-time evaluation in the checker's own steps; it is part of the
+compile-time evaluation in the checker's own steps, 2^20 unless the host
+sets another; it is part of the
 checked unit, as host constants are, so every backend receives the same
 acceptance.
 

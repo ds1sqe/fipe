@@ -70,9 +70,10 @@ parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays
 - The shape of `LimitError`, the `Err` of `try<T>` when a limit fails
   ([limits](06-limits.md) §Gates); the prelude declares it opaque.
 - May a limit read a value known at init when it says `Init`?
-- The compile budget's default.
-- Whether an earlier evaluated session value is exact remains open. The
-  checked line indexes tables kept by the session; evaluation owns values.
+- Whether an earlier evaluated session value is exact remains open,
+  except a value a compile demand prepared, which is exact for the lines
+  after it. The checked line indexes tables kept by the session;
+  evaluation owns values.
 - A hatch for hardware, in design: a trusted entry, and the holdings
   `Volatile`, `Pinned`, `At` and `Order`, byte order, offsets and
   addresses.
@@ -122,7 +123,8 @@ Ruled 2026-09-29: `use` runs a module once where it stands and a cycle is a
 check error, and the compile budget and the strict session are host inputs
 ([host](09-host.md)). Ruled 2026-10-12: the budget is
 optional, its unit is the backend's, and where it stops a run is not an
-observation ([host](09-host.md) §Budget). Open: a unit common to every
+observation ([host](09-host.md) §Budget); the compile budget defaults to
+2^20 steps. Open: a unit common to every
 backend; limits on memory or time. **Proposed:** identify modules by
 host-provided stable identity. Ruled 2026-09-30: the lexer has no bound on a
 number ([lexical](01-lexical.md) §Numbers). Specify closure environment
