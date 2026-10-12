@@ -93,11 +93,24 @@ fn fallible_casts_leave_only_target_limits_open() {
         .all(|c| c.name == "I64" && c.known.range.is_none()));
     let mut session = fipe::session::Session::new(Declarations::new());
     session.strict(true);
-    let fipe::embed::Outcome::Done(report) = session.line("n: Integer = \"x\"")
+    let fipe::embed::Outcome::Done(report) =
+        session.line("n: Integer = \"42\"")
     else {
         panic!()
     };
     assert_eq!(report.diagnostics, []);
+    // A written literal's read has its verdict at compile time.
+    let fipe::embed::Outcome::Done(report) = session.line("n: Integer = \"x\"")
+    else {
+        panic!()
+    };
+    assert!(matches!(
+        report.diagnostics.as_slice(),
+        [fipe::session::Diagnostic::Compile {
+            reason: fipe::value::Reason::Cast,
+            ..
+        }]
+    ));
 }
 
 #[test]

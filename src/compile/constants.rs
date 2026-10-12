@@ -56,40 +56,97 @@ impl Builder<'_, '_> {
         self.apply(target, arguments, dest, node)
     }
 
-    /// The value a reader prepares now: the prelude's reader, named or
-    /// selected by a concrete meaning.
+    /// The value a reader prepares now.
     fn prepared(&self, reader: usize, form: &ir::Form) -> Option<Value> {
-        let tables = self.tables();
-        let declaration = match &tables.nodes[reader].kind {
-            ir::Kind::Declared(index) => *index,
-            ir::Kind::Dispatch {
-                receiver: ir::Receiver::Meaning(ty),
-                member,
-            } => {
-                let ty = self.lowering.fixed(ty);
-                if !dispatch::concrete(&ty) {
-                    return None;
-                }
-                let ir::Type::Function { parameter, .. } =
-                    &tables.nodes[reader].ty
-                else {
-                    unreachable!("a reader takes the form")
-                };
-                let selected =
-                    dispatch::select(tables, *member, &ty, Some(parameter))?;
-                match tables.dispatch[*member].rows[selected.row].target {
-                    ir::Implementation::Declared(index) => index,
-                    _ => return None,
-                }
-            }
-            _ => return None,
-        };
-        if !self.lowering.native(declaration) {
-            return None;
-        }
-        let label = result_label(&tables.declarations[declaration].ty, tables);
-        prelude(form, label)
+        prepared(self.tables(), self.lowering.prelude, reader, form)
     }
+}
+
+/// Whether a literal node runs its reader, a program's or a prelude
+/// reader whose value is not finite, rather than being a constant now.
+pub fn runs_reader(tables: &ir::Tables, node: usize) -> bool {
+    let ir::Kind::Literal {
+        form,
+        reader: Some(reader),
+    } = &tables.nodes[node].kind
+    else {
+        return false;
+    };
+    let prelude = tables
+        .namespaces
+        .iter()
+        .position(|label| label == "prelude");
+    prepared(tables, prelude, *reader, form).is_none()
+}
+
+/// Whether a literal node's reader is a host's declaration, an effect
+/// that runs when the literal does.
+pub fn host_reader(tables: &ir::Tables, node: usize) -> bool {
+    let ir::Kind::Literal {
+        reader: Some(reader),
+        ..
+    } = &tables.nodes[node].kind
+    else {
+        return false;
+    };
+    prelude_declaration(tables, *reader).is_some()
+        && !prelude_operation(tables, *reader)
+}
+
+/// Whether an operation node names a declaration of the prelude, by name
+/// or selected by a concrete meaning: native code, never the host's.
+pub fn prelude_operation(tables: &ir::Tables, node: usize) -> bool {
+    let prelude = tables
+        .namespaces
+        .iter()
+        .position(|label| label == "prelude");
+    prelude_declaration(tables, node).is_some_and(|index| {
+        Some(tables.declarations[index].namespace) == prelude
+    })
+}
+
+/// The declaration an operation node names, by name or by the row a
+/// concrete meaning selects.
+fn prelude_declaration(tables: &ir::Tables, node: usize) -> Option<usize> {
+    match &tables.nodes[node].kind {
+        ir::Kind::Declared(index) => Some(*index),
+        ir::Kind::Dispatch {
+            receiver: ir::Receiver::Meaning(ty),
+            member,
+        } => {
+            let ty = dispatch::fixed(tables, ty);
+            if !dispatch::concrete(&ty) {
+                return None;
+            }
+            let ir::Type::Function { parameter, .. } = &tables.nodes[node].ty
+            else {
+                return None;
+            };
+            let selected =
+                dispatch::select(tables, *member, &ty, Some(parameter))?;
+            match tables.dispatch[*member].rows[selected.row].target {
+                ir::Implementation::Declared(index) => Some(index),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The value a reader prepares now: the prelude's reader, named or
+/// selected by a concrete meaning.
+fn prepared(
+    tables: &ir::Tables,
+    prelude_namespace: Option<usize>,
+    reader: usize,
+    form: &ir::Form,
+) -> Option<Value> {
+    let declaration = prelude_declaration(tables, reader)?;
+    if Some(tables.declarations[declaration].namespace) != prelude_namespace {
+        return None;
+    }
+    let label = result_label(&tables.declarations[declaration].ty, tables);
+    prelude(form, label)
 }
 
 /// The label of a declaration's result meaning, when it is the prelude's.

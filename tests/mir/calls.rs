@@ -360,33 +360,27 @@ fn prelude_literals_are_prepared_by_their_reader() {
 }
 
 #[test]
-fn a_literal_beyond_its_float_is_read_at_run_time() {
+fn a_literal_beyond_its_float_is_a_check_error() {
+    // Its reader runs in the compile phase, where it Faults.
     for source in ["1e400", "x: F32 = 1e39\nx"] {
-        let (_, program) = super::program(source);
+        let module = fipe::parse::parse(fipe::lex::lex(source)).unwrap();
+        let errors = fipe::check::check(
+            &module,
+            &fipe::decl::Declarations::new(),
+            &[],
+            fipe::check::Options::default(),
+        )
+        .unwrap_err();
         assert!(
-            program.constants.iter().all(|constant| !matches!(
-                constant,
-                Value::F32(_) | Value::F64(_)
-            )),
-            "{source}: {:?}",
-            program.constants
+            matches!(
+                errors.as_slice(),
+                [fipe::check::Error::Compile {
+                    reason: fipe::value::Reason::NotFinite,
+                    ..
+                }]
+            ),
+            "{source}: {errors:?}"
         );
-        let read =
-            program
-                .bodies
-                .iter()
-                .flat_map(|body| &body.blocks)
-                .any(|block| {
-                    matches!(
-                        &block.terminator,
-                        Terminator::Call {
-                            callee: Callee::Native(_),
-                            args,
-                            ..
-                        } if matches!(args.as_slice(), [Operand::Const(_)])
-                    )
-                });
-        assert!(read, "{source}");
     }
 }
 

@@ -1198,3 +1198,108 @@ fn a_refuted_entry_names_its_limit_and_value_at_its_place() {
         "{text}"
     );
 }
+
+/// A primality test written in the language.
+const PRIME: &[u8] = b"trial = n d => if d * d > n { True } else { if n % d == 0 { False } else { trial n (d + 1) } }\n\n\
+is_prime = n => n > 1 && trial n 2\n\n\
+type Prime: Integer where is_prime self\n\n";
+
+#[test]
+fn a_named_test_on_an_exact_value_is_proved_at_compile_time() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(PRIME)), "fipe> ");
+    assert_eq!(written(repl.feed(b"p: Prime = 7\n\n")), "fipe> ");
+    assert_eq!(
+        written(repl.feed(b":checks p\n")),
+        "p: Prime\nexact 7\nnames Prime\nknown at compile\n\
+         compile, once: binding p, exact 7, against Prime: \
+         proved at compile time on 7\nfipe> "
+    );
+    assert_eq!(
+        written(repl.feed(b"q: Prime = 8\n\n")),
+        "1:4: refuted entry against Prime: 8\nq: Prime = 8\n   ^^^^^\nfipe> "
+    );
+    assert_eq!(written(repl.feed(b"n: U8 & Prime = 13\n\n")), "fipe> ");
+    let text = written(repl.feed(b":checks n\n"));
+    assert!(
+        text.contains("against Prime: proved at compile time on 13"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_compile_budget_leaves_an_entry_open() {
+    let mut repl = Repl::new();
+    repl.compile_budget(10);
+    assert_eq!(written(repl.feed(PRIME)), "fipe> ");
+    assert_eq!(written(repl.feed(b"p: Prime = 7\n\n")), "fipe> ");
+    assert_eq!(
+        written(repl.feed(b":checks p\n")),
+        "p: Prime\nexact 7\nnames Prime\nknown at compile\n\
+         compile, once: binding p, exact 7, against Prime \
+         (compile budget exhausted)\nfipe> "
+    );
+}
+
+#[test]
+fn a_program_literal_that_faults_is_a_check_error() {
+    let mut repl = Repl::new();
+    let mask = b"type Mask: Literal { bits: U8 }\n\n\
+impl Mask: Literal {\n    literal = {\n        Whole { value, radix: 2, digits: 8 } => Self value,\n        _ => fault \"a Mask is written as eight binary digits\",\n    },\n}\n\n";
+    assert_eq!(written(repl.feed(mask)), "fipe> ");
+    assert_eq!(
+        written(repl.feed(b"m: Mask = 0b0000_1111\n\nm\n\n")),
+        "Mask 15\nfipe> "
+    );
+    assert_eq!(
+        written(repl.feed(b"k: Mask = 15\n\n")),
+        "1:11: the literal Faults reading Mask: a Mask is written as eight \
+         binary digits\nk: Mask = 15\n          ^^\nfipe> "
+    );
+}
+
+#[test]
+fn a_compile_demand_is_shown_exact() {
+    let mut repl = Repl::new();
+    assert_eq!(written(repl.feed(b"f = n => n * 6\n\n")), "fipe> ");
+    assert_eq!(written(repl.feed(b"x = Compile (f 7)\n\n")), "fipe> ");
+    assert_eq!(
+        written(repl.feed(b":t x\n")),
+        "x: Integer\nexact 42\nknown at compile\nfipe> "
+    );
+    assert_eq!(
+        written(repl.feed(b"z = Compile (1 / ([0] | head))\n\n")),
+        "1:18: the value demanded at compile time Faults: division by zero\n\
+         z = Compile (1 / ([0] | head))\n                 ^^^^^^^^^^^^\nfipe> "
+    );
+}
+
+#[test]
+fn a_sequence_that_faults_on_its_bracket_is_a_check_error() {
+    let mut repl = Repl::new();
+    let pos = b"type Pos: Sequence<Integer> { first: Integer }\n\n\
+impl Pos: Sequence<Integer> { sequence = xs => if (xs | head) > 0 { Self (xs | head) } else { fault \"not positive\" } }\n\n";
+    assert_eq!(written(repl.feed(pos)), "fipe> ");
+    assert_eq!(
+        written(repl.feed(b"p: Pos = [0]\n\n")),
+        "1:10: the sequence of Pos Faults on this bracket: not positive\n\
+         p: Pos = [0]\n         ^^^\nfipe> "
+    );
+    assert_eq!(
+        written(repl.feed(b"q: Pos = [3]\n\nq\n\n")),
+        "Pos 3\nfipe> "
+    );
+}
+
+#[test]
+fn an_empty_sum_is_its_meaning_s_zero() {
+    let mut repl = Repl::new();
+    let vec2 = b"type Vec2: Add & Zero { x: F64, y: F64 }\n\n\
+impl Vec2: Add { add = o self => Self (self.x + o.x) (self.y + o.y) }\n\n\
+impl Vec2: Zero { zero = Self 0.0 0.0 }\n\n";
+    assert_eq!(written(repl.feed(vec2)), "fipe> ");
+    assert_eq!(
+        written(repl.feed(b"t: Vec2 = [] | sum\n\nt\n\n")),
+        "Vec2 0.0 0.0\nfipe> "
+    );
+}

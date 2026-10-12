@@ -40,6 +40,9 @@ pub struct Index {
     weak_slots: Vec<usize>,
     emitted: Vec<(Origin, Vec<crate::ast::ExprId>)>,
     source_modules: BTreeMap<Origin, Rc<crate::ast::Module>>,
+    /// While a session line may still be refused: its mark and the
+    /// writes it made to what existed before it.
+    journal: Option<(session::Mark, Vec<session::Undo>)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -155,7 +158,10 @@ impl Index {
                     origin: home_origin(home, &name.origin),
                     name: name.name.clone(),
                 };
-                self.shapes.insert(key, (home.clone(), shape.clone()));
+                let old = self
+                    .shapes
+                    .insert(key.clone(), (home.clone(), shape.clone()));
+                self.note(|_, _| Some(session::Undo::Shape(key, old)));
             }
             let Type::Named { name, arguments } = &shape.ty else {
                 unreachable!("checked layouts name their declaration")
@@ -189,6 +195,16 @@ impl Index {
                         .collect(),
                 })
                 .collect();
+            self.note(|index_, mark| {
+                (index < mark.meanings).then(|| {
+                    let meaning = &index_.tables.borrow().meanings[index];
+                    session::Undo::Meaning(
+                        index,
+                        meaning.parameters.clone(),
+                        meaning.constructors.clone(),
+                    )
+                })
+            });
             self.tables.borrow_mut().meanings[index].parameters = parameters;
             self.tables.borrow_mut().meanings[index].constructors =
                 constructors;

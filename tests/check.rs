@@ -38,6 +38,8 @@ mod ir;
 
 #[path = "check/casts.rs"]
 mod casts;
+#[path = "check/compile_phase.rs"]
+mod compile_phase;
 #[path = "check/coverage.rs"]
 mod coverage;
 #[path = "check/outcomes.rs"]

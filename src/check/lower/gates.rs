@@ -200,6 +200,9 @@ impl Index {
                     crate::typed::CheckReason::Narrowing => {
                         ir::Reason::Narrowing
                     }
+                    crate::typed::CheckReason::CompileBudget => {
+                        ir::Reason::CompileBudget
+                    }
                 },
             };
             self.tables.borrow_mut().entries.push(recorded.clone());
@@ -221,6 +224,7 @@ impl Index {
                 let saved = self.tables.borrow().nodes[*node].clone();
                 let value = self.tables.borrow().nodes.len();
                 self.tables.borrow_mut().nodes.push(saved);
+                self.keep_node(*node);
                 self.tables.borrow_mut().nodes[*node].kind =
                     ir::Kind::Enter { entry, value };
             }

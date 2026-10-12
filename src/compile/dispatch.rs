@@ -170,6 +170,36 @@ pub fn concrete(ty: &Type) -> bool {
     }
 }
 
+/// A meaning parameter of a type that no witness of the frame binds; an
+/// unfixed session meaning counts as its slot.
+fn unbound(ty: &Type, hidden: &[usize]) -> Option<usize> {
+    match ty {
+        Type::Parameter(parameter) => {
+            (!hidden.contains(parameter)).then_some(*parameter)
+        }
+        Type::Session(slot) => Some(*slot),
+        Type::Unit | Type::Number(_) => None,
+        Type::Meaning {
+            arguments: parts, ..
+        }
+        | Type::Tuple(parts)
+        | Type::Packed(parts)
+        | Type::All(parts)
+        | Type::Sum(parts) => {
+            parts.iter().find_map(|part| unbound(part, hidden))
+        }
+        Type::Array {
+            element: first,
+            length: second,
+        }
+        | Type::Function {
+            parameter: first,
+            result: second,
+        } => unbound(first, hidden).or_else(|| unbound(second, hidden)),
+        Type::Not(inner) => unbound(inner, hidden),
+    }
+}
+
 /// A type with each parameter replaced by its binding.
 pub fn substitute(ty: &Type, bindings: &[(usize, Type)]) -> Type {
     map(ty, &|ty| match ty {
@@ -282,7 +312,12 @@ impl Builder<'_, '_> {
                 ir::Receiver::Value(_) => mir::Witness::Value(
                     arguments.receiver.expect("a value receiver is supplied"),
                 ),
-                ir::Receiver::Meaning(_) => mir::Witness::Meaning(witness),
+                ir::Receiver::Meaning(_) => {
+                    if let Some(parameter) = unbound(&witness, &self.hidden) {
+                        self.lowering.unbound_witness(parameter);
+                    }
+                    mir::Witness::Meaning(witness)
+                }
             };
             return Some((Callee::Dispatch { member, witness }, Vec::new()));
         };

@@ -29,6 +29,42 @@ fn literal_form(
 }
 
 impl Index {
+    /// A bracket at a place whose type claims `Sequence` by a program's
+    /// member: the array, handed to that `sequence`.
+    fn written_sequence(
+        &mut self,
+        source: &Source<'_>,
+        span: crate::token::Span,
+        array: ir::Kind,
+    ) -> ir::Kind {
+        let callee = self.chosen(source, span, None);
+        let Type::Function { parameter, .. } =
+            &source.typed.callee_types[&(span.start, span.end)]
+        else {
+            unreachable!("a sequence member takes the array")
+        };
+        let value = self.node(&source.home, span, parameter, array);
+        let ty = self.ty(&source.home, parameter);
+        let slot = self.tables.borrow().slots.len();
+        self.tables.borrow_mut().slots.push(ir::Slot {
+            ty,
+            parameters: Vec::new(),
+            hidden: Vec::new(),
+            definition: None,
+        });
+        ir::Kind::Call {
+            callee,
+            slots: alloc::vec![slot],
+            supplies: alloc::vec![ir::Supply {
+                spot: 0,
+                value,
+                element: false,
+            }],
+            defaults: Vec::new(),
+            open: Vec::new(),
+        }
+    }
+
     pub(super) fn expression(
         &mut self,
         source: &Source<'_>,
@@ -61,9 +97,19 @@ impl Index {
             E::Tuple(parts) => ir::Kind::Tuple(
                 parts.iter().map(|id| scope.expression(*id)).collect(),
             ),
-            E::List(parts) => ir::Kind::Array(
-                parts.iter().map(|id| scope.expression(*id)).collect(),
-            ),
+            E::List(parts) => {
+                let array = ir::Kind::Array(
+                    parts.iter().map(|id| scope.expression(*id)).collect(),
+                );
+                match source.typed.selected.get(&site) {
+                    None
+                    | Some(crate::typed::Selected::Declared {
+                        origin: Origin::Prelude,
+                        ..
+                    }) => array,
+                    Some(_) => self.written_sequence(source, span, array),
+                }
+            }
             E::Bind { pattern, value, .. } => ir::Kind::Bind {
                 pattern: self.pattern(source, scope, *pattern),
                 value: scope.expression(*value),

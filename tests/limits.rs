@@ -174,12 +174,12 @@ fn gates_cover_with_their_declared_complement_and_keep_passed_names() {
         let report = line(&mut session, text);
         assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
     }
+    // The named test ran at compile time and proved the entry.
     let report = line(&mut session, "p: Prime = 7");
     assert_eq!(report.diagnostics, []);
-    assert_eq!(
-        report.checks[0].reason,
-        fipe::typed::CheckReason::CompileTimeEvaluation
-    );
+    assert_eq!(report.checks, []);
+    assert_eq!(report.settled.len(), 1);
+    assert_eq!(report.settled[0].check.name, "Prime");
     assert_ne!(
         line(&mut session, "type Loop: Integer where (Loop self) == self")
             .diagnostics,
@@ -529,9 +529,13 @@ fn timed_tests_keep_three_phases_and_never_become_tests_themselves() {
     assert!(port.checks.iter().all(|c| c.phase == Phase::Init));
     let seed = line(&mut session, "q: Seed = 7");
     assert_eq!(seed.diagnostics, [], "{:?}", seed.diagnostics);
-    assert_eq!(seed.checks.len(), 1);
-    assert_eq!(seed.checks[0].phase, Phase::Compile);
-    assert_eq!(seed.checks[0].reason, CheckReason::CompileTimeEvaluation);
+    assert_eq!(seed.checks, []);
+    assert_eq!(seed.settled.len(), 1);
+    assert_eq!(seed.settled[0].check.phase, Phase::Compile);
+    assert_eq!(
+        seed.settled[0].check.reason,
+        CheckReason::CompileTimeEvaluation
+    );
     assert_ne!(
         line(&mut session, "f: Integer -> Start = n => n").diagnostics,
         []
@@ -704,8 +708,12 @@ fn demands_reach_grouped_entries_and_host_constants_bound_holdings() {
         let report = line(&mut session, text);
         assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
         if text.starts_with("q:") {
-            assert_eq!(report.checks.len(), 1);
-            assert_eq!(report.checks[0].phase, fipe::typed::Phase::Compile);
+            assert_eq!(report.checks, []);
+            assert_eq!(report.settled.len(), 1);
+            assert_eq!(
+                report.settled[0].check.phase,
+                fipe::typed::Phase::Compile
+            );
         }
     }
 }
@@ -1074,10 +1082,9 @@ fn limited_float_literals_keep_exact_values() {
     );
     let report = line(&mut session, "a: PF = 4.5");
     assert_eq!(report.diagnostics, []);
-    assert_eq!(
-        report.checks[0].reason,
-        fipe::typed::CheckReason::CompileTimeEvaluation
-    );
+    assert_eq!(report.checks, []);
+    assert_eq!(report.settled[0].value, "4.5");
+    assert_ne!(line(&mut session, "b: PF = 0.25").diagnostics, []);
 }
 
 #[test]
@@ -1420,9 +1427,10 @@ fn written_constructors_follow_body_guard_and_default_purity() {
     }
     let mut session =
         fipe::session::Session::new(fipe::decl::Declarations::new());
+    // The pure constructor builds by braces, so the demand is prepared.
     for source in [
         "type C { n: Integer }",
-        "impl C { n => Self n }",
+        "impl C { n => Self { n: n } }",
         "x: Compile & C = C 1",
     ] {
         assert_eq!(line(&mut session, source).diagnostics, [], "{source}");
@@ -1567,7 +1575,9 @@ fn a_limited_type_over_a_packed_base_narrows_it() {
     ] {
         assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
     }
-    // The value packs as the base and the type's test is entered.
+    // The value packs as the base and the type's test is entered; with
+    // no compile budget the entry stays open.
+    session.compile_budget(0);
     let report = line(&mut session, "nn: Named = C 1.0");
     assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
     assert!(

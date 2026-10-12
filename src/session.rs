@@ -39,7 +39,10 @@ pub struct Session {
     absent: Vec<String>,
     pending: Option<Pending>,
     strict: bool,
+    compile_budget: u64,
     index: Option<crate::check::lower::Index>,
+    /// The entries the compile phase proved, by accepted line.
+    settled: Vec<Vec<crate::check::Settled>>,
     /// The declared expressions and values typed so far, shared by
     /// every later line: a declaration module, an accepted line or a
     /// loaded file never changes within a session.
@@ -58,7 +61,9 @@ impl Clone for Session {
             absent: self.absent.clone(),
             pending: self.pending.clone(),
             strict: self.strict,
+            compile_budget: self.compile_budget,
             index,
+            settled: self.settled.clone(),
             declared: self.declared.inherit(),
         }
     }
@@ -98,6 +103,8 @@ pub struct Report {
     pub typed: Option<Typed>,
     /// Open entries left by this line.
     pub checks: Vec<crate::typed::Check>,
+    /// Entries of this line the compile phase proved, with their values.
+    pub settled: Vec<crate::check::Settled>,
     /// Indexed backend input, present only for a diagnostic-free line.
     pub unit: Option<crate::ir::Unit>,
 }
@@ -121,6 +128,7 @@ impl Report {
             resolved: None,
             typed: None,
             checks: Vec::new(),
+            settled: Vec::new(),
             unit: None,
         }
     }
@@ -166,7 +174,9 @@ impl Session {
             absent: Vec::new(),
             pending: None,
             strict: false,
+            compile_budget: crate::check::COMPILE_BUDGET,
             index: None,
+            settled: Vec::new(),
             declared: infer::files::FileCache::new(),
         }
     }
@@ -177,9 +187,39 @@ impl Session {
         self.strict = enabled;
     }
 
+    /// The charge units each compile-time evaluation of subsequent units
+    /// may spend; exhausted means open.
+    pub const fn compile_budget(&mut self, units: u64) {
+        self.compile_budget = units;
+    }
+
     /// Open checks of accepted lines, or of the latest binding named `name`.
     #[must_use]
     pub fn checks(&self, name: Option<&str>) -> Vec<crate::typed::Check> {
+        self.select(name, |line| &self.frame.lines[line].typed.checks, |c| c)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Entries the compile phase proved in accepted lines, or in the
+    /// latest binding named `name`.
+    #[must_use]
+    pub fn settled(&self, name: Option<&str>) -> Vec<crate::check::Settled> {
+        self.select(name, |line| &self.settled[line], |s| &s.check)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// The items of accepted lines whose check is of the latest binding
+    /// named `name`, or every item, once per place and limit.
+    fn select<'a, T>(
+        &'a self,
+        name: Option<&str>,
+        items: impl Fn(usize) -> &'a [T],
+        check_of: fn(&T) -> &crate::typed::Check,
+    ) -> Vec<&'a T> {
         let local_site = name
             .and_then(|name| self.frame.values.get(name))
             .and_then(|target| {
@@ -217,7 +257,8 @@ impl Session {
         self.frame
             .lines
             .iter()
-            .flat_map(|line| {
+            .enumerate()
+            .flat_map(|(index, line)| {
                 let span = local_site.and_then(|site| {
                     line.module.entries.iter().find_map(|entry| {
                         let Entry::Line(id) = entry else { return None };
@@ -231,7 +272,8 @@ impl Session {
                             .then_some(expr.span)
                     })
                 });
-                line.typed.checks.iter().filter(move |check| {
+                items(index).iter().filter(move |item| {
+                    let check = check_of(item);
                     name.is_none()
                         || (check.place_origin == resolve::Origin::This
                             && span
@@ -242,7 +284,8 @@ impl Session {
                         })
                 })
             })
-            .filter(|check| {
+            .filter(|item| {
+                let check = check_of(item);
                 seen.insert((
                     check.place_origin.clone(),
                     check.place,
@@ -251,7 +294,6 @@ impl Session {
                     check.limit,
                 ))
             })
-            .cloned()
             .collect()
     }
 
@@ -360,46 +402,48 @@ impl Session {
             cache,
             crate::check::Options {
                 strict: self.strict,
+                compile_budget: self.compile_budget,
             },
             (if pending.accept { usize::MAX } else { offset }, offset),
         );
         diagnostics.extend(checked.diagnostics);
         let resolved = checked.resolved;
-        let typed = checked.typed;
-        let checks = typed
-            .as_ref()
-            .map_or_else(Vec::new, |typed| typed.checks.clone());
+        let mut typed = checked.typed;
         let files_valid = cache.files.borrow().values().all(|file| {
             file.resolve_errors.is_empty() && file.type_errors.is_empty()
         });
+        let mut settled = Vec::new();
         let unit = if diagnostics.is_empty() && files_valid {
-            if let (Some(resolved), Some(typed)) = (&resolved, &typed) {
-                let index = self.index.get_or_insert_with(Default::default);
-                let mut query;
-                let index = if pending.accept {
-                    index
-                } else {
-                    query = index.fork();
-                    &mut query
-                };
-                index.session(self.frame.lines.len(), typed);
-                Some(index.emit(
+            if let (Some(resolved), Some(typed)) = (&resolved, &mut typed) {
+                match self.lower(
                     &module,
-                    resolved.clone(),
-                    typed.clone(),
-                    &self.declarations,
-                    &self.files,
-                    cache,
-                ))
+                    resolved,
+                    typed,
+                    offset,
+                    pending.accept,
+                ) {
+                    Ok((unit, proved)) => {
+                        settled = proved;
+                        Some(unit)
+                    }
+                    Err(errors) => {
+                        diagnostics.extend(errors);
+                        None
+                    }
+                }
             } else {
                 None
             }
         } else {
             None
         };
+        let checks = typed
+            .as_ref()
+            .map_or_else(Vec::new, |typed| typed.checks.clone());
         if pending.accept && diagnostics.len() == files {
             if let (Some(resolved), Some(typed)) = (&resolved, &typed) {
                 self.accept(&pending.text, &module, resolved, typed);
+                self.settled.push(settled.clone());
             }
         }
         self.declared.end_unit();
@@ -411,8 +455,111 @@ impl Session {
             resolved,
             typed,
             checks,
+            settled,
             unit,
         })
+    }
+
+    /// Lower a checked line and run the compile phase over it.
+    fn lower(
+        &mut self,
+        module: &Module,
+        resolved: &Resolved,
+        typed: &mut Typed,
+        offset: usize,
+        accept: bool,
+    ) -> Result<(crate::ir::Unit, Vec<crate::check::Settled>), Vec<Diagnostic>>
+    {
+        // An accepted line is emitted into the session's index, journaled
+        // so a refusal by the compile phase undoes it; a query owns a copy.
+        let lines = self.frame.lines.len();
+        let index = self.index.get_or_insert_with(Default::default);
+        let mut query;
+        let index = if accept {
+            index.begin();
+            index
+        } else {
+            query = index.fork();
+            &mut query
+        };
+        index.session(lines, typed);
+        let first = index.tables.borrow().nodes.len();
+        let mut unit = index.emit(
+            module,
+            resolved.clone(),
+            typed.clone(),
+            &self.declarations,
+            &self.files,
+            &self.declared,
+        );
+        let judged =
+            self.judge(&mut unit, first, (module, resolved), typed, offset);
+        if accept {
+            let index = self.index.as_mut().expect("the session's index");
+            if judged.is_ok() {
+                index.commit();
+            } else {
+                index.rollback();
+            }
+        }
+        judged.map(|settled| (unit, settled))
+    }
+
+    /// Run the compile phase over an emitted line and apply what it
+    /// decided to the line's typing; its check errors refuse the line.
+    fn judge(
+        &self,
+        unit: &mut crate::ir::Unit,
+        first: usize,
+        (module, resolved): (&Module, &Resolved),
+        typed: &mut Typed,
+        offset: usize,
+    ) -> Result<Vec<crate::check::Settled>, Vec<Diagnostic>> {
+        let demands = crate::check::demands(module, typed);
+        let phase = crate::check::evaluate::run(
+            unit,
+            first,
+            self.compile_budget,
+            &demands,
+        )
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| relocated(error, offset))
+                .collect::<Vec<_>>()
+        })?;
+        let settled = crate::check::settle(typed, module, &phase);
+        let frame = &self.frame;
+        let mut errors = crate::check::unsettled(
+            typed,
+            |origin, span| match origin {
+                resolve::Origin::This => {
+                    crate::check::timed_compile(module, resolved, span)
+                }
+                resolve::Origin::Line(line) => {
+                    frame.lines.get(*line).is_some_and(|line| {
+                        crate::check::timed_compile(
+                            &line.module,
+                            &line.resolved,
+                            span,
+                        )
+                    })
+                }
+                _ => false,
+            },
+            offset,
+        );
+        errors.extend(crate::check::open_errors(
+            &typed.checks,
+            self.strict,
+            offset,
+            true,
+        ));
+        if errors.is_empty() {
+            Ok(settled)
+        } else {
+            Err(errors)
+        }
     }
 
     fn accept(
@@ -476,6 +623,18 @@ impl Session {
             }
         }
         stems
+    }
+}
+
+/// A compile-phase diagnostic moved into the line's text.
+fn relocated(error: crate::check::Error, offset: usize) -> Diagnostic {
+    match error {
+        Diagnostic::Compile { span, what, reason } => Diagnostic::Compile {
+            span: local(span, offset),
+            what,
+            reason,
+        },
+        other => other,
     }
 }
 

@@ -68,6 +68,9 @@ pub(super) struct Sum {
     items: Rc<Vec<Value>>,
     index: usize,
     acc: Option<Value>,
+    /// The result's type, whose zero the empty sum is; the call knows
+    /// it, a later move of the frame does not.
+    result: Option<ir::Type>,
 }
 
 impl Pending {
@@ -113,12 +116,13 @@ impl Pending {
         }))
     }
 
-    pub(super) fn sum(over: &Value) -> Step {
+    pub(super) fn sum(over: &Value, result: Option<ir::Type>) -> Step {
         let items = Rc::clone(seq(over));
         Step::Start(Self::Sum(Sum {
             items,
             index: 0,
             acc: None,
+            result,
         }))
     }
 
@@ -226,12 +230,13 @@ impl Sum {
             self.acc = Some(value);
         }
         if self.acc.is_none() && self.items.is_empty() {
-            return match ctx.result.as_ref().map(|ty| of_type(ty, ctx.tables)) {
+            return match self.result.as_ref().map(|ty| of_type(ty, ctx.tables))
+            {
                 Some(Of::F32) => Step::Done(Value::F32(0.0)),
                 Some(Of::F64) => Step::Done(Value::F64(0.0)),
                 Some(Of::Integer) | None => Step::Done(arith::zero()),
                 Some(_) => {
-                    let Some(ir::Type::Meaning { index, .. }) = &ctx.result
+                    let Some(ir::Type::Meaning { index, .. }) = &self.result
                     else {
                         unreachable!()
                     };

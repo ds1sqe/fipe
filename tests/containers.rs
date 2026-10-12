@@ -147,11 +147,9 @@ fn program_sequence_claim_and_limited_bracket() {
     }
     let report = line(&mut session, "s: Sorted<Integer> = [1, 2, 3]");
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-    assert_eq!(report.checks.len(), 1, "{:?}", report.checks);
-    assert_eq!(
-        report.checks[0].reason,
-        fipe::typed::CheckReason::CompileTimeEvaluation
-    );
+    assert_eq!(report.checks, [], "{:?}", report.checks);
+    assert_eq!(report.settled.len(), 1, "{:?}", report.settled);
+    assert_eq!(report.settled[0].value, "[1, 2, 3]");
     assert_ne!(
         line(&mut session, "bad: Ring<Integer, 3> = [1, 2]").diagnostics,
         []

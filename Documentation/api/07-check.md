@@ -5,7 +5,13 @@
 ~~~text
 check::check(module, declarations, files, options)
     -> Result<ir::Unit, Vec<check::Error>>
-check::Options { strict: bool }
+check::Options { strict: bool, compile_budget: u64 }
+check::COMPILE_BUDGET: u64
+check::Error::Compile { span, what: check::Evaluated, reason: value::Reason }
+check::Evaluated = Entry { limit: String, value: Option<String> }
+                 | Literal { meaning: String } | Demand
+                 | Sequence { meaning: String }
+check::Settled { check: typed::Check, value: String }
 ~~~
 
 The inputs are parsed modules and loaded declarations, as for resolution
@@ -14,6 +20,52 @@ Resolution, inference, limits and coverage precede lowering. An error
 carries its stage and, for a file module, its stem. No unit accompanies an
 error. `resolve` and `infer` remain public; only `check` gives a unit.
 Lowering cannot fail: checking has already recorded every choice.
+
+## The compile phase
+
+After lowering, the checker runs pure code on the machine
+([MIR](08-mir.md)), each evaluation a node of the unit lowered alone as
+the main of a program, on a fresh `vm::Machine::new(compile_budget)`:
+the budget is an allowance per evaluation. `Options::default()` takes
+`COMPILE_BUDGET`, provisional until the language fixes a default. In
+order:
+
+1. Each literal whose reader runs, a program's `literal` or a prelude
+   reader whose value is not finite, and each read or number cast of a
+   written literal by the prelude's reader. A Fault is `Error::Compile`
+   with `Evaluated::Literal`; a generic body's reader, which needs its
+   caller's witness, runs when the literal does.
+2. Each bracket of exact elements handed to a program's `sequence`. A
+   Fault is `Error::Compile` with `Evaluated::Sequence`; a bracket of
+   other elements runs its `sequence` when it is evaluated.
+3. Each `Compile (value)` and each value a binding's place demands with
+   `Compile & T`. A Fault, or the budget's end, is `Error::Compile` with
+   `Evaluated::Demand`: a demanded value that cannot be ready is a check
+   error. The value is exact from then on: the expression and its
+   binding know it, so a later line reads it as exact.
+4. Each plan entry with the reason `CompileTimeEvaluation`: its value,
+   then its test on that value.
+   - Proved: the entry leaves the plan and the open checks; a session's
+     report lists it among `settled` with its value, and its `Enter`
+     node keeps only the value, so no `Compile` entry reaches a body.
+   - Refuted, or a Fault while computing the value or running the test:
+     `Error::Compile` at the entry's place. `Evaluated::Entry` names the
+     limit and the value tested, when computing it did not Fault;
+     `reason` is the Fault, `Failed` for a refutation. A refuted entry
+     inside the evaluated code is reported against its own limit, a
+     refuted divisor as `DivideByZero`.
+   - The budget runs out: the entry stays open with the reason
+     `CompileBudget`, "compile budget exhausted", and is tested when it
+     runs; a test written `Compile (test)` is then a check error.
+   - A value that reads a local slot, a parameter, a witness its caller
+     supplies or a part a destructuring line stores is not evaluated
+     alone; its entry stays open with its reason.
+
+A value with no closure and no witness becomes `ir::Constant` data in
+`Tables.prepared`, by node index; the compiler lowers a prepared node as
+that constant. Strict mode refuses only the entries the phase leaves
+open. Purity was checked before, so an evaluation that reaches a host
+declaration is a crate defect and panics.
 
 ## Units
 
@@ -82,6 +134,10 @@ head and is called like any other callable.
 | Enter | shared entry index, component path and checked value |
 | Repeat | array length and the default operation for each element |
 | Timing | compile or initialization demand and operand |
+
+A bracket at a place whose type claims `Sequence` by a program's member
+is a `Call` of that member, its one spot the `Array`; at the prelude's
+`Vec`, `Deque` or an array it is the `Array` itself.
 
 Patterns are `Any`, `Slot`, `Literal`, `Constructor`, `Record`, `Side`,
 `Gate` with its tests, `Tag`, `List` and `Tuple`. A pipe stage remains a node

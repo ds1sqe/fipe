@@ -118,7 +118,10 @@ impl<'l, 'a> Builder<'l, 'a> {
             .iter()
             .position(|captured| *captured == slot)
             .map_or_else(
-                || panic!("slot {slot} is neither local nor captured"),
+                || {
+                    self.lowering.unavailable(super::Unavailable::Local(slot));
+                    Operand::Capture(0)
+                },
                 Operand::Capture,
             )
     }
@@ -129,7 +132,9 @@ impl<'l, 'a> Builder<'l, 'a> {
             .iter()
             .position(|hidden| *hidden == parameter)
             .unwrap_or_else(|| {
-                panic!("meaning parameter {parameter} has no witness")
+                self.lowering
+                    .unavailable(super::Unavailable::Witness(parameter));
+                0
             })
     }
 

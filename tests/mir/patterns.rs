@@ -412,7 +412,7 @@ fn two_columns_share_one_switch_per_place() {
 }
 
 #[test]
-fn a_program_reader_literal_pattern_calls_its_reader() {
+fn a_program_reader_literal_pattern_is_prepared_at_compile_time() {
     let (_, program) = super::program(
         "type Mask: Literal & Eq { bits: U8 }\nimpl Mask: Literal { literal = f => Self 0 }\nmk: Mask -> String = { 0 => \"a\", _ => \"b\" }",
     );
@@ -421,7 +421,11 @@ fn a_program_reader_literal_pattern_calls_its_reader() {
         .into_iter()
         .filter(|callee| matches!(callee, Callee::Body(_)))
         .count();
-    assert_eq!(bodies, 1, "the reader runs on the written form");
+    assert_eq!(bodies, 0, "the reader ran in the compile phase");
+    assert!(program
+        .constants
+        .iter()
+        .any(|constant| matches!(constant, fipe::value::Value::Record(_))));
 }
 
 #[test]

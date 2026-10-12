@@ -195,6 +195,7 @@ impl Index {
                 });
         // The callee node is this call's own: it takes the fields in
         // place rather than leaving an unused copy beside it.
+        self.keep_node(callee);
         self.tables.borrow_mut().nodes[callee] = ir::Node {
             ty: signature,
             kind: ir::Kind::Constructor {
@@ -362,10 +363,18 @@ impl Index {
                         .map(|ty| self.ty(&source.home, ty)),
                     target,
                 };
-                let mut tables = self.tables.borrow_mut();
-                if !tables.dispatch[index].rows.contains(&row) {
-                    tables.dispatch[index].rows.push(row);
+                if self.tables.borrow().dispatch[index].rows.contains(&row) {
+                    continue;
                 }
+                self.note(|this, mark| {
+                    (index < mark.dispatch).then(|| {
+                        super::session::Undo::Rows(
+                            index,
+                            this.tables.borrow().dispatch[index].rows.len(),
+                        )
+                    })
+                });
+                self.tables.borrow_mut().dispatch[index].rows.push(row);
             }
         }
     }

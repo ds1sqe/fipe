@@ -1,7 +1,9 @@
 //! Checked, indexed input to a backend. Names here are display labels;
 //! every executable reference is a table index or a value slot.
 use crate::token::{Magnitude, Span};
-use alloc::{boxed::Box, rc::Rc, string::String, vec::Vec};
+use alloc::{
+    boxed::Box, collections::BTreeMap, rc::Rc, string::String, vec::Vec,
+};
 use core::cell::{Ref, RefCell};
 
 /// One compilation unit. Session units share append-only indexed tables.
@@ -38,6 +40,37 @@ pub struct Tables {
     pub slots: Vec<Slot>,
     /// None is an unfixed session meaning, distinct from a generic parameter.
     pub session_meanings: Vec<Option<Type>>,
+    /// The value the compile phase prepared for a node, by node index: a
+    /// backend reads it in place of evaluating the node.
+    pub prepared: BTreeMap<usize, Constant>,
+}
+
+/// A value prepared at compile time, as data: no closure, no witness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Constant {
+    Unit,
+    Integer {
+        negative: bool,
+        magnitude: Magnitude,
+    },
+    /// An `F32` by its bits.
+    F32(u32),
+    /// An `F64` by its bits.
+    F64(u64),
+    Text(String),
+    /// A `Vec`, a `Deque` or an array.
+    Sequence(Vec<Self>),
+    Tuple(Vec<Self>),
+    Record {
+        meaning: usize,
+        constructor: usize,
+        fields: Vec<Self>,
+    },
+    /// A value of a packed type, with the meaning index of its tag.
+    Packed {
+        tag: usize,
+        value: Box<Self>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,6 +245,20 @@ pub enum Reason {
     NoRule,
     CompileTimeEvaluation,
     Narrowing,
+    /// The compile phase ran out of its budget: the entry stays open.
+    CompileBudget,
+}
+
+impl core::fmt::Display for Reason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::UnknownInput => "unknown input",
+            Self::NoRule => "no rule",
+            Self::CompileTimeEvaluation => "compile-time evaluation",
+            Self::Narrowing => "narrowing",
+            Self::CompileBudget => "compile budget exhausted",
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

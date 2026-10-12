@@ -139,9 +139,10 @@ A literal read by the prelude, by name or by a dispatch a concrete meaning
 resolves to it, is a prepared constant: an integer that fits is `Int`,
 otherwise `Big`; a fraction is the nearest float by `core`'s correctly
 rounded parse of its decimal spelling. A literal whose nearest float is
-not finite is left to the reader at run time, where it Faults. Any other
-reader is called with the written form as a `Form` record constant until
-the compile phase runs it. A value definition is stored once, by the
+not finite is left to the reader, which Faults in the compile phase. Any
+other reader is called with the written form as a `Form` record
+constant; the compile phase runs it and a node it prepared, by
+`Tables.prepared`, lowers as that constant. A value definition is stored once, by the
 main or the module's init body, and so is each name a line's pattern
 binds, a lift's included, stored where the pattern binds it; one no
 line stores, such as an `impl`
@@ -229,8 +230,8 @@ host chapter's output exists.
 
 ## What follows
 
-The compile phase of the checker runs the same machine on `Compile`
-entries, program-reader literals and demands, turning them into
-constants. The deque's representation, a repeated length read from a
-witness, and a debugger's step granularity are not fixed by this
-chapter.
+The compile phase of the checker ([checking](07-check.md) §The compile
+phase) runs the same machine on `Compile` entries, program-reader
+literals and demands, turning them into constants. The deque's
+representation, a repeated length read from a witness, and a debugger's
+step granularity are not fixed by this chapter.

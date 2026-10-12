@@ -38,6 +38,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+pub use fipe::check::COMPILE_BUDGET;
 use fipe::{
     ast::{Entry, ExprKind},
     decl::{self, Declarations},
@@ -70,6 +71,8 @@ pub enum Out {
 pub struct Repl {
     session: Session,
     strict: bool,
+    /// The host's compile budget, kept across a host reload.
+    compile_budget: u64,
     input: Vec<u8>,
     /// The entry's lines so far.
     entry: String,
@@ -146,6 +149,7 @@ impl Repl {
         Self {
             session: Session::new(Declarations::new()),
             strict: false,
+            compile_budget: COMPILE_BUDGET,
             input: Vec::new(),
             entry: String::new(),
             continuation: Continuation::default(),
@@ -172,6 +176,13 @@ impl Repl {
     pub fn strict(&mut self, enabled: bool) {
         self.strict = enabled;
         self.session.strict(enabled);
+    }
+
+    /// The charge units each compile-time evaluation may spend,
+    /// including after a host reload.
+    pub fn compile_budget(&mut self, units: u64) {
+        self.compile_budget = units;
+        self.session.compile_budget(units);
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
@@ -384,6 +395,15 @@ impl Repl {
     }
 
     fn checks(&self, name: Option<&str>, out: &mut Outs) {
+        for settled in self.session.settled(name) {
+            if name.is_none() {
+                if let Some(owner) = &settled.check.owner {
+                    out.write(format!("{owner}: ").as_bytes());
+                }
+            }
+            let test = self.check_test(&settled.check);
+            out.write(render::settled(&settled, test).as_bytes());
+        }
         let checks = self.session.checks(name);
         let lines: Vec<_> = checks
             .iter()
@@ -672,6 +692,9 @@ impl Repl {
                 let reason = render::infer(&error.reason);
                 located(&path, text, error.span, &reason, out);
             }
+            Diagnostic::Compile { span, what, reason } => {
+                located("", line, *span, &render::compile(what, reason), out);
+            }
         }
     }
 
@@ -724,6 +747,7 @@ impl Repl {
         self.host_texts = texts.to_vec();
         self.session = Session::new(declarations);
         self.session.strict(self.strict);
+        self.session.compile_budget(self.compile_budget);
         self.last = None;
         // New tables, so a new machine; the replayed lines rebuild its
         // globals without printing again.
@@ -904,7 +928,8 @@ const fn from_file(diagnostic: &Diagnostic) -> bool {
         | Diagnostic::FileType { .. } => true,
         Diagnostic::Syntax(_)
         | Diagnostic::Resolve(_)
-        | Diagnostic::Type(_) => false,
+        | Diagnostic::Type(_)
+        | Diagnostic::Compile { .. } => false,
     }
 }
 

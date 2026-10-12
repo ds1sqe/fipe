@@ -295,6 +295,18 @@ pub(super) fn definition_invoke(
             meanings,
         };
     }
+    // A value member no line stores, unset yet: its body computes it.
+    if let (Some(None) | None, Some(body)) =
+        (globals.get(index), program.globals[index])
+    {
+        if args.is_empty() {
+            return Invoke::Body {
+                body,
+                args,
+                meanings,
+            };
+        }
+    }
     let value =
         globals.get(index).cloned().flatten().unwrap_or_else(|| {
             panic!("definition {index} has a body or a value")

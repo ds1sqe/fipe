@@ -30,7 +30,9 @@ line(&mut self, text: &str) -> Outcome<Report>
 query(&mut self, text: &str) -> Outcome<Report>
 reply(&mut self, reply: Reply) -> Outcome<Report>
 strict(&mut self, enabled: bool)
+compile_budget(&mut self, units: u64)
 checks(&self, name: Option<&str>) -> Vec<typed::Check>
+settled(&self, name: Option<&str>) -> Vec<check::Settled>
 source(&self) -> &str
 lines(&self) -> impl Iterator<Item = &str>
 ~~~
@@ -48,7 +50,12 @@ where `line` defaults it, so its scheme is the line's `typed.binding`.
 An accepted line is never taken back: a host that edits one starts a
 new session over the lines before it, from `lines`. `strict(true)` makes each open implicit entry a check error in
 the line and its file modules; explicit gates remain allowed. It defaults
-to false. The compile budget has no Rust form until evaluation exists.
+to false. `compile_budget(units)` sets the charge units each compile-time
+evaluation of later lines may spend ([checking](07-check.md) §The compile
+phase); it defaults to `check::COMPILE_BUDGET`. A line the compile phase
+refutes is refused like any line with a diagnostic: the session is as
+before it. `settled` lists the entries the phase proved, as `checks`
+lists the open ones.
 The source is the accepted lines, each followed by a blank
 line; spans are in the source followed by the line being checked.
 `lines` yields the accepted units in order, keeping embedded blank lines.
@@ -70,11 +77,14 @@ per checked unit; every use in that unit shares the result.
 Report { module: Option<ast::Module>, offset: usize,
          diagnostics: Vec<Diagnostic>, resolved: Option<resolve::Resolved>,
          typed: Option<typed::Typed>, checks: Vec<typed::Check>,
-         warnings: Vec<typed::Warning>, unit: Option<ir::Unit> }
+         settled: Vec<check::Settled>, warnings: Vec<typed::Warning>,
+         unit: Option<ir::Unit> }
 Diagnostic = Syntax(parse::Error) | Resolve(resolve::Error)
            | Type(infer::Error) | File { stem: String, error: parse::Error }
            | FileResolve { stem: String, error: resolve::Error }
            | FileType { stem: String, error: infer::Error }
+           | Compile { span: Span, what: check::Evaluated,
+                       reason: value::Reason }
 ~~~
 
 `module` is the line, parsed, with spans in the session's source followed
@@ -148,9 +158,12 @@ ranges, names of limits passed, and construction parts. The REPL's `:t x`
 prints only the facts held, one per line (`exact 300`, `range 200..300`,
 `names Quad, U16`, `parts lo: 2, hi: ..`). `:checks [name]` prints the
 open entries with the place in words, those same facts comma separated, and
-the reason each remains open. Otherwise identical entries include the place's
-line and column. Both REPL builds accept `--strict` beside `--host <dir>` and
-`--cwd <dir>`; it enables strict checking before input and survives `:host`.
+the reason each remains open, after the entries the compile phase proved,
+each with "proved at compile time on" and its value. Otherwise identical
+entries include the place's line and column. Both REPL builds accept
+`--strict` beside `--host <dir>` and `--cwd <dir>`; it enables strict
+checking before input and survives `:host`. `--compile-budget <n>` sets
+the session's compile budget, and survives `:host` too.
 
 ## Call binding
 

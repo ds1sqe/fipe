@@ -21,7 +21,8 @@ mod thunks;
 use crate::{ir, mir, mir::Terminator, value::Value};
 use alloc::{rc::Rc, vec::Vec};
 use builder::Builder;
-use core::cell::Ref;
+pub(crate) use constants::{host_reader, prelude_operation, runs_reader};
+use core::cell::{Cell, Ref};
 use patterns::build_function;
 
 /// Lower a checked unit to the program every backend consumes.
@@ -31,44 +32,94 @@ use patterns::build_function;
 #[must_use]
 pub fn compile(unit: &ir::Unit) -> mir::Program {
     let tables = unit.tables();
-    let mut lowering = Lowering {
-        prelude: tables
-            .namespaces
-            .iter()
-            .position(|label| label == "prelude"),
-        tables: &tables,
-        bodies: Vec::new(),
-        constants: Vec::new(),
-        definitions: alloc::vec![None; tables.definitions.len()],
-        tests: alloc::vec![None; tables.tests.len()],
-        globals: alloc::vec![None; tables.definitions.len()],
-        stored: stored(&tables),
-        pending: Vec::new(),
-    };
+    let mut lowering = Lowering::new(&tables, stored(&tables));
     let main = lowering.lines(&unit.main);
     let inits = (0..tables.modules.len())
         .map(|module| (module, lowering.lines(&tables.modules[module].lines)))
         .collect();
-    while let Some(pending) = lowering.pending.pop() {
-        match pending {
-            Pending::Definition(definition, body) => {
-                lowering.definition(definition, body);
-            }
-            Pending::Test(test, body) => lowering.test(test, body),
-            Pending::Global(definition, body) => {
-                lowering.global(definition, body);
+    lowering.program(unit, inits, main)
+}
+
+/// What one node of a unit reads that a program made of it alone does
+/// not hold, so the compile phase cannot evaluate the node by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unavailable {
+    /// A local slot or a parameter bound outside the node.
+    Local(usize),
+    /// A meaning parameter whose witness a caller supplies.
+    Witness(usize),
+    /// A value definition a destructuring line stores.
+    Stored(usize),
+}
+
+/// Lower one node of a unit as the main of a program, for the compile
+/// phase: no module runs its init, and a value definition a line binds
+/// to a name is computed from its body on first read, as a global no
+/// line stores is.
+///
+/// # Errors
+/// What the node reads from outside itself, when it reads any.
+///
+/// # Panics
+/// Panics only if a checker invariant is broken, a crate defect.
+pub(crate) fn evaluation(
+    unit: &ir::Unit,
+    node: usize,
+) -> Result<mir::Program, Unavailable> {
+    let tables = unit.tables();
+    let mut lowering = Lowering::new(&tables, destructured(&tables));
+    lowering.evaluating = true;
+    let main = lowering.lines(&[node]);
+    let program = lowering.program(unit, Vec::new(), main);
+    lowering.unavailable.get().map_or(Ok(program), Err)
+}
+
+/// The definitions a destructuring line stores: a part of its value,
+/// which no body of theirs computes alone.
+fn destructured(tables: &ir::Tables) -> Vec<bool> {
+    let mut stored = alloc::vec![false; tables.definitions.len()];
+    for node in &tables.nodes {
+        if let ir::Kind::Bind { pattern, .. } | ir::Kind::Lift { pattern, .. } =
+            &node.kind
+        {
+            if !matches!(pattern.kind, ir::PatternKind::Slot(_)) {
+                mark_stored(tables, pattern, &mut stored);
             }
         }
     }
-    mir::Program {
-        tables: Rc::clone(&unit.tables),
-        bodies: lowering.bodies,
-        constants: lowering.constants,
-        definitions: lowering.definitions,
-        tests: lowering.tests,
-        globals: lowering.globals,
-        inits,
-        main,
+    stored
+}
+
+/// The runtime value of a prepared constant.
+pub(crate) fn constant_value(constant: &ir::Constant) -> Value {
+    use crate::value::{Packed, Record};
+    let each = |parts: &[ir::Constant]| -> Vec<Value> {
+        parts.iter().map(constant_value).collect()
+    };
+    match constant {
+        ir::Constant::Unit => Value::Unit,
+        ir::Constant::Integer {
+            negative,
+            magnitude,
+        } => Value::integer(*negative, magnitude.clone()),
+        ir::Constant::F32(bits) => Value::F32(f32::from_bits(*bits)),
+        ir::Constant::F64(bits) => Value::F64(f64::from_bits(*bits)),
+        ir::Constant::Text(text) => Value::text(text),
+        ir::Constant::Sequence(parts) => Value::seq(each(parts)),
+        ir::Constant::Tuple(parts) => Value::Tuple(Rc::new(each(parts))),
+        ir::Constant::Record {
+            meaning,
+            constructor,
+            fields,
+        } => Value::Record(Rc::new(Record {
+            meaning: *meaning,
+            constructor: *constructor,
+            fields: each(fields),
+        })),
+        ir::Constant::Packed { tag, value } => Value::Packed(Rc::new(Packed {
+            meaning: *tag,
+            value: constant_value(value),
+        })),
     }
 }
 
@@ -142,6 +193,79 @@ struct Lowering<'a> {
     stored: Vec<bool>,
     /// Bodies whose index is reserved but not yet lowered.
     pending: Vec<Pending>,
+    /// Lowering one node for the compile phase.
+    evaluating: bool,
+    /// The first thing the evaluated node reads from outside itself.
+    unavailable: Cell<Option<Unavailable>>,
+}
+
+impl<'a> Lowering<'a> {
+    fn new(tables: &'a Ref<'a, ir::Tables>, stored: Vec<bool>) -> Self {
+        Self {
+            prelude: tables
+                .namespaces
+                .iter()
+                .position(|label| label == "prelude"),
+            tables,
+            bodies: Vec::new(),
+            constants: Vec::new(),
+            definitions: alloc::vec![None; tables.definitions.len()],
+            tests: alloc::vec![None; tables.tests.len()],
+            globals: alloc::vec![None; tables.definitions.len()],
+            stored,
+            pending: Vec::new(),
+            evaluating: false,
+            unavailable: Cell::new(None),
+        }
+    }
+
+    /// Lower the pending bodies and assemble the program.
+    fn program(
+        &mut self,
+        unit: &ir::Unit,
+        inits: Vec<(usize, usize)>,
+        main: usize,
+    ) -> mir::Program {
+        while let Some(pending) = self.pending.pop() {
+            match pending {
+                Pending::Definition(definition, body) => {
+                    self.definition(definition, body);
+                }
+                Pending::Test(test, body) => self.test(test, body),
+                Pending::Global(definition, body) => {
+                    self.global(definition, body);
+                }
+            }
+        }
+        mir::Program {
+            tables: Rc::clone(&unit.tables),
+            bodies: core::mem::take(&mut self.bodies),
+            constants: core::mem::take(&mut self.constants),
+            definitions: core::mem::take(&mut self.definitions),
+            tests: core::mem::take(&mut self.tests),
+            globals: core::mem::take(&mut self.globals),
+            inits,
+            main,
+        }
+    }
+
+    /// Note what an evaluated node reads from outside itself; outside
+    /// the compile phase it is a checker invariant broken.
+    pub(super) fn unavailable(&self, what: Unavailable) {
+        assert!(self.evaluating, "{what:?} is read where it is not bound");
+        if self.unavailable.get().is_none() {
+            self.unavailable.set(Some(what));
+        }
+    }
+
+    /// Note a dispatch whose witness the evaluated node does not hold;
+    /// a program's main may dispatch on a meaning it leaves free, which
+    /// Faults only if it runs.
+    pub(super) fn unbound_witness(&self, parameter: usize) {
+        if self.evaluating {
+            self.unavailable(Unavailable::Witness(parameter));
+        }
+    }
 }
 
 impl Lowering<'_> {
@@ -214,7 +338,10 @@ impl Lowering<'_> {
             })
             .collect();
         for definition in rows {
-            self.function_body(definition);
+            if self.function_body(definition).is_none() {
+                // A value member, such as `zero`, is read as its global.
+                self.reach_global(definition);
+            }
         }
     }
 
@@ -325,6 +452,9 @@ impl Lowering<'_> {
     /// A value definition read as a global: when no line stores it, a
     /// body computing it, reserved on first read.
     pub(super) fn reach_global(&mut self, definition: usize) {
+        if self.stored[definition] && self.evaluating {
+            self.unavailable(Unavailable::Stored(definition));
+        }
         if self.stored[definition] || self.globals[definition].is_some() {
             return;
         }

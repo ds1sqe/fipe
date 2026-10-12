@@ -1,12 +1,14 @@
 //! The Fipe REPL: one pump over `fipe-repl-core`, with I/O from the
 //! platform chosen by feature.
 //!
-//! `fipe-repl [--cwd <dir>] [--host <dir>] [--strict] [--budget <n>]`: the
+//! `fipe-repl [--cwd <dir>] [--host <dir>] [--strict] [--budget <n>]
+//! [--compile-budget <n>]`: the
 //! working directory changes first, so a relative host directory is found
 //! from it; with `--host` the session starts as after `:host <dir>`.
 //! `--strict` rejects open implicit checks; explicit gates remain allowed.
 //! `--budget` sets the charge units each line runs under, the REPL's own
-//! default otherwise.
+//! default otherwise; `--compile-budget` the units each compile-time
+//! evaluation may spend, the crate's provisional default otherwise.
 
 #![cfg_attr(feature = "linux", no_std, no_main)]
 #![deny(unsafe_code)]
@@ -27,16 +29,17 @@ mod platform;
 mod platform;
 
 use alloc::{collections::VecDeque, format, string::String};
-use fipe_repl_core::{Out, Repl, BUDGET};
+use fipe_repl_core::{Out, Repl, BUDGET, COMPILE_BUDGET};
 
-const USAGE: &str =
-    "usage: fipe-repl [--cwd <dir>] [--host <dir>] [--strict] [--budget <n>]\n";
+const USAGE: &str = "usage: fipe-repl [--cwd <dir>] [--host <dir>] \
+    [--strict] [--budget <n>] [--compile-budget <n>]\n";
 
 /// What the command line asks for.
 struct Options {
     host: Option<String>,
     strict: bool,
     budget: u64,
+    compile_budget: u64,
 }
 
 #[cfg(feature = "std")]
@@ -51,6 +54,7 @@ fn run() {
         host,
         strict,
         budget,
+        compile_budget,
     } = match arguments() {
         Ok(options) => options,
         Err(message) => {
@@ -61,6 +65,7 @@ fn run() {
     let mut repl = Repl::new();
     repl.strict(strict);
     repl.budget(budget);
+    repl.compile_budget(compile_budget);
     let mut outs = VecDeque::from(match host {
         Some(dir) => repl.host_directory(&dir),
         None => repl.feed(&[]),
@@ -108,6 +113,7 @@ fn arguments() -> Result<Options, String> {
     let mut host = None;
     let mut strict = false;
     let mut budget = BUDGET;
+    let mut compile_budget = COMPILE_BUDGET;
     while let Some(arg) = args.next() {
         if arg == "--strict" {
             strict = true;
@@ -117,6 +123,10 @@ fn arguments() -> Result<Options, String> {
             ("--host", Some(dir)) => host = Some(dir),
             ("--budget", Some(units)) => match units.parse() {
                 Ok(units) => budget = units,
+                Err(_) => return Err(USAGE.into()),
+            },
+            ("--compile-budget", Some(units)) => match units.parse() {
+                Ok(units) => compile_budget = units,
                 Err(_) => return Err(USAGE.into()),
             },
             ("--cwd", Some(dir)) if platform::chdir(&dir) => {}
@@ -130,5 +140,6 @@ fn arguments() -> Result<Options, String> {
         host,
         strict,
         budget,
+        compile_budget,
     })
 }

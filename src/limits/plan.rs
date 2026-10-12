@@ -17,6 +17,8 @@ pub enum Reason {
     NoRule,
     CompileTimeEvaluation,
     Narrowing,
+    /// The compile phase ran out of its budget: the entry stays open.
+    CompileBudget,
 }
 /// How often an entry occurs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +82,7 @@ impl core::fmt::Display for Reason {
             Self::NoRule => "no rule",
             Self::CompileTimeEvaluation => "compile-time evaluation",
             Self::Narrowing => "narrowing",
+            Self::CompileBudget => "compile budget exhausted",
         })
     }
 }

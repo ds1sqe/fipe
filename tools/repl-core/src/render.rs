@@ -373,6 +373,61 @@ pub fn check(
     )
 }
 
+/// A proved entry: where and against what, then the value the compile
+/// phase proved it on.
+pub fn settled(settled: &fipe::check::Settled, test: Option<&str>) -> String {
+    let line = check(&settled.check, None, test);
+    let open = line.rfind(" (").unwrap_or(line.len());
+    format!(
+        "{}: proved at compile time on {}\n",
+        &line[..open],
+        settled.value
+    )
+}
+
+/// A compile-time evaluation that refuted its test or Faulted.
+pub fn compile(what: &fipe::check::Evaluated, reason: &Reason) -> String {
+    use fipe::check::Evaluated;
+    match (what, reason) {
+        (
+            Evaluated::Entry {
+                limit,
+                value: Some(value),
+            },
+            Reason::Failed { .. },
+        ) => format!("refuted entry against {limit}: {value}"),
+        (
+            Evaluated::Entry {
+                limit,
+                value: Some(value),
+            },
+            reason,
+        ) => format!(
+            "refuted entry against {limit}: the test Faults on {value}: {reason}"
+        ),
+        (Evaluated::Entry { limit, value: None }, Reason::Budget) => format!(
+            "the compile-time test of {limit} is not settled: \
+             the compile budget is exhausted"
+        ),
+        (Evaluated::Entry { limit, value: None }, reason) => format!(
+            "the value entering {limit} Faults at compile time: {reason}"
+        ),
+        (Evaluated::Literal { meaning }, reason) => {
+            format!("the literal Faults reading {meaning}: {reason}")
+        }
+        (Evaluated::Demand, Reason::Budget) => String::from(
+            "the value demanded at compile time is not ready: \
+             the compile budget is exhausted",
+        ),
+        (Evaluated::Demand, reason) => {
+            format!("the value demanded at compile time Faults: {reason}")
+        }
+        (Evaluated::Sequence { meaning }, reason) => {
+            format!("the sequence of {meaning} Faults on this bracket: {reason}")
+        }
+    }
+}
+
 fn spot_problem(problem: &fipe::decl::SpotProblem) -> String {
     match problem {
         fipe::decl::SpotProblem::Duplicate(name) => {

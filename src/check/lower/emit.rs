@@ -13,8 +13,7 @@ impl Index {
         files: &[(String, crate::ast::Module)],
         cache: &crate::infer::files::FileCache,
     ) -> ir::Unit {
-        let home = self.home.clone().unwrap_or(Origin::This);
-        self.source_modules.insert(home, Rc::new(module.clone()));
+        self.source_module(module);
         let entry_start = self.tables.borrow().entries.len();
         let mut sources = sources(
             module,
@@ -40,7 +39,11 @@ impl Index {
                     end: *end,
                 };
                 if let Some(slot) = scope.slots.get(&site) {
-                    self.slots.insert((source.home.clone(), site), *slot);
+                    let key = (source.home.clone(), site);
+                    let old = self.slots.insert(key.clone(), *slot);
+                    self.note(|_, _| {
+                        Some(super::session::Undo::Slot(key, old))
+                    });
                 }
             }
         }
@@ -110,6 +113,16 @@ impl Index {
         }
     }
 
+    /// Keep the module the unit's home emits from, for later lines'
+    /// supplied expressions.
+    fn source_module(&mut self, module: &crate::ast::Module) {
+        let home = self.home.clone().unwrap_or(Origin::This);
+        let old = self
+            .source_modules
+            .insert(home.clone(), Rc::new(module.clone()));
+        self.note(|_, _| Some(super::session::Undo::SourceModule(home, old)));
+    }
+
     fn remember(&mut self, source: &Source<'_>, scope: &Scope) {
         if self.home.is_some() {
             for ((start, end), _) in &source.typed.frozen {
@@ -118,7 +131,10 @@ impl Index {
                     end: *end,
                 };
                 if let Some(slot) = scope.slots.get(&site) {
-                    self.visible.insert(site, *slot);
+                    let old = self.visible.insert(site, *slot);
+                    self.note(|_, _| {
+                        Some(super::session::Undo::Visible(site, old))
+                    });
                 }
             }
         }
@@ -149,6 +165,7 @@ impl Index {
             let Some(node) = node else { continue };
             let kind =
                 self.expression(source, scope, crate::ast::ExprId(index));
+            self.keep_node(*node);
             self.tables.borrow_mut().nodes[*node].kind = kind;
             if let Some(cast) = &source.typed.casts[index] {
                 let mut original = self.tables.borrow().nodes[*node].clone();
@@ -186,6 +203,7 @@ impl Index {
                         value,
                     }
                 };
+                self.keep_node(*node);
                 self.tables.borrow_mut().nodes[*node].ty = to;
                 self.tables.borrow_mut().nodes[*node].kind = kind;
             }
@@ -195,6 +213,7 @@ impl Index {
                 let node =
                     self.tables.borrow().definitions[body.definition].body;
                 let kind = self.function(source, scope, &body.arms);
+                self.keep_node(node);
                 self.tables.borrow_mut().nodes[node].kind = kind;
             }
             let definition =
@@ -210,6 +229,7 @@ impl Index {
                 let Some(next) = next else { break };
                 body = next;
             }
+            self.keep_node(body);
             if let ir::Kind::Function {
                 parameters, hidden, ..
             } = &mut self.tables.borrow_mut().nodes[body].kind
@@ -220,9 +240,14 @@ impl Index {
         }
     }
 
-    pub(super) fn captures(&self, scope: &Scope) {
+    pub(super) fn captures(&mut self, scope: &Scope) {
         use alloc::collections::BTreeMap;
-        let mut tables = self.tables.borrow_mut();
+        // A namespace older than the line, the prelude's, holds nodes
+        // the line may rewrite; the journal keeps them.
+        let journaled = self.journal.as_ref().map_or(0, |(mark, _)| mark.nodes);
+        let mut kept = Vec::new();
+        let tables = Rc::clone(&self.tables);
+        let mut tables = tables.borrow_mut();
         let functions: Vec<_> = scope
             .nodes
             .iter()
@@ -292,6 +317,12 @@ impl Index {
                 }
             }
             if external {
+                if index < journaled {
+                    kept.push(super::session::Undo::Node(
+                        index,
+                        tables.nodes[index].clone(),
+                    ));
+                }
                 tables.nodes[index].kind = ir::Kind::Capture { slot, meanings };
             }
         }
@@ -302,6 +333,10 @@ impl Index {
             {
                 *stored = captures.remove(&function).unwrap_or_default();
             }
+        }
+        drop(tables);
+        if let Some((_, undos)) = &mut self.journal {
+            undos.extend(kept);
         }
     }
 
@@ -462,8 +497,18 @@ impl Index {
             body,
             slot,
         });
+        self.note(|index, mark| {
+            (slot < mark.slots).then(|| {
+                super::session::Undo::SlotDefinition(
+                    slot,
+                    index.tables.borrow().slots[slot].definition,
+                )
+            })
+        });
         self.tables.borrow_mut().slots[slot].definition = Some(index);
-        self.slots.insert(key.clone(), slot);
+        let old = self.slots.insert(key.clone(), slot);
+        let undo_key = key.clone();
+        self.note(|_, _| Some(super::session::Undo::Slot(undo_key, old)));
         self.definitions.insert(key, index);
         index
     }
@@ -492,6 +537,7 @@ impl Index {
                     });
                     let body =
                         self.node(&source.home, span, &Type::Unit, remainder);
+                    self.keep_node(body);
                     self.tables.borrow_mut().nodes[body].ty = ty;
                     let pattern = self.pattern(source, scope, pattern);
                     let kind = ir::Kind::Lift {

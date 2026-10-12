@@ -23,6 +23,13 @@ impl<'a> Builder<'_, 'a> {
             return self.place(operand, dest, node);
         }
         let tables = self.tables();
+        // The compile phase evaluated the node; its value is a constant.
+        if let Some(constant) = tables.prepared.get(&node) {
+            self.count(node);
+            let constant =
+                self.lowering.constant(super::constant_value(constant));
+            return self.place(Operand::Const(constant), dest, node);
+        }
         let ir::Node { ty, kind, .. } = &tables.nodes[node];
         match kind {
             ir::Kind::Timing { value, .. } => {
