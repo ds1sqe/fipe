@@ -85,14 +85,12 @@ infinity or NaN is a value (E2). `-0.0 == 0.0` is `True` and `show -0.0` is
 `x: F64 = big ()` Faults at run time.
 - `x = []` runs and shows `[]`; `x | show` after it is the check error
 naming the unfixed element meaning; `x: Vec<Integer> = []` never asks.
-- `a + b` on `Integer` charges one for the node and one per 64-bit limb of
-the larger operand; the first node that cannot be paid Faults with its
-span, the same on every backend (H1).
+- With a budget a run Faults `Budget` with the location of the action it
+cannot pay, and prior effects stand; with none it runs to its end.
 - Fault ends execution; prior effects remain; execution capabilities close.
 A unit with any check error performs zero program effects.
-- The exact budget boundary faults before the first unaffordable action
-(H1). VM and native backends produce identical observations from the same
-typed unit and replayed host responses, including charge points (E2/H1).
+- VM and native backends produce identical observations from the same
+typed unit and replayed host responses for a run no budget stops (H1).
 
 Test monad identity and associativity for `Maybe` and `Result`. Each case
 states its outcome independently; agreement between backends alone proves

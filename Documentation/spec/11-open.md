@@ -120,10 +120,11 @@ declared by the host (09).
 
 Ruled 2026-09-29: `use` runs a module once where it stands and a cycle is a
 check error, and the compile budget and the strict session are host inputs
-([host](09-host.md)). Ruled 2026-10-08: the charge schedule, nodes of the
-intermediate form plus size terms ([host](09-host.md) §Budget).
-**Proposed:** identify modules by host-provided stable identity; the byte
-charge of a host call. Ruled 2026-09-30: the lexer has no bound on a
+([host](09-host.md)). Ruled 2026-10-12: the budget is
+optional, its unit is the backend's, and where it stops a run is not an
+observation ([host](09-host.md) §Budget). Open: a unit common to every
+backend; limits on memory or time. **Proposed:** identify modules by
+host-provided stable identity. Ruled 2026-09-30: the lexer has no bound on a
 number ([lexical](01-lexical.md) §Numbers). Specify closure environment
 capture, cancellation, cleanup failure, external byte charging, declaration
 validation and codec/formatter failure in the embedding contract. Every

@@ -1,7 +1,7 @@
 # Embedding, modules and backends
 
-A host embeds Fipe by providing declarations, environment, budget and
-input/output. No editor, OS or transport is prescribed. H1 in
+A host embeds Fipe by providing declarations, environment, an optional
+budget and input/output. No editor, OS or transport is prescribed. H1 in
 [open decisions](11-open.md) holds what conformance still needs.
 
 ## Compilation units
@@ -108,32 +108,33 @@ are compared under one host contract.
 
 ## Budget
 
-The host supplies a finite budget before a run; a script cannot raise it.
-Exhaustion is a Fault before the chargeable action that cannot be paid,
-and no backend, runtime check or dictionary call bypasses charging. The
-charge is one unit per node of the checked unit's intermediate form that
-is evaluated, plus size terms: an `Integer` operation one per 64-bit limb
-of the larger operand for `add`, `sub`, `eq` and `cmp` and the product of
-the limb counts for `mul`, `div` and `rem`; a container operation one per
-element visited; a test the evaluation of its limit; a skipped side,
-branch or arm nothing; a host call one plus its bytes (H1). The nodes are
-the checker's and every backend evaluates the same, so raw instructions
-never measure: parity would then depend on optimization.
+The host may supply a budget before a run; a script cannot raise it.
+With none, the run is unbounded. With one, the run Faults `Budget` before
+the first action it cannot pay, with that action's source location;
+earlier effects stand, and no runtime check or member call escapes the
+budget. What one unit measures is the backend's and is documented with
+it: the VM's is in the [MIR chapter](../api/08-mir.md) §Running. A unit
+common to every backend, and limits on memory or time, are open (H1).
+
 The host also sets the compile budget and the strict session
-([checks](07-checks.md) §Modes); both are inputs of the observation, and the
-compile budget is part of the checked unit, as host constants are.
+([checks](07-checks.md) §Modes). The compile budget bounds each
+compile-time evaluation in the checker's own steps; it is part of the
+checked unit, as host constants are, so every backend receives the same
+acceptance.
 
 ## Backend equivalence
 
-Given the same checked unit, host responses, input, environment and budget,
-every conforming backend produces the same observation:
+Given the same checked unit, host responses, input and environment, a run
+that no budget stops produces the same observation on every conforming
+backend:
 
 ```text
 observation = (returned value OR source-located Fault,
                ordered host-call/effect trace,
-               success/error output bytes,
-               budget charges)
+               success/error output bytes)
 ```
+
+Where a budget stops a run is the backend's.
 
 Addresses, allocation and instruction layout are not observations; a
 backend may optimize only while preserving the observation. The checker

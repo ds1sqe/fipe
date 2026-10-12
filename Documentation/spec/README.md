@@ -49,7 +49,8 @@ physical lines. A **stage** is one part of a pipeline. A **spot** is one
 parameter awaiting a value. A **module** is one source file and its
 exports. A **meaning**, **limit**, **type** and **place** are defined in
 [types](03-types.md). A **host** supplies declarations and effects. A **run**
-evaluates a checked unit under one environment and budget.
+evaluates a checked unit under one environment and, when the host gives
+one, a budget.
 
 `Γ` is a static environment, `ρ` a value environment; `τ` ranges over
 types, `σ` over type schemes, `e` over expressions, `v` over values.

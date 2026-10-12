@@ -172,7 +172,7 @@ reader's spelling is open ([open decisions](11-open.md) L1).
 ## Number types
 
 `Integer` is the one integer meaning, exact and unbounded; its arithmetic
-is [evaluation](08-evaluation.md)'s and is charged by operand size (H1). `I8
+is [evaluation](08-evaluation.md)'s. `I8
 I16 I32 I64 U8 U16 U32 U64` are widths, `U8` as in [limits](06-limits.md)
 §Examples, and a width is a limit: values of different widths mix, since
 all are `Integer`. Only the way down can fail, at the place, by

@@ -3,7 +3,7 @@
 Each limit of a place ([limits](06-limits.md)) is decided in a phase, with
 one of three outcomes, under a mode. The rules of §What is known are part
 of the language: a checker proves exactly what they give, so acceptance
-and charges are the same on every backend.
+is the same on every backend.
 
 ## Phases
 
@@ -14,13 +14,14 @@ and charges are the same on every backend.
 | eval | when an expression runs | anything |
 
 Init is ordinary evaluation of a module's bindings, once, under the same
-evaluator and charges; the phase is a label. Pure code reaches no host
+evaluator; the phase is a label. Pure code reaches no host
 command, no `log` and nothing of a hatch; a float member is pure for the
 compile phase only when IEEE 754 rounds it correctly, so `sin` is not. A
 host constant is a host declaration with a written value, exact and part
-of the checked unit, as the budget is. The compile
-budget is an allowance per evaluation, in the run's units, set by the
-host and part of the checked unit.
+of the checked unit, as the compile budget is. The compile budget is an
+allowance per evaluation, counted in the checker's steps
+([host](09-host.md) §Budget), set by the host and part of the checked
+unit.
 
 The pure float members are the operators, comparisons, `sqrt`, the four
 roundings and the number conversions; `sin`, `cos`, `atan2` and `hypot`
@@ -196,9 +197,8 @@ A test runs when its value is bound, before the next argument is
 evaluated: the base's limits first, then the type's in written order, `&`
 and `|` parts left to right, elements and tuple parts in order. The first
 failure stops and is a Fault that names the place, the limit and the
-value. A test is charged as the evaluation of its limit, the division
-test as one comparison, a proved entry nothing. Compile-time work is
-charged to the compile budget. A value that moves to a place with another
+value. A proved entry costs nothing at run time; compile-time work
+counts against the compile budget. A value that moves to a place with another
 holding is converted, charged per element.
 
 ```fipe
