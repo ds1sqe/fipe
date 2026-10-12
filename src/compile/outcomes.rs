@@ -204,9 +204,9 @@ impl<'a> Builder<'_, 'a> {
             } => match parts.as_slice() {
                 [] => (*constructor, None),
                 [part] => (*constructor, Some(part)),
-                _ => todo!("08.1 phase 2: a lift pattern with several parts"),
+                _ => todo!("a lift pattern with several parts"),
             },
-            other => todo!("08.1 phase 2: a lift pattern {other:?}"),
+            other => todo!("a lift pattern {other:?}"),
         };
         let hit = self.open(node);
         let miss = self.open(node);

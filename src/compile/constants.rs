@@ -116,8 +116,8 @@ fn plain(form: &ir::Form) -> Value {
 
 /// A prelude reader's value, by the meaning it reads to; `None` when
 /// the nearest float is not finite, so the reader runs and Faults
-/// (`08-evaluation.md` §Arithmetic) until the compile phase of 08.4
-/// reports it.
+/// (`08-evaluation.md` §Arithmetic) until the compile phase reports
+/// it.
 fn prelude(form: &ir::Form, label: &str) -> Option<Value> {
     Some(match (label, form) {
         (

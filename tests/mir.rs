@@ -3,7 +3,7 @@ use fipe::{
     value::Value,
 };
 
-/// Sources every row and the walk share: the straight line of 08.1.
+/// Sources every row and the walk share: the straight line.
 const STRAIGHT_LINES: &[&str] = &[
     "16",
     "[1, 2]",
