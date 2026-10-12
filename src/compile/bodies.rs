@@ -252,8 +252,38 @@ impl<'a> Builder<'_, 'a> {
             };
             return self.materialize(closure, dest, ty, node);
         }
+        if self.lowering.generic(index) {
+            return self.generic_value(index, meanings, ty, node, dest);
+        }
         self.lowering.reach_global(index);
         self.place(Operand::Global(index), dest, node)
+    }
+
+    /// A generic value definition at one use: its body run with the
+    /// use's witnesses, never a stored global.
+    pub(super) fn generic_value(
+        &mut self,
+        index: usize,
+        meanings: &[ir::Type],
+        ty: &ir::Type,
+        node: usize,
+        dest: Option<usize>,
+    ) -> Operand {
+        let body = self.lowering.generic_body(index);
+        let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
+        let target = self.open(node);
+        self.terminate(
+            Terminator::Call {
+                callee: mir::Callee::Body(body),
+                args: Vec::new(),
+                meanings: meanings.to_vec(),
+                dest,
+                target,
+            },
+            node,
+        );
+        self.switch_to(target);
+        Operand::Local(dest)
     }
 
     fn conditional(

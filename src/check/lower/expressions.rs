@@ -151,7 +151,7 @@ impl Index {
                     self.chosen_kind(source, span, Some(receiver))
                 }
             }
-            E::Pipe { .. } => Self::pipe(source, scope, id),
+            E::Pipe { .. } => self.pipe(source, scope, id),
             E::Outcome { .. } => self.outcome(source, scope, id),
             E::Record { .. } => {
                 let callee = self.chosen(source, span, None);
@@ -601,6 +601,7 @@ impl Index {
     }
 
     pub(super) fn pipe(
+        &mut self,
         source: &Source<'_>,
         scope: &Scope,
         id: crate::ast::ExprId,
@@ -614,12 +615,20 @@ impl Index {
                 left,
                 right,
             } => {
+                let stage = *right;
                 let stage_span = source.module.expressions[right.0].span;
                 let stage_site = (stage_span.start, stage_span.end);
                 let left = scope.expression(*left);
                 let right = scope.expression(*right);
                 let site = (operator.start, operator.end);
                 match op {
+                    PipeOp::Plain
+                        if !super::calls::supplied_stage(
+                            &source.module.expressions[stage.0].kind,
+                        ) =>
+                    {
+                        self.applied_stage(source, stage, left, right)
+                    }
                     PipeOp::Plain => ir::Kind::Pipe { left, stage: right },
                     PipeOp::Good | PipeOp::Bad => ir::Kind::Marked {
                         good: *op == PipeOp::Good,
@@ -645,6 +654,40 @@ impl Index {
                 }
             }
             _ => unreachable!("pipe expression"),
+        }
+    }
+
+    /// A stage that is a function value, applied to the piped value:
+    /// a call of the stage's node with the input as its one spot.
+    fn applied_stage(
+        &mut self,
+        source: &Source<'_>,
+        stage: crate::ast::ExprId,
+        input: usize,
+        function: usize,
+    ) -> ir::Kind {
+        let Some(Type::Function { parameter, .. }) = source.typed.expr(stage)
+        else {
+            unreachable!("a stage of a function type")
+        };
+        let ty = self.ty(&source.home, parameter);
+        let slot = self.tables.borrow().slots.len();
+        self.tables.borrow_mut().slots.push(ir::Slot {
+            ty,
+            parameters: Vec::new(),
+            hidden: Vec::new(),
+            definition: None,
+        });
+        ir::Kind::Call {
+            callee: function,
+            slots: alloc::vec![slot],
+            supplies: alloc::vec![ir::Supply {
+                spot: 0,
+                value: input,
+                element: false,
+            }],
+            defaults: Vec::new(),
+            open: Vec::new(),
         }
     }
 

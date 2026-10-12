@@ -47,6 +47,40 @@ pub(super) fn select_for(
     select_by_head(tables, member, meaning)
 }
 
+/// The arguments of a row written for a packed receiver's tag: the row
+/// reads the tag's own value, so the payload replaces the receiver. For
+/// `eq` the other side is packed too and compares tags first, then
+/// values (`04-members.md` §Packed types): `Err(false)` when the tags
+/// differ. A row of the packed meaning itself keeps the packed value.
+pub(super) fn unpack(
+    args: &mut [Value],
+    spot: usize,
+    row: &ir::Type,
+    eq: bool,
+) -> Result<(), bool> {
+    let Some(Value::Packed(packed)) = args.get(spot) else {
+        return Ok(());
+    };
+    let tag = packed.meaning;
+    if !matches!(row, ir::Type::Meaning { index, .. } if *index == tag) {
+        return Ok(());
+    }
+    let payload = packed.value.clone();
+    args[spot] = payload;
+    if eq {
+        for other in args.iter_mut() {
+            if let Value::Packed(packed) = other {
+                if packed.meaning != tag {
+                    return Err(false);
+                }
+                let payload = packed.value.clone();
+                *other = payload;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The row a value's tag selects for a member, by head meaning alone.
 pub(super) fn by_tag(
     tables: &ir::Tables,

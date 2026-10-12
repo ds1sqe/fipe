@@ -261,7 +261,6 @@ pub(crate) fn run(
         }
     }
     infer.declare();
-    infer.check_tests();
     let mut impls = 0;
     for entry in &module.entries {
         match entry {
@@ -286,6 +285,9 @@ pub(crate) fn run(
             }
             Entry::Item(item) => {
                 if let ItemKind::Type { name, members, .. } = &item.kind {
+                    // A test reads the bindings above its type, so it is
+                    // typed after them, at the type's own entry.
+                    infer.check_tests(item);
                     infer.field_defaults(name, members.as_deref());
                 }
             }
@@ -981,102 +983,96 @@ impl Infer<'_> {
         (named, mark)
     }
 
-    fn check_tests(&mut self) {
+    /// A type's tests, each typed as a `Bool` with `self` bound.
+    fn check_tests(&mut self, item: &crate::ast::Item) {
         let module = self.module;
         let resolved = self.resolved;
-        for entry in &module.entries {
-            if let Entry::Item(item) = entry {
-                if let ItemKind::Type {
-                    name,
-                    base,
-                    members,
-                    limits,
-                    parameters,
-                } = &item.kind
-                {
-                    let (named, mark) =
-                        self.assume_type_parameters(name, parameters);
-                    let owner = named.clone();
-                    let ty = self.limited(named);
-                    let ty = meaning(&ty).clone();
-                    self.bind_local(
-                        &Name {
-                            segments: vec![String::from("self")],
-                            span: name.span,
+        let ItemKind::Type {
+            name,
+            base,
+            members,
+            limits,
+            parameters,
+        } = &item.kind
+        else {
+            return;
+        };
+        let (named, mark) = self.assume_type_parameters(name, parameters);
+        let owner = named.clone();
+        let ty = self.limited(named);
+        let ty = meaning(&ty).clone();
+        self.bind_local(
+            &Name {
+                segments: vec![String::from("self")],
+                span: name.span,
+            },
+            ty.clone(),
+        );
+        self.self_type = Some(ty);
+        for limit in limits {
+            if let crate::ast::Limit::Test(id) = limit {
+                let span = module.expressions[id.0].span;
+                if base.is_none() && members.is_none() {
+                    self.error(
+                        span,
+                        Reason::Limit {
+                            message: String::from("a test needs a base"),
                         },
-                        ty.clone(),
                     );
-                    self.self_type = Some(ty);
-                    for limit in limits {
-                        if let crate::ast::Limit::Test(id) = limit {
-                            let span = module.expressions[id.0].span;
-                            if base.is_none() && members.is_none() {
-                                self.error(
-                                    span,
-                                    Reason::Limit {
-                                        message: String::from(
-                                            "a test needs a base",
-                                        ),
-                                    },
-                                );
-                                continue;
-                            }
-                            let enters_self =
-                                resolved.expressions().any(|(expr, target)| {
-                                    let expression =
-                                        &module.expressions[expr.0];
-                                    span.start <= expression.span.start
-                                        && expression.span.end <= span.end
-                                        && test_enters_self(
-                                            module,
-                                            resolved,
-                                            expr,
-                                            target,
-                                            &last(name),
-                                        )
-                                });
-                            let line_binding =
-                                resolved.expressions().any(|(expr, target)| {
-                                    let expression =
-                                        &module.expressions[expr.0];
-                                    span.start <= expression.span.start
-                                        && expression.span.end <= span.end
-                                        && self
-                                            .limit_reads_line(target, name.span)
-                                });
-                            if line_binding {
-                                self.error(span, Reason::Limit { message: String::from("a limit cannot read a line binding") });
-                                continue;
-                            }
-                            if enters_self {
-                                self.error(
-                                    span,
-                                    Reason::Limit {
-                                        message: String::from(
-                                            "a test enters its own type",
-                                        ),
-                                    },
-                                );
-                                continue;
-                            }
-                            self.record_local_test(&owner, name.span, *id);
-                            self.expr(
-                                *id,
-                                Some(&Expected::new(
-                                    prelude("Bool"),
-                                    name.span,
-                                )),
-                            );
-                        }
-                    }
-                    self.dots();
-                    for owed in &mut self.state.obligations[mark..] {
-                        owed.assumed = false;
-                    }
-                    self.self_type = None;
+                    continue;
                 }
+                let enters_self =
+                    resolved.expressions().any(|(expr, target)| {
+                        let expression = &module.expressions[expr.0];
+                        span.start <= expression.span.start
+                            && expression.span.end <= span.end
+                            && test_enters_self(
+                                module,
+                                resolved,
+                                expr,
+                                target,
+                                &last(name),
+                            )
+                    });
+                let line_binding =
+                    resolved.expressions().any(|(expr, target)| {
+                        let expression = &module.expressions[expr.0];
+                        span.start <= expression.span.start
+                            && expression.span.end <= span.end
+                            && self.limit_reads_line(target, name.span)
+                    });
+                if line_binding {
+                    self.error(
+                        span,
+                        Reason::Limit {
+                            message: String::from(
+                                "a limit cannot read a line binding",
+                            ),
+                        },
+                    );
+                    continue;
+                }
+                if enters_self {
+                    self.error(
+                        span,
+                        Reason::Limit {
+                            message: String::from("a test enters its own type"),
+                        },
+                    );
+                    continue;
+                }
+                self.record_local_test(&owner, name.span, *id);
+                self.expr(
+                    *id,
+                    Some(&Expected::new(prelude("Bool"), name.span)),
+                );
             }
         }
+        self.dots();
+        for owed in &mut self.state.obligations[mark..] {
+            owed.assumed = false;
+        }
+        self.self_type = None;
     }
 
     fn record_decisions(&self) -> Typed {

@@ -95,6 +95,25 @@ fn user_tests_and_gates_check_the_meaning_and_entry() {
 }
 
 #[test]
+fn a_test_is_typed_against_the_bindings_of_its_unit_above_it() {
+    let mut session =
+        fipe::session::Session::new(fipe::decl::Declarations::new());
+    let report = line(
+        &mut session,
+        "pos: Integer -> String = x => \"s\"\n\
+         type P: Integer where pos self",
+    );
+    assert_ne!(report.diagnostics, [], "a test is a Bool");
+    let report = line(
+        &mut session,
+        "pos: Integer -> Bool = x => x > 0\n\
+         type P: Integer where pos self\n\
+         p: P = 3",
+    );
+    assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
+}
+
+#[test]
 fn intersections_unions_and_negations_use_one_meaning() {
     let mut session =
         fipe::session::Session::new(fipe::decl::Declarations::new());
@@ -1575,16 +1594,19 @@ fn a_limited_type_over_a_packed_base_narrows_it() {
     ] {
         assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
     }
-    // The value packs as the base and the type's test is entered; with
-    // no compile budget the entry stays open.
-    session.compile_budget(0);
+    // The value packs as the base and the type's test is entered: the
+    // compile phase dispatches `area` on the packed value and proves it.
     let report = line(&mut session, "nn: Named = C 1.0");
     assert_eq!(report.diagnostics, [], "{:?}", report.diagnostics);
     assert!(
-        report.checks.iter().any(|check| check.name == "Named"),
+        report
+            .settled
+            .iter()
+            .any(|settled| settled.check.name == "Named"),
         "{:?}",
-        report.checks
+        report.settled
     );
+    assert_ne!(line(&mut session, "zero: Named = C 0.0").diagnostics, []);
     let packed = line(&mut session, "s: Shape = C 1.0");
     assert_eq!(packed.diagnostics, []);
     let again = line(&mut session, "n2: Named = s");

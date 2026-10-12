@@ -1,5 +1,6 @@
 //! Calls: the callee kinds, eval/apply of a function value, the casts.
 use super::{
+    drive::Start,
     frames::{BodyFrame, Frame},
     natives::{Ctx, Step},
     pending::Pending,
@@ -75,7 +76,8 @@ impl Machine {
                     Self::substitute(program, frame, ty)
                 };
                 let walk = Walk::derived(*kind, args, ty);
-                self.start(program, Pending::Walk(walk), back, node)
+                let start = Start::new(back, node, Some(result));
+                self.start(program, Pending::Walk(walk), start)
             }
             Callee::Dispatch { member, witness } => {
                 let (receiver, selected) = {
@@ -154,14 +156,14 @@ impl Machine {
                 prelude: &prelude,
                 natives: &natives,
                 globals: &self.globals,
-                result,
+                result: result.clone(),
             };
             natives.call(op, args, &ctx)
         };
         match step {
             Ok(Step::Done(value)) => self.deliver(program, value, back),
             Ok(Step::Start(pending)) => {
-                self.start(program, pending, back, node)
+                self.start(program, pending, Start::new(back, node, result))
             }
             Ok(Step::Call(_)) => unreachable!("a native starts as a frame"),
             Ok(Step::Fault(reason)) | Err(reason) => Err(Fault {
@@ -178,18 +180,27 @@ impl Machine {
         program: &mir::Program,
         member: usize,
         selected: &Selected,
-        args: Vec<Value>,
+        mut args: Vec<Value>,
         result: ir::Type,
         back: Return,
         node: usize,
     ) -> Result<Flow, Fault> {
-        let target = program.tables.borrow().dispatch[member].rows
-            [selected.row]
-            .target
-            .clone();
-        let receiver_spot = program.tables.borrow().dispatch[member].rows
-            [selected.row]
-            .receiver_spot;
+        let eq = self.natives().members.eq == Some(member);
+        let (target, receiver_spot, unpacked) = {
+            let tables = program.tables.borrow();
+            let row = &tables.dispatch[member].rows[selected.row];
+            let unpacked = super::dispatch::unpack(
+                &mut args,
+                row.receiver_spot.unwrap_or(0),
+                &row.receiver,
+                eq,
+            );
+            (row.target.clone(), row.receiver_spot, unpacked)
+        };
+        if let Err(equal) = unpacked {
+            let value = self.prelude().bool(equal);
+            return self.deliver(program, value, back);
+        }
         match target {
             ir::Implementation::Field(index) => {
                 let receiver = &args[receiver_spot.unwrap_or(0)];
@@ -207,7 +218,8 @@ impl Machine {
             ir::Implementation::Derived { kind, ty } => {
                 let ty = dispatch::substitute(&ty, &selected.bindings);
                 let walk = Walk::derived(kind, args, ty);
-                self.start(program, Pending::Walk(walk), back, node)
+                let start = Start::new(back, node, Some(result));
+                self.start(program, Pending::Walk(walk), start)
             }
             ir::Implementation::Definition { index, meanings } => {
                 let meanings = meanings
@@ -263,6 +275,7 @@ impl Machine {
                 node,
                 pending: Pending::Apply { rest: Some(rest) },
                 back,
+                result: None,
             }));
             Return::Resume
         };

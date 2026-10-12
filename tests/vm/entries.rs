@@ -84,3 +84,19 @@ fn an_element_entry_tests_each_element_and_names_the_first_failure() {
         "Ok(Int(2))"
     );
 }
+
+#[test]
+fn a_type_s_test_reads_a_generic_function_of_its_own_unit() {
+    let source = "pos = x => x > 0\n\
+                  type P: Integer where pos self\n\
+                  p: P = 3\n\
+                  q = n => { r: P = n\n r }\n\
+                  (p, q 4, pos 1.5)";
+    assert_eq!(super::run::shown(source), "(3, 4, True)");
+    let fault = run("pos = x => x > 0\n\
+         type P: Integer where pos self\n\
+         q = n => { r: P = n\n r }\n\
+         q 0")
+    .unwrap_err();
+    assert!(matches!(fault.reason, Reason::Failed { .. }), "{fault:?}");
+}

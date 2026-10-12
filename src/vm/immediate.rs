@@ -176,7 +176,7 @@ pub(super) fn immediate(
         }
         Native::Sum => {
             let over = arg(0);
-            Ok(Pending::sum(&over, ctx.result.clone()))
+            Ok(Pending::sum(&over))
         }
         Native::First => {
             let over = arg(0);

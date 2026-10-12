@@ -108,7 +108,9 @@ row set by index; a known head references its definition directly. A row
 may instead target a field index in its receiver layout: the dot reads a
 field first, else a member. A known record head uses `Field` directly.
 `Derived { kind, ty }` directly references a derived operation at a known
-head and is called like any other callable.
+head and is called like any other callable. A unit that packs a value
+records, for its tag, the rows of each member limit of the packed type,
+since a later line reaches the value through the packed type alone.
 
 ## Nodes
 
@@ -144,7 +146,8 @@ Patterns are `Any`, `Slot`, `Literal`, `Constructor`, `Record`, `Side`,
 `Gate` with its tests, `Tag`, `List` and `Tuple`. A pipe stage remains a node
 so a debugger can step by stage: a stage that calls lists the piped value,
 cast to its spot, among its supplies and is typed as its result; a stage
-that is a function value keeps its function type and the pipe applies it.
+that is a function value keeps its function type and the pipe is a
+`Call` of it, the piped value its one spot.
 The plan retains the phase, reason and frequency of each open test.
 
 A session unit holds its current line and indexes tables the session keeps.

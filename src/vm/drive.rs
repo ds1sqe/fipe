@@ -7,8 +7,26 @@ use super::{
     pending::Pending,
     Fault, Flow, Machine, Return,
 };
-use crate::{mir, value::Value};
+use crate::{ir, mir, value::Value};
 use alloc::vec::Vec;
+
+/// Where a native frame answers, its call site, and its call's result
+/// type.
+pub(super) struct Start {
+    back: Return,
+    node: usize,
+    result: Option<ir::Type>,
+}
+
+impl Start {
+    pub(super) const fn new(
+        back: Return,
+        node: usize,
+        result: Option<ir::Type>,
+    ) -> Self {
+        Self { back, node, result }
+    }
+}
 
 impl Machine {
     /// Hand a finished frame's value to where its caller wanted it.
@@ -67,7 +85,7 @@ impl Machine {
                 prelude: &prelude,
                 natives: &natives,
                 globals: &self.globals,
-                result: None,
+                result: frame.result.clone(),
             };
             let step = frame.pending.step(&ctx, returned);
             (frame.node, step, frame.pending.take_owed())
@@ -101,13 +119,13 @@ impl Machine {
         &mut self,
         program: &mir::Program,
         pending: Pending,
-        back: Return,
-        node: usize,
+        start: Start,
     ) -> Result<Flow, Fault> {
         self.frames.push(Frame::Native(NativeFrame {
-            node,
+            node: start.node,
             pending,
-            back,
+            back: start.back,
+            result: start.result,
         }));
         self.resume(program, None)
     }
@@ -142,7 +160,7 @@ impl Machine {
             }
             Invoke::Value(value) => self.deliver(program, value, back),
             Invoke::Native(pending) => {
-                self.start(program, *pending, back, node)
+                self.start(program, *pending, Start::new(back, node, None))
             }
         }
     }

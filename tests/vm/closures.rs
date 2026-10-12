@@ -56,3 +56,32 @@ fn a_gate_runs_its_limit_test() {
                   (m 4, m 3)";
     assert_eq!(shown(source), "(4, 0)");
 }
+
+#[test]
+fn a_pipe_into_a_function_value_applies_it_to_the_input() {
+    assert_eq!(shown("3 | { 3 => \"a\", _ => \"b\" }"), "\"a\"");
+    assert_eq!(shown("4 | { 3 => \"a\", _ => \"b\" }"), "\"b\"");
+    assert_eq!(shown("3 | (y => y + 1)"), "4");
+    assert_eq!(shown("inc = y => y + 1\n3 | (inc)"), "4");
+    assert_eq!(shown("2 | (y => y * 10) | (y => y + 1)"), "21");
+    assert_eq!(
+        shown("f = n => n | { 0 => 1, k => k * 2 }\n(f 0, f 5)"),
+        "(1, 10)"
+    );
+    assert_eq!(
+        session(&["g = y => (y, y)", "1 | (if True { g } else { g })"]),
+        ["()", "(1, 1)"]
+    );
+}
+
+#[test]
+fn a_generic_value_definition_takes_its_use_s_witnesses() {
+    assert_eq!(
+        shown("inc = x => x + 1\ng = inc\n(g 1, g 1.5, [1] | map g)"),
+        "(2, 2.5, [2])"
+    );
+    assert_eq!(
+        session(&["inc = x => x + 1", "h = Compile (inc)", "h 2", "h 2.5"]),
+        ["()", "()", "3", "3.5"]
+    );
+}

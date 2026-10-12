@@ -449,6 +449,25 @@ impl Lowering<'_> {
         build_function(self, node, hidden, captures, arms, Some(body));
     }
 
+    /// Whether a value definition takes witnesses: its scheme keeps
+    /// member limits, so each use instantiates it (`03-types.md`
+    /// §Generalization) and no one stored value serves every use.
+    pub(super) fn generic(&self, definition: usize) -> bool {
+        !self.tables.definitions[definition].hidden.is_empty()
+    }
+
+    /// The body computing a generic value definition from its use's
+    /// witnesses, reserved on first use.
+    pub(super) fn generic_body(&mut self, definition: usize) -> usize {
+        if let Some(body) = self.globals[definition] {
+            return body;
+        }
+        let body = self.reserve(self.tables.definitions[definition].body);
+        self.globals[definition] = Some(body);
+        self.pending.push(Pending::Global(definition, body));
+        body
+    }
+
     /// A value definition read as a global: when no line stores it, a
     /// body computing it, reserved on first read.
     pub(super) fn reach_global(&mut self, definition: usize) {
@@ -463,12 +482,13 @@ impl Lowering<'_> {
         self.pending.push(Pending::Global(definition, body));
     }
 
-    /// A global's reserved body: the definition's value into `_0`.
+    /// A global's reserved body: the definition's value into `_0`, from
+    /// the witnesses of a generic one.
     pub(super) fn global(&mut self, definition: usize, body: usize) {
         let node = self.tables.definitions[definition].body;
         let result = self.tables.nodes[node].ty.clone();
-        let mut builder =
-            Builder::new(self, node, result, Vec::new(), Vec::new());
+        let hidden = self.tables.definitions[definition].hidden.clone();
+        let mut builder = Builder::new(self, node, result, hidden, Vec::new());
         builder.lower_to(node, Some(0));
         builder.terminate(Terminator::Return, node);
         builder.finish(Some(body));

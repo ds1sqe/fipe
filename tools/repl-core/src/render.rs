@@ -31,6 +31,10 @@ pub fn fault(reason: &Reason, tables: &ir::Tables) -> String {
                 format!("refuted entry against {}: {value}", entry.label)
             }
         }
+        Reason::Unbound { definition } => format!(
+            "{} has no value: its line ended before binding it",
+            tables.definitions[*definition].label
+        ),
         other => other.to_string(),
     }
 }

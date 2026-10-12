@@ -3,6 +3,19 @@ use super::{
     TypeName, Vec,
 };
 
+/// Whether a stage of this form takes the piped value among its call's
+/// supplies, as inference types it (`infer/spots.rs` `stage`); any
+/// other stage is a function value applied to the input.
+pub(super) const fn supplied_stage(kind: &crate::ast::ExprKind) -> bool {
+    matches!(
+        kind,
+        crate::ast::ExprKind::Call { .. }
+            | crate::ast::ExprKind::Name(_)
+            | crate::ast::ExprKind::Instance { .. }
+            | crate::ast::ExprKind::Field { .. }
+    )
+}
+
 impl Index {
     pub(super) fn call(
         &mut self,

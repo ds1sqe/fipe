@@ -68,9 +68,6 @@ pub(super) struct Sum {
     items: Rc<Vec<Value>>,
     index: usize,
     acc: Option<Value>,
-    /// The result's type, whose zero the empty sum is; the call knows
-    /// it, a later move of the frame does not.
-    result: Option<ir::Type>,
 }
 
 impl Pending {
@@ -116,13 +113,12 @@ impl Pending {
         }))
     }
 
-    pub(super) fn sum(over: &Value, result: Option<ir::Type>) -> Step {
+    pub(super) fn sum(over: &Value) -> Step {
         let items = Rc::clone(seq(over));
         Step::Start(Self::Sum(Sum {
             items,
             index: 0,
             acc: None,
-            result,
         }))
     }
 
@@ -224,19 +220,18 @@ impl Pending {
 impl Sum {
     /// Add the next item to the accumulator: at once for numbers, by
     /// the written `add` row for a record; the empty sum is the zero of
-    /// the result's meaning.
+    /// the call's result meaning.
     fn step(&mut self, ctx: &Ctx<'_>, returned: Option<Value>) -> Step {
         if let Some(value) = returned {
             self.acc = Some(value);
         }
         if self.acc.is_none() && self.items.is_empty() {
-            return match self.result.as_ref().map(|ty| of_type(ty, ctx.tables))
-            {
+            return match ctx.result.as_ref().map(|ty| of_type(ty, ctx.tables)) {
                 Some(Of::F32) => Step::Done(Value::F32(0.0)),
                 Some(Of::F64) => Step::Done(Value::F64(0.0)),
                 Some(Of::Integer) | None => Step::Done(arith::zero()),
                 Some(_) => {
-                    let Some(ir::Type::Meaning { index, .. }) = &self.result
+                    let Some(ir::Type::Meaning { index, .. }) = &ctx.result
                     else {
                         unreachable!()
                     };
@@ -307,7 +302,21 @@ pub(super) fn member_call(
     match written_row(ctx, member, receiver) {
         Some((index, meanings, spot)) => {
             let mut args = others;
-            args.insert(spot.min(args.len()), receiver.clone());
+            let spot = spot.min(args.len());
+            args.insert(spot, receiver.clone());
+            // The row is the receiver's tag's, by `written_row`.
+            if let Value::Packed(packed) = receiver {
+                let tag = ir::Type::Meaning {
+                    index: packed.meaning,
+                    arguments: Vec::new(),
+                };
+                let eq = member.is_some() && member == ctx.natives.members.eq;
+                if let Err(equal) =
+                    super::dispatch::unpack(&mut args, spot, &tag, eq)
+                {
+                    return Step::Done(ctx.prelude.bool(equal));
+                }
+            }
             Step::Call(super::calls::definition_invoke(
                 ctx.program,
                 ctx.globals,

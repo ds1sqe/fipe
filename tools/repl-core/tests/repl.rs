@@ -1303,3 +1303,17 @@ impl Vec2: Zero { zero = Self 0.0 0.0 }\n\n";
         "Vec2 0.0 0.0\nfipe> "
     );
 }
+
+#[test]
+fn a_name_whose_line_faulted_first_has_no_value_when_read() {
+    let mut repl = Repl::new();
+    let text = written(
+        repl.feed(b"stop = n => fault \"stop\"\n\nx: Integer = stop 1\n\n"),
+    );
+    assert!(text.contains("stop"), "{text}");
+    let text = written(repl.feed(b"x + 1\n\n"));
+    assert!(
+        text.contains("x has no value: its line ended before binding it"),
+        "{text}"
+    );
+}

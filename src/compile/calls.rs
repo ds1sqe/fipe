@@ -107,6 +107,11 @@ impl Builder<'_, '_> {
                 self.count(node);
                 if let Some(body) = self.lowering.function_body(*index) {
                     Target::Static(Callee::Body(body), meanings.clone())
+                } else if self.lowering.generic(*index) {
+                    let ty = tables.nodes[node].ty.clone();
+                    let value =
+                        self.generic_value(*index, meanings, &ty, node, None);
+                    Target::Value(value)
                 } else {
                     self.lowering.reach_global(*index);
                     Target::Value(Operand::Global(*index))

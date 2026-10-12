@@ -236,6 +236,7 @@ impl Machine {
                         block,
                         statement,
                     },
+                    result: None,
                 }));
                 return self
                     .resume(program, None)

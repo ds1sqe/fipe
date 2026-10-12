@@ -33,6 +33,7 @@ impl Machine {
             node,
             pending: Pending::Predicate(run),
             back: Return::Continue,
+            result: None,
         }));
         Flow::Continue
     }

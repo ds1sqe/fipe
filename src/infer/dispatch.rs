@@ -11,7 +11,12 @@ impl Infer<'_> {
         if !self.state.errors.is_empty() {
             return Vec::new();
         }
-        let requests = self.dispatch_requests();
+        let mut requests = self.dispatch_requests();
+        for request in self.packed_members() {
+            if !requests.contains(&request) {
+                requests.push(request);
+            }
+        }
         if requests.is_empty() {
             return Vec::new();
         }
@@ -84,6 +89,38 @@ impl Infer<'_> {
                 }
             })
             .collect()
+    }
+
+    /// The members a value packed here can be asked for: each member
+    /// limit of the packed meaning, its bases' included. A later line
+    /// reaches the value through the packed type alone, which no longer
+    /// names its tag, so the rows for the tag are recorded where it packs.
+    fn packed_members(&mut self) -> Vec<(alloc::string::String, bool)> {
+        let targets: Vec<Type> = self
+            .state
+            .casts
+            .iter()
+            .flatten()
+            .filter(|cast| cast.row == crate::typed::CastRow::Pack)
+            .map(|cast| super::meaning(&self.apply(&cast.to)).clone())
+            .collect();
+        let mut members = Vec::new();
+        for target in targets {
+            let limits = self.member_limits(
+                &target,
+                &target,
+                crate::token::Span::default(),
+                &mut Vec::new(),
+            );
+            for limit in limits {
+                if let crate::types::Obligation::Member { name, .. } = limit {
+                    if !members.contains(&(name.clone(), false)) {
+                        members.push((name, false));
+                    }
+                }
+            }
+        }
+        members
     }
 
     fn dispatch_requests(&self) -> Vec<(alloc::string::String, bool)> {

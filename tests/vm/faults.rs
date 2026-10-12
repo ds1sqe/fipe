@@ -1,6 +1,6 @@
 //! Faults: `fault` ends the run without a value, an `Err` returned is
 //! a value, and a Fault names its reason at the node where it happened.
-use super::run::{budgeted, program, shown, spanned};
+use super::run::{budgeted, program, session, shown, spanned};
 use fipe::value::Reason;
 
 #[test]
@@ -64,4 +64,19 @@ fn fault_gives_its_message_as_the_reason() {
         fault("fault \"boom\"").0,
         Reason::Message(String::from("boom"))
     );
+}
+
+#[test]
+fn a_value_whose_line_faulted_before_binding_it_faults_where_read() {
+    let lines = session(&[
+        "stop = n => fault \"stop\"",
+        "x: Integer = stop 1",
+        "y = 2",
+        "x + 1",
+        "y",
+    ]);
+    assert_eq!(lines[1], "fault: stop");
+    assert!(lines[3].starts_with("fault: "), "{lines:?}");
+    assert!(lines[3].contains("has no value"), "{lines:?}");
+    assert_eq!(lines[4], "2");
 }

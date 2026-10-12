@@ -99,8 +99,11 @@ native, a host call, a field read in place, or a derived operation. One
 with a parameter or an unfixed session meaning stays a run-time dispatch,
 and every definition row of the member is lowered so the machine finds
 its body. Rows are matched by head meaning, then by the overload
-argument's meaning; a field row wins. A `Type::Session` is read from the
-session's meaning slots when the line compiles.
+argument's meaning; a field row wins. A packed value selects by its tag,
+and a row written for the tag receives the payload; `eq` on two packed
+values compares their tags first, unequal tags giving `False`, then the
+payloads. A `Type::Session` is read from the session's meaning slots
+when the line compiles.
 
 ## What the compiler decides
 
@@ -133,7 +136,9 @@ checker recorded, direct, wrapped, or discarded to the bad side. A lift
 is the same rule spelled as a binding. `||` and `&&` switch by their
 recorded mode, a skipped side being an edge not taken. A comparison
 switches the `Ordering` to `True` on an accepted constructor, else
-`False`. A pipe lowers as its stage, which already lists the piped value.
+`False`. A pipe whose stage calls lowers as its stage, which already
+lists the piped value; the checker gives a stage that is a function value
+as a `Call` of it with the piped value as its one spot.
 
 A literal read by the prelude, by name or by a dispatch a concrete meaning
 resolves to it, is a prepared constant: an integer that fits is `Int`,
@@ -207,7 +212,10 @@ returns `Request::Call` with the arguments in spot order and the `with`
 environment open at the call; `reply` with the same program continues
 it, a value going where the call wanted it and a failure Faulting
 `Host` at the call. A Fault ends the run where it happens; the host's
-prior effects stand.
+prior effects stand. A line whose run ended before it bound a name
+leaves that global without a value, and a later line that reads it
+Faults `Unbound` there: the name's body is not run again, which would
+repeat the earlier line's effects.
 
 The budget is per run, `None` for an unbounded one; `charged` reports
 the units of the run in progress or of the last one, bounded or not. A

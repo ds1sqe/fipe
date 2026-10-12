@@ -34,6 +34,10 @@ pub struct NativeFrame {
     pub node: usize,
     pub(super) pending: Pending,
     pub(super) back: Return,
+    /// The type of the call's destination, witnesses in place, which
+    /// every move of the frame reads; `None` for a frame no call typed
+    /// (a test, an application, a walk another native asked for).
+    pub(super) result: Option<ir::Type>,
 }
 
 impl BodyFrame {

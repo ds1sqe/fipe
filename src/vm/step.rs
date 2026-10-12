@@ -47,9 +47,21 @@ impl Machine {
             .into_iter()
             .find(|definition| self.globals[*definition].is_none())
         {
-            let body = program.globals[definition].unwrap_or_else(|| {
-                panic!("global {definition} is stored first")
-            });
+            // A global a line stores and an earlier run of it never
+            // stored, since that run ended first: no body may compute it
+            // again, which would repeat the line's effects.
+            let Some(body) = program.globals[definition] else {
+                let node = block
+                    .nodes
+                    .get(index)
+                    .or_else(|| block.nodes.last())
+                    .copied()
+                    .expect("a step has a node");
+                return Err(Fault {
+                    span: Self::span(program, node),
+                    reason: Reason::Unbound { definition },
+                });
+            };
             let frame = BodyFrame::new(
                 program,
                 body,
@@ -220,6 +232,7 @@ impl Machine {
                         pass: *pass,
                         fail: *fail,
                     },
+                    result: None,
                 }));
                 self.resume(program, None)
             }
