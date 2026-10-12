@@ -7,7 +7,8 @@ use fipe::value::Reason;
 fn fault_ends_the_run_with_its_message() {
     assert_eq!(shown("fault \"boom\""), "fault: boom");
     assert_eq!(shown("x = 1\nfault \"stop\"\nx"), "fault: stop");
-    let f = "f: Integer -> Integer = n => if n > 0 { n } else { fault \"negative\" }\n";
+    let f = "f: Integer -> Integer = \
+             n => if n > 0 { n } else { fault \"negative\" }\n";
     assert_eq!(shown(&format!("{f}f 2")), "2");
     assert_eq!(shown(&format!("{f}f -1")), "fault: negative");
 }
