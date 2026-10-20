@@ -1,0 +1,53 @@
+use text 2
+# <- keyword.import
+#   ^ module
+#        ^ number
+
+pub type Point: Eq & Show { pub x: I64, y: I64 = 0 }
+# <- keyword.modifier
+#   ^ keyword.type
+#        ^ type.definition
+#               ^ type
+#                  ^ operator
+#                         ^ punctuation.bracket
+#                           ^ keyword.modifier
+#                               ^ variable.member
+#                                  ^ type
+#                                     ^ punctuation.delimiter
+#                                                ^ number
+
+type Shape { Circle(r: F64), Dot }
+#    ^ type.definition
+#            ^ constructor
+#                   ^ variable.member
+#                            ^ constructor
+
+type Pos: Integer where self > 0
+#                 ^ keyword
+#                            ^ operator
+
+impl Point {
+# <- keyword.type
+#    ^ type
+
+    x (y = 0) => Self { x, y },
+#   ^ variable.parameter
+#      ^ variable.parameter
+#             ^ operator
+#                ^ constructor
+#                       ^ variable.member
+
+    pub line: I64 -> Self = p => Self p p,
+#       ^ function
+#                 ^ operator
+
+}
+
+add: Integer -> Integer -> Integer
+# <- function
+#    ^ type
+
+size: Vec<U8> = []
+#     ^ type
+#        ^ punctuation.bracket
+#         ^ type

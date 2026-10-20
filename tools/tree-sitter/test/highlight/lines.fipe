@@ -1,0 +1,66 @@
+ls -l /var/log | filter (e => e > 1) | map .name |: Just || 0
+# <- function.call
+#  ^ variable.parameter
+#     ^ string.special.path
+#              ^ operator
+#                ^ function.call
+#                        ^ variable.parameter
+#                                      ^ function.call
+#                                          ^ variable.member
+#                                                ^ operator
+#                                                   ^ constructor
+#                                                        ^ operator
+#                                                           ^ number
+
+ls -depth=2 /etc
+#  ^ variable.parameter
+
+double = { n => n * 2 }
+# <- function
+#          ^ variable.parameter
+#                 ^ operator
+
+with cwd /tmp { cat ./notes.md }
+# <- keyword
+#    ^ variable
+#        ^ string.special.path
+#                   ^ string.special.path
+
+n: I64 = if True { 1 } else { 2.5 }
+#        ^ keyword.conditional
+#           ^ boolean
+#                      ^ keyword.conditional
+#                             ^ number.float
+
+[:1] |! (e => e) && ok
+# <- punctuation.bracket
+#    ^ operator
+#                ^ operator
+
+"text" | read<U16>
+# <- string
+#        ^ variable
+#            ^ punctuation.bracket
+#             ^ type
+
+'raw' | show
+# <- string
+
+hello world
+# <- function.call
+#     ^ variable
+
+cat x.y | grep foo-bar
+#              ^ string.special
+
+p = { Point { x, .. } => x }
+#     ^ constructor
+#                ^ punctuation.special
+
+(f 1).x == 1
+#    ^ variable.member
+#       ^ operator
+
+greet = who => who
+# <- function
+#       ^ variable.parameter

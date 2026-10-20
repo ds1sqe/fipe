@@ -1,0 +1,16 @@
+# Fipe in Helix: add to ~/.config/helix/languages.toml, set `rev` to a
+# commit of the language repository, run `hx --grammar fetch` and
+# `hx --grammar build`, and copy queries/fipe/ from this directory to
+# ~/.config/helix/runtime/queries/fipe/.
+
+[[language]]
+name = "fipe"
+scope = "source.fipe"
+file-types = ["fipe"]
+comment-tokens = ["#"]
+indent = { tab-width = 4, unit = "    " }
+roots = []
+
+[[grammar]]
+name = "fipe"
+source = { git = "https://github.com/ds1sqe/fipe", rev = "COMMIT", subpath = "tools/tree-sitter" }

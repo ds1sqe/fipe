@@ -7,7 +7,11 @@
       "title": "Fipe",
       "scope": "source.fipe",
       "path": ".",
-      "file-types": ["fipe"],
+      "file-types": [
+        "fipe"
+      ],
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm",
       "injection-regex": "^fipe$",
       "class-name": "TreeSitterFipe"
     }
@@ -16,8 +20,14 @@
     "version": "0.1.0",
     "license": "MIT OR Apache-2.0",
     "description": "Fipe grammar for tree-sitter, generated with tree-sitter CLI 0.26.9",
-    "authors": [{ "name": "Kim Dae Up" }],
-    "links": { "repository": "https://github.com/ds1sqe/fipe" }
+    "authors": [
+      {
+        "name": "Kim Dae Up"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/ds1sqe/fipe"
+    }
   },
   "bindings": {
     "c": false,
