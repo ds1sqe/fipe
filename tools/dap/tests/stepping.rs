@@ -512,3 +512,92 @@ fn an_arm_binding_and_module_values_are_shown_by_name() {
     client.request("continue", json!({ "threadId": 1 }));
     assert_eq!(client.sent.last().unwrap()["event"], "terminated");
 }
+
+/// The lines of an example's trace fixture.
+fn fixture(name: &str) -> Vec<String> {
+    let path = root().join(format!("tests/fixtures/traces/{name}.txt"));
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+#[test]
+fn a_session_stepped_line_by_line_observes_what_a_run_does() {
+    for name in [
+        "01-files",
+        "02-outcomes",
+        "03-types",
+        "04-text",
+        "05-modules",
+    ] {
+        let program = example(name);
+        let lines = std::fs::read_to_string(&program).unwrap().lines().count();
+        let mut client = Client::new();
+        client.launch(json!({
+            "program": program,
+            "host": root().join("tests/fixtures/host"),
+            "trace": root().join(format!("tests/fixtures/traces/{name}.txt")),
+        }));
+        let every: Vec<Value> =
+            (1..=lines).map(|line| json!({ "line": line })).collect();
+        client.request(
+            "setBreakpoints",
+            json!({ "source": { "path": program }, "breakpoints": every }),
+        );
+        client.request("configurationDone", json!({}));
+        let mut stops = 0;
+        let fault = loop {
+            let ended =
+                client.sent.iter().find_map(|m| match m["event"].as_str() {
+                    Some("terminated") => Some(None),
+                    Some("stopped") if m["body"]["reason"] == "exception" => {
+                        Some(
+                            m["body"]["description"].as_str().map(String::from),
+                        )
+                    }
+                    _ => None,
+                });
+            if let Some(fault) = ended {
+                break fault;
+            }
+            stops += 1;
+            assert!(stops < 100_000, "{name}: no end");
+            client.request("next", json!({ "threadId": 1 }));
+        };
+        assert!(stops > 0, "{name}: no breakpoint was hit");
+        let output = |category: &str| -> Vec<String> {
+            client
+                .sent
+                .iter()
+                .filter(|m| {
+                    m["event"] == "output" && m["body"]["category"] == category
+                })
+                .map(|m| m["body"]["output"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let fixture = fixture(name);
+        let calls: Vec<String> = fixture
+            .iter()
+            .filter(|line| line.starts_with("call "))
+            .cloned()
+            .collect();
+        assert_eq!(output("stdout"), calls, "{name}: the host calls");
+        match fault {
+            Some(description) => {
+                assert_eq!(format!("{description}\n"), fixture[0], "{name}");
+                // The conformance host writes a Fault to the error output.
+                let error = fixture.last().unwrap();
+                assert_eq!(
+                    *error,
+                    format!("error {:?}\n", fixture[0]),
+                    "{name}"
+                );
+            }
+            None => {
+                assert_eq!(output("console"), [fixture[0].clone()], "{name}");
+            }
+        }
+    }
+}

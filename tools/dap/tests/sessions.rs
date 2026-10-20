@@ -47,6 +47,23 @@ fn events(sent: &[Value]) -> Vec<&Value> {
     sent.iter().filter(|m| m["type"] == "event").collect()
 }
 
+/// The text of the output events of `category`: `stdout` for the host
+/// calls, `console` for the run's value.
+fn outputs<'a>(sent: &'a [Value], category: &str) -> Vec<&'a str> {
+    events(sent)
+        .into_iter()
+        .filter(|e| e["event"] == "output" && e["body"]["category"] == category)
+        .map(|e| e["body"]["output"].as_str().unwrap())
+        .collect()
+}
+
+/// The first line of an example's trace fixture: its value or Fault.
+fn result(example: &str) -> String {
+    let path = root().join(format!("tests/fixtures/traces/{example}.txt"));
+    let text = std::fs::read_to_string(path).unwrap();
+    format!("{}\n", text.lines().next().unwrap())
+}
+
 /// The `call` lines of an example's trace fixture.
 fn calls(example: &str) -> Vec<String> {
     let path = root().join(format!("tests/fixtures/traces/{example}.txt"));
@@ -83,12 +100,8 @@ fn an_example_under_its_trace_runs_to_terminated_with_its_calls() {
         .collect();
     assert_eq!(names.first(), Some(&"initialized"));
     assert_eq!(names[names.len() - 2..], ["exited", "terminated"]);
-    let outputs: Vec<&str> = events
-        .iter()
-        .filter(|e| e["event"] == "output")
-        .map(|e| e["body"]["output"].as_str().unwrap())
-        .collect();
-    assert_eq!(outputs, calls("02-outcomes"));
+    assert_eq!(outputs(&sent, "stdout"), calls("02-outcomes"));
+    assert_eq!(outputs(&sent, "console"), [result("02-outcomes")]);
     let threads = sent
         .iter()
         .find(|m| m["command"] == "threads")
@@ -105,12 +118,8 @@ fn every_example_with_a_trace_replays_its_calls() {
             "host": root.join("tests/fixtures/host"),
             "trace": root.join(format!("tests/fixtures/traces/{example}.txt")),
         }));
-        let outputs: Vec<&str> = events(&sent)
-            .iter()
-            .filter(|e| e["event"] == "output")
-            .map(|e| e["body"]["output"].as_str().unwrap())
-            .collect();
-        assert_eq!(outputs, calls(example), "{example}");
+        assert_eq!(outputs(&sent, "stdout"), calls(example), "{example}");
+        assert_eq!(outputs(&sent, "console"), [result(example)], "{example}");
         assert_eq!(events(&sent).last().unwrap()["event"], "terminated");
     }
 }
@@ -225,4 +234,40 @@ fn the_binary_speaks_the_protocol_over_stdio() {
         unordered(sent),
         unordered(drive(script["requests"].as_array().unwrap()))
     );
+}
+
+#[test]
+fn every_scripted_session_ends_as_its_trace_fixture_says() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sessions");
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter_map(|path| Some(path.file_stem()?.to_str()?.to_string()))
+        .collect();
+    names.sort();
+    assert!(names.len() >= 6, "{names:?}");
+    for name in names {
+        let script = script(&name);
+        let example = script["example"].as_str().unwrap();
+        let sent = drive(script["requests"].as_array().unwrap());
+        for message in sent.iter().filter(|m| m["type"] == "response") {
+            assert_eq!(message["success"], true, "{name}: {message}");
+        }
+        assert_eq!(outputs(&sent, "stdout"), calls(example), "{name}");
+        let stopped =
+            events(&sent).into_iter().find(|e| e["event"] == "stopped");
+        if script["ends"] == "exception" {
+            let stopped = stopped.expect("a stopped event");
+            assert_eq!(stopped["body"]["reason"], "exception", "{name}");
+            let description = format!(
+                "{}\n",
+                stopped["body"]["description"].as_str().unwrap()
+            );
+            assert_eq!(description, result(example), "{name}");
+        } else {
+            assert!(stopped.is_none(), "{name}: {stopped:?}");
+            assert_eq!(outputs(&sent, "console"), [result(example)], "{name}");
+            assert_eq!(events(&sent).last().unwrap()["event"], "terminated");
+        }
+    }
 }

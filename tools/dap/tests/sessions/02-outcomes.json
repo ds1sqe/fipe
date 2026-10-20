@@ -1,15 +1,47 @@
 {
   "about": "Launch 02-outcomes.fipe under the replay host over its trace fixture and run it to its end.",
   "requests": [
-    { "seq": 1, "type": "request", "command": "initialize", "arguments": { "adapterID": "fipe" } },
-    { "seq": 2, "type": "request", "command": "launch", "arguments": {
+    {
+      "seq": 1,
+      "type": "request",
+      "command": "initialize",
+      "arguments": {
+        "adapterID": "fipe"
+      }
+    },
+    {
+      "seq": 2,
+      "type": "request",
+      "command": "launch",
+      "arguments": {
         "program": "${ROOT}/Documentation/examples/02-outcomes.fipe",
         "host": "${ROOT}/tests/fixtures/host",
-        "trace": "${ROOT}/tests/fixtures/traces/02-outcomes.txt" } },
-    { "seq": 3, "type": "request", "command": "configurationDone" },
-    { "seq": 4, "type": "request", "command": "threads" },
-    { "seq": 5, "type": "request", "command": "disconnect" }
+        "trace": "${ROOT}/tests/fixtures/traces/02-outcomes.txt"
+      }
+    },
+    {
+      "seq": 3,
+      "type": "request",
+      "command": "configurationDone"
+    },
+    {
+      "seq": 4,
+      "type": "request",
+      "command": "threads"
+    },
+    {
+      "seq": 5,
+      "type": "request",
+      "command": "disconnect"
+    }
   ],
-  "events": ["initialized", "output...", "exited", "terminated"],
-  "outputs": "the call lines of ${ROOT}/tests/fixtures/traces/02-outcomes.txt"
+  "events": [
+    "initialized",
+    "output...",
+    "exited",
+    "terminated"
+  ],
+  "outputs": "the call lines of ${ROOT}/tests/fixtures/traces/02-outcomes.txt",
+  "example": "02-outcomes",
+  "ends": "terminated"
 }

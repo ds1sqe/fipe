@@ -53,15 +53,42 @@ adapter shows is the VM's and every stop is one the VM took
 | `exceptionInfo` | the Fault's located description and reason |
 | `disconnect` | ends the session |
 
+Events: `output` with category `stdout` for each host call, written
+as the trace fixture writes it (`call ns.label (args) -> reply`), and
+one with category `console` for the run's value (`value …`) before
+`exited` and `terminated`; `stopped` for a breakpoint, a step, a pause,
+an entry stop or a Fault (reason `exception`).
+
 Every value shown is the VM's own, written by the crate's structural
 renderer; every stop is one the VM took. Stopping changes no
-observation: the host calls of a stepped session are those of a run.
+observation: a session stepped line by line through an example makes
+the host calls, value or Fault of its trace fixture
+(`tests/stepping.rs`).
+
+## What it does not do
+
+- `evaluate` reads a name only: no expression, field access, call or
+  assignment, since checking an expression in a paused frame's scope
+  would be a second checker.
+- No `setVariable`, `restart`, `goto`, `stepBack`, data or function
+  breakpoints, conditions or hit counts, `loadedSources` or
+  `disassemble`; each is refused as unsupported.
+- The standalone host only replays a trace fixture; a host doing real
+  input and output is the embedding editor's.
+- The success and error output of the conformance host's policy are
+  not reproduced: they are that host's, applied to the value shown.
+- No editor client has been run against it here (Neovim has no
+  built-in DAP client and nvim-dap is not installed); the recorded
+  session below is the binary over its real stdio.
 
 ## Checks
 
-The sessions are scripted in `tests/sessions.rs` and
-`tests/stepping.rs`.
-
+Scripted sessions: `tests/sessions/*.json` (one per example with a
+trace fixture, run by `tests/sessions.rs`) and `tests/stepping.rs`.
+`scripts/record.sh` records a whole session of `02-outcomes.fipe`
+(breakpoint on a stage, `next` across its pipes, Pipe, Effects and
+Budget scopes, `evaluate`, `continue`) over the real binary, one JSON
+message per line.
 
 ```sh
 cargo fmt --check

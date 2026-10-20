@@ -213,7 +213,17 @@ impl Debuggee {
                 Stop::Before(node) => self.at(node, None, out),
                 Stop::After(node, value) => self.at(node, Some(value), out),
                 Stop::Request(request) => self.call(&request, out),
-                Stop::Done(Ok(_)) => {
+                Stop::Done(Ok(value)) => {
+                    // The run's value, written as the trace's first line
+                    // writes it, so a session can be compared with a run.
+                    let line = format!(
+                        "value {}\n",
+                        show(&value, &self.program.tables.borrow())
+                    );
+                    out.event(
+                        "output",
+                        json!({ "category": "console", "output": line }),
+                    );
                     out.event("exited", json!({ "exitCode": 0 }));
                     out.event("terminated", Json::Null);
                     self.phase = Phase::Ended;
