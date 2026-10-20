@@ -103,7 +103,13 @@ impl Infer<'_> {
             .flatten()
             .filter(|cast| cast.row == crate::typed::CastRow::Pack)
             .map(|cast| super::meaning(&self.apply(&cast.to)).clone())
-            .collect();
+            .fold(Vec::new(), |mut targets, target| {
+                // A meaning packed at many places asks for its limits once.
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
+                targets
+            });
         let mut members = Vec::new();
         for target in targets {
             let limits = self.member_limits(
@@ -169,8 +175,10 @@ impl Infer<'_> {
                 continue;
             };
             let Some(word) = self.module.expressions.iter().find_map(|expr| {
+                // `read<Point>` is the word with type arguments.
                 match &expr.kind {
                     crate::ast::ExprKind::Name(name)
+                    | crate::ast::ExprKind::Instance { name, .. }
                         if (expr.span.start, expr.span.end) == *site =>
                     {
                         name.segments.last()

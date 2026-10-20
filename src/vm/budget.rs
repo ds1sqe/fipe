@@ -24,10 +24,7 @@ impl Machine {
         }
         self.charged = self.charged.saturating_add(left);
         let unpaid = usize::try_from(left).expect("below the node count");
-        Err(Fault {
-            span: Self::span(program, nodes[unpaid]),
-            reason: Reason::Budget,
-        })
+        Err(Self::fault(program, nodes[unpaid], Reason::Budget))
     }
 
     /// Pay `units`, or Fault `Budget` (at the caller's node).

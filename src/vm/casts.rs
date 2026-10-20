@@ -24,15 +24,23 @@ pub(super) fn cast(
             }
             _ => Err(Reason::Cast),
         },
-        ir::CastRow::Bytes => match (&value, to) {
-            (Value::Text(_), ir::Type::Meaning { index, .. })
-                if Some(*index) == prelude.vec =>
-            {
-                Ok(crate::value::text::bytes(&value))
-            }
-            _ => Ok(value),
-        },
-        ir::CastRow::Show | ir::CastRow::Codec => Ok(value),
+        // A shown or encoded value is text by now: at `Vec<U8>` it
+        // enters as its bytes, as text does.
+        ir::CastRow::Bytes | ir::CastRow::Show | ir::CastRow::Codec => {
+            Ok(bytes_at(to, value, prelude))
+        }
+    }
+}
+
+/// Text at a `Vec<U8>` place becomes its bytes; anything else passes.
+fn bytes_at(to: &ir::Type, value: Value, prelude: &Prelude) -> Value {
+    match (&value, to) {
+        (Value::Text(_), ir::Type::Meaning { index, .. })
+            if Some(*index) == prelude.vec =>
+        {
+            crate::value::text::bytes(&value)
+        }
+        _ => value,
     }
 }
 

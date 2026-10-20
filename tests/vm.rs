@@ -38,6 +38,8 @@ mod host;
 mod laws;
 #[path = "vm/lifts.rs"]
 mod lifts;
+#[path = "vm/lines.rs"]
+mod lines;
 #[path = "vm/natives.rs"]
 mod natives;
 #[path = "vm/outcomes.rs"]

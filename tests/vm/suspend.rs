@@ -232,3 +232,41 @@ fn with_puts_its_key_in_the_environment_of_a_host_call() {
     let c = vec![(String::from("lang"), Value::text("C"))];
     assert_eq!(environments, [c.clone(), c, vec![], vec![]]);
 }
+
+#[test]
+fn a_shown_value_at_a_byte_spot_reaches_the_host_as_bytes() {
+    let source = "type P: Show { n: I64 }\n(P 1) | put ./out";
+    let program = program(source);
+    let script = read(&program, Script::default(), "./out")
+        .reply("commands.put", Ok(Value::Unit));
+    let observation = observe(&program, Some(1 << 20), script);
+    assert_eq!(observation.result, Ok(Value::Unit));
+    let (put, _) = &observation.trace[1];
+    let bytes = "P 1".bytes().map(|b| Value::Int(i64::from(b))).collect();
+    assert_eq!(arguments(put)[1], Value::seq(bytes));
+}
+
+#[test]
+fn a_call_in_tail_position_keeps_one_frame_for_its_recursion() {
+    let source = "down = n => if n == 0 { find ./x } else { down (n - 1) }\n\
+                  down 1000";
+    let program = program(source);
+    let mut machine = fipe::vm::Machine::new(None);
+    // The innermost call asks for its path; every caller is gone.
+    let fipe::embed::Outcome::Request(_) = machine.run(&program) else {
+        panic!("the innermost call reads its path")
+    };
+    assert!(machine.frames().len() <= 2, "{}", machine.frames().len());
+}
+
+#[test]
+fn a_call_not_in_tail_position_keeps_its_caller() {
+    let source = "count = n => if n == 0 { find ./x } else { (count (n - 1)) || Nothing }\n\
+                  count 10";
+    let program = program(source);
+    let mut machine = fipe::vm::Machine::new(None);
+    let fipe::embed::Outcome::Request(_) = machine.run(&program) else {
+        panic!("the innermost call reads its path")
+    };
+    assert!(machine.frames().len() > 10, "{}", machine.frames().len());
+}

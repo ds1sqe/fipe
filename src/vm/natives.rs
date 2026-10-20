@@ -113,6 +113,8 @@ pub(super) struct Members {
     pub(super) default: Option<usize>,
     pub(super) add: Option<usize>,
     pub(super) zero: Option<usize>,
+    pub(super) len: Option<usize>,
+    pub(super) read: Option<usize>,
 }
 
 /// The natives of one tables, by declaration index.
@@ -156,6 +158,8 @@ impl Natives {
                 default: member("default"),
                 add: member("add"),
                 zero: member("zero"),
+                len: member("len"),
+                read: member("read"),
             },
         }
     }

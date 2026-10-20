@@ -45,10 +45,7 @@ impl Machine {
         back: Return,
         node: usize,
     ) -> Result<Flow, Fault> {
-        let fault = |reason| Fault {
-            span: Self::span(program, node),
-            reason,
-        };
+        let fault = |reason| Self::fault(program, node, reason);
         match callee {
             Callee::Body(body) => {
                 let frame = BodyFrame::new(
@@ -143,10 +140,8 @@ impl Machine {
             return Ok(self.host(op, args, back, node));
         };
         let units = super::budget::size(native, &args);
-        self.pay(units).map_err(|reason| Fault {
-            span: Self::span(program, node),
-            reason,
-        })?;
+        self.pay(units)
+            .map_err(|reason| Self::fault(program, node, reason))?;
         let step = {
             let prelude = self.prelude();
             let tables = program.tables.borrow();
@@ -166,10 +161,9 @@ impl Machine {
                 self.start(program, pending, Start::new(back, node, result))
             }
             Ok(Step::Call(_)) => unreachable!("a native starts as a frame"),
-            Ok(Step::Fault(reason)) | Err(reason) => Err(Fault {
-                span: Self::span(program, node),
-                reason,
-            }),
+            Ok(Step::Fault(reason)) | Err(reason) => {
+                Err(Self::fault(program, node, reason))
+            }
         }
     }
 

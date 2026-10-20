@@ -64,3 +64,19 @@ fn the_span_of_a_fault_is_in_the_unit() {
     assert_eq!(&source[fault.span.start..fault.span.end], "0");
     let _ = ir::Phase::Eval;
 }
+
+#[test]
+fn a_width_tests_the_result_at_its_place_not_each_operand() {
+    assert_eq!(shown("u: U16 = 70000 - 10000\nu"), "60000");
+    assert_eq!(shown("v: U8 = 300 - 100\nv"), "200");
+    assert_eq!(shown("w: U8 = 200 + 100 - 100\nw"), "200");
+    // The result is still tested: past the width is refuted.
+    let module = super::parse(super::lex("x: U8 = 200 + 100")).unwrap();
+    let checked = super::check::check(
+        &module,
+        &super::Declarations::new(),
+        &[],
+        super::check::Options::default(),
+    );
+    assert!(checked.is_err(), "300 is no U8");
+}

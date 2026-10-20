@@ -79,13 +79,20 @@ pub(super) fn immediate(
         }
         Native::Len => {
             let value = arg(0);
-            done(match &value {
-                Value::Text(_) => text::len(&value),
+            match &value {
+                Value::Text(_) => done(text::len(&value)),
                 Value::Seq(parts) => {
-                    Value::Int(i64::try_from(parts.len()).expect("fits"))
+                    done(Value::Int(i64::try_from(parts.len()).expect("fits")))
                 }
-                other => unreachable!("a length of {other:?}"),
-            })
+                // Any other value's meaning claims `Len` by a program's
+                // member.
+                _ => Ok(Pending::started(super::pending::member_call(
+                    ctx,
+                    ctx.natives.members.len,
+                    &value,
+                    Vec::new(),
+                ))),
+            }
         }
         Native::Not => done(prelude.bool(!prelude.is_true(&arg(0)))),
         Native::Concat => {
@@ -116,7 +123,23 @@ pub(super) fn immediate(
             done(value)
         }
         Native::Read(of) => {
-            let Value::Text(text) = arg(0) else {
+            let text = arg(0);
+            // The free `read` reads the meaning its call's result holds:
+            // a number by its reader, a program's meaning by its member.
+            let target = ctx.result.as_ref().and_then(read_target);
+            let of = match target {
+                Some(ty) => match super::natives::of_type(ty, ctx.tables) {
+                    Of::Other => {
+                        if let Some(step) = written_read(ty, &text, ctx) {
+                            return Ok(Pending::started(step));
+                        }
+                        Of::Other
+                    }
+                    of => of,
+                },
+                None => of,
+            };
+            let Value::Text(text) = text else {
                 unreachable!("text")
             };
             done(match of {
@@ -250,4 +273,39 @@ fn collect(over: &Value, prelude: &crate::value::Prelude) -> Value {
         }
     }
     prelude.ok(Value::seq(payloads))
+}
+
+/// The meaning `read` produces: `T` of its result `Result<T, ParseError>`.
+fn read_target(result: &crate::ir::Type) -> Option<&crate::ir::Type> {
+    match result {
+        crate::ir::Type::Meaning { arguments, .. } => arguments.first(),
+        _ => None,
+    }
+}
+
+/// A program's `read` for a meaning that claims `Read` by one, called
+/// with the text; `None` for a meaning the prelude reads.
+fn written_read(
+    ty: &crate::ir::Type,
+    text: &Value,
+    ctx: &Ctx<'_>,
+) -> Option<Step> {
+    let crate::ir::Type::Meaning { index, .. } = ty else {
+        return None;
+    };
+    let member = ctx.natives.members.read?;
+    let selected =
+        crate::compile::dispatch::select_by_head(ctx.tables, member, *index)?;
+    let crate::ir::Implementation::Definition { index, meanings } =
+        &ctx.tables.dispatch[member].rows[selected.row].target
+    else {
+        return None;
+    };
+    Some(Step::Call(super::calls::definition_invoke(
+        ctx.program,
+        ctx.globals,
+        *index,
+        alloc::vec![text.clone()],
+        meanings.clone(),
+    )))
 }

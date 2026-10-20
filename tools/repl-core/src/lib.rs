@@ -82,6 +82,8 @@ pub struct Repl {
     files: Vec<(String, String)>,
     /// Declaration sources in HOST order, for written-test descriptions.
     host_texts: Vec<String>,
+    /// The directory the declaration sources came from.
+    host_dir: String,
     /// Paths `:load` chose for module names; others are `<name>.fipe`.
     paths: Vec<(String, String)>,
     /// How many file texts, and which paths, stood before the line in
@@ -162,6 +164,7 @@ impl Repl {
             wait: None,
             files: Vec::new(),
             host_texts: Vec::new(),
+            host_dir: String::new(),
             paths: Vec::new(),
             withdrawn_loads: Vec::new(),
             before: (0, Vec::new()),
@@ -634,9 +637,15 @@ impl Repl {
             }
             Outcome::Done(Err(fault)) => {
                 if !self.replaying {
-                    let reason =
-                        render::fault(&fault.reason, &program.tables.borrow());
-                    self.fault(&fault, &reason, report.offset, text, out);
+                    let tables = program.tables.borrow();
+                    let reason = render::fault(&fault.reason, &tables);
+                    let namespace = &tables.namespaces[fault.namespace];
+                    if let Some((path, source)) = self.source_of(namespace) {
+                        let prefix = format!("fault at {path}:");
+                        located(&prefix, source, fault.span, &reason, out);
+                    } else {
+                        self.fault(&fault, &reason, report.offset, text, out);
+                    }
                 }
                 if let Some(withdrawn) =
                     report.accepted.and_then(|line| self.session.withdraw(line))
@@ -783,6 +792,27 @@ impl Repl {
         }
     }
 
+    /// The path and text of a source other than the session's, by the
+    /// namespace a Fault names: the prelude, a host declaration file or
+    /// a loaded file module. `None` for the session's lines.
+    fn source_of(&self, namespace: &str) -> Option<(String, &str)> {
+        if namespace == "main" || namespace.starts_with("line ") {
+            return None;
+        }
+        if namespace == "prelude" {
+            return Some((
+                String::from("prelude.fipe"),
+                fipe::decl::prelude_source(),
+            ));
+        }
+        if let Some(index) = HOST.iter().position(|name| *name == namespace) {
+            let text = self.host_texts.get(index)?;
+            return Some((host_path(&self.host_dir, namespace), text));
+        }
+        let text = self.cached(namespace)?;
+        Some((self.path(namespace), text))
+    }
+
     fn cached(&self, stem: &str) -> Option<&str> {
         self.files
             .iter()
@@ -830,6 +860,7 @@ impl Repl {
         let lines: Vec<String> =
             self.session.lines().map(String::from).collect();
         self.host_texts = texts.to_vec();
+        self.host_dir = String::from(dir);
         self.session = Session::new(declarations);
         self.session.strict(self.strict);
         self.session.compile_budget(self.compile_budget);

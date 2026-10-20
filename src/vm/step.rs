@@ -74,10 +74,7 @@ impl Machine {
             }
             return self
                 .statement(program, &block.statements[index], node)
-                .map_err(|reason| Fault {
-                    span: Self::span(program, node),
-                    reason,
-                });
+                .map_err(|reason| Self::fault(program, node, reason));
         }
         let node = *block.nodes.last().expect("a terminator's node");
         self.terminator(program, &block.terminator, node)
@@ -193,10 +190,11 @@ impl Machine {
                     .map(|(_, block)| *block)
                     .or(*otherwise);
                 let Some(block) = block else {
-                    return Err(Fault {
-                        span: Self::span(program, node),
-                        reason: Reason::Unreachable,
-                    });
+                    return Err(Self::fault(
+                        program,
+                        node,
+                        Reason::Unreachable,
+                    ));
                 };
                 let frame = self.top();
                 frame.block = block;
@@ -232,25 +230,9 @@ impl Machine {
                 meanings,
                 dest,
                 target,
-            } => {
-                let args = self.operands(program, args);
-                let (meanings, result) = {
-                    let Some(Frame::Body(frame)) = self.frames.last() else {
-                        unreachable!()
-                    };
-                    let meanings = meanings
-                        .iter()
-                        .map(|ty| Self::substitute(program, frame, ty))
-                        .collect();
-                    (meanings, self.local_type(program, *dest))
-                };
-                let back = Return::Into {
-                    dest: *dest,
-                    block: *target,
-                    statement: 0,
-                };
-                self.call(program, callee, args, meanings, result, back, node)
-            }
+            } => self.call_terminator(
+                program, callee, args, meanings, *dest, *target, node,
+            ),
             Terminator::Return => {
                 let Some(Frame::Body(frame)) = self.frames.pop() else {
                     unreachable!()
@@ -258,12 +240,91 @@ impl Machine {
                 let value = frame.locals.into_iter().next().expect("_0");
                 self.deliver(program, value, frame.back)
             }
-            Terminator::Unreachable => Err(Fault {
-                span: Self::span(program, node),
-                reason: Reason::Unreachable,
-            }),
+            Terminator::Unreachable => {
+                Err(Self::fault(program, node, Reason::Unreachable))
+            }
         }
     }
+}
+
+impl Machine {
+    /// A call terminator: the callee with its arguments and witnesses,
+    /// its result into `dest`, then `target`.
+    #[allow(clippy::too_many_arguments)]
+    fn call_terminator(
+        &mut self,
+        program: &mir::Program,
+        callee: &mir::Callee,
+        args: &[mir::Operand],
+        meanings: &[ir::Type],
+        dest: usize,
+        target: usize,
+        node: usize,
+    ) -> Result<Flow, Fault> {
+        let args = self.operands(program, args);
+        let (meanings, result) = {
+            let Some(Frame::Body(frame)) = self.frames.last() else {
+                unreachable!()
+            };
+            let meanings = meanings
+                .iter()
+                .map(|ty| Self::substitute(program, frame, ty))
+                .collect();
+            (meanings, self.local_type(program, dest))
+        };
+        let back = Return::Into {
+            dest,
+            block: target,
+            statement: 0,
+        };
+        let tail = dest == 0 && {
+            let Some(Frame::Body(frame)) = self.frames.last() else {
+                unreachable!()
+            };
+            returns(&program.bodies[frame.body], target)
+        };
+        let depth = self.frames.len();
+        let flow =
+            self.call(program, callee, args, meanings, result, back, node)?;
+        if tail && self.frames.len() == depth + 1 {
+            self.replace_caller();
+        }
+        Ok(flow)
+    }
+
+    /// A call in tail position: the body frame it pushed takes its
+    /// caller's place and returns where the caller would have, so a
+    /// recursion as iteration keeps one frame.
+    fn replace_caller(&mut self) {
+        let Some(Frame::Body(_)) = self.frames.last() else {
+            return;
+        };
+        let Some(Frame::Body(mut entered)) = self.frames.pop() else {
+            unreachable!()
+        };
+        let Some(Frame::Body(replaced)) = self.frames.pop() else {
+            unreachable!("a call's caller is a body")
+        };
+        entered.back = replaced.back;
+        self.frames.push(Frame::Body(entered));
+    }
+}
+
+/// Whether a call's result in `_0` is all that is left: from `block`,
+/// empty blocks reach `Return`.
+fn returns(body: &mir::Body, mut block: usize) -> bool {
+    for _ in 0..body.blocks.len() {
+        let next = &body.blocks[block];
+        if !next.statements.is_empty() {
+            return false;
+        }
+        match next.terminator {
+            Terminator::Return => return true,
+            Terminator::Goto(target) => block = target,
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// A record's field, a tuple's part, a sequence's element, a packed

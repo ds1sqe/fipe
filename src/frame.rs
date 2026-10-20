@@ -300,7 +300,12 @@ fn delta(
             }) => (*line, name.clone()),
             _ => continue,
         };
-        delta.impls.push(owner.clone());
+        // A line is listed once per type, however many of its impls
+        // the type has: each listing is a scope the line's impls are
+        // read from.
+        if !delta.impls.contains(&owner) {
+            delta.impls.push(owner.clone());
+        }
         let mut constructor = None;
         for member in members {
             match member {

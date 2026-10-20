@@ -184,9 +184,20 @@ pub fn infer(reason: &infer::Reason) -> String {
             let choices = if candidates.is_empty() {
                 String::new()
             } else {
+                // Each candidate is written beside the others and the
+                // two sides, so names of different declarations show
+                // their modules.
+                let context = fipe::types::Type::Tuple(
+                    candidates
+                        .iter()
+                        .chain(source)
+                        .chain([target])
+                        .cloned()
+                        .collect(),
+                );
                 let choices = candidates
                     .iter()
-                    .map(ToString::to_string)
+                    .map(|candidate| candidate.beside(&context).to_string())
                     .collect::<alloc::vec::Vec<_>>()
                     .join(", ");
                 format!("; candidates: {choices}")

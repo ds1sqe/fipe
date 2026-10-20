@@ -91,10 +91,7 @@ impl Machine {
             (frame.node, step, frame.pending.take_owed())
         };
         if let Err(reason) = self.pay(owed) {
-            return Err(Fault {
-                span: Self::span(program, node),
-                reason,
-            });
+            return Err(Self::fault(program, node, reason));
         }
         match step {
             Step::Call(invoke) => {
@@ -107,10 +104,7 @@ impl Machine {
                 };
                 self.deliver(program, value, frame.back)
             }
-            Step::Fault(reason) => Err(Fault {
-                span: Self::span(program, node),
-                reason,
-            }),
+            Step::Fault(reason) => Err(Self::fault(program, node, reason)),
         }
     }
 

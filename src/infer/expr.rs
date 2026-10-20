@@ -421,13 +421,26 @@ impl Infer<'_> {
                 _ => break,
             }
         }
-        let inner = expected.filter(|_| {
-            reach
-                && matches!(
-                    module.expressions[node.0].kind,
-                    ExprKind::Literal(_)
-                )
-        });
+        // A literal operand reads as the place's meaning: a width is a
+        // limit, tested on the result at the place, never on an operand
+        // (`04-members.md` §Number types).
+        let operand = expected
+            .filter(|_| {
+                reach
+                    && matches!(
+                        module.expressions[node.0].kind,
+                        ExprKind::Literal(_)
+                    )
+            })
+            .map(|expected| {
+                if spine.is_empty() {
+                    return expected.clone();
+                }
+                let mut operand = expected.clone();
+                operand.ty = super::meaning(&self.apply(&expected.ty)).clone();
+                operand
+            });
+        let inner = operand.as_ref();
         let literal_run = matches!(module.expressions[node.0].kind, ExprKind::Literal(_))
             && spine.iter().all(|(id, _)| matches!(&module.expressions[id.0].kind,
                 ExprKind::Binary { right, .. } if matches!(module.expressions[right.0].kind, ExprKind::Literal(_))));

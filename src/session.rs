@@ -71,6 +71,7 @@ pub struct Accepted {
 pub struct Withdrawn {
     pub(crate) definitions: usize,
     pub(crate) modules: usize,
+    pub(crate) tests: usize,
 }
 
 /// The last accepted line's undo.
@@ -385,17 +386,20 @@ impl Session {
                     if last.loaded.contains(stem))
         });
         // A line with no unit was never emitted, so nothing ran.
-        let (definitions, modules) = match (last.journal, self.index.as_mut()) {
-            (Some(journal), Some(index)) => {
-                let before = journal.before();
-                index.withdraw(journal);
-                before
-            }
-            _ => (usize::MAX, usize::MAX),
-        };
+        let (definitions, modules, tests) =
+            match (last.journal, self.index.as_mut()) {
+                (Some(journal), Some(index)) => {
+                    let (definitions, modules) = journal.before();
+                    let tests = journal.tests_before();
+                    index.withdraw(journal);
+                    (definitions, modules, tests)
+                }
+                _ => (usize::MAX, usize::MAX, usize::MAX),
+            };
         Some(Withdrawn {
             definitions,
             modules,
+            tests,
         })
     }
 

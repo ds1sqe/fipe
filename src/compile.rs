@@ -349,6 +349,8 @@ impl Lowering<'_> {
     pub(super) fn walked_members(label: &str) -> &'static [&'static str] {
         match label {
             "show" => &["show"],
+            "len" => &["len"],
+            "read" => &["read"],
             "eq" | "count" => &["eq"],
             "cmp" | "sort" => &["cmp"],
             "default" => &["default"],

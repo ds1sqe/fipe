@@ -350,9 +350,13 @@ impl<'a> Builder<'_, 'a> {
             ir::PatternKind::Slot(slot) => {
                 if let Some(definition) = self.tables().slots[*slot].definition
                 {
-                    // A function definition's body is lowered on reference;
-                    // a value definition's is computed here, once.
-                    if self.lowering.function_body(definition).is_none() {
+                    // A function definition's body is lowered on reference,
+                    // a generic value's runs at each use with its
+                    // witnesses; any other value definition's is computed
+                    // here, once.
+                    if self.lowering.function_body(definition).is_none()
+                        && !self.lowering.generic(definition)
+                    {
                         let value = self.lower(value);
                         self.emit(Statement::Store { definition, value }, node);
                     }

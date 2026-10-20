@@ -21,6 +21,12 @@ pub use spots::Problem as SpotProblem;
 
 const PRELUDE: &str = include_str!("../prelude/prelude.fipe");
 
+/// The prelude's source, which the spans of its declarations index.
+#[must_use]
+pub const fn prelude_source() -> &'static str {
+    PRELUDE
+}
+
 /// The prelude, the host's command namespace and the host's modules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declarations {

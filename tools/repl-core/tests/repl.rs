@@ -1396,6 +1396,33 @@ fn a_use_after_a_withdrawn_load_says_how_to_load_it_again() {
 }
 
 #[test]
+fn a_fault_in_a_loaded_module_is_located_in_that_file() {
+    let mut repl = Repl::new();
+    written(repl.feed(b"a = 1\n\nb = 2\n\n"));
+    assert_eq!(repl.feed(b"use geo\n\n"), [Out::File("geo.fipe".into())]);
+    written(repl.file(
+        "geo.fipe",
+        Some("pub reveal = _ => 7\npub boom = n => n / 0.0\n"),
+    ));
+    let text = written(repl.feed(b"geo.boom 1.0\n\n"));
+    assert!(text.contains("fault at geo.fipe:2:"), "{text}");
+    assert!(text.contains("pub boom = n => n / 0.0\n"), "{text}");
+    assert!(!text.contains("line 1"), "{text}");
+}
+
+#[test]
+fn a_fault_in_a_host_default_is_located_in_the_declaration_file() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b"a = 1\n\n:host\n");
+    host(&mut repl, outs);
+    let text = written(repl.feed(b"ls\n\n"));
+    assert!(
+        text.contains("fault at tests/fixtures/host/commands.fipe:39:"),
+        "{text}"
+    );
+}
+
+#[test]
 fn ir_shows_literals_and_resolution_says_when_nothing_is_named() {
     let mut repl = Repl::new();
     let text = written(repl.feed(b":ir 7 - 2\n"));
@@ -1415,6 +1442,26 @@ fn an_unbound_word_at_a_typed_spot_says_it_is_text() {
         text.contains(
             "found String; `dir` is text here: no name `dir` is bound"
         ),
+        "{text}"
+    );
+}
+
+#[test]
+fn conversion_candidates_name_the_line_of_a_shadowed_type() {
+    let mut repl = Repl::new();
+    written(
+        repl.feed(b"type A { n: I64 }\n\na1 = A 1\n\ntype A { n: I64 }\n\n"),
+    );
+    written(repl.feed(
+        b"type B: From<A> { m: I64 }\nimpl B: From<A> { from: A -> Self = a => Self a.n }\n\n",
+    ));
+    let text = written(repl.feed(b"a1 | B.from\n\n"));
+    assert!(text.contains("candidates: "), "{text}");
+    let candidates = text.split("candidates: ").nth(1).unwrap();
+    let source = text.split(" accepts ").nth(1).unwrap();
+    assert_ne!(
+        candidates.split(['\n', ';']).next(),
+        source.split(['\n', ';']).next(),
         "{text}"
     );
 }

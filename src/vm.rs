@@ -20,6 +20,7 @@ mod entries;
 mod frames;
 mod globals;
 mod immediate;
+mod merge;
 mod natives;
 mod order;
 mod pending;
@@ -41,7 +42,12 @@ pub use natives::Natives;
 /// A run that ended: the reason, at the node whose span this is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fault {
+    /// The node's span, in the source `namespace` names.
     pub span: Span,
+    /// The source the span is in, by `tables.namespaces`: `main` or
+    /// `line N` for a session's lines, a file module's stem, a host
+    /// module's name, `commands`, or `prelude`.
+    pub namespace: usize,
     pub reason: Reason,
 }
 
@@ -88,6 +94,9 @@ pub struct Machine {
     waiting: Option<(Return, usize)>,
     /// The `with` keys and values open, outermost first.
     environment: Vec<(usize, Value)>,
+    /// Every program run so far, joined: the bodies frames and function
+    /// values index.
+    program: Option<Rc<mir::Program>>,
 }
 
 /// What a frame's caller does with the returned value.
@@ -140,6 +149,7 @@ impl Machine {
             stage: None,
             waiting: None,
             environment: Vec::new(),
+            program: None,
         }
     }
 
@@ -166,6 +176,13 @@ impl Machine {
     pub fn withdraw(&mut self, withdrawn: &Withdrawn) {
         self.globals.truncate(withdrawn.definitions);
         self.initialized.truncate(withdrawn.modules);
+        if let Some(program) = self.program.as_mut() {
+            merge::forget(
+                Rc::make_mut(program),
+                withdrawn.definitions,
+                withdrawn.tests,
+            );
+        }
         // Both are found per tables length, which the next line may
         // reach again with other contents.
         self.natives = None;
@@ -190,13 +207,26 @@ impl Machine {
         &mut self,
         program: &mir::Program,
     ) -> Outcome<Result<Value, Fault>> {
-        self.prepare(program);
+        merge::merge(&mut self.program, program);
+        let program = self.joined();
+        self.prepare(&program);
         self.charged = 0;
         self.frames.clear();
         self.environment.clear();
         self.waiting = None;
         self.stage = Some(Stage::Init(0));
-        self.advance(program)
+        self.advance(&program)
+    }
+
+    /// Every program run so far, joined: the bodies that frames and
+    /// function values index, renumbered from each run's program.
+    #[must_use]
+    pub fn program(&self) -> Option<&mir::Program> {
+        self.program.as_deref()
+    }
+
+    fn joined(&self) -> Rc<mir::Program> {
+        Rc::clone(self.program.as_ref().expect("a program ran"))
     }
 
     /// Answer the owed host request and continue the run, with the
@@ -211,12 +241,14 @@ impl Machine {
         reply: Reply,
     ) -> Outcome<Result<Value, Fault>> {
         let (back, node) = self.waiting.take().expect("a host request is owed");
+        let joined = self.joined();
+        debug_assert!(Rc::ptr_eq(&joined.tables, &program.tables));
+        let program = &*joined;
         let flow = match reply {
             Reply::Value(Ok(value)) => self.deliver(program, value, back),
-            Reply::Value(Err(message)) => Err(Fault {
-                span: Self::span(program, node),
-                reason: Reason::Host(message),
-            }),
+            Reply::Value(Err(message)) => {
+                Err(Self::fault(program, node, Reason::Host(message)))
+            }
             Reply::File(_) => panic!("a host call takes a value reply"),
         };
         self.settle(program, flow)
@@ -344,9 +376,19 @@ impl Machine {
         Rc::clone(&self.prelude.as_ref().expect("prepared").1)
     }
 
-    /// The span of a node, for a Fault.
-    pub(crate) fn span(program: &mir::Program, node: usize) -> Span {
-        program.tables.borrow().nodes[node].span
+    /// A Fault at a node, located in the node's source.
+    pub(crate) fn fault(
+        program: &mir::Program,
+        node: usize,
+        reason: Reason,
+    ) -> Fault {
+        let tables = program.tables.borrow();
+        let node = &tables.nodes[node];
+        Fault {
+            span: node.span,
+            namespace: node.namespace,
+            reason,
+        }
     }
 
     /// A type with the frame's witnesses in place of its parameters.

@@ -101,3 +101,26 @@ fn packed_values_compare_tags_first_then_values() {
         "(\"c1\", \"[c1, D 1]\")"
     );
 }
+
+#[test]
+fn len_and_read_run_a_written_claim_through_the_prelude_word() {
+    let written = "type L: Len { n: I64 }\n\
+                   impl L: Len { len = self => 99 }\n";
+    assert_eq!(shown(&format!("{written}len (L 1)")), "99");
+    assert_eq!(shown(&format!("{written}(L 1) | len")), "99");
+    let read = "type Q: Read & Show { x: I64 }\n\
+                impl Q: Read { read = s => Ok (Self 7) }\n";
+    assert_eq!(shown(&format!("{read}\"zzz\" | read<Q>")), "Ok (Q 7)");
+    // Inside a generic function the witness arrives at run time.
+    let generic = "size = x => len x\nsize (L 1)";
+    assert_eq!(shown(&format!("{written}{generic}")), "99");
+}
+
+#[test]
+fn len_and_read_keep_their_built_in_rows() {
+    assert_eq!(shown("len \"abc\""), "3");
+    assert_eq!(shown("len [1, 2]"), "2");
+    assert_eq!(shown("\"42\" | read<I64>"), "Ok 42");
+    assert_eq!(shown("\"2.5\" | read<F64>"), "Ok 2.5");
+    assert_eq!(shown("size = x => len x\nsize [1, 2, 3]"), "3");
+}

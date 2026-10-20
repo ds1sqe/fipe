@@ -33,6 +33,19 @@ pub(super) enum Pending {
     Predicate(Run),
     Sort(super::order::Sort),
     Count(super::order::Count),
+    /// A native that hands its arguments to one written member: the
+    /// call until made, then its answer passes through.
+    Once(Option<Invoke>),
+}
+
+impl Pending {
+    /// A native's step as the frame it becomes: a call starts one.
+    pub(super) fn started(step: Step) -> Step {
+        match step {
+            Step::Call(invoke) => Step::Start(Self::Once(Some(invoke))),
+            other => other,
+        }
+    }
 }
 
 /// `map` over a sequence, a `Maybe` or a `Result`.
@@ -144,6 +157,11 @@ impl Pending {
                 }
                 (None, Some(value)) => Step::Done(value),
                 (_, None) => unreachable!("an apply waits on the body"),
+            },
+            Self::Once(call) => match (call.take(), returned) {
+                (Some(invoke), None) => Step::Call(invoke),
+                (None, Some(value)) => Step::Done(value),
+                _ => unreachable!("a once calls once"),
             },
             Self::Then(call) => match (call.take(), returned) {
                 (Some((function, payload)), None) => {

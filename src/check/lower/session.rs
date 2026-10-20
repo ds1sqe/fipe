@@ -76,6 +76,11 @@ impl Journal {
     pub const fn before(&self) -> (usize, usize) {
         (self.mark.definitions, self.mark.modules)
     }
+
+    /// How many limit tests stood before the line.
+    pub const fn tests_before(&self) -> usize {
+        self.mark.tests
+    }
 }
 
 /// A write a session line made to something that existed before it,
