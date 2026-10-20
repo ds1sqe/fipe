@@ -56,6 +56,40 @@ fn a_recursive_definition_grows_the_frames_not_the_stack() {
     assert_eq!(shown(source), "2000");
 }
 
+/// A tail recursion `100 000` calls deep runs on a thread whose Rust
+/// stack holds a few kilobytes per call at most: the frames are the
+/// machine's, on the heap.
+#[test]
+fn a_recursion_a_hundred_thousand_deep_runs_on_a_small_stack() {
+    let deep = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let source = "f = n => if n == 0 { 0 } else { f (n - 1) }\n\
+                          f 100000";
+            let module = fipe::parse::parse(fipe::lex::lex(source)).unwrap();
+            let unit = fipe::check::check(
+                &module,
+                &fipe::decl::Declarations::new(),
+                &[],
+                fipe::check::Options::default(),
+            )
+            .unwrap();
+            let program = fipe::compile::compile(&unit);
+            let mut machine = fipe::vm::Machine::new(Some(1 << 24));
+            let fipe::embed::Outcome::Done(Ok(value)) = machine.run(&program)
+            else {
+                panic!("the run ends with a value")
+            };
+            let shown =
+                fipe::value::structural::show(&value, &program.tables.borrow());
+            (shown, machine.charged())
+        })
+        .unwrap();
+    let (value, charged) = deep.join().unwrap();
+    assert_eq!(value, "0");
+    assert!(charged < 1 << 24, "{charged}");
+}
+
 #[test]
 fn a_host_call_is_a_request_and_a_failed_reply_faults() {
     let module = fipe::parse::parse(fipe::lex::lex("\"a\" | put ./f")).unwrap();

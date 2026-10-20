@@ -34,6 +34,8 @@ mod fallback;
 mod faults;
 #[path = "vm/host.rs"]
 mod host;
+#[path = "vm/laws.rs"]
+mod laws;
 #[path = "vm/lifts.rs"]
 mod lifts;
 #[path = "vm/natives.rs"]
