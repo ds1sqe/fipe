@@ -1,12 +1,15 @@
 //! A language server for Fipe over the `fipe` crate: diagnostics from
-//! every stage, go to definition, references and hover. The server
+//! every stage, go to definition, references, hover, completion,
+//! rename and formatting. The server
 //! holds no parser, resolver or checker of its own; it asks the crate
 //! and presents the answers.
 //!
 //! One thread reads requests from a byte stream and answers each in
 //! turn, analysing a whole document again on every change.
 
+pub mod actions;
 pub mod analysis;
+pub mod format;
 pub mod loader;
 pub mod position;
 pub mod transport;
@@ -18,13 +21,16 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, GotoDefinitionParams, Hover, HoverContents,
-    HoverParams, Location, MarkupContent, MarkupKind, PublishDiagnosticsParams,
-    ReferenceParams, TextDocumentPositionParams, Uri,
+    CompletionParams, Diagnostic, DiagnosticSeverity, DocumentFormattingParams,
+    GotoDefinitionParams, Hover, HoverContents, HoverParams, Location,
+    MarkupContent, MarkupKind, PublishDiagnosticsParams, ReferenceParams,
+    RenameParams, TextDocumentPositionParams, Uri,
 };
 use serde_json::{json, Value};
 
+use actions::rename;
 use analysis::{Analysis, Located, Source};
+use fipe::resolve::{Origin, Target};
 use loader::Host;
 use position::Encoding;
 
@@ -120,6 +126,21 @@ impl Server {
                     serde_json::from_value(params).map_err(|e| invalid(&e))?;
                 Ok(self.hover(&params.text_document_position_params))
             }
+            "textDocument/completion" => {
+                let params: CompletionParams =
+                    serde_json::from_value(params).map_err(|e| invalid(&e))?;
+                Ok(self.completion(&params.text_document_position))
+            }
+            "textDocument/rename" => {
+                let params: RenameParams =
+                    serde_json::from_value(params).map_err(|e| invalid(&e))?;
+                self.rename(&params)
+            }
+            "textDocument/formatting" => {
+                let params: DocumentFormattingParams =
+                    serde_json::from_value(params).map_err(|e| invalid(&e))?;
+                self.formatting(&params.text_document.uri)
+            }
             _ => Err((-32601, format!("method not found: {method}"))),
         }
     }
@@ -145,6 +166,9 @@ impl Server {
                 "definitionProvider": true,
                 "referencesProvider": true,
                 "hoverProvider": true,
+                "completionProvider": {"triggerCharacters": [".", "-"]},
+                "renameProvider": true,
+                "documentFormattingProvider": true,
             },
             "serverInfo": {
                 "name": "fipe-lsp",
@@ -216,6 +240,28 @@ impl Server {
         Some((analysis, offset))
     }
 
+    /// The URI and text of a source the analysis of `document` names.
+    fn place<'a>(
+        &'a self,
+        analysis: &'a Analysis,
+        document: &Uri,
+        source: &Source,
+    ) -> Option<(Uri, &'a str)> {
+        match source {
+            Source::This => Some((document.clone(), analysis.text.as_str())),
+            Source::File(index) => {
+                let file = analysis.files.get(*index)?;
+                Some((uri::of(&file.path), file.text.as_str()))
+            }
+            Source::Host(name) => {
+                let (path, text) = self.host.source(name)?;
+                let path = std::fs::canonicalize(path).ok()?;
+                Some((uri::of(&path), text))
+            }
+            Source::Prelude => None,
+        }
+    }
+
     /// A located span as an LSP location.
     fn location(
         &self,
@@ -223,19 +269,7 @@ impl Server {
         document: &Uri,
         (source, span): &Located,
     ) -> Option<Location> {
-        let (uri, text) = match source {
-            Source::This => (document.clone(), analysis.text.as_str()),
-            Source::File(index) => {
-                let file = analysis.files.get(*index)?;
-                (uri::of(&file.path), file.text.as_str())
-            }
-            Source::Host(name) => {
-                let (path, text) = self.host.source(name)?;
-                let path = std::fs::canonicalize(path).ok()?;
-                (uri::of(&path), text)
-            }
-            Source::Prelude => return None,
-        };
+        let (uri, text) = self.place(analysis, document, source)?;
         Some(Location::new(
             uri,
             position::range(text, *span, self.encoding),
@@ -293,6 +327,207 @@ impl Server {
             range: None,
         };
         serde_json::to_value(hover).unwrap_or(Value::Null)
+    }
+}
+
+impl Server {
+    /// An open document's text, or the disk's.
+    fn text_of(&self, path: &Path) -> Option<String> {
+        self.documents
+            .get(uri::of(path).as_str())
+            .cloned()
+            .or_else(|| std::fs::read_to_string(path).ok())
+    }
+
+    fn completion(&self, position: &TextDocumentPositionParams) -> Value {
+        let Some((analysis, offset)) = self.at(position) else {
+            return Value::Null;
+        };
+        let path = uri::path(&position.text_document.uri);
+        let open =
+            |path: &Path| self.documents.get(uri::of(path).as_str()).cloned();
+        let reanalyse = |text: &str| {
+            Analysis::new(text, path.as_deref(), &self.host, &open)
+        };
+        let dir = path.as_deref().and_then(Path::parent);
+        let items = actions::complete::complete(
+            &analysis, &self.host, dir, offset, &reanalyse,
+        );
+        serde_json::to_value(items).unwrap_or(Value::Null)
+    }
+
+    fn rename(&self, params: &RenameParams) -> Answer {
+        let failed = |text: &str| (-32803, String::from(text));
+        let position = &params.text_document_position;
+        let (analysis, offset) = self
+            .at(position)
+            .ok_or_else(|| failed("the document is not open"))?;
+        // A top-level definition's own name is the document's value or
+        // type, which files beside it may import, not a local.
+        let declared = analysis.declaration_at(offset);
+        let target = declared
+            .clone()
+            .filter(|target| !matches!(target, Target::Local { .. }))
+            .or_else(|| analysis.target_at(offset).map(|(_, target)| target))
+            .or(declared)
+            .ok_or_else(|| failed("nothing here can be renamed"))?;
+        let target = rename::renamed(&target).map_err(failed)?;
+        let old = rename::old_name(&analysis.text, &target)
+            .ok_or_else(|| failed("nothing here can be renamed"))?;
+        let new = params.new_name.as_str();
+        if !rename::valid(&old, new) {
+            return Err((
+                -32602,
+                format!("`{new}` is not a name of the same case as `{old}`"),
+            ));
+        }
+        let document = &position.text_document.uri;
+        // Each edited document's URI, text and the spans to replace.
+        let mut edits: BTreeMap<String, (String, Vec<(usize, usize)>)> =
+            BTreeMap::new();
+        let mut add = |uri: &Uri, text: &str, span: Option<(usize, usize)>| {
+            let Some(span) = span else { return };
+            let entry = edits
+                .entry(uri.as_str().to_string())
+                .or_insert_with(|| (String::from(text), Vec::new()));
+            if !entry.1.contains(&span) {
+                entry.1.push(span);
+            }
+        };
+        for (source, span) in analysis.references(&self.host, &target, true) {
+            if let Some((uri, text)) = self.place(&analysis, document, &source)
+            {
+                add(&uri, text, rename::name_span(text, span, &old));
+            }
+        }
+        // A top-level binding is a local of the document, and the value
+        // its export names for the files that import it.
+        let exported = match &target {
+            Target::Local { site } => analysis
+                .resolved
+                .exports
+                .iter()
+                .find(|export| export.span == *site)
+                .map(|export| export.target.clone()),
+            _ => None,
+        };
+        let shared = exported.as_ref().unwrap_or(&target);
+        match origin(shared) {
+            Some(Origin::File(stem)) => {
+                for span in rename::use_spans(&analysis.module, stem, &old) {
+                    add(document, &analysis.text, Some(span));
+                }
+            }
+            Some(Origin::This) => {
+                for (uri, text, span) in self.importers(document, shared, &old)
+                {
+                    add(&uri, &text, Some(span));
+                }
+            }
+            _ => {}
+        }
+        let changes: serde_json::Map<String, Value> = edits
+            .into_iter()
+            .map(|(uri, (text, mut spans))| {
+                spans.sort_unstable();
+                let edits: Vec<Value> = spans
+                    .iter()
+                    .map(|span| {
+                        json!({
+                            "range": position::range(&text, *span, self.encoding),
+                            "newText": new,
+                        })
+                    })
+                    .collect();
+                (uri, Value::Array(edits))
+            })
+            .collect();
+        Ok(json!({ "changes": changes }))
+    }
+
+    /// The places in the files beside `document` that import `target`,
+    /// which `document` defines, by name: each file's URI, text and the
+    /// span of the name.
+    fn importers(
+        &self,
+        document: &Uri,
+        target: &Target,
+        old: &str,
+    ) -> Vec<(Uri, String, (usize, usize))> {
+        let Some(path) = uri::path(document) else {
+            return Vec::new();
+        };
+        let (Some(stem), Some(dir)) =
+            (path.file_stem().and_then(|s| s.to_str()), path.parent())
+        else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        let mut siblings: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|other| {
+                other.extension().is_some_and(|ext| ext == "fipe")
+                    && *other != path
+            })
+            .collect();
+        siblings.sort();
+        let open =
+            |path: &Path| self.documents.get(uri::of(path).as_str()).cloned();
+        let imported = analysis::with_origin(target, Origin::File(stem.into()));
+        for sibling in siblings {
+            let Some(text) = self.text_of(&sibling) else {
+                continue;
+            };
+            let other = Analysis::new(&text, Some(&sibling), &self.host, &open);
+            if !loader::uses(&other.module).any(|(used, _)| used == stem) {
+                continue;
+            }
+            let uri = uri::of(&sibling);
+            for node in other.resolved.uses(&imported) {
+                let span = Analysis::span(&other.module, node)
+                    .and_then(|span| rename::name_span(&other.text, span, old));
+                if let Some(span) = span {
+                    found.push((uri.clone(), other.text.clone(), span));
+                }
+            }
+            for span in rename::use_spans(&other.module, stem, old) {
+                found.push((uri.clone(), other.text.clone(), span));
+            }
+        }
+        found
+    }
+
+    fn formatting(&self, document: &Uri) -> Answer {
+        let failed = |text: &str| (-32803, String::from(text));
+        let analysis = self
+            .analyse(document.as_str())
+            .ok_or_else(|| failed("the document is not open"))?;
+        if !analysis.diagnostics.is_empty() {
+            return Err(failed("a file with errors is not formatted"));
+        }
+        let text = &analysis.text;
+        let formatted = format::format(text).map_err(failed)?;
+        if formatted == *text {
+            return Ok(json!([]));
+        }
+        let end = position::position(text, text.len(), self.encoding);
+        Ok(json!([{
+            "range": {"start": {"line": 0, "character": 0}, "end": end},
+            "newText": formatted,
+        }]))
+    }
+}
+
+/// The origin of a declared target.
+const fn origin(target: &Target) -> Option<&Origin> {
+    match target {
+        Target::Value { origin, .. }
+        | Target::Constructor { origin, .. }
+        | Target::Type { origin, .. } => Some(origin),
+        _ => None,
     }
 }
 

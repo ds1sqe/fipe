@@ -124,7 +124,8 @@ impl Analysis {
     }
 
     /// The span of a node of `module`.
-    fn span(module: &Module, node: Node) -> Option<(usize, usize)> {
+    #[must_use]
+    pub fn span(module: &Module, node: Node) -> Option<(usize, usize)> {
         let span = match node {
             Node::Expr(id) => module.expr(id)?.span,
             Node::Pattern(id) => module.pattern(id)?.span,
@@ -145,6 +146,74 @@ impl Analysis {
         Some((node, target.clone()))
     }
 
+    /// What the declaration under byte `offset` defines: a top-level
+    /// value, type or constructor of the document, or a local's binder.
+    #[must_use]
+    pub fn declaration_at(&self, offset: usize) -> Option<Target> {
+        let part = |c: char| c.is_alphanumeric() || c == '_';
+        let start = self.text[..offset.min(self.text.len())]
+            .rfind(|c: char| !part(c))
+            .map_or(0, |at| at + 1);
+        let end = self.text[start..]
+            .find(|c: char| !part(c))
+            .map_or(self.text.len(), |at| start + at);
+        let word = self.text.get(start..end)?;
+        let mut candidates = vec![
+            Target::Value {
+                origin: Origin::This,
+                name: String::from(word),
+            },
+            Target::Type {
+                origin: Origin::This,
+                name: String::from(word),
+            },
+        ];
+        for entry in &self.module.entries {
+            let fipe::ast::Entry::Item(item) = entry else {
+                continue;
+            };
+            let fipe::ast::ItemKind::Type {
+                name,
+                members: Some(members),
+                ..
+            } = &item.kind
+            else {
+                continue;
+            };
+            for member in members {
+                if let fipe::ast::Member::Constructor { name: built, .. } =
+                    member
+                {
+                    if built.segments == [word] {
+                        candidates.push(Target::Constructor {
+                            origin: Origin::This,
+                            ty: name.segments.join("."),
+                            name: String::from(word),
+                        });
+                    }
+                }
+            }
+        }
+        let at =
+            |span: fipe::token::Span| span.start <= start && end <= span.end;
+        if let Some(found) = candidates
+            .into_iter()
+            .find(|candidate| self.resolved.site(candidate).is_some_and(at))
+        {
+            return Some(found);
+        }
+        let Some(Node::Pattern(id)) = self.module.at(offset) else {
+            return None;
+        };
+        match &self.module.pattern(id)?.kind {
+            fipe::ast::PatternKind::Name(name)
+            | fipe::ast::PatternKind::Default { name, .. } => {
+                Some(Target::Local { site: name.span })
+            }
+            _ => None,
+        }
+    }
+
     fn file_index(&self, stem: &str) -> Option<usize> {
         self.files.iter().position(|file| file.stem == stem)
     }
@@ -153,6 +222,16 @@ impl Analysis {
     fn file_resolved(&self, host: &Host, index: usize) -> Resolved {
         let module = &self.files[index].module;
         resolve_partial(module, &host.declarations, &self.pairs).0
+    }
+
+    /// The names file module `index` exports.
+    #[must_use]
+    pub fn file_exports(&self, host: &Host, index: usize) -> Vec<String> {
+        self.file_resolved(host, index)
+            .exports
+            .into_iter()
+            .map(|export| export.name)
+            .collect()
     }
 
     /// Where `target` is defined.
@@ -183,8 +262,12 @@ impl Analysis {
                     return Vec::new();
                 };
                 let local = with_origin(target, Origin::This);
-                self.file_resolved(host, index)
+                let resolved = self.file_resolved(host, index);
+                // A value binding is a local of its own module; its
+                // export names its site.
+                resolved
                     .site(&local)
+                    .or_else(|| export_site(&resolved, &local))
                     .map(|span| (Source::File(index), (span.start, span.end)))
                     .into_iter()
                     .collect()
@@ -225,7 +308,15 @@ impl Analysis {
                     target.clone()
                 };
                 let resolved = self.file_resolved(host, index);
-                for node in resolved.uses(&local) {
+                let own = (Some(index) == defined_in)
+                    .then(|| export_site(&resolved, &local))
+                    .flatten()
+                    .map(|site| Target::Local { site });
+                let mut nodes: Vec<Node> = resolved.uses(&local).collect();
+                if let Some(own) = &own {
+                    nodes.extend(resolved.uses(own));
+                }
+                for node in nodes {
                     if let Some(span) = Self::span(&file.module, node) {
                         found.push((Source::File(index), span));
                     }
@@ -302,6 +393,19 @@ impl Analysis {
     }
 }
 
+/// The site of the export of `resolved` that names `target`.
+#[must_use]
+pub fn export_site(
+    resolved: &Resolved,
+    target: &Target,
+) -> Option<fipe::token::Span> {
+    resolved
+        .exports
+        .iter()
+        .find(|export| export.target == *target)
+        .map(|export| export.span)
+}
+
 /// The origin of a declared target.
 const fn origin(target: &Target) -> Option<&Origin> {
     match target {
@@ -313,7 +417,8 @@ const fn origin(target: &Target) -> Option<&Origin> {
 }
 
 /// `target` with its origin replaced.
-fn with_origin(target: &Target, origin: Origin) -> Target {
+#[must_use]
+pub fn with_origin(target: &Target, origin: Origin) -> Target {
     match target {
         Target::Value { name, .. } => Target::Value {
             origin,
