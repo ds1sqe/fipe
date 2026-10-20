@@ -248,3 +248,78 @@ fn a_deep_expression_is_refused_in_its_own_entry_only() {
     assert_eq!(result.len(), 1, "{result:?}");
     assert_eq!(result[0].reason, Reason::DepthLimit);
 }
+
+#[test]
+fn a_partial_parse_keeps_the_readable_entries_and_marks_the_others() {
+    let input = "a = 1\n[ = 3\nb = a\n";
+    let module = fipe::parse::parse_partial(lex(input));
+    assert_eq!(module.entries.len(), 2);
+    let source = Source::new(input);
+    let malformed: Vec<_> = module
+        .malformed
+        .iter()
+        .map(|span| source.slice(*span))
+        .collect();
+    assert_eq!(malformed, [Some("[ = 3")]);
+    assert_eq!(module.errors.len(), 1);
+    assert_eq!(errors(input), module.errors);
+}
+
+#[test]
+fn an_error_recovered_inside_an_entry_makes_the_entry_malformed() {
+    let input = "f = () => {\nadd 2 * 1\n}\ng = 2";
+    let module = fipe::parse::parse_partial(lex(input));
+    assert_eq!(module.entries.len(), 1, "{:?}", module.malformed);
+    assert_eq!(module.malformed.len(), 1);
+    let span = module.malformed[0];
+    assert_eq!(span.start, 0);
+    assert!(Source::new(input).slice(span).unwrap().ends_with('}'));
+    assert_eq!(errors(input), module.errors);
+}
+
+#[test]
+fn an_entry_holding_a_lexical_error_is_malformed() {
+    let input = "x = 1\nls\u{200b}next\ny = 2";
+    let module = fipe::parse::parse_partial(lex(input));
+    assert_eq!(module.entries.len(), 2);
+    assert_eq!(module.malformed.len(), 1);
+    assert!(matches!(
+        module.errors.first().map(|error| error.reason),
+        Some(Reason::Lexical(fipe::lex::Reason::Stray('\u{200b}')))
+    ));
+}
+
+#[test]
+fn a_partial_parse_of_an_invalid_token_stream_is_an_empty_module() {
+    let module = fipe::parse::parse_partial(Lexed {
+        tokens: Vec::new(),
+        comments: Vec::new(),
+        errors: Vec::new(),
+    });
+    assert_eq!(module.entries, [] as [fipe::ast::Entry; 0]);
+    assert_eq!(
+        module.errors.iter().map(|e| e.reason).collect::<Vec<_>>(),
+        [Reason::InvalidTokenStream]
+    );
+}
+
+#[test]
+fn an_offset_finds_the_innermost_node_holding_it() {
+    use fipe::ast::{ExprKind, Node, PatternKind};
+    let input = "f = x => x + 1\n[ = 3\n";
+    let module = fipe::parse::parse_partial(lex(input));
+    let Some(Node::Expr(id)) = module.at(9) else {
+        panic!("{:?}", module.at(9))
+    };
+    assert!(matches!(module.expr(id).unwrap().kind, ExprKind::Name(_)));
+    assert_eq!(module.expr(id).unwrap().span, Span { start: 9, end: 10 });
+    let Some(Node::Pattern(id)) = module.at(4) else {
+        panic!("{:?}", module.at(4))
+    };
+    assert!(matches!(
+        module.pattern(id).unwrap().kind,
+        PatternKind::Name(_)
+    ));
+    assert_eq!(module.at(16), None, "a malformed entry has no node");
+    assert_eq!(module.at(input.len()), None);
+}

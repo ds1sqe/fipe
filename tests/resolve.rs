@@ -869,3 +869,57 @@ fn a_constructor_as_a_binding_pattern_is_not_a_case_rule_error() {
         [(Reason::CaseRule { uppercase: false }, Some("Point"))]
     );
 }
+
+#[test]
+fn a_partial_module_resolves_its_readable_lines_and_a_malformed_one_binds_nothing(
+) {
+    use fipe::{ast::Node, parse::parse_partial, resolve::resolve_partial};
+    let input = "a = 1\nq = )\nb = a\nc = q\n";
+    let module = parse_partial(lex(input));
+    assert_eq!(module.malformed.len(), 1);
+    let (resolved, errors) = resolve_partial(&module, &host(), &[]);
+    let source = Source::new(input);
+    let named = |text: &str| {
+        resolved
+            .expressions()
+            .find(|(id, _)| {
+                source.slice(module.expr(*id).unwrap().span) == Some(text)
+            })
+            .map(|(_, target)| target.clone())
+    };
+    let a = named("a").expect("the use of `a` resolves");
+    let site = resolved.site(&a).expect("its definition site");
+    assert_eq!(source.slice(site), Some("a"));
+    assert_eq!(site.start, 0);
+    let uses: Vec<_> = resolved
+        .uses(&a)
+        .map(|node| match node {
+            Node::Expr(id) => module.expr(id).unwrap().span.start,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(uses, [input.find("= a").unwrap() + 2]);
+    assert!(named("q").is_none(), "a malformed line binds nothing");
+    assert!(errors
+        .iter()
+        .any(|error| matches!(error.reason, Reason::UnknownName)));
+}
+
+#[test]
+fn an_item_target_has_its_declaration_site_and_its_uses() {
+    use fipe::ast::Node;
+    let input = "type P { n: I64 }\np = P 1\nq: P = P 2\n";
+    let module = parse(lex(input)).unwrap();
+    let resolved = resolve(&module, &host(), &[]).unwrap();
+    let ty = Target::Type {
+        origin: Origin::This,
+        name: "P".into(),
+    };
+    let source = Source::new(input);
+    assert_eq!(resolved.site(&ty).and_then(|s| source.slice(s)), Some("P"));
+    let types = resolved
+        .uses(&ty)
+        .filter(|node| matches!(node, Node::Type(_)))
+        .count();
+    assert_eq!(types, 1, "the annotation `P`");
+}

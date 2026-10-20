@@ -15,7 +15,8 @@ pub struct PatternId(pub(crate) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeId(pub(crate) usize);
 
-/// A complete syntactically valid file; no name or type has been resolved.
+/// A parsed file: valid when it has no error node; no name or type has
+/// been resolved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Module {
     pub doc: Option<String>,
@@ -23,6 +24,12 @@ pub struct Module {
     pub comments: Vec<Span>,
     pub span: Span,
     pub entries: Vec<Entry>,
+    /// Each entry the parser could not read, by its span, in source
+    /// order: an error node, which binds nothing.
+    pub malformed: Vec<Span>,
+    /// The diagnostics behind `malformed`; a module with any is not a
+    /// compilation unit.
+    pub errors: Vec<crate::parse::Error>,
     pub(crate) expressions: Vec<Expr>,
     pub(crate) patterns: Vec<Pattern>,
     pub(crate) types: Vec<Type>,
@@ -46,6 +53,49 @@ impl Module {
     pub fn ty(&self, id: TypeId) -> Option<&Type> {
         self.types.get(id.0)
     }
+
+    /// The innermost node whose span holds the byte `offset`: the
+    /// smallest span with `start <= offset < end`, an expression before
+    /// a pattern before a type of the same span. Nodes of a malformed
+    /// entry are not reached.
+    #[must_use]
+    pub fn at(&self, offset: usize) -> Option<Node> {
+        let holds = |span: Span| span.start <= offset && offset < span.end;
+        let within = |span: Span| {
+            self.malformed
+                .iter()
+                .all(|bad| span.end <= bad.start || bad.end <= span.start)
+        };
+        let expressions = self
+            .expressions
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.span, Node::Expr(ExprId(i))));
+        let patterns = self
+            .patterns
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.span, Node::Pattern(PatternId(i))));
+        let types = self
+            .types
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.span, Node::Type(TypeId(i))));
+        expressions
+            .chain(patterns)
+            .chain(types)
+            .filter(|(span, _)| holds(*span) && within(*span))
+            .min_by_key(|(span, _)| span.end - span.start)
+            .map(|(_, node)| node)
+    }
+}
+
+/// A node of a module's arenas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Node {
+    Expr(ExprId),
+    Pattern(PatternId),
+    Type(TypeId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

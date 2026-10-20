@@ -18,8 +18,40 @@ The inputs are parsed modules and loaded declarations, as for resolution
 and inference. The file-loading request loop belongs to `Session`.
 Resolution, inference, limits and coverage precede lowering. An error
 carries its stage and, for a file module, its stem. No unit accompanies an
-error. `resolve` and `infer` remain public; only `check` gives a unit.
+error. A module or file module with error nodes ([parser](02-parser.md))
+is refused: its syntax errors come first, then the diagnostics of the
+rest of it. `resolve` and `infer` remain public; only `check` gives a unit.
 Lowering cannot fail: checking has already recorded every choice.
+
+## Queries
+
+~~~text
+resolve::resolve_partial(module, declarations, files)
+    -> (resolve::Resolved, Vec<resolve::Error>)
+Resolved::expr | pattern | ty (id) -> Option<&Target>
+Resolved::site(&self, target: &Target) -> Option<token::Span>
+Resolved::uses(&self, target: &Target) -> impl Iterator<Item = ast::Node>
+Resolved::exports: Vec<resolve::Export>
+infer::infer_partial(module, resolved, declarations, files)
+    -> (typed::Typed, Vec<infer::Error>)
+Typed::expr(id) -> Option<&types::Type>; binding(id) -> Option<&Scheme>
+Typed::bound: BTreeMap<(start, end), typed::Bound>
+decl::Namespace::value(name) -> Option<&Declared>; Kind::Function { spots }
+~~~
+
+The partial forms keep what each stage learned beside its errors, over a
+partial module too: a name that failed has no target, a binding that
+typed keeps its scheme when another failed, and an error node takes part
+in neither. `site` is where a target of this module is defined: a
+binding's pattern name, or a declared item's name, the later of two; a
+target of another origin is answered by that module's resolution. `uses`
+lists every node naming a target, itself or as the head of a member
+chain or type member. `Type` and `Scheme` display in the spec's type
+syntax. A checked call's `Bound`, keyed by its span, gives its spots'
+declaration sites and types, its supplies with the spot each fills, its
+defaults and its open spots; a host or prelude function's labeled spots,
+with their types and defaults, are its `Declared` kind's `spots`, and a
+Bool spot is a flag.
 
 ## The compile phase
 

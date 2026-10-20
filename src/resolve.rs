@@ -127,6 +127,64 @@ impl Resolved {
                 Some((ExprId(index), target.as_ref()?))
             })
     }
+
+    /// Where `target` is defined in this module: a binding's pattern
+    /// name, or the name of an item the module declares; `None` for a
+    /// target of another origin, which that module's resolution answers.
+    /// Of two top-level definitions of one item name, the later one.
+    #[must_use]
+    pub fn site(&self, target: &Target) -> Option<Span> {
+        if let Target::Local { site } = target {
+            return Some(*site);
+        }
+        self.definitions
+            .iter()
+            .rev()
+            .find(|definition| definition.target == *target)
+            .map(|definition| definition.site)
+    }
+
+    /// Every node naming `target`, in arena order (expressions, then
+    /// patterns, then types): a node resolved to it, or a member chain
+    /// or type member whose head it is.
+    pub fn uses<'a>(
+        &'a self,
+        target: &'a Target,
+    ) -> impl Iterator<Item = crate::ast::Node> + 'a {
+        let names = move |found: &Option<Target>| {
+            found.as_ref().is_some_and(|found| names(found, target))
+        };
+        let expressions = self.expressions.iter().enumerate().filter_map(
+            move |(index, found)| {
+                names(found).then_some(crate::ast::Node::Expr(ExprId(index)))
+            },
+        );
+        let patterns = self.patterns.iter().enumerate().filter_map(
+            move |(index, found)| {
+                names(found)
+                    .then_some(crate::ast::Node::Pattern(PatternId(index)))
+            },
+        );
+        let types =
+            self.types
+                .iter()
+                .enumerate()
+                .filter_map(move |(index, found)| {
+                    names(found)
+                        .then_some(crate::ast::Node::Type(TypeId(index)))
+                });
+        expressions.chain(patterns).chain(types)
+    }
+}
+
+/// Whether `found` names `target`, itself or as the head of a chain.
+fn names(found: &Target, target: &Target) -> bool {
+    found == target
+        || match found {
+            Target::Members { head, .. } => names(head, target),
+            Target::TypeMember { ty, .. } => names(ty, target),
+            _ => false,
+        }
 }
 
 /// A `pub` type or binding of the module.
@@ -235,8 +293,10 @@ pub fn resolve(
 }
 
 /// [`resolve`] without its checks of the used modules, keeping what it
-/// resolved beside its errors: a name that failed has no target.
-pub(crate) fn resolve_partial(
+/// resolved beside its errors: a name that failed has no target. A
+/// malformed entry ([`Module::malformed`]) binds nothing.
+#[must_use]
+pub fn resolve_partial(
     module: &Module,
     declarations: &Declarations,
     files: &[(String, Module)],

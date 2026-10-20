@@ -44,3 +44,29 @@ mod compile_phase;
 mod coverage;
 #[path = "check/outcomes.rs"]
 mod outcomes;
+
+#[test]
+fn a_module_with_a_malformed_line_types_the_rest_and_is_no_unit() {
+    use fipe::{
+        check::{check, Error as CheckError, Options},
+        parse::parse_partial,
+        resolve::resolve_partial,
+    };
+    let declarations = Declarations::new();
+    let input = "n = 1 + 2\nq = )\nm = n * 2\n";
+    let module = parse_partial(lex(input));
+    let (resolved, _) = resolve_partial(&module, &declarations, &[]);
+    let (typed, errors) = infer_partial(&module, &resolved, &declarations, &[]);
+    assert!(errors.is_empty(), "{errors:?}");
+    let schemes: Vec<_> = typed
+        .bindings()
+        .map(|(_, scheme)| scheme.to_string())
+        .collect();
+    assert_eq!(schemes.len(), 2, "{schemes:?}");
+    let refused = check(&module, &declarations, &[], Options::default())
+        .expect_err("a module with an error node is no unit");
+    assert!(
+        matches!(refused.first(), Some(CheckError::Syntax(error)) if Some(error.span.start) == input.find(')')),
+        "{refused:?}"
+    );
+}

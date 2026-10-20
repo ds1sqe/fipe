@@ -476,6 +476,19 @@ pub fn check(
             &cache,
         ));
     }
+    // A module the parser could not read whole is no unit: its syntax
+    // errors lead, the rest of it is still checked for its diagnostics.
+    let syntax = module.errors.iter().cloned().map(Error::Syntax);
+    let file_syntax = files.iter().flat_map(|(stem, file)| {
+        file.errors.iter().map(|error| Error::File {
+            stem: stem.clone(),
+            error: error.clone(),
+        })
+    });
+    checked.diagnostics = syntax
+        .chain(file_syntax)
+        .chain(core::mem::take(&mut checked.diagnostics))
+        .collect();
     if !checked.diagnostics.is_empty() {
         return Err(checked.diagnostics);
     }

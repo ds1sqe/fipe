@@ -7,12 +7,27 @@ representation and the implementation limits.
 
 ~~~text
 parse::parse(input: lex::Lexed) -> Result<ast::Module, Vec<parse::Error>>
+parse::parse_partial(input: lex::Lexed) -> ast::Module
 Error { span: token::Span, reason: parse::Reason }
+ast::Module::at(&self, offset: usize) -> Option<ast::Node>
+ast::Node = Expr(ExprId) | Pattern(PatternId) | Type(TypeId)
 ~~~
 
 The parser consumes owned tokens and does no rescanning, lookup, checking
 or I/O. Lexical errors come back as `Reason::Lexical` without parsing.
 Any error rejects the whole result; recovery only collects more errors.
+`parse_partial` keeps what it read: each entry it reads whole is in
+`entries`, and each other one, an entry with an error or an error
+recovered inside it, is an error node, its span in `malformed` in source
+order; `errors` holds the diagnostics, lexical ones first, and an entry
+holding a lexical error is an error node too. An error node binds
+nothing, and a module with errors is not a compilation unit: `check`
+refuses it. `parse` is `parse_partial` with no error, and returns only
+the lexical errors when there are any, as before. An invalid token
+stream is an empty module with that one error. `at` is the innermost
+node whose span holds a byte offset, `start <= offset < end`, an
+expression before a pattern before a type of one span; an error node's
+nodes are not reached.
 `Lexed` is publicly constructible: a missing, repeated or nonempty-span
 EOF, or overlapping or reversed spans, is `InvalidTokenStream`, never a
 panic. Comment spans must be nonempty, ordered, within EOF and disjoint

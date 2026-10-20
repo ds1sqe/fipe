@@ -116,20 +116,77 @@ impl fmt::Display for Reason {
 /// Returns lexical or syntax diagnostics; a failed unit has no returned AST.
 pub fn parse(input: Lexed) -> Result<Module, Vec<Error>> {
     if !input.errors.is_empty() {
-        return Err(input
-            .errors
-            .into_iter()
-            .map(|error| Error {
-                span: error.span,
-                reason: Reason::Lexical(error.reason),
-            })
-            .collect());
+        return Err(lexical(input.errors));
     }
-    let end = validate(&input.tokens).map_err(|error| vec![error])?;
-    validate_comments(&input.comments, &input.tokens, end)
-        .map_err(|error| vec![error])?;
+    let module = parse_partial(input);
+    if module.errors.is_empty() {
+        Ok(module)
+    } else {
+        Err(module.errors)
+    }
+}
+
+/// Parse what can be read, keeping each unreadable entry as an error node.
+///
+/// Every entry the parser reads is in `entries`, every other is a span
+/// in `malformed`, and `errors` holds the diagnostics, lexical ones
+/// first. An entry holding a lexical error is malformed. An invalid
+/// token stream yields an empty module with that one error.
+#[must_use]
+pub fn parse_partial(input: Lexed) -> Module {
+    let lexed = lexical(input.errors);
+    let mut module = match validate(&input.tokens).and_then(|end| {
+        validate_comments(&input.comments, &input.tokens, end).map(|()| end)
+    }) {
+        Err(error) => Module {
+            errors: vec![error],
+            ..Module::default()
+        },
+        Ok(end) => read(input.tokens, input.comments, end),
+    };
+    if !lexed.is_empty() {
+        let mut kept = Vec::new();
+        for entry in core::mem::take(&mut module.entries) {
+            let span = entry_span(&module, &entry);
+            if lexed.iter().any(|error| {
+                span.start <= error.span.start && error.span.start < span.end
+            }) {
+                module.malformed.push(span);
+            } else {
+                kept.push(entry);
+            }
+        }
+        module.entries = kept;
+        module.malformed.sort_by_key(|span| span.start);
+        let parsed = core::mem::take(&mut module.errors);
+        module.errors = lexed.into_iter().chain(parsed).collect();
+    }
+    module
+}
+
+fn lexical(errors: Vec<crate::lex::LexError>) -> Vec<Error> {
+    errors
+        .into_iter()
+        .map(|error| Error {
+            span: error.span,
+            reason: Reason::Lexical(error.reason),
+        })
+        .collect()
+}
+
+/// The span of an entry: its item's, or its line's expression.
+fn entry_span(module: &Module, entry: &Entry) -> Span {
+    match entry {
+        Entry::Item(item) => item.span,
+        Entry::Line(id) => {
+            module.expr(*id).map_or_else(Span::default, |e| e.span)
+        }
+    }
+}
+
+fn read(tokens: Vec<Token>, comments: Vec<Span>, end: usize) -> Module {
     Parser {
-        tokens: input.tokens,
+        tokens,
         position: 0,
         previous: Span::default(),
         depth: 0,
@@ -137,7 +194,7 @@ pub fn parse(input: Lexed) -> Result<Module, Vec<Error>> {
         too_deep: None,
         module: Module {
             span: Span { start: 0, end },
-            comments: input.comments,
+            comments,
             ..Module::default()
         },
         errors: Vec::new(),
@@ -240,7 +297,7 @@ struct Parser {
 }
 
 impl Parser {
-    fn file(mut self) -> Result<Module, Vec<Error>> {
+    fn file(mut self) -> Module {
         self.newlines();
         if matches!(self.peek(), Kind::InnerDoc(_)) {
             match self.docs(true) {
@@ -249,6 +306,7 @@ impl Parser {
             }
         }
         while !matches!(self.peek(), Kind::Eof) {
+            let start = self.here().start;
             let recorded = self.errors.len();
             let entry = self.entry().and_then(|entry| {
                 self.too_deep.map_or(Ok(entry), |span| {
@@ -260,7 +318,11 @@ impl Parser {
             });
             self.too_deep = None;
             match entry {
-                Ok(entry) => self.module.entries.push(entry),
+                Ok(entry) if self.errors.len() == recorded => {
+                    self.module.entries.push(entry);
+                }
+                // An error recovered inside the entry makes it malformed.
+                Ok(_) => self.malformed(start),
                 Err(error) => {
                     // An error recovered inside the entry is its cause;
                     // what fails after it is a cascade.
@@ -268,15 +330,20 @@ impl Parser {
                         self.errors.push(error);
                     }
                     self.recover(None);
+                    self.malformed(start);
                 }
             }
             self.newlines();
         }
-        if self.errors.is_empty() {
-            Ok(self.module)
-        } else {
-            Err(self.errors)
-        }
+        self.module.errors = self.errors;
+        self.module
+    }
+
+    /// Record the entry from `start` to the last token read as an error
+    /// node.
+    fn malformed(&mut self, start: usize) {
+        let end = self.previous.end.max(start);
+        self.module.malformed.push(Span { start, end });
     }
 
     /// A file entry: an item, a binding, a signature-only declaration
