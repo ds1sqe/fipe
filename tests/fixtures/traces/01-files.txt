@@ -1,0 +1,18 @@
+value 3
+call commands.read ("/var/log") -> Ok "/var/log"
+call commands.ls ("/var/log", True, False, 1, "*") -> [Entry "syslog" "/var/log/syslog" 2400000 172800, Entry "auth.log" "/var/log/auth.log" 300 864000, Entry "kern.log" "/var/log/kern.log" 1500000 3600]
+call commands.read ("/var/log") -> Ok "/var/log"
+call commands.ls ("/var/log", True, False, 1, "*") -> [Entry "syslog" "/var/log/syslog" 2400000 172800, Entry "auth.log" "/var/log/auth.log" 300 864000, Entry "kern.log" "/var/log/kern.log" 1500000 3600]
+call commands.read ("./big-logs") -> Ok "./big-logs"
+call commands.put ("./big-logs", [91, 34, 115, 121, 115, 108, 111, 103, 34, 44, 32, 34, 107, 101, 114, 110, 46, 108, 111, 103, 34, 93]) -> ()
+call commands.read ("/tmp") -> Ok "/tmp"
+call commands.ls ("/tmp", True, False, 1, "*") -> [Entry "a.txt" "/tmp/a.txt" 10 691200, Entry "b.txt" "/tmp/b.txt" 20 3600]
+call commands.read ("./stale") -> Ok "./stale"
+call commands.append ("./stale", [91, 34, 97, 46, 116, 120, 116, 34, 93]) -> ()
+call commands.read ("/etc") -> Ok "/etc"
+call commands.ls ("/etc", False, True, 2, "*.conf") -> [Entry "hosts" "/etc/hosts" 120 86400, Entry "fipe.conf" "/etc/fipe.conf" 40 7200]
+call commands.read ("./notes.md") -> Ok (Entry "notes.md" "./notes.md" 29 60)
+call commands.cat (Entry "notes.md" "./notes.md" 29 60) -> "# Notes\n\nbuy milk\n\ncall home\n"
+call commands.read ("./notes.md") -> Ok (Entry "notes.md" "./notes.md" 29 60)
+call commands.cat (Entry "notes.md" "./notes.md" 29 60) -> "# Notes\n\nbuy milk\n\ncall home\n"
+output ""

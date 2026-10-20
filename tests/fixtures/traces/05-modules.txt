@@ -1,0 +1,15 @@
+value Just ()
+call commands.root () -> "/"
+call commands.read ("/module/fs/root") -> Ok "/module/fs/root"
+call sys.lookup ("/", "/module/fs/root") -> 7
+call commands.Rd (7) -> "rd"
+call commands.read ("/etc") -> Ok "/etc"
+call fs.list ("rd", "/etc", False) -> [Entry "hosts" "/etc/hosts" 120 86400, Entry "fipe.conf" "/etc/fipe.conf" 40 7200]
+call fs.size (Entry "hosts" "/etc/hosts" 120 86400) -> 120
+call commands.read ("./") with cwd "/tmp" -> Ok "./"
+call commands.ls ("./", False, False, 1, "*") with cwd "/tmp" -> [Entry "notes.md" "./notes.md" 64 600, Entry "names" "./names" 16 600]
+call commands.read ("./listing") with cwd "/tmp" -> Ok "./listing"
+call commands.put ("./listing", [91, 34, 110, 111, 116, 101, 115, 46, 109, 100, 34, 44, 32, 34, 110, 97, 109, 101, 115, 34, 93]) with cwd "/tmp" -> ()
+call commands.read ("./names") with lang "C" -> Ok (Entry "names" "./names" 13 60)
+call commands.cat (Entry "names" "./names" 13 60) with lang "C" -> "zoe\nadam\nmia\n"
+output ""

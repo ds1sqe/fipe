@@ -1,0 +1,12 @@
+value ()
+call commands.read ("./config.toml") -> Ok "./config.toml"
+call commands.find ("./config.toml") -> Just (Entry "config.toml" "./config.toml" 12 60)
+call commands.cat (Entry "config.toml" "./config.toml" 12 60) -> "port = 8080\n"
+call commands.read ("./config.toml") -> Ok "./config.toml"
+call commands.find ("./config.toml") -> Just (Entry "config.toml" "./config.toml" 12 60)
+call commands.cat (Entry "config.toml" "./config.toml" 12 60) -> "port = 8080\n"
+call commands.read ("./x") -> Ok "./x"
+call commands.find ("./x") -> Nothing
+call commands.read ("./cache") -> Ok "./cache"
+call commands.find ("./cache") -> Nothing
+output ""

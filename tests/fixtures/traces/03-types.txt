@@ -1,0 +1,2 @@
+fault in main at 25:36: 2.23606797749979 is not an exact Integer
+output ""
