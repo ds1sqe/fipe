@@ -159,7 +159,7 @@ impl Infer<'_> {
         let left_span = self.span(left);
         let applied = self.apply(&left_ty);
         let Some((family, arguments)) = family(&applied) else {
-            self.not_outcome(&applied, operator);
+            self.not_outcome(&applied, operator, Reason::NeedsOutcome);
             let input = self.fresh();
             self.stage(right, input, left_span, None);
             return self.fresh();
@@ -186,12 +186,12 @@ impl Infer<'_> {
 
     /// A left that is no outcome: unknown while it is a variable, unless
     /// the variable is a literal's, which no outcome type is.
-    fn not_outcome(&mut self, applied: &Type, operator: Span) {
+    fn not_outcome(&mut self, applied: &Type, operator: Span, known: Reason) {
         let reason =
             if matches!(applied, Type::Var(_)) && !self.numeric_var(applied) {
                 Reason::UnknownFamily
             } else {
-                Reason::NeedsMaybeOrResult
+                known
             };
         self.error(operator, reason);
     }
@@ -350,7 +350,7 @@ impl Infer<'_> {
         let Some((family @ (Family::Maybe | Family::Result), arguments)) =
             family(&applied)
         else {
-            self.not_outcome(&applied, operator);
+            self.not_outcome(&applied, operator, Reason::NeedsMaybeOrResult);
             self.expr(right, None);
             return self.fresh();
         };
@@ -434,7 +434,7 @@ impl Infer<'_> {
             family(&applied),
             Some((Family::Maybe | Family::Result, _))
         ) {
-            self.not_outcome(&applied, operator);
+            self.not_outcome(&applied, operator, Reason::NeedsMaybeOrResult);
             self.expr(right, None);
             return self.fresh();
         }

@@ -53,6 +53,9 @@ pub struct Session {
     /// What undoes the last accepted line, until another is accepted or
     /// it is withdrawn.
     last: Option<Last>,
+    /// The names withdrawn lines bound, kept only to word a later
+    /// "unknown name".
+    withdrawn: alloc::collections::BTreeSet<String>,
 }
 
 /// A line the session accepted, which the host withdraws with
@@ -101,6 +104,7 @@ impl Clone for Session {
             declared: self.declared.inherit(),
             accepted: self.accepted,
             last: self.last.clone(),
+            withdrawn: self.withdrawn.clone(),
         }
     }
 }
@@ -221,6 +225,7 @@ impl Session {
             declared: infer::files::FileCache::new(),
             accepted: 0,
             last: None,
+            withdrawn: alloc::collections::BTreeSet::new(),
         }
     }
 
@@ -365,6 +370,7 @@ impl Session {
     pub fn withdraw(&mut self, line: Accepted) -> Option<Withdrawn> {
         let last = self.last.take_if(|last| last.serial == line.serial)?;
         self.pending = None;
+        self.withdrawn.extend(last.frame.names().map(String::from));
         self.frame.withdraw(last.frame);
         if let Some((_, start)) = self.lines.pop() {
             self.source.truncate(start);
@@ -391,6 +397,14 @@ impl Session {
             definitions,
             modules,
         })
+    }
+
+    /// Whether a withdrawn line bound `name`: a later line naming it
+    /// gets the ordinary "unknown name" (or "unknown type"), which a
+    /// host may word with this.
+    #[must_use]
+    pub fn withdrawn(&self, name: &str) -> bool {
+        self.withdrawn.contains(name)
     }
 
     /// Check a line without accepting it. An expression line is
@@ -574,7 +588,7 @@ impl Session {
             &mut query
         };
         index.session(lines, typed);
-        let first = index.tables.borrow().nodes.len();
+        let first = index.tables().nodes.len();
         let mut unit = index.emit(
             module,
             resolved.clone(),

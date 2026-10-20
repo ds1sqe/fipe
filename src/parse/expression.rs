@@ -122,7 +122,15 @@ impl Parser {
         }
         let left = self.unary(context)?;
         if self.binary().is_some() {
-            return self.binary_tail(left, 1, context);
+            let expression = self.binary_tail(left, 1, context)?;
+            // An operand of an operator is never applied by space: `n *
+            // f (n - 1)` leaves `(n - 1)` after the operator expression.
+            if argument_start(self.peek(), context)
+                && self.here().start > self.expr_span(expression).end
+            {
+                return Err(self.error(Reason::ApplicationInOperator));
+            }
+            return Ok(expression);
         }
         self.space_call(left, context)
     }

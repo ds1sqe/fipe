@@ -43,6 +43,28 @@ fn checked(
 }
 
 #[test]
+fn a_proved_entry_leaves_its_value_as_the_one_child_of_its_node() {
+    let mut session = session(&PRIME);
+    let report = line(&mut session, "p: Prime = 7");
+    let seven = report.offset + "p: Prime = ".len();
+    let unit = report.unit.unwrap();
+    let tables = unit.tables();
+    let literals: Vec<_> = (0..tables.nodes.len())
+        .filter(|index| {
+            tables.nodes[*index].span.start == seven
+                && matches!(tables.nodes[*index].kind, ir::Kind::Literal { .. })
+        })
+        .collect();
+    assert_eq!(literals.len(), 1, "one node holds the literal");
+    let parents = tables
+        .nodes
+        .iter()
+        .filter(|node| matches!(&node.kind, ir::Kind::Block(parts) if parts == &literals))
+        .count();
+    assert_eq!(parents, 1, "the proved node holds the literal");
+}
+
+#[test]
 fn a_named_test_on_an_exact_value_is_proved_at_compile_time() {
     let mut session = session(&PRIME);
     let report = line(&mut session, "p: Prime = 7");

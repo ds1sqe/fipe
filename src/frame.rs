@@ -162,6 +162,16 @@ pub struct Undo {
     weak: WeakUndo,
 }
 
+impl Undo {
+    /// The value and type names the line bound.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.values
+            .iter()
+            .chain(&self.types)
+            .map(|(name, _)| name.as_str())
+    }
+}
+
 /// What a line changed in the weak variables, which every line carries
 /// in full: how many there were, and each of those it solved with its
 /// value before.

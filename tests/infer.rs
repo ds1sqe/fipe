@@ -104,12 +104,16 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::Default { .. } => "Default",
         Reason::NonBoolChaining => "NonBoolChaining",
         Reason::ExtraArgument => "ExtraArgument",
+        Reason::PositionalBool => "PositionalBool",
+        Reason::LiteralApplied => "LiteralApplied",
+        Reason::IfWithoutElse => "IfWithoutElse",
         Reason::UnknownSpot { .. } => "UnknownSpot",
         Reason::FlagOperand { .. } => "FlagOperand",
         Reason::DuplicateSupply { .. } => "DuplicateSupply",
         Reason::FilledSpot => "FilledSpot",
         Reason::OpenSpot => "OpenSpot",
         Reason::NeedsMaybeOrResult => "NeedsMaybeOrResult",
+        Reason::NeedsOutcome => "NeedsOutcome",
         Reason::NotYetChecked { .. } => "NotYetChecked",
         Reason::Discarded => "Discarded",
         Reason::MissingField { .. } => "MissingField",
@@ -258,6 +262,10 @@ fn outcomes_follow_their_family() {
     );
     let text = format!("{either}e || 0");
     assert_eq!(kinds(&text), [("NeedsMaybeOrResult", "||")]);
+    assert_eq!(
+        kinds("[1, 2, 3] |: (x => Just x)"),
+        [("NeedsOutcome", "|:")]
+    );
     // `|!` on `Maybe` supplies nothing: its stage is a value, and a
     // plain one is discarded for `Nothing`.
     assert_eq!(ty("find x |: cat |! log \"no config\""), "Maybe<String>");
@@ -608,6 +616,12 @@ fn operands_past_the_spot_list_apply_to_a_function_result() {
     );
     // A result that is no function, or a spot still open, keeps the error.
     assert_eq!(kinds("inc = n => n + 1\ninc 1 2"), [("ExtraArgument", "2")]);
+    assert_eq!(
+        kinds("t = { True => \"y\", False => \"n\" }\nt True"),
+        [("PositionalBool", "True")]
+    );
+    assert_eq!(kinds("2 ^ 10"), [("LiteralApplied", "^")]);
+    assert_eq!(kinds("if True { 1 }"), [("IfWithoutElse", "{ 1 }")]);
     assert_eq!(
         kinds("app = f x => f x\ninc = n => n + 1\napp inc 1 2"),
         [("ExtraArgument", "2")]

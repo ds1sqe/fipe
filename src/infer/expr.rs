@@ -57,6 +57,69 @@ impl Infer<'_> {
         ty
     }
 
+    /// A written call: a timing form's operand, a literal written with
+    /// operands, or a call bound by the spot steps.
+    fn call(
+        &mut self,
+        callee: ExprId,
+        arguments: &[crate::ast::Argument],
+        style: crate::ast::CallStyle,
+        expected: Option<&Expected>,
+        span: Span,
+    ) -> Type {
+        if crate::resolve::timing(self.resolved.expr(callee)).is_some() {
+            if let [crate::ast::Argument {
+                kind: crate::ast::ArgumentKind::Positional(value),
+                ..
+            }] = arguments
+            {
+                return self.expr(*value, expected);
+            }
+        }
+        if matches!(
+            self.module.expressions[callee.0].kind,
+            ExprKind::Literal(_)
+        ) {
+            return self.literal_applied(callee, arguments);
+        }
+        let callee = self.callee(callee);
+        let expected = expected.map(|e| e.ty.clone());
+        self.written_call(
+            callee,
+            arguments,
+            style,
+            None,
+            span,
+            expected.as_ref(),
+        )
+    }
+
+    /// A literal written as a callee, `2 ^ 10`: it takes no operands. The
+    /// error is at the first operand, which is what the writer may have
+    /// meant as an operator.
+    fn literal_applied(
+        &mut self,
+        callee: ExprId,
+        arguments: &[crate::ast::Argument],
+    ) -> Type {
+        self.expr(callee, None);
+        if let Some(first) = arguments.first() {
+            self.error(first.span, Reason::LiteralApplied);
+        }
+        for argument in arguments {
+            match &argument.kind {
+                crate::ast::ArgumentKind::Positional(value)
+                | crate::ast::ArgumentKind::Flag {
+                    value: Some(value), ..
+                } => {
+                    self.expr(*value, None);
+                }
+                crate::ast::ArgumentKind::Flag { value: None, .. } => {}
+            }
+        }
+        self.fresh()
+    }
+
     fn binding_value(&mut self, id: ExprId) -> Type {
         self.bind(id).map_or(Type::Unit, |lift| {
             self.rebuild(
@@ -156,28 +219,7 @@ impl Infer<'_> {
                 callee,
                 arguments,
                 style,
-            } => {
-                if crate::resolve::timing(self.resolved.expr(*callee)).is_some()
-                {
-                    if let [crate::ast::Argument {
-                        kind: crate::ast::ArgumentKind::Positional(value),
-                        ..
-                    }] = arguments.as_slice()
-                    {
-                        return self.expr(*value, expected);
-                    }
-                }
-                let callee = self.callee(*callee);
-                let expected = expected.map(|e| e.ty.clone());
-                self.written_call(
-                    callee,
-                    arguments,
-                    *style,
-                    None,
-                    span,
-                    expected.as_ref(),
-                )
-            }
+            } => self.call(*callee, arguments, *style, expected, span),
             ExprKind::Not { operator, value } => {
                 let ty = self.expr(*value, expected);
                 self.require_claim(ty.clone(), prelude("Not"), *operator);
@@ -324,13 +366,26 @@ impl Infer<'_> {
         span: Span,
     ) -> Type {
         self.expr(condition, Some(&Expected::new(prelude("Bool"), span)));
-        let then_ty = self.expr(then_body, expected);
         if let Some(else_body) = else_body {
+            let then_ty = self.expr(then_body, expected);
             let sibling = Expected::new(then_ty.clone(), self.span(then_body));
             self.expr(else_body, Some(&sibling));
             return then_ty;
         }
-        self.unify(&Type::Unit, &then_ty, self.span(then_body), span);
+        // Without `else` the `if` is `()`, so its body must be too; a
+        // body with a value says so, not that `()` lacks its claim.
+        let then_ty = self.expr(then_body, None);
+        let applied = self.apply(&then_ty);
+        let valued = match applied {
+            Type::Unit => false,
+            Type::Var(_) => self.numeric_var(&applied),
+            _ => true,
+        };
+        if valued {
+            self.error(self.span(then_body), Reason::IfWithoutElse);
+        } else {
+            self.unify(&Type::Unit, &then_ty, self.span(then_body), span);
+        }
         if let Some(expected) = expected {
             self.unify(&expected.ty, &Type::Unit, span, expected.span);
         }

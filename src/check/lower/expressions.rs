@@ -45,8 +45,7 @@ impl Index {
         };
         let value = self.node(&source.home, span, parameter, array);
         let ty = self.ty(&source.home, parameter);
-        let slot = self.tables.borrow().slots.len();
-        self.tables.borrow_mut().slots.push(ir::Slot {
+        let slot = self.store.push_slot(ir::Slot {
             ty,
             parameters: Vec::new(),
             hidden: Vec::new(),
@@ -230,7 +229,7 @@ impl Index {
                     source.resolved.expr(id)
                 {
                     let slot = scope.slots[binding];
-                    let signature = self.tables.borrow().slots[slot].clone();
+                    let signature = self.store.tables().slots[slot].clone();
                     let definition = signature.definition;
                     let arguments = source
                         .typed
@@ -378,7 +377,7 @@ impl Index {
                 let index =
                     self.definitions.iter().find_map(|((home, _), index)| {
                         (*home == origin
-                            && self.tables.borrow().definitions[*index].label
+                            && self.store.tables().definitions[*index].label
                                 == *name)
                             .then_some(*index)
                     });
@@ -453,8 +452,7 @@ impl Index {
                     unreachable!("selector function")
                 };
                 let input = self.ty(&source.home, parameter);
-                let slot = self.tables.borrow().slots.len();
-                self.tables.borrow_mut().slots.push(ir::Slot {
+                let slot = self.store.push_slot(ir::Slot {
                     ty: input,
                     parameters: Vec::new(),
                     hidden: Vec::new(),
@@ -623,9 +621,9 @@ impl Index {
                 let site = (operator.start, operator.end);
                 match op {
                     PipeOp::Plain
-                        if !super::calls::supplied_stage(
-                            &source.module.expressions[stage.0].kind,
-                        ) =>
+                        if !source.module.expressions[stage.0]
+                            .kind
+                            .supplies_piped_value() =>
                     {
                         self.applied_stage(source, stage, left, right)
                     }
@@ -671,8 +669,7 @@ impl Index {
             unreachable!("a stage of a function type")
         };
         let ty = self.ty(&source.home, parameter);
-        let slot = self.tables.borrow().slots.len();
-        self.tables.borrow_mut().slots.push(ir::Slot {
+        let slot = self.store.push_slot(ir::Slot {
             ty,
             parameters: Vec::new(),
             hidden: Vec::new(),
@@ -707,23 +704,22 @@ impl Index {
                 else {
                     unreachable!("outcome meaning")
                 };
-                let label = if self.tables.borrow().meanings[meaning].label
-                    == "Maybe"
-                {
-                    if *good {
-                        "Just"
+                let label =
+                    if self.store.tables().meanings[meaning].label == "Maybe" {
+                        if *good {
+                            "Just"
+                        } else {
+                            "Nothing"
+                        }
+                    } else if *good {
+                        "Ok"
                     } else {
-                        "Nothing"
-                    }
-                } else if *good {
-                    "Ok"
-                } else {
-                    "Err"
-                };
+                        "Err"
+                    };
                 let constructor = self.constructor_index(meaning, label);
                 let fields = if let Some(payload) = payload {
                     alloc::vec![scope.expression(*payload)]
-                } else if self.tables.borrow().meanings[meaning].constructors
+                } else if self.store.tables().meanings[meaning].constructors
                     [constructor]
                     .fields
                     .is_empty()
@@ -762,16 +758,13 @@ impl Index {
             E::With { key, value, body } => {
                 let label = key.segments.join(".");
                 let existing = self
-                    .tables
-                    .borrow()
+                    .store
+                    .tables()
                     .keys
                     .iter()
                     .position(|key| key == &label);
-                let key = existing.unwrap_or_else(|| {
-                    let index = self.tables.borrow().keys.len();
-                    self.tables.borrow_mut().keys.push(label);
-                    index
-                });
+                let key =
+                    existing.unwrap_or_else(|| self.store.push_key(label));
                 ir::Kind::With {
                     key,
                     value: scope.expression(*value),
@@ -887,7 +880,7 @@ impl Index {
             || source.typed.conversions.contains_key(&site)
         {
             let node = self.chosen(source, span, receiver);
-            return self.tables.borrow().nodes[node].kind.clone();
+            return self.store.tables().nodes[node].kind.clone();
         }
         self.selected_kind(
             source,

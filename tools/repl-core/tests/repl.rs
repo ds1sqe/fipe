@@ -1352,10 +1352,69 @@ fn a_line_whose_run_faults_is_withdrawn() {
     assert!(text.contains("stop"), "{text}");
     assert_eq!(
         written(repl.feed(b"x + 1\n\n")),
-        "1:1: unknown name\nx + 1\n^\nfipe> "
+        "1:1: unknown name: the line that bound `x` was withdrawn when its \
+         run Faulted; give it again\nx + 1\n^\nfipe> "
     );
     assert_eq!(written(repl.feed(b"x = 1\n\nx + 1\n\n")), "2\nfipe> ");
     // `:t` reads the last line that stood.
     let text = written(repl.feed(b"y = (1.0 / 0.0)\n\n:t\n\n"));
     assert!(text.contains("x + 1: Integer\n"), "{text}");
+}
+
+#[test]
+fn a_name_of_a_withdrawn_line_says_why_it_is_unknown() {
+    let mut repl = Repl::new();
+    let text = written(repl.feed(b"x = 1.0 / 0.0\n\n"));
+    assert!(text.contains("the result is not finite"), "{text}");
+    let text = written(repl.feed(b"x + 1.0\n\n"));
+    assert!(
+        text.starts_with(
+            "1:1: unknown name: the line that bound `x` was withdrawn when \
+             its run Faulted; give it again\n"
+        ),
+        "{text}"
+    );
+    let text = written(repl.feed(b"y + 1.0\n\n"));
+    assert!(text.starts_with("1:1: unknown name\n"), "{text}");
+}
+
+#[test]
+fn a_use_after_a_withdrawn_load_says_how_to_load_it_again() {
+    let mut repl = Repl::new();
+    assert_eq!(repl.feed(b":load a/m\n"), [Out::File("a/m.fipe".into())]);
+    let text = written(repl.file("a/m.fipe", Some("pub a = (1.0 / 0.0)\n")));
+    assert!(text.contains("the result is not finite"), "{text}");
+    assert_eq!(repl.feed(b"use m\n\n"), [Out::File("m.fipe".into())]);
+    let text = written(repl.file("m.fipe", None));
+    assert!(
+        text.starts_with(
+            "`m`: its `:load` of a/m.fipe was withdrawn when its run \
+             Faulted; load it again with `:load a/m.fipe`\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn ir_shows_literals_and_resolution_says_when_nothing_is_named() {
+    let mut repl = Repl::new();
+    let text = written(repl.feed(b":ir 7 - 2\n"));
+    assert!(text.contains("= literal 7 prepared by"), "{text}");
+    assert!(text.contains("= literal 2 prepared by"), "{text}");
+    let text = written(repl.feed(b":r 1 + 2\n"));
+    assert!(text.starts_with("no names to resolve"), "{text}");
+}
+
+#[test]
+fn an_unbound_word_at_a_typed_spot_says_it_is_text() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b":host\n");
+    host(&mut repl, outs);
+    let text = written(repl.feed(b"use fs\n\nfs.list dir /etc\n\n"));
+    assert!(
+        text.contains(
+            "found String; `dir` is text here: no name `dir` is bound"
+        ),
+        "{text}"
+    );
 }

@@ -102,6 +102,15 @@ pub enum Reason {
     },
     ConflictingConversion,
     ExtraArgument,
+    /// An `if` without `else` whose body has a value: such an `if` is
+    /// `()`.
+    IfWithoutElse,
+    /// A literal written with operands, as `2 ^ 10`: a literal takes
+    /// none; at the first operand.
+    LiteralApplied,
+    /// A positional operand while a Bool spot is open: positional
+    /// operands fill non-Bool spots only.
+    PositionalBool,
     NonBoolChaining,
     /// A spot's declared default does not meet its spot; `cause` is the
     /// first error of the default's own typing, none when its names did
@@ -134,6 +143,8 @@ pub enum Reason {
     OpenSpot,
     /// `||` or `&&` on `Either` or another non-`Bool` type.
     NeedsMaybeOrResult,
+    /// `|:` or `|!` on a type that is no outcome.
+    NeedsOutcome,
     /// A type-dependent form reserved for a later minor.
     NotYetChecked {
         form: crate::resolve::Unchecked,

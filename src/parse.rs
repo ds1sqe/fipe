@@ -28,6 +28,9 @@ pub enum Reason {
     InvalidTokenStream,
     Expected(Expected),
     OperatorInArguments,
+    /// An operand of an operator followed by an argument: an application
+    /// used as an operand is grouped.
+    ApplicationInOperator,
     ChainedComparison,
     FlagValueMustTouch,
     ArmsNeedGroup,
@@ -67,6 +70,9 @@ impl fmt::Display for Reason {
             Self::OperatorInArguments => {
                 f.write_str("group an operator expression used as an argument")
             }
+            Self::ApplicationInOperator => f.write_str(
+                "group an application used as an operand, as `n * (f (n - 1))`",
+            ),
             Self::ChainedComparison => f.write_str("group chained comparisons"),
             Self::FlagValueMustTouch => {
                 f.write_str("flag, equals and attached value must touch")

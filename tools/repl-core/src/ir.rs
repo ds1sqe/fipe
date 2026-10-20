@@ -37,6 +37,34 @@ pub(super) fn render(unit: Option<&Unit>, out: &mut Outs) {
     out.write(format!("main: {}\n", indices(&unit.main)).as_bytes());
 }
 
+/// A literal as written, in decimal for a number.
+fn spelling(form: &fipe::ir::Form) -> String {
+    use fipe::ir::Form;
+    let sign = |negative: bool| if negative { "-" } else { "" };
+    match form {
+        Form::Unit => String::from("()"),
+        Form::Whole {
+            negative,
+            magnitude,
+            ..
+        } => format!("{}{magnitude}", sign(*negative)),
+        Form::Fraction {
+            negative,
+            digits,
+            exponent_negative,
+            exponent,
+        } => format!(
+            "{}{digits}e{}{exponent}",
+            sign(*negative),
+            sign(*exponent_negative)
+        ),
+        Form::Text(text) => {
+            format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+        }
+        Form::Bytes(bytes) => format!("{} bytes", bytes.len()),
+    }
+}
+
 fn indices(values: &[usize]) -> String {
     values
         .iter()
@@ -48,7 +76,7 @@ fn indices(values: &[usize]) -> String {
 fn operation(kind: &Kind, tables: &Tables) -> String {
     match kind {
         Kind::Timing { phase, value } => format!("{} value {value}", if *phase == fipe::ir::Phase::Compile { "compile" } else { "initialize" }),
-        Kind::Literal { reader, .. } => reader.map_or_else(|| String::from("literal"), |reader| format!("literal prepared by value {reader}")),
+        Kind::Literal { form, reader } => reader.map_or_else(|| format!("literal {}", spelling(form)), |reader| format!("literal {} prepared by value {reader}", spelling(form))),
         Kind::Local { slot, meanings } => format!("local slot {slot}, {} hidden meanings", meanings.len()),
         Kind::Capture { slot, meanings } => format!("captured slot {slot}, {} hidden meanings", meanings.len()),
         Kind::Definition { index, meanings } => format!("definition {}, {} hidden meanings", tables.definitions[*index].label, meanings.len()),

@@ -28,7 +28,7 @@ mod platform;
 #[path = "platform/linux.rs"]
 mod platform;
 
-use alloc::{collections::VecDeque, format, string::String};
+use alloc::{collections::VecDeque, format, string::String, vec::Vec};
 use fipe_repl_core::{Out, Repl, BUDGET, COMPILE_BUDGET};
 
 const USAGE: &str = "usage: fipe-repl [--cwd <dir>] [--host <dir>] \
@@ -71,6 +71,9 @@ fn run() {
         None => repl.feed(&[]),
     });
     let mut buffer = [0; 4096];
+    // Input read but not yet fed: fed one line at a time, so each line's
+    // output is written before the next line runs.
+    let mut unfed: Vec<u8> = Vec::new();
     let mut end = false;
     loop {
         while let Some(out) = outs.pop_front() {
@@ -88,6 +91,15 @@ fn run() {
                 Out::Exit => return,
             }
         }
+        if !unfed.is_empty() {
+            let line = unfed
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .map_or(unfed.len(), |at| at + 1);
+            let line: Vec<u8> = unfed.drain(..line).collect();
+            outs.extend(repl.feed(&line));
+            continue;
+        }
         if end {
             return;
         }
@@ -99,11 +111,11 @@ fn run() {
             }
         };
         end = read == 0;
-        outs.extend(if end {
-            repl.flush()
+        if end {
+            outs.extend(repl.flush());
         } else {
-            repl.feed(&buffer[..read])
-        });
+            unfed.extend_from_slice(&buffer[..read]);
+        }
     }
 }
 

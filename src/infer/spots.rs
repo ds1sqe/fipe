@@ -478,13 +478,16 @@ impl Infer<'_> {
             .iter()
             .zip(&filled)
             .any(|(slot, supply)| supply.is_none() && !slot.default);
+        let open_bool = slots.iter().zip(&filled).any(|(slot, supply)| {
+            supply.is_none() && !slot.default && self.is_bool(&slot.ty)
+        });
         let result = slots
             .iter()
             .zip(&filled)
             .rev()
             .filter(|(slot, supply)| supply.is_none() && !slot.default)
             .fold(result, |ty, (slot, _)| Type::function(slot.ty.clone(), ty));
-        self.apply_extra(result, extra, open, stage)
+        self.apply_extra(result, extra, (open, open_bool), stage)
     }
 
     /// A conversion's source spot: a supplied value is converted to the
@@ -966,11 +969,13 @@ impl Infer<'_> {
 
     /// Step 4's tail: the bound result, a function, takes the operands
     /// written past the spot list, as 08-evaluation's APP applies them.
+    /// An operand left over while a Bool spot is open was refused by
+    /// that spot, which only a flag or the pipe fills.
     fn apply_extra(
         &mut self,
         result: Type,
         extra: Vec<ExprId>,
-        open: bool,
+        (open, open_bool): (bool, bool),
         stage: Span,
     ) -> Type {
         if extra.is_empty() {
@@ -992,9 +997,14 @@ impl Infer<'_> {
             self.peel(&result, extra.len())
         };
         let Some((parameters, rest)) = peeled else {
+            let reason = if open_bool {
+                Reason::PositionalBool
+            } else {
+                Reason::ExtraArgument
+            };
             for operand in extra {
                 let span = self.span(operand);
-                self.error(span, Reason::ExtraArgument);
+                self.error(span, reason.clone());
                 self.expr(operand, None);
             }
             return result;
@@ -1292,29 +1302,24 @@ impl Infer<'_> {
         let module = self.module;
         let span = self.span(id);
         let pipe = Some((input.clone(), input_span));
-        let result = match &module.expressions[id.0].kind {
-            ExprKind::Call {
-                callee,
-                arguments,
-                style,
-            } => {
-                let callee = self.callee(*callee);
-                self.written_call(
-                    callee, arguments, *style, pipe, span, expected,
-                )
-            }
-            ExprKind::Name(_)
-            | ExprKind::Instance { .. }
-            | ExprKind::Field { .. } => {
-                let callee = self.callee(id);
-                self.apply_callee(callee, &[], pipe, span, expected)
-            }
-            _ => {
-                let result = self.fresh();
-                let function = Type::function(input, result.clone());
-                self.expr(id, Some(&Expected::new(function, input_span)));
-                return result;
-            }
+        let kind = &module.expressions[id.0].kind;
+        if !kind.supplies_piped_value() {
+            let result = self.fresh();
+            let function = Type::function(input, result.clone());
+            self.expr(id, Some(&Expected::new(function, input_span)));
+            return result;
+        }
+        let result = if let ExprKind::Call {
+            callee,
+            arguments,
+            style,
+        } = kind
+        {
+            let callee = self.callee(*callee);
+            self.written_call(callee, arguments, *style, pipe, span, expected)
+        } else {
+            let callee = self.callee(id);
+            self.apply_callee(callee, &[], pipe, span, expected)
         };
         // The stage's call lists the piped value among its supplies, so
         // its node is the stage's result, not a function of the input.

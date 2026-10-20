@@ -45,7 +45,7 @@ impl Index {
                 visiting.push(name.clone());
                 let mut predicates = Vec::new();
                 if let Some((shape_home, shape)) =
-                    self.shapes.get(&name).cloned()
+                    self.store.shapes().get(&name).cloned()
                 {
                     let Type::Named {
                         arguments: parameters,
@@ -122,9 +122,9 @@ impl Index {
                 name: name.name.clone(),
             };
             if self.gates.get(&name).is_some_and(|tests| {
-                tests.iter().any(|index| {
-                    self.tables.borrow().tests[*index].body == body
-                })
+                tests
+                    .iter()
+                    .any(|index| self.store.tables().tests[*index].body == body)
             }) {
                 continue;
             }
@@ -140,8 +140,7 @@ impl Index {
                 })
                 .collect();
             let namespace = self.namespace(&test_source.home);
-            let index = self.tables.borrow().tests.len();
-            self.tables.borrow_mut().tests.push(ir::Test {
+            let index = self.store.push_test(ir::Test {
                 parameters,
                 namespace,
                 span: test_source.module.expressions[test.value.0].span,
@@ -170,7 +169,7 @@ impl Index {
                 },
                 |ty| self.predicate(&source.home, ty, &mut Vec::new()),
             );
-            let entry = self.tables.borrow().entries.len();
+            let entry = self.store.tables().entries.len();
             let recorded = ir::Entry {
                 path: check.path.clone(),
                 namespace,
@@ -205,7 +204,7 @@ impl Index {
                     }
                 },
             };
-            self.tables.borrow_mut().entries.push(recorded.clone());
+            self.store.push_entry(recorded.clone());
             plan.push(recorded);
             // A default's divisor check planned at this call was typed
             // with the default, whose own lowering enters the divisor;
@@ -221,11 +220,9 @@ impl Index {
                     continue;
                 }
                 let Some(node) = node else { continue };
-                let saved = self.tables.borrow().nodes[*node].clone();
-                let value = self.tables.borrow().nodes.len();
-                self.tables.borrow_mut().nodes.push(saved);
-                self.keep_node(*node);
-                self.tables.borrow_mut().nodes[*node].kind =
+                let saved = self.store.tables().nodes[*node].clone();
+                let value = self.store.push_node(saved);
+                self.store.node_mut(*node).kind =
                     ir::Kind::Enter { entry, value };
             }
         }

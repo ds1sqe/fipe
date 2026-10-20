@@ -822,3 +822,13 @@ fn integer_forms_keep_radix_and_written_digit_count() {
         );
     }
 }
+
+#[test]
+fn an_application_used_as_an_operand_is_grouped() {
+    let input = "n * fact (n - 1)";
+    let found = errors(input);
+    assert_eq!(found[0].reason, Reason::ApplicationInOperator);
+    assert_eq!(Source::new(input).slice(found[0].span), Some("("));
+    let parsed = module("n * (fact (n - 1))");
+    assert!(format!("{parsed:?}").contains("Multiply"), "{parsed:?}");
+}

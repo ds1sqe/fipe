@@ -102,8 +102,7 @@ impl Index {
         let mut slots = Vec::new();
         for (_, ty, _) in fields {
             let ty = self.ty(&source.home, ty);
-            let slot = self.tables.borrow().slots.len();
-            self.tables.borrow_mut().slots.push(ir::Slot {
+            let slot = self.store.push_slot(ir::Slot {
                 ty,
                 parameters: Vec::new(),
                 hidden: Vec::new(),
@@ -167,11 +166,16 @@ impl Index {
         let module = if *origin == Origin::This {
             source.module.clone()
         } else {
-            self.source_modules.get(origin).cloned().unwrap_or_else(|| {
-                Rc::new(
-                    owner(source.declarations, source.files, origin).clone(),
-                )
-            })
+            self.store
+                .source_modules()
+                .get(origin)
+                .cloned()
+                .unwrap_or_else(|| {
+                    Rc::new(
+                        owner(source.declarations, source.files, origin)
+                            .clone(),
+                    )
+                })
         };
         let instance = Source {
             module,

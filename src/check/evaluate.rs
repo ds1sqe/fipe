@@ -405,8 +405,9 @@ fn entries(
         };
         match settle(unit, (node, value), (index, &entry), budget) {
             Settled::Proved(shown) => {
-                let kind = unit.tables().nodes[value].kind.clone();
-                unit.tables.borrow_mut().nodes[node].kind = kind;
+                // The entry leaves the node; its value stays the one child.
+                unit.tables.borrow_mut().nodes[node].kind =
+                    ir::Kind::Block(alloc::vec![value]);
                 phase.proved.push(Proved {
                     entry,
                     value: shown,

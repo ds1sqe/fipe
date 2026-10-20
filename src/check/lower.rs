@@ -20,19 +20,16 @@ use core::cell::RefCell;
 
 #[derive(Clone, Debug, Default)]
 pub struct Index {
-    pub tables: Rc<RefCell<ir::Tables>>,
+    store: session::Store,
     namespaces: BTreeMap<Origin, usize>,
     meanings: BTreeMap<TypeName, usize>,
     parameters: BTreeMap<(Origin, Parameter), usize>,
     definitions: BTreeMap<(Origin, crate::token::Span), usize>,
-    slots: BTreeMap<(Origin, crate::token::Span), usize>,
     gates: BTreeMap<TypeName, Vec<usize>>,
-    shapes: BTreeMap<TypeName, (Origin, Shape)>,
     declarations: BTreeMap<(Origin, crate::token::Span), usize>,
     dispatch: BTreeMap<(String, bool), usize>,
     constant_defaults: Vec<usize>,
     home: Option<Origin>,
-    visible: BTreeMap<crate::token::Span, usize>,
     /// A line's own variables that became weak, by slot.
     session_variables: BTreeMap<(Origin, u32), usize>,
     /// How many weak variables each line started with: a variable below
@@ -40,10 +37,6 @@ pub struct Index {
     weak_before: BTreeMap<Origin, usize>,
     weak_slots: Vec<usize>,
     emitted: Vec<(Origin, Vec<crate::ast::ExprId>)>,
-    source_modules: BTreeMap<Origin, Rc<crate::ast::Module>>,
-    /// While a session line may still be refused: its mark and the
-    /// writes it made to what existed before it.
-    journal: Option<session::Journal>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -53,11 +46,15 @@ enum Parameter {
 }
 
 impl Index {
+    /// The session's tables, for reading.
+    pub fn tables(&self) -> core::cell::Ref<'_, ir::Tables> {
+        self.store.tables()
+    }
+
     pub fn namespace(&mut self, origin: &Origin) -> usize {
         if let Some(index) = self.namespaces.get(origin) {
             return *index;
         }
-        let index = self.tables.borrow().namespaces.len();
         let label = match origin {
             Origin::This => String::from("main"),
             Origin::Prelude => String::from("prelude"),
@@ -65,7 +62,7 @@ impl Index {
             Origin::Host(name) | Origin::File(name) => name.clone(),
             Origin::Line(line) => alloc::format!("line {}", line + 1),
         };
-        self.tables.borrow_mut().namespaces.push(label);
+        let index = self.store.push_namespace(label);
         self.namespaces.insert(origin.clone(), index);
         index
     }
@@ -79,8 +76,7 @@ impl Index {
             return *index;
         }
         let namespace = self.namespace(&name.origin);
-        let index = self.tables.borrow().meanings.len();
-        self.tables.borrow_mut().meanings.push(ir::Meaning {
+        let index = self.store.push_meaning(ir::Meaning {
             label: name.name.clone(),
             namespace,
             parameters: Vec::new(),
@@ -159,16 +155,13 @@ impl Index {
                     origin: home_origin(home, &name.origin),
                     name: name.name.clone(),
                 };
-                let old = self
-                    .shapes
-                    .insert(key.clone(), (home.clone(), shape.clone()));
-                self.note(|_, _| Some(session::Undo::Shape(key, old)));
+                self.store.insert_shape(key, (home.clone(), shape.clone()));
             }
             let Type::Named { name, arguments } = &shape.ty else {
                 unreachable!("checked layouts name their declaration")
             };
             let index = self.meaning(home, name);
-            if !self.tables.borrow().meanings[index].constructors.is_empty() {
+            if !self.store.tables().meanings[index].constructors.is_empty() {
                 continue;
             }
             let parameters = arguments
@@ -196,19 +189,9 @@ impl Index {
                         .collect(),
                 })
                 .collect();
-            self.note(|index_, mark| {
-                (index < mark.meanings).then(|| {
-                    let meaning = &index_.tables.borrow().meanings[index];
-                    session::Undo::Meaning(
-                        index,
-                        meaning.parameters.clone(),
-                        meaning.constructors.clone(),
-                    )
-                })
-            });
-            self.tables.borrow_mut().meanings[index].parameters = parameters;
-            self.tables.borrow_mut().meanings[index].constructors =
-                constructors;
+            let mut meaning = self.store.meaning_mut(index);
+            meaning.parameters = parameters;
+            meaning.constructors = constructors;
         }
     }
 }
@@ -317,14 +300,12 @@ impl Index {
             })
             .collect();
         let hidden = hidden.iter().map(|index| parameters[*index]).collect();
-        let index = self.tables.borrow().slots.len();
-        self.tables.borrow_mut().slots.push(ir::Slot {
+        self.store.push_slot(ir::Slot {
             ty,
             parameters,
             hidden,
             definition: None,
-        });
-        index
+        })
     }
 
     fn reserve(&mut self, source: &Source<'_>) -> Scope {
@@ -337,8 +318,7 @@ impl Index {
                 continue;
             };
             let ty = self.ty(&source.home, ty);
-            let node = self.tables.borrow().nodes.len();
-            self.tables.borrow_mut().nodes.push(ir::Node {
+            let node = self.store.push_node(ir::Node {
                 namespace,
                 span: expression.span,
                 ty,
@@ -346,7 +326,7 @@ impl Index {
             });
             nodes[index] = Some(node);
         }
-        let mut slots = self.visible.clone();
+        let mut slots = self.store.visible().clone();
         for ((start, end), scheme) in &source.typed.schemes {
             let hidden = source
                 .typed
@@ -366,10 +346,11 @@ impl Index {
                 end: *end,
             };
             let existing = self
-                .slots
+                .store
+                .slots()
                 .get(&(source.home.clone(), site))
                 .copied()
-                .or_else(|| self.visible.get(&site).copied());
+                .or_else(|| self.store.visible().get(&site).copied());
             let slot = existing.unwrap_or_else(|| {
                 self.slot(&source.home, scheme, hidden, &parameters)
             });
@@ -391,14 +372,12 @@ impl Index {
     ) -> usize {
         let namespace = self.namespace(home);
         let ty = self.ty(home, ty);
-        let index = self.tables.borrow().nodes.len();
-        self.tables.borrow_mut().nodes.push(ir::Node {
+        self.store.push_node(ir::Node {
             namespace,
             span,
             ty,
             kind,
-        });
-        index
+        })
     }
 }
 

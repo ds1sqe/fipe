@@ -153,6 +153,22 @@ pub enum ExprKind {
     Arms(Vec<Arm>),
 }
 
+impl ExprKind {
+    /// Whether a pipe stage of this form takes the piped value among its
+    /// call's supplies: a written call, a name, an instance or a field.
+    /// Any other stage is a function value applied to the piped value.
+    #[must_use]
+    pub const fn supplies_piped_value(&self) -> bool {
+        matches!(
+            self,
+            Self::Call { .. }
+                | Self::Name(_)
+                | Self::Instance { .. }
+                | Self::Field { .. }
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Literal {
     Unit,

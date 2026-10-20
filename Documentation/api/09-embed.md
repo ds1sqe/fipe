@@ -30,6 +30,7 @@ line(&mut self, text: &str) -> Outcome<Report>
 query(&mut self, text: &str) -> Outcome<Report>
 reply(&mut self, reply: Reply) -> Outcome<Report>
 withdraw(&mut self, line: Accepted) -> Option<Withdrawn>
+withdrawn(&self, name: &str) -> bool
 strict(&mut self, enabled: bool)
 compile_budget(&mut self, units: u64)
 checks(&self, name: Option<&str>) -> Vec<typed::Check>
@@ -56,7 +57,9 @@ line had not been given, files it loaded and absent answers included,
 and gives the `Withdrawn` that `vm::Machine::withdraw` takes. `withdraw`
 returns `None`, changing nothing, unless the line is the last accepted
 one and not already withdrawn; a refused line or a query in between
-leaves it the last. A line awaiting a reply is abandoned. `strict(true)` makes each open implicit entry a check error in
+leaves it the last. `withdrawn` says whether a withdrawn line bound a name,
+so a host can word a later "unknown name" for it; nothing else of the
+session remembers the line. A line awaiting a reply is abandoned. `strict(true)` makes each open implicit entry a check error in
 the line and its file modules; explicit gates remain allowed. It defaults
 to false. `compile_budget(units)` sets the checker's steps each compile-time
 evaluation of later lines may spend ([checking](07-check.md) §The compile

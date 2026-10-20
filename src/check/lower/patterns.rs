@@ -162,7 +162,7 @@ impl Index {
             },
         );
         let constructor = self.constructor_index(meaning, label);
-        let count = self.tables.borrow().meanings[meaning].constructors
+        let count = self.store.tables().meanings[meaning].constructors
             [constructor]
             .fields
             .len();
@@ -182,7 +182,7 @@ impl Index {
         meaning: usize,
         label: &str,
     ) -> usize {
-        self.tables.borrow().meanings[meaning]
+        self.store.tables().meanings[meaning]
             .constructors
             .iter()
             .position(|constructor| constructor.label == label)
@@ -212,11 +212,11 @@ impl Index {
                     crate::resolve::Target::Constructor { name, .. } => {
                         name.clone()
                     }
-                    _ => self.tables.borrow().meanings[meaning].label.clone(),
+                    _ => self.store.tables().meanings[meaning].label.clone(),
                 };
                 let constructor = self.constructor_index(meaning, &label);
-                let layout = self.tables.borrow().meanings[meaning]
-                    .constructors[constructor]
+                let layout = self.store.tables().meanings[meaning].constructors
+                    [constructor]
                     .fields
                     .clone();
                 let fields = fields

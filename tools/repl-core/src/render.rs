@@ -63,6 +63,7 @@ pub fn syntax(reason: parse::Reason) -> String {
         R::Lexical(_)
         | R::InvalidTokenStream
         | R::OperatorInArguments
+        | R::ApplicationInOperator
         | R::ChainedComparison
         | R::FlagValueMustTouch
         | R::ArmsNeedGroup
@@ -203,6 +204,9 @@ pub fn infer(reason: &infer::Reason) -> String {
         }
         R::NotAFunction => "not a function".into(),
         R::ExtraArgument => "one argument too many".into(),
+        R::IfWithoutElse => "an `if` without `else` is `()`, so its body may have no value: add an `else`".into(),
+        R::LiteralApplied => "a literal takes no operands".into(),
+        R::PositionalBool => "a Bool spot takes no positional operand: pipe the value in, `value | f`, or write the spot's flag".into(),
         R::UnknownSpot { name } => format!("no spot named `{name}`"),
         R::FlagOperand { name } => {
             format!("flag `{name}` needs an operand: `-{name} value`")
@@ -228,7 +232,12 @@ pub fn infer(reason: &infer::Reason) -> String {
         }
         R::FilledSpot => "no open spot to fill".into(),
         R::OpenSpot => "`|!` on Maybe needs a value, not an open spot".into(),
-        R::NeedsMaybeOrResult => "`||` and `&&` need Maybe or Result".into(),
+        R::NeedsMaybeOrResult => {
+            "`||` and `&&` need Bool, Maybe or Result on their left".into()
+        }
+        R::NeedsOutcome => {
+            "`|:` and `|!` need Maybe, Result or Either on their left".into()
+        }
         R::NotYetChecked { form } => format!("not yet checked: {form}"),
         R::Discarded => "a line before the last must be ()".into(),
         R::MissingField { name } => format!("missing field `{name}`"),

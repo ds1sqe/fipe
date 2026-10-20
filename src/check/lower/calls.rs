@@ -3,19 +3,6 @@ use super::{
     TypeName, Vec,
 };
 
-/// Whether a stage of this form takes the piped value among its call's
-/// supplies, as inference types it (`infer/spots.rs` `stage`); any
-/// other stage is a function value applied to the input.
-pub(super) const fn supplied_stage(kind: &crate::ast::ExprKind) -> bool {
-    matches!(
-        kind,
-        crate::ast::ExprKind::Call { .. }
-            | crate::ast::ExprKind::Name(_)
-            | crate::ast::ExprKind::Instance { .. }
-            | crate::ast::ExprKind::Field { .. }
-    )
-}
-
 impl Index {
     pub(super) fn call(
         &mut self,
@@ -32,14 +19,12 @@ impl Index {
             .iter()
             .map(|(_, ty)| {
                 let ty = self.ty(&source.home, ty);
-                let index = self.tables.borrow().slots.len();
-                self.tables.borrow_mut().slots.push(ir::Slot {
+                self.store.push_slot(ir::Slot {
                     ty,
                     parameters: Vec::new(),
                     hidden: Vec::new(),
                     definition: None,
-                });
-                index
+                })
             })
             .collect();
         let supplies = bound
@@ -142,14 +127,12 @@ impl Index {
             .iter()
             .map(|(ty, _)| {
                 let ty = self.ty(&source.home, ty);
-                let index = self.tables.borrow().slots.len();
-                self.tables.borrow_mut().slots.push(ir::Slot {
+                self.store.push_slot(ir::Slot {
                     ty,
                     parameters: Vec::new(),
                     hidden: Vec::new(),
                     definition: None,
-                });
-                index
+                })
             })
             .collect();
         let supplies = applied
@@ -182,7 +165,7 @@ impl Index {
         else {
             return callee;
         };
-        let original = self.tables.borrow().nodes[callee].clone();
+        let original = self.store.tables().nodes[callee].clone();
         let ir::Kind::Constructor {
             meaning,
             constructor,
@@ -208,8 +191,7 @@ impl Index {
                 });
         // The callee node is this call's own: it takes the fields in
         // place rather than leaving an unused copy beside it.
-        self.keep_node(callee);
-        self.tables.borrow_mut().nodes[callee] = ir::Node {
+        *self.store.node_mut(callee) = ir::Node {
             ty: signature,
             kind: ir::Kind::Constructor {
                 meaning,
@@ -249,8 +231,7 @@ impl Index {
             Selected::Value { origin, site } => {
                 let origin = home_origin(&source.home, origin);
                 let index = self.definitions[&(origin, *site)];
-                let definition =
-                    self.tables.borrow().definitions[index].clone();
+                let definition = self.store.tables().definitions[index].clone();
                 let meanings = definition
                     .hidden
                     .iter()
@@ -274,15 +255,12 @@ impl Index {
                     let (ordinal, label) = declaration(source, &origin, *site);
                     let namespace = self.namespace(&origin);
                     let ty = self.ty(&source.home, ty);
-                    let index = self.tables.borrow().declarations.len();
-                    self.tables.borrow_mut().declarations.push(
-                        ir::Declaration {
-                            namespace,
-                            index: ordinal,
-                            label,
-                            ty,
-                        },
-                    );
+                    let index = self.store.push_declaration(ir::Declaration {
+                        namespace,
+                        index: ordinal,
+                        label,
+                        ty,
+                    });
                     self.declarations.insert(key, index);
                     index
                 };
@@ -303,7 +281,7 @@ impl Index {
                     unreachable!("constructor result is nominal")
                 };
                 let constructor = self.constructor_index(meaning, name);
-                let count = self.tables.borrow().meanings[meaning].constructors
+                let count = self.store.tables().meanings[meaning].constructors
                     [constructor]
                     .fields
                     .len();
@@ -349,7 +327,7 @@ impl Index {
                             &row.ty,
                             None,
                         );
-                        match self.tables.borrow().nodes[node].kind.clone() {
+                        match self.store.tables().nodes[node].kind.clone() {
                             ir::Kind::Definition { index, meanings } => {
                                 ir::Implementation::Definition {
                                     index,
@@ -376,23 +354,15 @@ impl Index {
                         .map(|ty| self.ty(&source.home, ty)),
                     target,
                 };
-                if self.tables.borrow().dispatch[index].rows.contains(&row) {
+                if self.store.tables().dispatch[index].rows.contains(&row) {
                     continue;
                 }
-                self.note(|this, mark| {
-                    (index < mark.dispatch).then(|| {
-                        super::session::Undo::Rows(
-                            index,
-                            this.tables.borrow().dispatch[index].rows.len(),
-                        )
-                    })
-                });
-                self.tables.borrow_mut().dispatch[index].rows.push(row);
+                self.store.push_row(index, row);
             }
         }
     }
     pub(super) fn constant_default(&mut self, node: usize) -> usize {
-        let tables = self.tables.borrow();
+        let tables = self.store.tables();
         let value = &tables.nodes[node];
         if matches!(value.ty, ir::Type::Function { .. }) {
             return node;

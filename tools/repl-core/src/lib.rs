@@ -87,6 +87,9 @@ pub struct Repl {
     /// How many file texts, and which paths, stood before the line in
     /// progress: what a withdrawn line leaves.
     before: (usize, Vec<(String, String)>),
+    /// Paths `:load` chose on lines later withdrawn, by module name: a
+    /// later `use` of the name says why its file is not found.
+    withdrawn_loads: Vec<(String, String)>,
     /// Whether the last output was a prompt, which exit ends with LF.
     prompted: bool,
     /// The last accepted line, for `:t` and `:r`.
@@ -160,6 +163,7 @@ impl Repl {
             files: Vec::new(),
             host_texts: Vec::new(),
             paths: Vec::new(),
+            withdrawn_loads: Vec::new(),
             before: (0, Vec::new()),
             prompted: false,
             last: None,
@@ -229,7 +233,17 @@ impl Repl {
                 mode,
             }) => {
                 if let Some(text) = text {
+                    self.withdrawn_loads.retain(|(name, _)| *name != stem);
                     self.files.push((stem, text.to_string()));
+                } else if let Some((name, path)) =
+                    self.withdrawn_loads.iter().find(|(name, _)| *name == stem)
+                {
+                    out.write(
+                        format!(
+                            "`{name}`: its `:load` of {path} was withdrawn when its run Faulted; load it again with `:load {path}`\n"
+                        )
+                        .as_bytes(),
+                    );
                 }
                 let reply = Reply::File(text.map(String::from));
                 let outcome = self.session.reply(reply);
@@ -565,7 +579,7 @@ impl Repl {
             located("", &text, warning.span, &format!("warning: written as {reading}; both readings bind; write double parentheses to keep the tuple"), out);
         }
         for diagnostic in &report.diagnostics {
-            self.diagnostic(diagnostic, &text, out);
+            self.diagnostic(diagnostic, &report, &text, out);
         }
         if matches!(mode, Mode::Accept) && report.module.is_some() {
             self.parsed = Some(report.clone());
@@ -630,6 +644,13 @@ impl Repl {
                     self.machine.withdraw(&withdrawn);
                     let (files, paths) = core::mem::take(&mut self.before);
                     self.files.truncate(files);
+                    for load in &self.paths {
+                        if !paths.contains(load) {
+                            self.withdrawn_loads
+                                .retain(|(name, _)| *name != load.0);
+                            self.withdrawn_loads.push(load.clone());
+                        }
+                    }
                     self.paths = paths;
                 }
                 false
@@ -675,7 +696,13 @@ impl Repl {
         located(&prefix, &source[first..last], span, reason, out);
     }
 
-    fn diagnostic(&self, diagnostic: &Diagnostic, line: &str, out: &mut Outs) {
+    fn diagnostic(
+        &self,
+        diagnostic: &Diagnostic,
+        report: &Report,
+        line: &str,
+        out: &mut Outs,
+    ) {
         let at = Context {
             source: self.session.source(),
             line,
@@ -686,11 +713,46 @@ impl Repl {
                 located("", line, error.span, &reason, out);
             }
             Diagnostic::Resolve(error) => {
-                let reason = render::resolve(&error.reason, &at);
+                let mut reason = render::resolve(&error.reason, &at);
+                let word = line.get(error.span.start..error.span.end);
+                if matches!(
+                    error.reason,
+                    fipe::resolve::Reason::UnknownName
+                        | fipe::resolve::Reason::UnknownType
+                ) && word.is_some_and(|word| self.session.withdrawn(word))
+                {
+                    let word = word.unwrap_or_default();
+                    reason = format!(
+                        "{reason}: the line that bound `{word}` was withdrawn when its run Faulted; give it again"
+                    );
+                }
                 located("", line, error.span, &reason, out);
             }
             Diagnostic::Type(error) => {
-                let reason = render::infer(&error.reason);
+                let mut reason = render::infer(&error.reason);
+                if matches!(error.reason, fipe::infer::Reason::Mismatch { .. })
+                    && unbound_word(report, error.span)
+                {
+                    let word = line
+                        .get(error.span.start..error.span.end)
+                        .unwrap_or_default();
+                    reason.push_str(&format!(
+                        "; `{word}` is text here: no name `{word}` is bound"
+                    ));
+                }
+                if error.reason == fipe::infer::Reason::LiteralApplied {
+                    let word = line
+                        .get(error.span.start..error.span.end)
+                        .unwrap_or_default();
+                    reason = format!("{reason}: `{word}` is an operand here");
+                    if !word.is_empty()
+                        && !word.chars().any(char::is_alphanumeric)
+                    {
+                        reason.push_str(
+                            ", not an operator; the arithmetic operators are `+ - * / %`",
+                        );
+                    }
+                }
                 located("", line, error.span, &reason, out);
             }
             Diagnostic::File { stem, error } => {
@@ -865,6 +927,11 @@ fn names(session: &Session, report: &Report, line: &str, out: &mut Outs) {
         })
         .collect();
     names.sort_by_key(|&(start, ..)| start);
+    if names.is_empty() {
+        out.write(
+            b"no names to resolve: operators and literals name nothing\n",
+        );
+    }
     for (start, _, name, target) in names {
         let (l, c) = Source::new(line).line_col(start);
         let at = Context {
@@ -875,6 +942,22 @@ fn names(session: &Session, report: &Report, line: &str, out: &mut Outs) {
         let text = format!("{l}:{c} {name}: {target}\n");
         out.write(text.as_bytes());
     }
+}
+
+/// Whether the line's expression at `span` (in the line's coordinates)
+/// is an unbound name in an argument position, which is text.
+fn unbound_word(report: &Report, span: Span) -> bool {
+    let (Some(module), Some(resolved)) = (&report.module, &report.resolved)
+    else {
+        return false;
+    };
+    resolved.expressions().any(|(id, target)| {
+        matches!(target, fipe::resolve::Target::Word)
+            && module.expr(id).is_some_and(|expr| {
+                expr.span.start.checked_sub(report.offset) == Some(span.start)
+                    && expr.span.end - report.offset == span.end
+            })
+    })
 }
 
 /// The exact spelling of a combined-text span, in the line's own text.
