@@ -353,8 +353,12 @@ fn a_binding_with_parts_reads_its_parts() {
         assert_eq!(stored, 2, "{source}");
         assert!(
             matches!(
-                body.blocks.last().unwrap().statements.last(),
-                Some(Statement::Assign(0, Rvalue::Use(Operand::Global(_))))
+                body.blocks.last().unwrap().statements.as_slice(),
+                [
+                    ..,
+                    Statement::Assign(0, Rvalue::Use(Operand::Global(_))),
+                    Statement::Line(Operand::Local(0)),
+                ]
             ),
             "{source}: {body:?}"
         );
@@ -442,7 +446,11 @@ fn an_unfixed_session_slot_lowers_without_a_dispatch() {
     let program = fipe::compile::compile(&unit);
     super::walk::check_program(&program);
     assert!(matches!(
-        main_body(&program).blocks[0].statements.last(),
-        Some(Statement::Assign(0, Rvalue::Use(Operand::Global(_))))
+        main_body(&program).blocks[0].statements.as_slice(),
+        [
+            ..,
+            Statement::Assign(0, Rvalue::Use(Operand::Global(_))),
+            Statement::Line(Operand::Local(0)),
+        ]
     ));
 }

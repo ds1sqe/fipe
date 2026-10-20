@@ -22,8 +22,9 @@ a returned `Request`; the driver performs it and passes the answer to
 | `File { stem }`: the source of file module `stem`; the driver maps the stem to a path | the text, or `None` when absent |
 | `Call { declaration, arguments, environment }`: a run calls the host declaration `tables.declarations[declaration]` with its arguments in spot order, under the `with` keys (`tables.keys`) and values open, outermost first | `Value(Ok(value))`, or `Value(Err(message))`, which Faults the run with `Host` at the call |
 
-Sink policy is the host's; the conformance host's, under which the
-trace fixtures run, heads `tests/fixtures/host/commands.fipe`.
+Sink policy is the host's: it reads each main expression line's value from
+`vm::Machine::lines` as lines end, at a request or the run's end; the
+conformance host's policy heads `tests/fixtures/host/commands.fipe`.
 
 ## Stepping
 
@@ -37,17 +38,16 @@ Machine::globals(&self) -> impl Iterator<Item = (usize, &Value)>
 ~~~
 
 A stepped run is `run` handed out stop by stop: `begin` starts it,
-`next_stop` advances it to `Before` the next statement or terminator of
-the top body frame (a block's charge is not one), `After` a write into
-a frame (an assignment, or a call's result reaching its destination;
-a marked pipe's, `||`'s and `&&`'s result whichever side ran), a host
-request, which `answer` replies to, or `Done`. Between stops a driver
-reads `frames()` (each body frame's locals and captures by slot),
-`globals()` (each stored value definition's value), `charged()` and
-`budget()`; the trace so far is the requests it answered. Stops are not observations: a stepped run makes the same
-requests and charges as `run`, and an unstepped run pays nothing for
-the boundary. `next_stop` without a stepped run, or with a reply owed,
-panics.
+`next_stop` advances it to `Before` the next statement or terminator of the top
+body frame (a block's charge is not one), `After` a write into a frame (an
+assignment, or a call's result reaching its destination; a marked pipe's,
+`||`'s and `&&`'s result whichever side ran), a host request, which `answer`
+replies to, or `Done`. Between stops a driver reads `frames()` (each body
+frame's locals and captures by slot), `globals()` (each stored value
+definition's value), `lines()`, `charged()` and `budget()`; the trace so far is
+the requests it answered. Stops are not observations: a stepped run makes the
+same requests and charges as `run`, and an unstepped run pays nothing for the
+boundary. `next_stop` without a stepped run, or with a reply owed, panics.
 
 ## Session
 

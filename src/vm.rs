@@ -123,6 +123,9 @@ pub struct Machine {
     stepping: bool,
     /// The stops a stepped run reached and has not handed out yet.
     stops: VecDeque<Stop>,
+    /// Each main expression line's value in the run in progress or the
+    /// last one, with the line's IR node.
+    lines: Vec<(usize, Value)>,
 }
 
 /// What a frame's caller does with the returned value.
@@ -178,6 +181,7 @@ impl Machine {
             program: None,
             stepping: false,
             stops: VecDeque::new(),
+            lines: Vec::new(),
         }
     }
 
@@ -263,7 +267,16 @@ impl Machine {
         self.stage = Some(Stage::Init(0));
         self.stepping = false;
         self.stops.clear();
+        self.lines.clear();
         program
+    }
+
+    /// Each main expression line's value, with the line's IR node, in
+    /// line order: the run in progress or the last one. A line whose
+    /// run ended before it is absent. Reading changes nothing.
+    #[must_use]
+    pub fn lines(&self) -> &[(usize, Value)] {
+        &self.lines
     }
 
     /// Every program run so far, joined: the bodies that frames and

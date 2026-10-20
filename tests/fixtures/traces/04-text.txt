@@ -5,5 +5,5 @@ call text.trim ("world") -> "world"
 call text.trim ("name") -> "name"
 call commands.read ("./letters") -> Ok "./letters"
 call commands.put ("./letters", [97, 10, 98, 10, 99]) -> ()
-success ""
+success "[Count \"call\" 1, Count \"ishmael.\" 1, Count \"some\" 1, Count \"years\" 1, Count \"ago.\" 1]\n\"hello, world\"\n\"hello, name\"\n1\n2\n\"\\\"tab\\\\there\\\"\"\n11\n8081\n"
 error ""

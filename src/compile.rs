@@ -33,7 +33,7 @@ use patterns::build_function;
 pub fn compile(unit: &ir::Unit) -> mir::Program {
     let tables = unit.tables();
     let mut lowering = Lowering::new(&tables, stored(&tables));
-    let main = lowering.lines(&unit.main);
+    let main = lowering.main(&unit.main);
     let inits = (0..tables.modules.len())
         .map(|module| (module, lowering.lines(&tables.modules[module].lines)))
         .collect();
@@ -432,6 +432,32 @@ impl Lowering<'_> {
         let mut builder =
             Builder::new(self, node, result, Vec::new(), Vec::new());
         builder.sequence(node, lines, Some(0));
+        builder.terminate(Terminator::Return, node);
+        builder.finish(None)
+    }
+
+    /// The main body: its lines in order, each expression line's value
+    /// kept for the host by a `Line` statement, `_0` the last value.
+    fn main(&mut self, lines: &[usize]) -> usize {
+        let node = lines.last().copied().unwrap_or(0);
+        let result = lines
+            .last()
+            .map_or(ir::Type::Unit, |last| self.tables.nodes[*last].ty.clone());
+        let mut builder =
+            Builder::new(self, node, result, Vec::new(), Vec::new());
+        if lines.is_empty() {
+            builder.sequence(node, lines, Some(0));
+        }
+        for (index, line) in lines.iter().enumerate() {
+            let dest = (index + 1 == lines.len()).then_some(0);
+            let value = builder.lower_to(*line, dest);
+            if !matches!(
+                builder.tables().nodes[*line].kind,
+                ir::Kind::Bind { .. }
+            ) {
+                builder.emit(mir::Statement::Line(value), *line);
+            }
+        }
         builder.terminate(Terminator::Return, node);
         builder.finish(None)
     }

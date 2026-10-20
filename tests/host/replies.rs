@@ -139,15 +139,55 @@ fn read_target(tables: &Tables, ty: &ir::Type) -> String {
     String::from("?")
 }
 
-/// The conformance host's state over one run: the files it wrote and
-/// the success output.
+/// The conformance host's state over one run: the files it wrote, the
+/// success and error output, and how many main lines it has written.
 #[derive(Default)]
 pub struct Host {
     written: Files,
     pub success: Vec<u8>,
+    pub error: Vec<u8>,
+    lines: usize,
 }
 
 impl Host {
+    /// Write the main lines the run kept since the last call, by the
+    /// sink policy: a value with a newline to the success output, `()`
+    /// and `Nothing` nothing, `Just v` and `Ok v` the content, `Err e`
+    /// to the error output.
+    pub fn write_lines(&mut self, kept: &[(usize, Value)], tables: &Tables) {
+        let prelude = Prelude::new(tables);
+        for (_, value) in &kept[self.lines..] {
+            let (out, value) = match value {
+                Value::Record(record)
+                    if Some(record.meaning) == prelude.maybe =>
+                {
+                    let Some(value) = record.fields.first() else {
+                        continue;
+                    };
+                    (&mut self.success, value)
+                }
+                Value::Record(record)
+                    if Some(record.meaning) == prelude.result =>
+                {
+                    let out = if record.constructor == 0 {
+                        &mut self.success
+                    } else {
+                        &mut self.error
+                    };
+                    (out, &record.fields[0])
+                }
+                value => (&mut self.success, value),
+            };
+            if *value != Value::Unit {
+                out.extend(
+                    fipe::value::structural::show(value, tables).bytes(),
+                );
+                out.push(b'\n');
+            }
+        }
+        self.lines = kept.len();
+    }
+
     /// Apply a write to its sink: `out` is the success output, any
     /// other sink a file `put` replaces and `append` extends.
     fn write(&mut self, sink: &str, bytes: Vec<u8>, replace: bool) {

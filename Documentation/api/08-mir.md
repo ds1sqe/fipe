@@ -40,13 +40,13 @@ Each local keeps its type and the IR slot it holds, `None` for a temporary.
 
 ## Blocks, statements and terminators
 
-A block is statements and one terminator, with the node of each: a Fault
-has its span and a debugger steps by node or by block without a second
-table. Statements assign an rvalue to a local, store a value definition's
-global, enter an `Eval` or `Init` entry with the value it checks, push
-a `with` key and value onto the environment a host call receives, or pop
-it. A block whose lowering charged anything opens with `Charge`, the
-nodes it pays in the order their lowering completed.
+A block is statements and one terminator, with the node of each: a Fault has
+its span and a debugger steps by node or by block without a second table.
+Statements assign an rvalue to a local, store a value definition's global,
+enter an `Eval` or `Init` entry with the value it checks, push a `with` key and
+value onto the environment a host call receives, pop it, or keep a main
+expression line's value (`Line`). A block whose lowering charged anything opens
+with `Charge`, the nodes it pays in the order their lowering completed.
 
 The charges are the VM's metering, which [the host
 chapter](../spec/09-host.md) §Budget leaves to each backend: one unit
@@ -196,8 +196,8 @@ vm::Machine::new(budget: Option<u64>) -> Machine
 run(&mut self, program: &mir::Program) -> Outcome<Result<Value, Fault>>
 reply(&mut self, program: &mir::Program, reply: Reply)
     -> Outcome<Result<Value, Fault>>
-charged(&self) -> u64
-budget(&self) -> Option<u64>
+charged(&self) -> u64; budget(&self) -> Option<u64>
+lines(&self) -> &[(usize, Value)]        # each main expression line's value
 set_budget(&mut self, budget: Option<u64>)
 withdraw(&mut self, withdrawn: &session::Withdrawn)
 vm::Fault { span: token::Span, namespace: usize, reason: value::Reason }
@@ -205,18 +205,18 @@ vm::Observation { result: Result<Value, Fault>, trace: Vec<(Request,
                   Reply)>, success: Vec<u8>, error: Vec<u8> }
 ~~~
 
-One machine serves a session: its globals are the accepted lines'
-values, and its `program` joins every run's, so a stored function value
-keeps its body. `run` runs each module's init body not yet run, then the
-main, with frames on the heap, never on the Rust stack. A `Host` callee,
-or a dispatch row naming a host's declaration, is the one place a run
-returns `Request::Call` with the arguments in spot order and the `with`
-environment open at the call; `reply` with the same program continues
-it, a value going where the call wanted it and a failure Faulting `Host`
-at the call. A Fault ends the run where it happens, its span in its
-`namespace`'s source; the host's prior effects stand. `withdraw` forgets
-a withdrawn line's globals and module inits ([embedding](09-embed.md)
-§Session): given again, it reruns them, effects included.
+One machine serves a session: its globals are the accepted lines' values, and
+its `program` joins every run's, so a stored function value keeps its body.
+`run` runs each module's init body not yet run, then the main, with frames on
+the heap, never on the Rust stack. A `Host` callee, or a dispatch row naming a
+host's declaration, is the one place a run returns `Request::Call` with the
+arguments in spot order and the `with` environment open at the call; `reply`
+with the same program continues it, a value going where the call wanted it and
+a failure Faulting `Host` at the call. A Fault ends the run where it happens,
+its span in its `namespace`'s source; the host's prior effects stand.
+`withdraw` forgets a withdrawn line's globals and module inits
+([embedding](09-embed.md) §Session): given again, it reruns them, effects
+included.
 
 The budget is per run, `None` for an unbounded one; `charged` reports
 the units of the run in progress or of the last one, bounded or not. A

@@ -1,7 +1,7 @@
 //! The conformance host's sink policy: writes to `out` are the success
-//! output, writes to any other sink are files a later `cat` reads, the
-//! run's value goes to the success output and an `Err` or a Fault to
-//! the error output.
+//! output, writes to any other sink are files a later `cat` reads,
+//! each expression line's value goes to the success output and an `Err`
+//! or a Fault to the error output.
 use super::{observe, program};
 use fipe::{embed::Request, value::Value};
 
@@ -38,6 +38,14 @@ fn the_runs_value_is_written_and_an_err_goes_to_the_error_output() {
     assert_eq!(observation.success, b"4\n");
     let observation = run("x: Maybe<Integer> = Nothing\nx");
     assert_eq!(observation.success, b"");
+}
+
+#[test]
+fn each_expression_line_is_written_in_order_between_writes_to_out() {
+    let observation =
+        run("1 + 1\nput out \"mid\\n\"\nx = 5\nx * 2\nNothing\n()");
+    assert_eq!(observation.success, b"2\nmid\n10\n");
+    assert_eq!(observation.error, b"");
 }
 
 #[test]
@@ -84,6 +92,11 @@ fn the_files_example_writes_its_big_logs_by_put() {
         })
         .collect();
     assert_eq!(written, [b"[\"syslog\", \"kern.log\"]".to_vec()]);
-    // The example's last line counts the lines of its notes.
-    assert_eq!(observation.success, b"3\n");
+    // Each expression line's value, in order: the largest logs' names,
+    // the configuration paths and the two counts of the notes; the lines
+    // ending in `put` and `append` give `()`, which writes nothing.
+    assert_eq!(
+        observation.success,
+        b"[\"syslog\", \"kern.log\"]\n[\"/etc/hosts\", \"/etc/fipe.conf\"]\n3\n3\n"
+    );
 }

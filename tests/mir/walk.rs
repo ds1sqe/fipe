@@ -79,6 +79,15 @@ pub fn check_program(program: &Program) {
                         push(&mut lowered, block.nodes[index]);
                     }
                     Statement::Pop => push(&mut lowered, block.nodes[index]),
+                    Statement::Line(value) => {
+                        // Kept for the host: only the main keeps lines,
+                        // and a line pays nothing of its own.
+                        assert!(
+                            *body == program.bodies[program.main],
+                            "only the main keeps lines"
+                        );
+                        check_operand(program, body, value);
+                    }
                 }
             }
             if let Some(Statement::Charge(nodes)) = block.statements.first() {

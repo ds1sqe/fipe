@@ -335,6 +335,7 @@ fn statement(statement: &Statement, tables: &Tables) -> String {
             format!("push {} = {}", tables.keys[*key], operand(value, tables))
         }
         Statement::Pop => String::from("pop"),
+        Statement::Line(value) => format!("line {}", operand(value, tables)),
     }
 }
 

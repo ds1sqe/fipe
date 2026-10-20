@@ -99,6 +99,9 @@ pub enum Statement {
     },
     /// Close the environment the matching `Push` opened.
     Pop,
+    /// A main line's value, kept for the host in line order
+    /// ([`crate::vm::Machine::lines`]); its node is the line.
+    Line(Operand),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

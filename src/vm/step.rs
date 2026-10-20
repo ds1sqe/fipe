@@ -108,6 +108,10 @@ impl Machine {
             Statement::Pop => {
                 self.environment.pop();
             }
+            Statement::Line(value) => {
+                let value = self.operand(program, *value);
+                self.lines.push((node, value));
+            }
         }
         Ok(Flow::Continue)
     }

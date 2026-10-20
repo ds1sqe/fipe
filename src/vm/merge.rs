@@ -139,7 +139,8 @@ impl<'a> Joining<'a> {
                     Statement::Assign(_, rvalue) => self.rvalue(rvalue),
                     Statement::Store { value, .. }
                     | Statement::Enter { value, .. }
-                    | Statement::Push { value, .. } => self.operand(value),
+                    | Statement::Push { value, .. }
+                    | Statement::Line(value) => self.operand(value),
                     Statement::Charge(_) | Statement::Pop => {}
                 }
             }

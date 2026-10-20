@@ -40,7 +40,8 @@ pub(super) fn in_statement(statement: &Statement) -> Vec<usize> {
         Statement::Assign(_, value) => rvalue(&mut found, value),
         Statement::Store { value, .. }
         | Statement::Enter { value, .. }
-        | Statement::Push { value, .. } => push(&mut found, value),
+        | Statement::Push { value, .. }
+        | Statement::Line(value) => push(&mut found, value),
         Statement::Charge(_) | Statement::Pop => (),
     }
     found

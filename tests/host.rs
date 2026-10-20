@@ -8,7 +8,7 @@ use fipe::{
     lex::lex,
     mir::Program,
     parse::parse,
-    value::{structural, Prelude, Value},
+    value::Value,
     vm::{Fault, Machine, Observation, Stop},
 };
 
@@ -76,6 +76,7 @@ fn observe(
         match outcome {
             Outcome::Done(result) => break result,
             Outcome::Request(request) => {
+                host.write_lines(machine.lines(), &program.tables.borrow());
                 let reply = Reply::Value(
                     host.answer(&program.tables.borrow(), &request),
                 );
@@ -84,6 +85,7 @@ fn observe(
             }
         }
     };
+    host.write_lines(machine.lines(), &program.tables.borrow());
     let observation = finish(program, main, result, trace, host);
     (observation, machine.charged())
 }
@@ -106,6 +108,7 @@ fn observe_stepped(
         match stop {
             Stop::Done(result) => break result,
             Stop::Request(request) => {
+                host.write_lines(machine.lines(), &program.tables.borrow());
                 let reply = Reply::Value(
                     host.answer(&program.tables.borrow(), &request),
                 );
@@ -115,13 +118,14 @@ fn observe_stepped(
             Stop::Before(_) | Stop::After(..) => {}
         }
     };
+    host.write_lines(machine.lines(), &program.tables.borrow());
     let observation = finish(program, main, result, trace, host);
     (observation, machine.charged(), stops)
 }
 
-/// The observation of a finished run under the sink policy: the run's
-/// value written to the success output (an `Err` to the error output),
-/// a Fault, located, to the error output.
+/// The observation of a finished run: the host's output, its main
+/// lines already written by the sink policy, and a Fault, located, to
+/// the error output.
 fn finish(
     program: &Program,
     main: &str,
@@ -130,36 +134,12 @@ fn finish(
     host: replies::Host,
 ) -> Observation {
     let tables = program.tables.borrow();
-    let prelude = Prelude::new(&tables);
-    let mut success = host.success;
-    let mut error = Vec::new();
-    // `()` writes nothing, unwrapped or not.
-    let line = |out: &mut Vec<u8>, value: &Value| {
-        if *value != Value::Unit {
-            out.extend(structural::show(value, &tables).bytes());
-            out.push(b'\n');
-        }
-    };
-    match &result {
-        Ok(Value::Record(record)) if Some(record.meaning) == prelude.maybe => {
-            if let Some(value) = record.fields.first() {
-                line(&mut success, value);
-            }
-        }
-        Ok(Value::Record(record)) if Some(record.meaning) == prelude.result => {
-            let out = if record.constructor == 0 {
-                &mut success
-            } else {
-                &mut error
-            };
-            line(out, &record.fields[0]);
-        }
-        Ok(value) => line(&mut success, value),
-        Err(fault) => {
-            let sources = trace::Sources::of(main);
-            error.extend(trace::located(fault, &tables, &sources).bytes());
-            error.push(b'\n');
-        }
+    let success = host.success;
+    let mut error = host.error;
+    if let Err(fault) = &result {
+        let sources = trace::Sources::of(main);
+        error.extend(trace::located(fault, &tables, &sources).bytes());
+        error.push(b'\n');
     }
     drop(tables);
     Observation {

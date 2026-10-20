@@ -46,7 +46,10 @@ fn a_literal_is_one_constant_used_once() {
     ));
     assert_eq!(
         statements[1..],
-        [Statement::Assign(0, Rvalue::Use(Operand::Const(0)))]
+        [
+            Statement::Assign(0, Rvalue::Use(Operand::Const(0))),
+            Statement::Line(Operand::Local(0)),
+        ]
     );
     assert_eq!(body.blocks[0].terminator, Terminator::Return);
 }
@@ -248,6 +251,7 @@ fn a_block_binds_a_local_and_reads_it() {
         [
             Statement::Assign(1, Rvalue::Use(Operand::Const(0))),
             Statement::Assign(0, Rvalue::Use(Operand::Local(1))),
+            Statement::Line(Operand::Local(0)),
         ]
     );
     assert!(
@@ -267,7 +271,10 @@ fn a_timing_is_a_use_of_its_value() {
     ));
     assert_eq!(
         statements[1..],
-        [Statement::Assign(0, Rvalue::Use(Operand::Const(0)))]
+        [
+            Statement::Assign(0, Rvalue::Use(Operand::Const(0))),
+            Statement::Line(Operand::Local(0)),
+        ]
     );
 }
 

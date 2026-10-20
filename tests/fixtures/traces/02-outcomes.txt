@@ -9,5 +9,5 @@ call commands.read ("./x") -> Ok "./x"
 call commands.find ("./x") -> Nothing
 call commands.read ("./cache") -> Ok "./cache"
 call commands.find ("./cache") -> Nothing
-success ""
+success "\"port = 8080\\n\"\n\"port = 8080\\n\"\n\"-\"\n"
 error ""

@@ -15,5 +15,5 @@ call commands.read ("./notes.md") -> Ok (Entry "notes.md" "./notes.md" 29 60)
 call commands.cat (Entry "notes.md" "./notes.md" 29 60) -> "# Notes\n\nbuy milk\n\ncall home\n"
 call commands.read ("./notes.md") -> Ok (Entry "notes.md" "./notes.md" 29 60)
 call commands.cat (Entry "notes.md" "./notes.md" 29 60) -> "# Notes\n\nbuy milk\n\ncall home\n"
-success "3\n"
+success "[\"syslog\", \"kern.log\"]\n[\"/etc/hosts\", \"/etc/fipe.conf\"]\n3\n3\n"
 error ""

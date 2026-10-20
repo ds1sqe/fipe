@@ -44,6 +44,8 @@ mod laws;
 mod lifts;
 #[path = "vm/lines.rs"]
 mod lines;
+#[path = "vm/main_lines.rs"]
+mod main_lines;
 #[path = "vm/natives.rs"]
 mod natives;
 #[path = "vm/outcomes.rs"]
