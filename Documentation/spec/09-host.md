@@ -21,9 +21,11 @@ names into scope. `use module n` requests a host-declared API version;
 `use module.name …` brings names into scope. A session line whose unit
 dispatches on a session meaning no earlier line fixed is the check error
 naming it; any other line runs, and a value once computed is never
-recomputed when a later line fixes the meaning. A used module holds items and
-bindings only; another top-level line in it is the check error "a used
-module has no main", and a `use` that reaches its own module is the check
+recomputed when a later line fixes the meaning. A session line whose run
+Faults is withdrawn: its names, types and claims are as if it had not been
+given, and its effects stand. A used module holds items and bindings
+only; another top-level line in it is the check error "a used module has
+no main", and a `use` that reaches its own module is the check
 error "import cycle" at that `use`. What `pub` exports is
 [syntax](02-syntax.md)'s §Definitions; a module exports its final bindings, a
 name when its final binding is `pub`, and an exported host-callable
