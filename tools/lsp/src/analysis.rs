@@ -146,6 +146,36 @@ impl Analysis {
         Some((node, target.clone()))
     }
 
+    /// What the `use` segment under byte `offset` names: its module, or
+    /// what its imported name names in each namespace.
+    #[must_use]
+    pub fn import_at(&self, offset: usize) -> Option<Vec<Target>> {
+        let within = |span: fipe::token::Span| {
+            span.start <= offset && offset <= span.end
+        };
+        self.resolved.imports.iter().find_map(|import| {
+            if within(import.module_span) {
+                Some(vec![Target::Module(import.module.clone())])
+            } else if import.name_span.is_some_and(within)
+                && !import.targets.is_empty()
+            {
+                Some(import.targets.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// What byte `offset` names: the node's target, or a `use`
+    /// segment's targets.
+    #[must_use]
+    pub fn targets_at(&self, offset: usize) -> Vec<Target> {
+        self.target_at(offset).map_or_else(
+            || self.import_at(offset).unwrap_or_default(),
+            |(_, target)| vec![target],
+        )
+    }
+
     /// What the declaration under byte `offset` defines: a top-level
     /// value, type or constructor of the document, or a local's binder.
     #[must_use]
@@ -240,12 +270,22 @@ impl Analysis {
         if let Target::Local { site } = target {
             return vec![(Source::This, (site.start, site.end))];
         }
-        if let Target::Module(Origin::File(stem)) = target {
-            return self
-                .file_index(stem)
-                .map(|index| (Source::File(index), (0, 0)))
-                .into_iter()
-                .collect();
+        match target {
+            Target::Module(Origin::File(stem)) => {
+                return self
+                    .file_index(stem)
+                    .map(|index| (Source::File(index), (0, 0)))
+                    .into_iter()
+                    .collect();
+            }
+            Target::Module(Origin::Host(name)) => {
+                return host
+                    .source(name)
+                    .map(|_| (Source::Host(name.clone()), (0, 0)))
+                    .into_iter()
+                    .collect();
+            }
+            _ => {}
         }
         let Some(origin) = origin(target) else {
             return Vec::new();
@@ -298,9 +338,13 @@ impl Analysis {
                 found.push((Source::This, span));
             }
         }
+        for span in import_spans(&self.resolved, target) {
+            found.push((Source::This, span));
+        }
         // A file module sees a target of its own as `This`, and one of
         // another file module by that module's stem.
-        if matches!(origin(target), Some(Origin::File(_))) {
+        let file_module = matches!(target, Target::Module(Origin::File(_)));
+        if file_module || matches!(origin(target), Some(Origin::File(_))) {
             for (index, file) in self.files.iter().enumerate() {
                 let local = if Some(index) == defined_in {
                     with_origin(target, Origin::This)
@@ -320,6 +364,9 @@ impl Analysis {
                     if let Some(span) = Self::span(&file.module, node) {
                         found.push((Source::File(index), span));
                     }
+                }
+                for span in import_spans(&resolved, &local) {
+                    found.push((Source::File(index), span));
                 }
             }
         }
@@ -349,6 +396,9 @@ impl Analysis {
     /// expression's inferred type, or a host or prelude declaration.
     #[must_use]
     pub fn hover(&self, host: &Host, offset: usize) -> Option<String> {
+        if self.module.at(offset).is_none() {
+            return self.import_hover(host, offset);
+        }
         let node = self.module.at(offset)?;
         let target = self.target_at(offset).map(|(_, target)| target);
         let word = Self::span(&self.module, node)
@@ -391,6 +441,63 @@ impl Analysis {
             Node::Type(_) => None,
         }
     }
+}
+
+impl Analysis {
+    /// What hovering a `use` segment shows: the module it names, or the
+    /// declaration of the name it imports.
+    fn import_hover(&self, host: &Host, offset: usize) -> Option<String> {
+        let target = self.import_at(offset)?.into_iter().next()?;
+        match &target {
+            Target::Module(Origin::File(stem)) => {
+                Some(format!("module {stem}: {stem}.fipe"))
+            }
+            Target::Module(Origin::Host(name)) => {
+                Some(format!("host module {name}"))
+            }
+            Target::Module(_) => None,
+            _ => match origin(&target)? {
+                origin @ (Origin::Commands
+                | Origin::Host(_)
+                | Origin::Prelude) => declaration_text(host, origin, &target),
+                Origin::File(_) => {
+                    let (Source::File(index), (start, _)) =
+                        self.definition(host, &target).into_iter().next()?
+                    else {
+                        return None;
+                    };
+                    Some(doc_and_lines(&self.files[index].text, start))
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
+/// The spans in `resolved`'s `use` items that name `target`: a module's
+/// segment, or an imported name's.
+#[must_use]
+pub fn import_spans(
+    resolved: &Resolved,
+    target: &Target,
+) -> Vec<(usize, usize)> {
+    resolved
+        .imports
+        .iter()
+        .filter_map(|import| {
+            let span = match target {
+                Target::Module(module) => {
+                    (import.module == *module).then_some(import.module_span)
+                }
+                _ => import
+                    .targets
+                    .contains(target)
+                    .then_some(import.name_span)
+                    .flatten(),
+            }?;
+            Some((span.start, span.end))
+        })
+        .collect()
 }
 
 /// The site of the export of `resolved` that names `target`.
@@ -486,7 +593,16 @@ fn declaration_text(
         Source::Host(name) => host.source(&name)?.1,
         _ => return None,
     };
+    Some(doc_and_lines(text, start))
+}
+
+/// The doc lines above the line holding byte `start` of `text`, that
+/// line, and the lines a trailing `->` continues it onto.
+fn doc_and_lines(text: &str, start: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
     let line = text[..start.min(text.len())].matches('\n').count();
     let mut first = line;
     while first > 0 && lines[first - 1].trim_start().starts_with("##") {
@@ -496,5 +612,5 @@ fn declaration_text(
     while last + 1 < lines.len() && lines[last].trim_end().ends_with("->") {
         last += 1;
     }
-    Some(lines[first..=last].join("\n"))
+    lines[first..=last.min(lines.len().saturating_sub(1))].join("\n")
 }

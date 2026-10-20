@@ -923,3 +923,72 @@ fn an_item_target_has_its_declaration_site_and_its_uses() {
         .count();
     assert_eq!(types, 1, "the annotation `P`");
 }
+
+#[test]
+fn each_use_segment_names_its_module_and_what_it_imports() {
+    let geometry = "pub type Point { x: I64 }\npub area = n => n\nhidden = 1\n";
+    let files = vec![(String::from("geometry"), parse(lex(geometry)).unwrap())];
+    let input = "use fs\nuse geometry\nuse geometry.Point geometry.area\n";
+    let module = parse(lex(input)).unwrap();
+    let resolved = resolve(&module, &host(), &files).unwrap();
+    let source = Source::new(input);
+    let text = |span: Span| source.slice(span).unwrap();
+    let shown: Vec<_> = resolved
+        .imports
+        .iter()
+        .map(|import| {
+            (
+                import.module.clone(),
+                text(import.module_span),
+                import.name_span.map(text),
+                import.targets.clone(),
+            )
+        })
+        .collect();
+    let file = || Origin::File("geometry".into());
+    assert_eq!(
+        shown,
+        [
+            (Origin::Host("fs".into()), "fs", None, vec![]),
+            (file(), "geometry", None, vec![]),
+            (
+                file(),
+                "geometry",
+                Some("Point"),
+                vec![
+                    Target::Type {
+                        origin: file(),
+                        name: "Point".into(),
+                    },
+                    Target::Constructor {
+                        origin: file(),
+                        ty: "Point".into(),
+                        name: "Point".into(),
+                    },
+                ],
+            ),
+            (
+                file(),
+                "geometry",
+                Some("area"),
+                vec![Target::Value {
+                    origin: file(),
+                    name: "area".into(),
+                }],
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_use_of_an_unexported_name_imports_nothing() {
+    let files = vec![(String::from("g"), parse(lex("hidden = 1\n")).unwrap())];
+    let module = parse(lex("use g.hidden\n")).unwrap();
+    let (resolved, errors) =
+        fipe::resolve::resolve_partial(&module, &host(), &files);
+    assert!(errors
+        .iter()
+        .any(|error| matches!(error.reason, Reason::NotExported)));
+    assert_eq!(resolved.imports.len(), 1);
+    assert_eq!(resolved.imports[0].targets, []);
+}

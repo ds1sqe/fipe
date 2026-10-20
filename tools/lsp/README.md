@@ -39,9 +39,9 @@ the package. The `fipe` crate keeps no dependency.
 | Request | What it does |
 | --- | --- |
 | diagnostics | on every open and change, from `check`: syntax errors first, then the diagnostics of the rest of the file; an error inside a used file is placed at its `use` |
-| definition | locals, the module's names, names from file modules, host declarations (in their declaration file) |
-| references | every use in the document and its file modules, and the declaration when asked |
-| hover | a binding's inferred scheme, an expression's type, or a host or prelude declaration with its docs |
+| definition | locals, the module's names, names from file modules, host declarations (in their declaration file); on a `use` segment, the module's file or the imported name's declaration |
+| references | every use in the document and its file modules, the `use` segments that import the name (in the sibling files too, for a name the document defines), and the declaration when asked |
+| hover | a binding's inferred scheme, an expression's type, or a host or prelude declaration with its docs; on a `use` segment, the module or the imported declaration |
 | completion | after `use`, after `.`, on a flag (`-label`, `-label=` for a non-Bool spot), and the names in scope |
 | rename | the declaration and every use across the document, its file modules and the sibling files that import the name |
 | formatting | the whole document: indentation by open brackets and continuing pipes, one space between tokens that do not touch |
@@ -57,8 +57,6 @@ What the actions do not do:
   member removed, once per request: as costly as a full check.
 - Rename refuses prelude, host, command, session-line and module
   names, and a new name of another case or not one segment.
-- Definition on a segment of a `use` path (`use geometry.Point`)
-  answers nothing; it answers on a use of the name it brings in.
 - Workspace-wide operations stop at the document, its file modules
   and the `.fipe` files beside it.
 

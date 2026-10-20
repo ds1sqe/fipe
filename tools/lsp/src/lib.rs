@@ -280,12 +280,20 @@ impl Server {
         let Some((analysis, offset)) = self.at(position) else {
             return Value::Null;
         };
-        let Some((_, target)) = analysis.target_at(offset) else {
+        let targets = analysis.targets_at(offset);
+        if targets.is_empty() {
             return Value::Null;
-        };
+        }
         let document = &position.text_document.uri;
-        let locations: Vec<Location> = analysis
-            .definition(&self.host, &target)
+        let mut located: Vec<Located> = Vec::new();
+        for target in &targets {
+            for place in analysis.definition(&self.host, target) {
+                if !located.contains(&place) {
+                    located.push(place);
+                }
+            }
+        }
+        let locations: Vec<Location> = located
             .iter()
             .filter_map(|located| self.location(&analysis, document, located))
             .collect();
@@ -300,15 +308,38 @@ impl Server {
         let Some((analysis, offset)) = self.at(position) else {
             return Value::Null;
         };
-        let Some((_, target)) = analysis.target_at(offset) else {
-            return json!([]);
-        };
         let document = &position.text_document.uri;
-        let locations: Vec<Location> = analysis
-            .references(&self.host, &target, declaration)
+        let mut located: Vec<Located> = Vec::new();
+        let mut targets = analysis.targets_at(offset);
+        if targets.is_empty() {
+            targets.extend(analysis.declaration_at(offset));
+        }
+        let mut importers = Vec::new();
+        for target in &targets {
+            for place in analysis.references(&self.host, target, declaration) {
+                if !located.contains(&place) {
+                    located.push(place);
+                }
+            }
+            // The files beside the document that import what it defines.
+            let shared = shared(&analysis, target);
+            if let (Some(Origin::This), Some(name)) =
+                (origin(&shared), rename::old_name(&analysis.text, target))
+            {
+                importers.extend(self.importers(document, &shared, &name));
+            }
+        }
+        let mut locations: Vec<Location> = located
             .iter()
             .filter_map(|located| self.location(&analysis, document, located))
             .collect();
+        for (uri, text, span) in importers {
+            let location =
+                Location::new(uri, position::range(&text, span, self.encoding));
+            if !locations.contains(&location) {
+                locations.push(location);
+            }
+        }
         serde_json::to_value(locations).unwrap_or(Value::Null)
     }
 
@@ -368,7 +399,7 @@ impl Server {
         let target = declared
             .clone()
             .filter(|target| !matches!(target, Target::Local { .. }))
-            .or_else(|| analysis.target_at(offset).map(|(_, target)| target))
+            .or_else(|| analysis.targets_at(offset).into_iter().next())
             .or(declared)
             .ok_or_else(|| failed("nothing here can be renamed"))?;
         let target = rename::renamed(&target).map_err(failed)?;
@@ -400,31 +431,12 @@ impl Server {
                 add(&uri, text, rename::name_span(text, span, &old));
             }
         }
-        // A top-level binding is a local of the document, and the value
-        // its export names for the files that import it.
-        let exported = match &target {
-            Target::Local { site } => analysis
-                .resolved
-                .exports
-                .iter()
-                .find(|export| export.span == *site)
-                .map(|export| export.target.clone()),
-            _ => None,
-        };
-        let shared = exported.as_ref().unwrap_or(&target);
-        match origin(shared) {
-            Some(Origin::File(stem)) => {
-                for span in rename::use_spans(&analysis.module, stem, &old) {
-                    add(document, &analysis.text, Some(span));
-                }
+        // The document's own `use` segments are among the references.
+        let shared = shared(&analysis, &target);
+        if matches!(origin(&shared), Some(Origin::This)) {
+            for (uri, text, span) in self.importers(document, &shared, &old) {
+                add(&uri, &text, Some(span));
             }
-            Some(Origin::This) => {
-                for (uri, text, span) in self.importers(document, shared, &old)
-                {
-                    add(&uri, &text, Some(span));
-                }
-            }
-            _ => {}
         }
         let changes: serde_json::Map<String, Value> = edits
             .into_iter()
@@ -493,7 +505,7 @@ impl Server {
                     found.push((uri.clone(), other.text.clone(), span));
                 }
             }
-            for span in rename::use_spans(&other.module, stem, old) {
+            for span in analysis::import_spans(&other.resolved, &imported) {
                 found.push((uri.clone(), other.text.clone(), span));
             }
         }
@@ -518,6 +530,21 @@ impl Server {
             "range": {"start": {"line": 0, "character": 0}, "end": end},
             "newText": formatted,
         }]))
+    }
+}
+
+/// What other files know `target` as: a top-level binding is a local
+/// of the document, and the value its export names for the files that
+/// import it.
+fn shared(analysis: &Analysis, target: &Target) -> Target {
+    match target {
+        Target::Local { site } => analysis
+            .resolved
+            .exports
+            .iter()
+            .find(|export| export.span == *site)
+            .map_or_else(|| target.clone(), |export| export.target.clone()),
+        _ => target.clone(),
     }
 }
 

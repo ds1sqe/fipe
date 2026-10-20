@@ -1,7 +1,6 @@
 //! Rename: what may be renamed, to what, and the span of the name in
 //! each place that spells it.
 
-use fipe::ast::{Entry, ItemKind, Module};
 use fipe::lex::lex;
 use fipe::resolve::{Origin, Target};
 use fipe::token::Kind;
@@ -84,29 +83,4 @@ pub fn name_span(
         at += segment.len() + 1;
     }
     None
-}
-
-/// The spans of `name` in the `use` items of `module` that import it
-/// from the file module `stem`.
-#[must_use]
-pub fn use_spans(
-    module: &Module,
-    stem: &str,
-    name: &str,
-) -> Vec<(usize, usize)> {
-    let mut spans = Vec::new();
-    for entry in &module.entries {
-        let Entry::Item(item) = entry else { continue };
-        let ItemKind::Use { names, .. } = &item.kind else {
-            continue;
-        };
-        for used in names {
-            if let [module, imported] = used.segments.as_slice() {
-                if module == stem && imported == name {
-                    spans.push((used.span.end - name.len(), used.span.end));
-                }
-            }
-        }
-    }
-    spans
 }

@@ -88,6 +88,9 @@ pub struct Resolved {
     patterns: Vec<Option<Target>>,
     types: Vec<Option<Target>>,
     pub exports: Vec<Export>,
+    /// Each name of the module's `use` items whose module resolved, in
+    /// source order.
+    pub imports: Vec<Import>,
     /// What the module defines at its top level, in order: a later
     /// definition of a name shadows an earlier one.
     pub(crate) definitions: Vec<Definition>,
@@ -185,6 +188,22 @@ fn names(found: &Target, target: &Target) -> bool {
             Target::TypeMember { ty, .. } => names(ty, target),
             _ => false,
         }
+}
+
+/// One name of a `use` item: the module its first segment names and,
+/// for `use m.name`, what `name` imports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Import {
+    /// The used module.
+    pub module: Origin,
+    /// The span of the module's segment.
+    pub module_span: Span,
+    /// The span of the imported name's segment, for `use m.name`.
+    pub name_span: Option<Span>,
+    /// What the imported name names in each namespace it is exported
+    /// in (a type and its constructor share a name); empty for
+    /// `use m`, or when `m` does not export it.
+    pub targets: Vec<Target>,
 }
 
 /// A `pub` type or binding of the module.
@@ -612,6 +631,7 @@ impl<'a> Resolver<'a> {
                 patterns: vec![None; module.patterns.len()],
                 types: vec![None; module.types.len()],
                 exports: Vec::new(),
+                imports: Vec::new(),
                 definitions: Vec::new(),
             },
             frame: Vec::new(),
@@ -736,21 +756,36 @@ impl<'a> Resolver<'a> {
         if self.unit && matches!(origin, Origin::File(_)) {
             self.used_faults(name.span, module);
         }
+        let start = name.span.start;
+        let mut import = Import {
+            module: origin.clone(),
+            module_span: Span {
+                start,
+                end: start + module.len(),
+            },
+            name_span: None,
+            targets: Vec::new(),
+        };
         if name.segments.len() == 1 {
+            self.resolved.imports.push(import);
             self.define(name, Space::Value, Target::Module(origin), false);
             return;
         }
         let member = &name.segments[1];
-        let mut found = false;
+        import.name_span = Some(Span {
+            start: name.span.end - member.len(),
+            end: name.span.end,
+        });
         for space in [Space::Type, Space::Value] {
             if let Some(target) = self.exported(&origin, member, space) {
+                import.targets.push(target.clone());
                 self.define(name, space, target, false);
-                found = true;
             }
         }
-        if !found {
+        if import.targets.is_empty() {
             self.error(name.span, Reason::NotExported);
         }
+        self.resolved.imports.push(import);
     }
 
     /// Whether `use stem` in the used module being checked closes an

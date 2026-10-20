@@ -38,6 +38,8 @@ Resolved::expr | pattern | ty (id) -> Option<&Target>
 Resolved::site(&self, target: &Target) -> Option<token::Span>
 Resolved::uses(&self, target: &Target) -> impl Iterator<Item = ast::Node>
 Resolved::exports: Vec<resolve::Export>
+Resolved::imports: Vec<resolve::Import { module, module_span, name_span,
+                                         targets }>
 infer::infer_partial(module, resolved, declarations, files)
     -> (typed::Typed, Vec<infer::Error>)
 Typed::expr(id) -> Option<&types::Type>; binding(id) -> Option<&Scheme>
@@ -52,7 +54,10 @@ in neither. `site` is where a target of this module is defined: a
 binding's pattern name, or a declared item's name, the later of two; a
 target of another origin is answered by that module's resolution. `uses`
 lists every node naming a target, itself or as the head of a member
-chain or type member. `Type` and `Scheme` display in the spec's type
+chain or type member. `imports` gives each name of a `use` item whose
+module resolved, in source order: the module, its segment's span, and
+for `use m.name` the name's span and what it imports in each namespace
+it is exported in. `Type` and `Scheme` display in the spec's type
 syntax. A checked call's `Bound`, keyed by its span, gives its spots'
 declaration sites and types, its supplies with the spot each fills, its
 defaults and its open spots; a host or prelude function's labeled spots,

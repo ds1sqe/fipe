@@ -272,3 +272,176 @@ fn an_unknown_request_is_method_not_found() {
     let error = &replies.iter().find(|m| m["id"] == 5).unwrap()["error"];
     assert_eq!(error["code"], -32601);
 }
+
+/// The start of each location, as (file name, line, character).
+fn starts(locations: &Value) -> Vec<(String, u64, u64)> {
+    let mut found: Vec<(String, u64, u64)> = locations
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|location| {
+            let uri = location["uri"].as_str().unwrap();
+            let name = uri.rsplit('/').next().unwrap().to_string();
+            let start = &location["range"]["start"];
+            (
+                name,
+                start["line"].as_u64().unwrap(),
+                start["character"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+#[test]
+fn definition_on_a_use_segment_answers_the_module_or_the_declaration() {
+    let path = root().join("Documentation/examples/05-modules.fipe");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let uri = uri(&path);
+    let (line, character) = find(&text, "use geometry.Point");
+    let (fs_line, fs_character) = find(&text, "use fs");
+    let replies = exchange(
+        &["utf-8"],
+        &[
+            open(&uri, &text),
+            // `Point`, `geometry` and `fs` in the `use` lines.
+            at(1, "textDocument/definition", &uri, line, character + 15),
+            at(2, "textDocument/definition", &uri, line, character + 6),
+            at(
+                3,
+                "textDocument/definition",
+                &uri,
+                fs_line,
+                fs_character + 4,
+            ),
+        ],
+    );
+    let geometry = root().join("Documentation/examples/geometry.fipe");
+    let geometry_text = std::fs::read_to_string(&geometry).unwrap();
+    let (point_line, point_character) = find(&geometry_text, "Point:");
+    let point = reply(&replies, 1);
+    assert_eq!(point.as_array().unwrap().len(), 1, "{point:?}");
+    assert_eq!(point[0]["uri"], uri_of_str(&geometry));
+    assert_eq!(
+        point[0]["range"]["start"],
+        json!({"line": point_line, "character": point_character})
+    );
+    let module = reply(&replies, 2);
+    assert_eq!(module[0]["uri"], uri_of_str(&geometry));
+    assert_eq!(
+        module[0]["range"]["start"],
+        json!({"line": 0, "character": 0})
+    );
+    let fs = root().join("tests/fixtures/host/fs.fipe");
+    assert_eq!(reply(&replies, 3)[0]["uri"], uri_of_str(&fs));
+}
+
+#[test]
+fn hover_on_a_use_segment_shows_the_module_or_the_declaration() {
+    let path = root().join("Documentation/examples/05-modules.fipe");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let uri = uri(&path);
+    let (line, character) = find(&text, "use geometry.Point");
+    let (fs_line, fs_character) = find(&text, "use fs");
+    let replies = exchange(
+        &["utf-8"],
+        &[
+            open(&uri, &text),
+            at(1, "textDocument/hover", &uri, line, character + 15),
+            at(2, "textDocument/hover", &uri, line, character + 6),
+            at(3, "textDocument/hover", &uri, fs_line, fs_character + 4),
+        ],
+    );
+    let shown = |id| {
+        reply(&replies, id)["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(shown(1).contains("pub type Point"), "{}", shown(1));
+    assert!(
+        shown(2).contains("module geometry: geometry.fipe"),
+        "{}",
+        shown(2)
+    );
+    assert!(shown(3).contains("host module fs"), "{}", shown(3));
+}
+
+#[test]
+fn references_of_an_imported_name_include_its_use_segment() {
+    let path = root().join("Documentation/examples/05-modules.fipe");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let uri = uri(&path);
+    let (line, character) = find(&text, "use geometry.Point");
+    let (use_line, use_character) = find(&text, "p: Point");
+    let replies = exchange(
+        &["utf-8"],
+        &[
+            open(&uri, &text),
+            at(1, "textDocument/references", &uri, line, character + 15),
+            at(
+                2,
+                "textDocument/references",
+                &uri,
+                use_line,
+                use_character + 3,
+            ),
+        ],
+    );
+    let from_segment = starts(reply(&replies, 1));
+    let from_use = starts(reply(&replies, 2));
+    // The segment imports the type and its constructor; the annotation
+    // names the type only.
+    assert!(
+        from_use.iter().all(|found| from_segment.contains(found)),
+        "{from_use:?} within {from_segment:?}"
+    );
+    let segment = (
+        String::from("05-modules.fipe"),
+        u64::from(line),
+        u64::from(character + 13),
+    );
+    assert!(from_segment.contains(&segment), "{from_segment:?}");
+    let annotation = (
+        String::from("05-modules.fipe"),
+        u64::from(use_line),
+        u64::from(use_character + 3),
+    );
+    assert!(from_segment.contains(&annotation), "{from_segment:?}");
+    assert!(
+        from_segment
+            .iter()
+            .any(|(file, ..)| file == "geometry.fipe"),
+        "the declaration: {from_segment:?}"
+    );
+}
+
+#[test]
+fn references_of_a_declaration_include_the_use_segments_that_import_it() {
+    let dir = std::env::temp_dir()
+        .join(format!("fipe-lsp-uses-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib = dir.join("lib.fipe");
+    let main = dir.join("main.fipe");
+    std::fs::write(&lib, "pub inc = n => n + 1\n").unwrap();
+    std::fs::write(&main, "use lib.inc\ninc 2\n").unwrap();
+    let lib_uri = uri(&lib);
+    let replies = exchange(
+        &["utf-8"],
+        &[
+            open(&lib_uri, "pub inc = n => n + 1\n"),
+            at(1, "textDocument/references", &lib_uri, 0, 5),
+        ],
+    );
+    let found = starts(reply(&replies, 1));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        found.contains(&(String::from("main.fipe"), 0, 8)),
+        "the use segment: {found:?}"
+    );
+    assert!(
+        found.contains(&(String::from("main.fipe"), 1, 0)),
+        "the use: {found:?}"
+    );
+}
