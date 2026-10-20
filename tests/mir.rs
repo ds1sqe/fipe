@@ -81,6 +81,8 @@ fn an_operand_is_sixteen_bytes() {
 mod calls;
 #[path = "mir/examples.rs"]
 mod examples;
+#[path = "mir/names.rs"]
+mod names;
 #[path = "mir/outcomes.rs"]
 mod outcomes;
 #[path = "mir/patterns.rs"]

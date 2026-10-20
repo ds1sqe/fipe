@@ -278,6 +278,7 @@ impl Index {
     fn slot(
         &mut self,
         home: &Origin,
+        site: crate::token::Span,
         scheme: &crate::types::Scheme,
         hidden: &[usize],
         body_parameters: &[Type],
@@ -300,11 +301,13 @@ impl Index {
             })
             .collect();
         let hidden = hidden.iter().map(|index| parameters[*index]).collect();
+        let namespace = self.namespace(home);
         self.store.push_slot(ir::Slot {
             ty,
             parameters,
             hidden,
             definition: None,
+            name: Some((namespace, site)),
         })
     }
 
@@ -352,7 +355,7 @@ impl Index {
                 .copied()
                 .or_else(|| self.store.visible().get(&site).copied());
             let slot = existing.unwrap_or_else(|| {
-                self.slot(&source.home, scheme, hidden, &parameters)
+                self.slot(&source.home, site, scheme, hidden, &parameters)
             });
             slots.insert(site, slot);
         }

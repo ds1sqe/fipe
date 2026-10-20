@@ -33,6 +33,7 @@ vm::Stop = Before(node) | After(node, Value) | Request(Request)
 Machine::begin(&mut self, program: &mir::Program)
 Machine::next_stop(&mut self) -> Stop
 Machine::answer(&mut self, reply: Reply)
+Machine::globals(&self) -> impl Iterator<Item = (usize, &Value)>
 ~~~
 
 A stepped run is `run` handed out stop by stop: `begin` starts it,
@@ -42,8 +43,8 @@ a frame (an assignment, or a call's result reaching its destination;
 a marked pipe's, `||`'s and `&&`'s result whichever side ran), a host
 request, which `answer` replies to, or `Done`. Between stops a driver
 reads `frames()` (each body frame's locals and captures by slot),
-`charged()` and `budget()`; the trace so far is the requests it
-answered. Stops are not observations: a stepped run makes the same
+`globals()` (each stored value definition's value), `charged()` and
+`budget()`; the trace so far is the requests it answered. Stops are not observations: a stepped run makes the same
 requests and charges as `run`, and an unstepped run pays nothing for
 the boundary. `next_stop` without a stepped run, or with a reply owed,
 panics.

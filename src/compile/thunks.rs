@@ -107,12 +107,10 @@ impl Builder<'_, '_> {
         builder.captures = captures.len();
         builder.count(node);
         for (spot, ty) in open.iter().zip(parameters) {
-            builder.spot(Some(slots[*spot]), ty, node);
+            builder.spot(Some(slots[*spot]), ty);
         }
-        let inner: Vec<usize> = slots
-            .iter()
-            .map(|slot| builder.slot_local(*slot, node))
-            .collect();
+        let inner: Vec<usize> =
+            slots.iter().map(|slot| builder.slot_local(*slot)).collect();
         for (position, spot) in supplied.iter().enumerate() {
             builder.assign(
                 inner[*spot],
@@ -183,7 +181,7 @@ impl Builder<'_, '_> {
         builder.captures = 1;
         builder.count(node);
         for ty in parameters {
-            builder.spot(None, ty, node);
+            builder.spot(None, ty);
         }
         let mut args: Vec<Operand> =
             (1..=remaining).map(Operand::Local).collect();
@@ -260,7 +258,7 @@ impl Builder<'_, '_> {
             Builder::new(self.lowering, node, result, hidden, Vec::new());
         builder.count(node);
         for ty in parameters {
-            builder.spot(None, ty, node);
+            builder.spot(None, ty);
         }
         let arguments = Arguments {
             args: (1..=arity).map(Operand::Local).collect(),

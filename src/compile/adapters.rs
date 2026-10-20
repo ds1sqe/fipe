@@ -158,7 +158,7 @@ impl Builder<'_, '_> {
             Vec::new(),
         );
         builder.count(node);
-        builder.spot(None, (**parameter).clone(), node);
+        builder.spot(None, (**parameter).clone());
         builder.convert(node, Operand::Local(1), 0);
         builder.terminate(Terminator::Return, node);
         let body = builder.finish(None);

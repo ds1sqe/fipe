@@ -107,6 +107,7 @@ impl Index {
                 parameters: Vec::new(),
                 hidden: Vec::new(),
                 definition: None,
+                name: None,
             });
             slots.push(slot);
         }

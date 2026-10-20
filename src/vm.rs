@@ -224,6 +224,18 @@ impl Machine {
         &self.frames
     }
 
+    /// The values the runs so far stored for value definitions, by
+    /// index into `Tables.definitions`, in that order; a definition not
+    /// yet run, or withdrawn, is absent. Reading changes no run.
+    pub fn globals(&self) -> impl Iterator<Item = (usize, &Value)> {
+        self.globals
+            .iter()
+            .enumerate()
+            .filter_map(|(definition, value)| {
+                Some((definition, value.as_ref()?))
+            })
+    }
+
     /// Run a program: each module's init body not yet run, then the
     /// main; its value, the Fault that ended it, or the host request it
     /// waits on.

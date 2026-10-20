@@ -480,3 +480,35 @@ fn a_closure_frame_shows_what_it_captured() {
     client.request("continue", json!({ "threadId": 1 }));
     assert_eq!(client.sent.last().unwrap()["event"], "terminated");
 }
+
+#[test]
+fn an_arm_binding_and_module_values_are_shown_by_name() {
+    let program = "k = 6\nm = k * 7\npick = {\n    0 => m,\n    other => other + k,\n}\npick 3\n";
+    let (mut client, path) = scratch("globals", program, "value ()\n");
+    client.request(
+        "setBreakpoints",
+        json!({ "source": { "path": path }, "breakpoints": [{ "line": 5 }] }),
+    );
+    client.request("configurationDone", json!({}));
+    assert_eq!(client.last("stopped")["reason"], "breakpoint");
+    let locals = client.scope(0, "Locals");
+    assert!(
+        locals
+            .iter()
+            .any(|(name, value, _)| name == "other" && value == "3"),
+        "{locals:?}"
+    );
+    let globals = client.scope(0, "Globals");
+    assert_eq!(
+        globals,
+        [
+            (String::from("k"), String::from("6"), 0),
+            (String::from("m"), String::from("42"), 0),
+        ]
+    );
+    let found =
+        client.request("evaluate", json!({ "expression": "m", "frameId": 0 }));
+    assert_eq!(found["body"]["result"], "42");
+    client.request("continue", json!({ "threadId": 1 }));
+    assert_eq!(client.sent.last().unwrap()["event"], "terminated");
+}

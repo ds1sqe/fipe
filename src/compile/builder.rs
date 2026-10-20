@@ -60,7 +60,7 @@ impl<'l, 'a> Builder<'l, 'a> {
             substituted: BTreeMap::new(),
             locals: alloc::vec![mir::Local {
                 ty: result,
-                node: None
+                slot: None
             }],
             blocks: alloc::vec![Open {
                 statements: Vec::new(),
@@ -78,14 +78,9 @@ impl<'l, 'a> Builder<'l, 'a> {
     }
 
     /// The next spot, declared before any other local.
-    pub(super) fn spot(
-        &mut self,
-        slot: Option<usize>,
-        ty: ir::Type,
-        node: usize,
-    ) -> usize {
+    pub(super) fn spot(&mut self, slot: Option<usize>, ty: ir::Type) -> usize {
         debug_assert_eq!(self.locals.len(), self.arity + 1);
-        let local = self.local(ty, Some(node));
+        let local = self.local(ty, slot);
         self.arity += 1;
         if let Some(slot) = slot {
             self.slots.insert(slot, local);
@@ -93,18 +88,18 @@ impl<'l, 'a> Builder<'l, 'a> {
         local
     }
 
-    pub(super) fn local(&mut self, ty: ir::Type, node: Option<usize>) -> usize {
-        self.locals.push(mir::Local { ty, node });
+    pub(super) fn local(&mut self, ty: ir::Type, slot: Option<usize>) -> usize {
+        self.locals.push(mir::Local { ty, slot });
         self.locals.len() - 1
     }
 
     /// The local of an IR slot, made on first use.
-    pub(super) fn slot_local(&mut self, slot: usize, node: usize) -> usize {
+    pub(super) fn slot_local(&mut self, slot: usize) -> usize {
         if let Some(local) = self.slots.get(&slot) {
             return *local;
         }
         let ty = self.tables().slots[slot].ty.clone();
-        let local = self.local(ty, Some(node));
+        let local = self.local(ty, Some(slot));
         self.slots.insert(slot, local);
         local
     }

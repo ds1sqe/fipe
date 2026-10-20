@@ -229,7 +229,7 @@ impl<'a> Builder<'_, 'a> {
             Some(ir::PatternKind::Slot(slot))
                 if self.tables().slots[*slot].definition.is_none() =>
             {
-                let local = self.slot_local(*slot, node);
+                let local = self.slot_local(*slot);
                 self.assign(local, Rvalue::Field(outcome, 0), node);
             }
             Some(_) => {

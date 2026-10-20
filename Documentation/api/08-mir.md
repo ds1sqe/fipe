@@ -36,7 +36,7 @@ list, the meaning parameters whose witness the caller supplies, in order.
 A `Type::Parameter` met at run time names the witness at that parameter's
 position in the hidden list. Local `_0` is the result; locals `1..=arity`
 are the spots; then come bound names, a call's spots and temporaries.
-Each local keeps its type and, for a named slot, its binding node.
+Each local keeps its type and the IR slot it holds, `None` for a temporary.
 
 ## Blocks, statements and terminators
 

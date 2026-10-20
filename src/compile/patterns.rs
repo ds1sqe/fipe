@@ -126,7 +126,7 @@ pub(super) fn build_function<'a>(
                 PatternKind::Slot(slot) => Some(*slot),
                 _ => None,
             };
-            builder.spot(slot, ty, node);
+            builder.spot(slot, ty);
         }
         builder.lower_to(arm.body, Some(0));
         builder.terminate(Terminator::Return, node);
@@ -134,7 +134,7 @@ pub(super) fn build_function<'a>(
     }
     let places: Vec<Operand> = spots
         .into_iter()
-        .map(|ty| Operand::Local(builder.spot(None, ty, node)))
+        .map(|ty| Operand::Local(builder.spot(None, ty)))
         .collect();
     let rows = arms
         .iter()
@@ -196,7 +196,7 @@ impl<'a> Builder<'_, 'a> {
             match &pattern.kind {
                 PatternKind::Any => (),
                 PatternKind::Slot(slot) => {
-                    let local = self.slot_local(*slot, node);
+                    let local = self.slot_local(*slot);
                     self.assign(local, Rvalue::Use(*place), node);
                 }
                 other => unreachable!("a test left to bind: {other:?}"),

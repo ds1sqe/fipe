@@ -59,8 +59,9 @@ pub struct Body {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Local {
     pub ty: ir::Type,
-    /// A named slot's binding node, for a debugger.
-    pub node: Option<usize>,
+    /// The IR slot this local holds, whose name is
+    /// `Tables.slots[slot].name`; `None` for a temporary.
+    pub slot: Option<usize>,
 }
 
 /// Statements and one terminator.

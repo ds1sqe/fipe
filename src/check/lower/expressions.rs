@@ -50,6 +50,7 @@ impl Index {
             parameters: Vec::new(),
             hidden: Vec::new(),
             definition: None,
+            name: None,
         });
         ir::Kind::Call {
             callee,
@@ -457,6 +458,7 @@ impl Index {
                     parameters: Vec::new(),
                     hidden: Vec::new(),
                     definition: None,
+                    name: None,
                 });
                 let mut receiver = self.node(
                     &source.home,
@@ -674,6 +676,7 @@ impl Index {
             parameters: Vec::new(),
             hidden: Vec::new(),
             definition: None,
+            name: None,
         });
         ir::Kind::Call {
             callee: function,

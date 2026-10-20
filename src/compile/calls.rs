@@ -281,7 +281,7 @@ impl Builder<'_, '_> {
             .map(|spot| {
                 let filled = open.is_empty()
                     || supplies.iter().any(|supply| supply.spot == spot);
-                filled.then(|| self.slot_local(slots[spot], node))
+                filled.then(|| self.slot_local(slots[spot]))
             })
             .collect();
         let local = |spot: usize| locals[spot].expect("a filled spot");

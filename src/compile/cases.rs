@@ -190,7 +190,7 @@ impl<'a> Builder<'_, 'a> {
                 index: integer,
                 arguments: Vec::new(),
             },
-            Some(node),
+            None,
         );
         self.assign(length, Rvalue::Length(place), node);
         let mut keys = Vec::new();

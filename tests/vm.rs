@@ -34,6 +34,8 @@ mod entries;
 mod fallback;
 #[path = "vm/faults.rs"]
 mod faults;
+#[path = "vm/globals.rs"]
+mod globals;
 #[path = "vm/host.rs"]
 mod host;
 #[path = "vm/laws.rs"]

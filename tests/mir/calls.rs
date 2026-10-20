@@ -251,8 +251,8 @@ fn a_block_binds_a_local_and_reads_it() {
         ]
     );
     assert!(
-        body.locals[1].node.is_some(),
-        "a named local keeps its binding"
+        body.locals[1].slot.is_some(),
+        "a named local keeps its slot"
     );
 }
 

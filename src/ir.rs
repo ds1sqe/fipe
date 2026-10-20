@@ -79,6 +79,10 @@ pub struct Slot {
     pub parameters: Vec<usize>,
     pub hidden: Vec<usize>,
     pub definition: Option<usize>,
+    /// The name the source binds this slot to, as the namespace of its
+    /// source and the name's span; `None` for a slot the checker made
+    /// for a call's spot, a selector's input or a piped value.
+    pub name: Option<(usize, Span)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

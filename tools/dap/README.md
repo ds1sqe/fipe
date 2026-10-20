@@ -47,9 +47,9 @@ adapter shows is the VM's and every stop is one the VM took
 | `pause` | stops a running program at its next stop |
 | `threads` | the one thread, `1` |
 | `stackTrace` | the body frames, innermost first, named by their definition, `main`, a module's init or `arm at line:column`; at a pipe the column is its mark; after a Fault, one frame where it happened |
-| `scopes` | Locals (named slots and spots), Captures (a closure's), Pipe (the top frame's pipe: `mark`, `in`, `side`, `stage`, `out`), Effects (the host calls so far with their replies) and Budget (`remaining`, `budget`, `charged`) |
+| `scopes` | Locals (each local the source names), Captures (a closure's), Globals (the module-level values stored so far, of the program and its file modules), Pipe (the top frame's pipe: `mark`, `in`, `side`, `stage`, `out`), Effects (the host calls so far with their replies) and Budget (`remaining`, `budget`, `charged`) |
 | `variables` | a scope's items; a record opens by field label, a sequence or tuple by index |
-| `evaluate` | the value of a name bound in the frame (a local, then a capture); never an expression, and not a module-level binding, which the machine does not expose |
+| `evaluate` | the value of a name bound in the frame (a local, then a capture, then a module-level value); never an expression |
 | `exceptionInfo` | the Fault's located description and reason |
 | `disconnect` | ends the session |
 

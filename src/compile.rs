@@ -509,7 +509,7 @@ impl Lowering<'_> {
         let result = self.tables.nodes[node].ty.clone();
         let self_ty = self.tables.slots[self_slot].ty.clone();
         let mut builder = Builder::new(self, node, result, hidden, Vec::new());
-        builder.spot(Some(self_slot), self_ty, node);
+        builder.spot(Some(self_slot), self_ty);
         builder.lower_to(node, Some(0));
         builder.terminate(Terminator::Return, node);
         builder.finish(Some(body));

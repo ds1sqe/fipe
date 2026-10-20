@@ -75,7 +75,7 @@ impl<'a> Builder<'_, 'a> {
         if let Some((_, operand)) = read.iter().find(|(at, _)| *at == index) {
             return *operand;
         }
-        let local = self.local(self.part_type(ty, shape, index), Some(node));
+        let local = self.local(self.part_type(ty, shape, index), None);
         self.assign(local, Rvalue::Field(place, index), node);
         read.push((index, Operand::Local(local)));
         Operand::Local(local)
@@ -170,7 +170,7 @@ impl<'a> Builder<'_, 'a> {
         if let Some(definition) = self.tables().slots[slot].definition {
             self.emit(crate::mir::Statement::Store { definition, value }, node);
         } else {
-            let local = self.slot_local(slot, node);
+            let local = self.slot_local(slot);
             self.assign(local, Rvalue::Use(value), node);
         }
     }

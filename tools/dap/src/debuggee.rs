@@ -621,8 +621,8 @@ impl Debuggee {
             )
     }
 
-    /// The scopes of a frame: Locals, Captures, the Pipe of the top
-    /// frame's stop, Effects and Budget.
+    /// The scopes of a frame: Locals, Captures, Globals, the Pipe of the
+    /// top frame's stop, Effects and Budget.
     pub fn scopes(&mut self, frame: usize) -> Vec<Json> {
         let tables = self.program.tables.clone();
         let tables = tables.borrow();
@@ -635,6 +635,11 @@ impl Debuggee {
                 let reference = self.references.add(captures);
                 scopes.push(scope("Captures", reference));
             }
+        }
+        let globals = self.globals(&tables);
+        if !globals.is_empty() {
+            let reference = self.references.add(globals);
+            scopes.push(scope("Globals", reference));
         }
         if frame == 0 {
             if let Some(items) = self.pipe_items(&tables) {
@@ -658,7 +663,7 @@ impl Debuggee {
     }
 
     /// The named locals and the captures of the frame `frame` from the
-    /// top.
+    /// top, each named by the slot it holds.
     fn frame_values(&self, frame: usize, tables: &Tables) -> (Named, Named) {
         let Some(program) = self.machine.program() else {
             return (Vec::new(), Vec::new());
@@ -668,42 +673,27 @@ impl Debuggee {
             return (Vec::new(), Vec::new());
         };
         let body = &program.bodies[frame.body];
-        let spots = self.spot_names(body.node, body.arity, tables);
-        let mut locals = Vec::new();
-        for (slot, local) in body.locals.iter().enumerate() {
-            let Some(value) = frame.locals.get(slot) else {
-                continue;
-            };
-            // A spot is named by its arms' patterns; any other slot by
-            // its binding node when that node's text is a name.
-            let spot = slot.checked_sub(1).and_then(|spot| spots.get(spot));
-            let name = spot.map_or_else(
-                || {
-                    local.node.and_then(|node| {
-                        let entry = &tables.nodes[node];
-                        let text = self.files.slice(
-                            &tables.namespaces[entry.namespace],
-                            entry.span,
-                        )?;
-                        is_name(text).then(|| text.to_string())
-                    })
-                },
-                Clone::clone,
-            );
-            if let Some(name) = name {
-                locals.push((name, Item::Value(value.clone())));
-            }
-        }
-        let names = self.capture_names(body.node, tables);
+        let locals = body
+            .locals
+            .iter()
+            .zip(&frame.locals)
+            .filter_map(|(local, value)| {
+                let name = self.slot_name(local.slot?, tables)?;
+                Some((name, Item::Value(value.clone())))
+            })
+            .collect();
+        let slots = match &tables.nodes[body.node].kind {
+            Kind::Function { captures, .. } => captures.as_slice(),
+            _ => &[],
+        };
         let captures = frame
             .captures
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                let name = names
+                let name = slots
                     .get(index)
-                    .cloned()
-                    .flatten()
+                    .and_then(|slot| self.slot_name(*slot, tables))
                     .unwrap_or_else(|| format!("capture {index}"));
                 (name, Item::Value(value.clone()))
             })
@@ -711,63 +701,28 @@ impl Debuggee {
         (locals, captures)
     }
 
-    /// The name of each spot of a function body: the name every arm
-    /// binds there, when they agree and it is a name.
-    fn spot_names(
-        &self,
-        node: usize,
-        arity: usize,
-        tables: &Tables,
-    ) -> Vec<Option<String>> {
-        let entry = &tables.nodes[node];
-        let Kind::Function { arms, .. } = &entry.kind else {
-            return vec![None; arity];
-        };
-        let namespace = &tables.namespaces[entry.namespace];
-        (0..arity)
-            .map(|spot| {
-                let mut names = arms.iter().map(|arm| {
-                    let pattern = arm.patterns.get(spot)?;
-                    if !matches!(pattern.kind, fipe::ir::PatternKind::Slot(_)) {
-                        return None;
-                    }
-                    let text = self.files.slice(namespace, pattern.span)?;
-                    is_name(text).then(|| text.to_string())
-                });
-                let first = names.next().flatten()?;
-                names
-                    .all(|name| name.as_deref() == Some(first.as_str()))
-                    .then_some(first)
-            })
-            .collect()
+    /// The name the source binds a slot to.
+    fn slot_name(&self, slot: usize, tables: &Tables) -> Option<String> {
+        let (namespace, span) = tables.slots.get(slot)?.name?;
+        self.files
+            .slice(&tables.namespaces[namespace], span)
+            .map(str::to_string)
     }
 
-    /// The name of each capture of a closure body: the text of a use of
-    /// its slot inside the function.
-    fn capture_names(
-        &self,
-        node: usize,
-        tables: &Tables,
-    ) -> Vec<Option<String>> {
-        let entry = &tables.nodes[node];
-        let Kind::Function { captures, .. } = &entry.kind else {
-            return Vec::new();
-        };
-        let name = &tables.namespaces[entry.namespace];
-        captures
-            .iter()
-            .map(|slot| {
-                tables.nodes.iter().find_map(|use_| match use_.kind {
-                    Kind::Capture { slot: used, .. }
-                        if used == *slot
-                            && use_.namespace == entry.namespace
-                            && entry.span.start <= use_.span.start
-                            && use_.span.end <= entry.span.end =>
-                    {
-                        self.files.slice(name, use_.span).map(str::to_string)
-                    }
-                    _ => None,
-                })
+    /// The module-level values the runs so far stored, of the program
+    /// and the file modules it loaded, by name.
+    fn globals(&self, tables: &Tables) -> Named {
+        self.machine
+            .globals()
+            .filter_map(|(definition, value)| {
+                let definition = &tables.definitions[definition];
+                let namespace = &tables.namespaces[definition.namespace];
+                self.files
+                    .get(namespace)
+                    .is_some_and(|file| file.path.is_some())
+                    .then(|| {
+                        (definition.label.clone(), Item::Value(value.clone()))
+                    })
             })
             .collect()
     }
@@ -861,7 +816,7 @@ impl Debuggee {
     }
 
     /// The value of a name bound in a frame: its latest local of that
-    /// name, else a capture.
+    /// name, else a capture, else a module-level value.
     ///
     /// # Errors
     /// When `expression` is not a name, or names nothing in the frame.
@@ -883,6 +838,7 @@ impl Debuggee {
             .into_iter()
             .rev()
             .chain(captures)
+            .chain(self.globals(&tables))
             .find(|(bound, _)| bound == name);
         let Some((_, item)) = found else {
             return Err(format!("{name} is not bound in this frame"));

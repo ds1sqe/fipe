@@ -361,7 +361,7 @@ impl<'a> Builder<'_, 'a> {
                         self.emit(Statement::Store { definition, value }, node);
                     }
                 } else {
-                    let local = self.slot_local(*slot, node);
+                    let local = self.slot_local(*slot);
                     self.lower_to(value, Some(local));
                 }
             }

@@ -35,8 +35,8 @@ pub fn check_program(program: &Program) {
         assert_ne!(body.blocks.len(), 0, "a body has blocks");
         for local in &body.locals {
             check_type(&tables, &local.ty);
-            if let Some(node) = local.node {
-                assert!(node < tables.nodes.len());
+            if let Some(slot) = local.slot {
+                assert!(slot < tables.slots.len());
             }
         }
         for block in &body.blocks {
