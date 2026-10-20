@@ -90,3 +90,8 @@ fn a_skipped_side_charges_nothing() {
         charged("Just 1 |: (n => n + 1 + 2)") > charged("Just 1 |: (n => n)")
     );
 }
+
+#[test]
+fn a_bracket_at_a_maybe_place_is_its_good_side() {
+    assert_eq!(shown("m: Maybe<Integer> = [:1]\nm"), "Just 1");
+}

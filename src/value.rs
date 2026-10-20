@@ -116,7 +116,12 @@ pub enum Reason {
     Budget,
     DivideByZero,
     NotFinite,
-    NotExact,
+    /// A number the target cannot hold exactly: the value in the
+    /// language's spelling and the target's name.
+    NotExact {
+        value: String,
+        target: String,
+    },
     /// An entry of the plan refuted at run time.
     Failed {
         entry: usize,
@@ -137,7 +142,9 @@ impl fmt::Display for Reason {
             Self::Budget => f.write_str("the budget is exhausted"),
             Self::DivideByZero => f.write_str("division by zero"),
             Self::NotFinite => f.write_str("the result is not finite"),
-            Self::NotExact => f.write_str("the value is not exact"),
+            Self::NotExact { value, target } => {
+                write!(f, "{value} is not an exact {target}")
+            }
             Self::Failed { entry, value } => {
                 write!(f, "entry {entry} refutes {value}")
             }

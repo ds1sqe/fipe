@@ -85,3 +85,19 @@ fn a_generic_value_definition_takes_its_use_s_witnesses() {
         ["()", "()", "3", "3.5"]
     );
 }
+
+#[test]
+fn a_packed_binding_is_told_apart_by_the_gate_pattern() {
+    let source = "id: Integer | String = 3\n\
+                  id | { Integer n => n.show, String s => s }";
+    assert_eq!(shown(source), "\"3\"");
+    let source = "id: Integer | String = \"x\"\n\
+                  id | { Integer n => n.show, String s => s }";
+    assert_eq!(shown(source), "\"x\"");
+}
+
+#[test]
+fn a_piped_value_replaces_a_field_default() {
+    let source = "type P { x: Integer = 300 }\np = 1 | P\nx: U8 = p.x\nx";
+    assert_eq!(shown(source), "1");
+}

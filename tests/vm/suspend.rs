@@ -188,22 +188,31 @@ fn a_host_call_the_budget_cannot_pay_makes_no_request() {
         read(&program, Script::default(), "./x")
             .reply("commands.find", Ok(prelude(&program).nothing()))
     };
-    let (_, full) = observe_charged(&program, None, script());
+    let (full, units) = observe_charged(&program, None, script());
+    let full = keys(&program, &full.trace);
+    assert_eq!(full, ["commands.read", "commands.find"]);
+    let mut before = 0;
     let mut seen = 0;
-    for budget in 0..full {
+    for budget in 0..units {
         let observation = observe(&program, Some(budget), script());
         let fault = observation.result.unwrap_err();
         assert_eq!(fault.reason, Reason::Budget);
         let at = &source[fault.span.start..fault.span.end];
-        // Every request made was paid for: the find is asked only when
-        // its call is paid, the read only when the literal is.
+        // The effects that stand are exactly the full run's first ones,
+        // in order, one more each time a call becomes payable: the find
+        // is never asked under a budget that stops the run.
+        let asked = keys(&program, &observation.trace);
+        assert_eq!(asked, full[..asked.len()], "{budget}: {at}");
+        assert!(asked.len() == before || asked.len() == before + 1);
+        assert!(asked.len() < 2, "{budget}: {at}");
+        before = asked.len();
         if at == "find ./x" {
-            assert!(observation.trace.len() <= 1, "{budget}: {at}");
+            assert_eq!(asked, ["commands.read"], "{budget}");
             seen += 1;
         }
-        assert!(observation.trace.len() < 2, "{budget}: {at}");
     }
     assert!(seen > 0, "some budget stops at the find");
+    assert_eq!(before, 1, "the read stands once its call is paid");
 }
 
 #[test]
@@ -269,4 +278,60 @@ fn a_call_not_in_tail_position_keeps_its_caller() {
         panic!("the innermost call reads its path")
     };
     assert!(machine.frames().len() > 10, "{}", machine.frames().len());
+}
+
+/// The keys a source's run asks, with `cli.port` answered `port` each
+/// time, and its result.
+fn port_run(source: &str, port: i64, asked: usize) -> (Vec<String>, String) {
+    let program = program(source);
+    let mut script = Script::default();
+    for _ in 0..asked {
+        script = script.reply("cli.port", Ok(Value::Int(port)));
+    }
+    let observation = observe(&program, Some(1 << 20), script);
+    let shown = match &observation.result {
+        Ok(value) => {
+            fipe::value::structural::show(value, &program.tables.borrow())
+        }
+        Err(fault) => format!("fault: {}", fault.reason),
+    };
+    (keys(&program, &observation.trace), shown)
+}
+
+#[test]
+fn a_skipped_fallback_conjunction_or_error_side_asks_the_host_nothing() {
+    let none: [&str; 0] = [];
+    for (source, result) in [
+        ("use cli\nJust 3 || cli.port", "3"),
+        ("use cli\nFalse && (cli.port > 0)", "False"),
+        ("use cli\nTrue || (cli.port > 0)", "True"),
+        (
+            "use cli\nr: Result<Integer, Integer> = Ok 1\n\
+             r |! (_ => Err cli.port)",
+            "Ok 1",
+        ),
+    ] {
+        assert_eq!(
+            port_run(source, 7, 0),
+            (none.map(String::from).to_vec(), result.into()),
+            "{source}"
+        );
+    }
+    // The same sides, taken, ask once.
+    for (source, result) in [
+        ("use cli\nm: Maybe<Integer> = Nothing\nm || cli.port", "7"),
+        ("use cli\nTrue && (cli.port > 0)", "True"),
+        ("use cli\nFalse || (cli.port > 0)", "True"),
+        (
+            "use cli\nr: Result<Integer, Integer> = Err 1\n\
+             r |! (_ => Err cli.port)",
+            "Err 7",
+        ),
+    ] {
+        assert_eq!(
+            port_run(source, 7, 1),
+            (vec!["cli.port".into()], result.into()),
+            "{source}"
+        );
+    }
 }

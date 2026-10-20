@@ -114,3 +114,17 @@ fn a_later_line_tries_back_by_a_claim_beside_show_claims() {
     lines.line("b = (A 1) | B.from");
     assert_eq!(lines.line("b | try<A>"), "Ok (A 1)");
 }
+
+#[test]
+fn an_empty_vector_runs_and_a_later_show_names_its_unfixed_element() {
+    let mut lines = Lines::new();
+    assert_eq!(lines.line("x = []"), "()");
+    assert_eq!(lines.line("x"), "[]");
+    // The element meaning is unfixed, so `show` has no claim to choose.
+    let refused = lines.line("x | show");
+    assert!(
+        refused.starts_with("refused: ")
+            && refused.contains("Ambiguous { class: \"Show\" }"),
+        "{refused}"
+    );
+}

@@ -80,3 +80,18 @@ fn a_width_tests_the_result_at_its_place_not_each_operand() {
     );
     assert!(checked.is_err(), "300 is no U8");
 }
+
+#[test]
+fn signed_zero_compares_equal_and_floats_show_their_shortest_form() {
+    assert_eq!(shown("-0.0 == 0.0"), "True");
+    assert_eq!(shown("show -0.0"), "\"-0.0\"");
+    assert_eq!(shown("show 0.1"), "\"0.1\"");
+    assert_eq!(shown("show 1.0"), "\"1.0\"");
+}
+
+#[test]
+fn a_float_binding_holds_the_nearest_double_and_a_whole_literal_widens() {
+    assert_eq!(run("x: F64 = 0.1\nx"), Ok(Value::F64(0.1)));
+    assert_eq!(run("f: F64 = 2\nf"), Ok(Value::F64(2.0)));
+    assert_eq!(shown("f: F64 = 2\nf"), "2.0");
+}

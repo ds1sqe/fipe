@@ -100,3 +100,104 @@ fn a_type_s_test_reads_a_generic_function_of_its_own_unit() {
     .unwrap_err();
     assert!(matches!(fault.reason, Reason::Failed { .. }), "{fault:?}");
 }
+
+/// A host source run with `cli.port` answered from `ports` in order:
+/// the keys asked and the value or the Fault's reason.
+fn with_ports(source: &str, ports: &[i64]) -> (Vec<String>, String) {
+    use super::host::{key, observe, Script};
+    let program = super::host::program(source);
+    let script = ports.iter().fold(Script::default(), |script, port| {
+        script.reply("cli.port", Ok(super::Value::Int(*port)))
+    });
+    let observation = observe(&program, Some(1 << 20), script);
+    let asked = observation
+        .trace
+        .iter()
+        .map(|(request, _)| key(&program, request))
+        .collect();
+    let shown = match &observation.result {
+        Ok(value) => super::structural::show(value, &program.tables.borrow()),
+        Err(fault) => format!("fault: {}", fault.reason),
+    };
+    (asked, shown)
+}
+
+/// The entry a host source's run refutes with `cli.port` answered
+/// `port`, after that one request: its label and the refuted value; the
+/// entry's phase is init.
+fn refuted_at_init(source: &str, port: i64) -> (String, String) {
+    use super::host::{observe, Script};
+    let program = super::host::program(source);
+    let script =
+        Script::default().reply("cli.port", Ok(super::Value::Int(port)));
+    let observation = observe(&program, Some(1 << 20), script);
+    assert_eq!(observation.trace.len(), 1);
+    let fault = observation.result.unwrap_err();
+    let Reason::Failed { entry, value } = fault.reason else {
+        panic!("{fault:?}")
+    };
+    let tables = program.tables.borrow();
+    assert_eq!(tables.entries[entry].phase, fipe::ir::Phase::Init);
+    (tables.entries[entry].label.clone(), value)
+}
+
+#[test]
+fn a_host_constant_at_a_limited_place_is_tested_at_init() {
+    let source = "use cli\n\
+                  type Port: Integer where 0 < self, self <= 65535\n\
+                  port: Port = cli.port\n\
+                  port";
+    assert_eq!(
+        with_ports(source, &[8080]),
+        (vec!["cli.port".into()], "8080".into())
+    );
+    assert_eq!(
+        refuted_at_init(source, 70000),
+        ("Port".into(), "70000".into())
+    );
+}
+
+#[test]
+fn an_init_test_at_a_module_binding_is_tested_when_it_is_bound() {
+    let source = "use cli\n\
+                  type Start: Integer where Init (self > 0)\n\
+                  s: Start = cli.port\n\
+                  s";
+    assert_eq!(
+        with_ports(source, &[5]),
+        (vec!["cli.port".into()], "5".into())
+    );
+    assert_eq!(refuted_at_init(source, 0), ("Start".into(), "0".into()));
+}
+
+#[test]
+fn a_field_default_reads_the_host_once_at_a_binding_and_per_call_in_an_arm() {
+    let declared = "use cli\ntype Rc { n: U8 = cli.port }\n";
+    let none: Vec<String> = Vec::new();
+    assert_eq!(with_ports(&format!("{declared}1"), &[]), (none, "1".into()));
+    let source = format!("{declared}a = Rc\n(a.n, a.n)");
+    assert_eq!(
+        with_ports(&source, &[3]),
+        (vec!["cli.port".into()], "(3, 3)".into())
+    );
+    let source = format!("{declared}g = k => Rc\n((g 1).n, (g 2).n)");
+    assert_eq!(
+        with_ports(&source, &[4, 5]),
+        (vec!["cli.port".into(), "cli.port".into()], "(4, 5)".into())
+    );
+}
+
+#[test]
+fn a_unit_with_a_check_error_has_no_program_to_run() {
+    // A host call precedes the error in source order; the unit is
+    // refused whole, so no program exists and no request is made.
+    let source = "use cli\np = cli.port\ntype R { a: Integer }\nr = R 1\nr.b";
+    let module = parse(lex(source)).unwrap();
+    let checked = check::check(
+        &module,
+        &super::host::declarations(),
+        &[],
+        check::Options::default(),
+    );
+    assert!(checked.is_err(), "the wrong field is a check error");
+}

@@ -149,7 +149,10 @@ fn a_written_form_reads_as_its_integer_or_is_not_exact() {
             None,
             Some((Value::Int(25), Value::Int(-1)))
         )),
-        Err(Reason::NotExact)
+        Err(Reason::NotExact {
+            value: "25e-1".into(),
+            target: "Integer".into()
+        })
     );
     assert_eq!(
         arith::literal(&form(

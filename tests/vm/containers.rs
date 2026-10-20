@@ -60,7 +60,14 @@ fn the_types_example_runs_until_its_inexact_length() {
     // `Point -y 1 -x 2`: the number row is exact or Faults (E2).
     let source = include_str!("../../Documentation/examples/03-types.fipe");
     let fault = super::run::run(source).expect_err("an inexact length");
-    assert_eq!(fault.reason, fipe::value::Reason::NotExact);
+    assert!(
+        matches!(
+            &fault.reason,
+            fipe::value::Reason::NotExact { target, .. } if target == "Integer"
+        ),
+        "{:?}",
+        fault.reason
+    );
     let at = &source[fault.span.start..fault.span.end];
     assert!(at.contains("hypot x y"), "{at}");
 }

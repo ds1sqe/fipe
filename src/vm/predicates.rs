@@ -165,10 +165,17 @@ impl Run {
                     parts: alloc::vec![*inner],
                     next: 0,
                 }),
-                // The division test is charged as one comparison.
-                Predicate::Nonzero { .. } => {
+                // The division test is charged as one comparison. A
+                // divisor of a generic meaning is tested only when the
+                // instance is an integer; a float divisor of zero Faults
+                // `NotFinite` in the division itself.
+                Predicate::Nonzero { when_integer } => {
                     self.owed += 1;
-                    result = Some(nonzero(&self.value));
+                    let integer =
+                        matches!(self.value, Value::Int(_) | Value::Big(_));
+                    result = Some(
+                        (when_integer && !integer) || nonzero(&self.value),
+                    );
                 }
                 // A function value is not tested; its calls are.
                 Predicate::Function { .. } => result = Some(true),

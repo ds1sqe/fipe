@@ -221,7 +221,10 @@ pub fn literal(form: &Value) -> Result<Value, Reason> {
         (1, [digits, exponent, ..]) => {
             let spelling = format!("{}e{}", show(digits), show(exponent));
             let (negative, magnitude) = Magnitude::whole_of_fraction(&spelling)
-                .ok_or(Reason::NotExact)?;
+                .ok_or_else(|| Reason::NotExact {
+                    value: spelling.clone(),
+                    target: "Integer".into(),
+                })?;
             Ok(Value::integer(negative, magnitude))
         }
         _ => unreachable!("a number form"),

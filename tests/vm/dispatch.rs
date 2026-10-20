@@ -124,3 +124,11 @@ fn len_and_read_keep_their_built_in_rows() {
     assert_eq!(shown("\"2.5\" | read<F64>"), "Ok 2.5");
     assert_eq!(shown("size = x => len x\nsize [1, 2, 3]"), "3");
 }
+
+#[test]
+fn a_gate_constructor_on_an_open_value_faults_when_its_test_fails() {
+    let source = "f: Integer -> U8 = x => U8 x\n(f 3, f 255)";
+    assert_eq!(shown(source), "(3, 255)");
+    let source = "f: Integer -> U8 = x => U8 x\nf 300";
+    assert_eq!(shown(source), "fault: the cast failed");
+}

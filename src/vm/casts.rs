@@ -9,7 +9,7 @@ use crate::{
 /// A cast by its row to the target type.
 ///
 /// # Errors
-/// `NotExact` on the number row, `Cast` on a reader's `Err`.
+/// `NotExact` on the number row, naming the value and the target, `Cast` on a reader's `Err`.
 pub(super) fn cast(
     row: ir::CastRow,
     to: &ir::Type,
@@ -59,12 +59,13 @@ fn number(
             Value::Int(_) | Value::Big(_) => Ok(value),
             Value::F32(_) | Value::F64(_) => {
                 exact_integer(float::Float::of(&value).wide())
-                    .ok_or(Reason::NotExact)
+                    .ok_or_else(|| not_exact(&value, "Integer"))
             }
             other => unreachable!("a number, not {other:?}"),
         };
     }
     let wide = index == prelude.f64;
+    let target = if wide { "F64" } else { "F32" };
     let converted = match &value {
         Value::Int(small) => {
             #[allow(clippy::cast_precision_loss)] // checked below
@@ -83,7 +84,7 @@ fn number(
     };
     let (float, exact) = converted;
     if !exact {
-        return Err(Reason::NotExact);
+        return Err(not_exact(&value, target));
     }
     if wide {
         return float::Float::F64(float).finite();
@@ -93,7 +94,20 @@ fn number(
     if f64::from(narrow).to_bits() == float.to_bits() {
         float::Float::F32(narrow).finite()
     } else {
-        Err(Reason::NotExact)
+        Err(not_exact(&value, target))
+    }
+}
+
+/// `NotExact` naming a number in the language's spelling and the
+/// target it does not fit exactly.
+fn not_exact(value: &Value, target: &str) -> Reason {
+    let value = match value {
+        Value::F32(_) | Value::F64(_) => float::show(value),
+        _ => arith::show(value),
+    };
+    Reason::NotExact {
+        value,
+        target: target.into(),
     }
 }
 
