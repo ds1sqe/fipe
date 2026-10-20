@@ -5,10 +5,10 @@
 use super::{observe, program, trace};
 use fipe::{embed::Request, value::Reason};
 
-const GEOMETRY: &str =
+pub const GEOMETRY: &str =
     include_str!("../../Documentation/examples/geometry.fipe");
 
-const EXAMPLES: &[(&str, &str)] = &[
+pub const EXAMPLES: &[(&str, &str)] = &[
     (
         "01-files",
         include_str!("../../Documentation/examples/01-files.fipe"),

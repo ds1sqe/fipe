@@ -25,6 +25,9 @@ pub struct BodyFrame {
     pub meanings: Vec<ir::Type>,
     /// Where the body's result goes.
     pub(super) back: Return,
+    /// The position a stepped run last stopped before, so a step that
+    /// first runs a global's body does not stop there twice.
+    pub(super) announced: Option<(usize, usize)>,
 }
 
 /// A native waiting on a call it made; `node` is the call site, for a
@@ -64,6 +67,7 @@ impl BodyFrame {
             captures,
             meanings,
             back,
+            announced: None,
         }
     }
 }

@@ -43,6 +43,9 @@ impl Machine {
                 block,
                 statement,
             } => {
+                if self.stepping {
+                    self.landed(program, block, statement, &value);
+                }
                 let frame = self.top();
                 frame.locals[dest] = value;
                 frame.block = block;

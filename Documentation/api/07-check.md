@@ -181,6 +181,12 @@ cast to its spot, among its supplies and is typed as its result; a stage
 that is a function value keeps its function type and the pipe is a
 `Call` of it, the piped value its one spot.
 The plan retains the phase, reason and frequency of each open test.
+Everything a tool shows of a run is read from the tables: each node's
+span in the source `namespace` names; a pipe's mark from its kind
+(`Pipe`, `Marked` with its side, `Or`, `And`); an arm's span and its
+patterns' spans; a slot's binding node (`mir::Local.node`), whose span
+is its name; and constructor and field labels in `Tables.meanings`.
+`value::structural::show` renders any value with those labels.
 
 A session unit holds its current line and indexes tables the session keeps.
 `Unit::tables()` reads those shared tables, including `session_meanings`;

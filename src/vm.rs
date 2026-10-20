@@ -26,6 +26,7 @@ mod order;
 mod pending;
 mod predicates;
 mod step;
+mod stepping;
 mod walk;
 
 use crate::{
@@ -35,7 +36,7 @@ use crate::{
     token::Span,
     value::{Prelude, Reason, Value},
 };
-use alloc::{rc::Rc, vec::Vec};
+use alloc::{collections::VecDeque, rc::Rc, vec::Vec};
 pub use frames::{BodyFrame, Frame, NativeFrame};
 pub use natives::Natives;
 
@@ -63,6 +64,26 @@ pub struct Observation {
     pub result: Result<Value, Fault>,
     pub trace: Vec<(Request, Reply)>,
     pub output: Vec<u8>,
+}
+
+/// Where a stepped run stopped ([`Machine::begin`]).
+///
+/// Stops are not observations: a stepped run makes the same host
+/// requests, in the same order, and charges the same units as `run`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Stop {
+    /// The top body frame is about to run the statement or terminator
+    /// of IR node `node`; a block's charge is not a stop.
+    Before(usize),
+    /// The statement or call of IR node `node` wrote this value into
+    /// its frame: an assignment, or a call's result landing in its
+    /// destination. A marked pipe's or `||`'s result is one, whichever
+    /// side it took.
+    After(usize, Value),
+    /// The run waits on a host request; [`Machine::answer`] replies.
+    Request(Request),
+    /// The run ended with its value or Fault.
+    Done(Result<Value, Fault>),
 }
 
 /// Which body of a run is in progress: a module's init, by its
@@ -97,6 +118,10 @@ pub struct Machine {
     /// Every program run so far, joined: the bodies frames and function
     /// values index.
     program: Option<Rc<mir::Program>>,
+    /// Whether the run in progress was begun stepped.
+    stepping: bool,
+    /// The stops a stepped run reached and has not handed out yet.
+    stops: VecDeque<Stop>,
 }
 
 /// What a frame's caller does with the returned value.
@@ -150,6 +175,8 @@ impl Machine {
             waiting: None,
             environment: Vec::new(),
             program: None,
+            stepping: false,
+            stops: VecDeque::new(),
         }
     }
 
@@ -207,6 +234,12 @@ impl Machine {
         &mut self,
         program: &mir::Program,
     ) -> Outcome<Result<Value, Fault>> {
+        let program = self.open(program);
+        self.advance(&program)
+    }
+
+    /// Join a run's program, size the machine to it and reset the run.
+    fn open(&mut self, program: &mir::Program) -> Rc<mir::Program> {
         merge::merge(&mut self.program, program);
         let program = self.joined();
         self.prepare(&program);
@@ -215,7 +248,9 @@ impl Machine {
         self.environment.clear();
         self.waiting = None;
         self.stage = Some(Stage::Init(0));
-        self.advance(&program)
+        self.stepping = false;
+        self.stops.clear();
+        program
     }
 
     /// Every program run so far, joined: the bodies that frames and
@@ -263,16 +298,7 @@ impl Machine {
     ) -> Outcome<Result<Value, Fault>> {
         loop {
             if self.frames.is_empty() {
-                let body = self.next_body(program);
-                let frame = BodyFrame::new(
-                    program,
-                    body,
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    Return::Finish,
-                );
-                self.frames.push(Frame::Body(frame));
+                self.enter_next(program);
             }
             let flow = self.step(program);
             if let Some(outcome) = self.settle(program, flow) {

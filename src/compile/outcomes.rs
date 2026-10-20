@@ -297,8 +297,11 @@ impl<'a> Builder<'_, 'a> {
         self.assign(dest, rvalue, node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(taken);
-        self.lower_to(right, Some(dest));
+        // The right's value is the node's result on this side too, so a
+        // stepped run sees the node write it, whichever side ran.
+        let result = self.lower(right);
         self.count(node);
+        self.assign(dest, Rvalue::Use(result), node);
         self.terminate(Terminator::Goto(join), node);
         self.switch_to(join);
         Operand::Local(dest)
@@ -343,8 +346,9 @@ impl<'a> Builder<'_, 'a> {
         self.switch_to(taken);
         match rebuild {
             None => {
-                self.lower_to(right, Some(dest));
+                let result = self.lower(right);
                 self.count(node);
+                self.assign(dest, Rvalue::Use(result), node);
             }
             Some(rebuild) => {
                 let result = self.lower(right);

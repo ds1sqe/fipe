@@ -8,13 +8,15 @@ use fipe::{
     lex::lex,
     mir::Program,
     parse::parse,
-    vm::{Machine, Observation},
+    vm::{Machine, Observation, Stop},
 };
 
 #[path = "host/examples.rs"]
 mod examples;
 #[path = "host/replies.rs"]
 mod replies;
+#[path = "host/stepping.rs"]
+mod stepping;
 #[path = "host/trace.rs"]
 mod trace;
 
@@ -79,4 +81,38 @@ fn observe(program: &Program, budget: Option<u64>) -> (Observation, u64) {
         output: Vec::new(),
     };
     (observation, machine.charged())
+}
+
+/// The same run stepped stop by stop: the observation, the units
+/// charged and every stop in order.
+fn observe_stepped(
+    program: &Program,
+    budget: Option<u64>,
+) -> (Observation, u64, Vec<Stop>) {
+    let mut machine = Machine::new(budget);
+    let mut trace = Vec::new();
+    let mut stops = Vec::new();
+    machine.begin(program);
+    let result = loop {
+        let stop = machine.next_stop();
+        stops.push(stop.clone());
+        match stop {
+            Stop::Done(result) => break result,
+            Stop::Request(request) => {
+                let reply = Reply::Value(replies::answer(
+                    &program.tables.borrow(),
+                    &request,
+                ));
+                trace.push((request, reply.clone()));
+                machine.answer(reply);
+            }
+            Stop::Before(_) | Stop::After(..) => {}
+        }
+    };
+    let observation = Observation {
+        result,
+        trace,
+        output: Vec::new(),
+    };
+    (observation, machine.charged(), stops)
 }
