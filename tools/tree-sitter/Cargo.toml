@@ -1,0 +1,34 @@
+[package]
+name = "tree-sitter-fipe"
+description = "Fipe grammar for tree-sitter"
+version = "0.1.0"
+authors = ["Kim Dae Up <ds1sqe@mensakorea.org>"]
+license = "MIT OR Apache-2.0"
+keywords = ["incremental", "parsing", "tree-sitter", "fipe"]
+categories = ["parser-implementations", "parsing", "text-editors"]
+repository = "https://github.com/ds1sqe/fipe"
+edition = "2021"
+autoexamples = false
+publish = false
+
+build = "bindings/rust/build.rs"
+include = [
+  "bindings/rust/*",
+  "grammar.js",
+  "queries/*",
+  "src/*",
+  "tree-sitter.json",
+]
+
+[lib]
+path = "bindings/rust/lib.rs"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1.2"
+
+[dev-dependencies]
+fipe = { path = "../.." }
+tree-sitter = "0.25.10"

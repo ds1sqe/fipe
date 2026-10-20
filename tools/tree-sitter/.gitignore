@@ -1,0 +1,9 @@
+# Rust artifacts
+target/
+
+# Grammar volatiles
+build/
+*.wasm
+*.o
+*.so
+*.dylib

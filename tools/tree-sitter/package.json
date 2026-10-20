@@ -1,0 +1,30 @@
+{
+  "name": "tree-sitter-fipe",
+  "version": "0.1.0",
+  "description": "Fipe grammar for tree-sitter",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ds1sqe/fipe.git",
+    "directory": "tools/tree-sitter"
+  },
+  "license": "MIT OR Apache-2.0",
+  "author": {
+    "name": "Kim Dae Up"
+  },
+  "keywords": [
+    "incremental",
+    "parsing",
+    "tree-sitter",
+    "fipe"
+  ],
+  "files": [
+    "grammar.js",
+    "tree-sitter.json",
+    "queries/*",
+    "src/**"
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "0.26.9"
+  }
+}
