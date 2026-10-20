@@ -112,10 +112,12 @@ core. Purity is one static bit per scheme ([checks](07-checks.md)
 §Phases). Mutation is never in the language; state is a host resource.
 Evaluation is strict; delay is `() => …`; a host `Stream<T>` is pulled on
 demand. `map f` with pure `f` may run in parallel without syntax; impure
-stages stay in order. No coloring: a host call suspends the run and the
-host's reply resumes it (ruled 2026-10-08, [embedding](../api/09-embed.md)),
-so a `Task<T>` is a suspended pipeline. `Stream`, `Task` and `Cell` are
-declared by the host (09).
+stages stay in order. No coloring: a host call is the host's to perform,
+as a syscall is the kernel's. Open: whether the run blocks in the host or
+suspends until its reply (the VM suspends today,
+[embedding](../api/09-embed.md)); a run left waiting on a reply that never
+comes; asynchronous hosts and threads, and with them `Task<T>`. `Stream`,
+`Task` and `Cell` are declared by the host (09).
 
 ## H1 — Host and backend observables
 
