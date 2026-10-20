@@ -1,23 +1,30 @@
 ================================================================================
-The first newline after a pipe is suppressed; a second one remains
+The first newline after a pipe is suppressed
 ================================================================================
 a | # comment
   b
-c |
 
-d
 
 --------------------------------------------------------------------------------
 
 (file
-  (name)
-  (comment)
-  (name)
-  (newline)
-  (name)
-  (newline)
-  (name)
-  (newline))
+  (pipe
+    (name)
+    (comment)
+    (name)))
+
+================================================================================
+A second newline after a pipe remains, and the line is incomplete
+:error
+================================================================================
+c |
+
+d
+
+
+--------------------------------------------------------------------------------
+
+(file)
 
 ================================================================================
 A backslash line join yields no token and ends a word
@@ -30,72 +37,83 @@ cat x\
 --------------------------------------------------------------------------------
 
 (file
-  (name)
-  (name)
-  (name)
-  (newline)
-  (name)
-  (name)
-  (name)
-  (newline))
+  (application
+    (name)
+    (name)
+    (name))
+  (application
+    (name)
+    (name)
+    (name)))
 
 ================================================================================
 Quotes with a prefix or suffix, and a raw quote across lines
 ================================================================================
 re"a+b"i b"\xFF" 'raw
-line' Re"x"
+line' Re "x"
 
 --------------------------------------------------------------------------------
 
 (file
-  (string)
-  (string)
-  (raw_string)
-  (name)
-  (string)
-  (newline))
+  (application
+    (string)
+    (string)
+    (raw_string)
+    (upper_name)
+    (string)))
 
 ================================================================================
 Word classification
 ================================================================================
-0x1F 1e5 10ms 0r7Z 0x 1.5 -x -n=-5 /tmp ./a .size fs.Entry a+b if -> ++
+0x1F 1e5 10ms 0r7Z 0x 1.5 -x -n=-5 /tmp ./a .size fs.Entry a+b
+
 
 --------------------------------------------------------------------------------
 
 (file
-  (integer)
-  (float)
-  (integer)
-  (integer)
-  (word)
-  (float)
-  (flag)
-  (flag)
-  (integer)
-  (path)
-  (path)
-  (selector)
-  (name)
-  (word)
-  (newline))
+  (application
+    (integer)
+    (float)
+    (integer)
+    (integer)
+    (word)
+    (float)
+    (flag_argument
+      (flag))
+    (flag_argument
+      (flag)
+      (integer))
+    (path)
+    (path)
+    (selector)
+    (upper_name)
+    (word)))
+
+================================================================================
+Keywords and symbols where no line takes them
+:error
+================================================================================
+if -> ++
+
+
+--------------------------------------------------------------------------------
+
+(file)
 
 ================================================================================
 Docs are tokens; a third hash makes a comment
 ================================================================================
-## doc
 ##! inner
+## doc
 ### banner
 x = 1
 
 --------------------------------------------------------------------------------
 
 (file
-  (doc)
-  (newline)
   (inner_doc)
-  (newline)
+  (doc)
   (comment)
-  (newline)
-  (name)
-  (integer)
-  (newline))
+  (binding
+    (name)
+    (integer)))

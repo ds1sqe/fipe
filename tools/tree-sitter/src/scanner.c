@@ -1,22 +1,35 @@
 // The external scanner of tree-sitter-fipe: the parts of
-// Documentation/spec/01-lexical.md that a regular lexer cannot see.
+// Documentation/spec/01-lexical.md and 02-syntax.md §Lines and
+// continuation that a regular lexer cannot see.
 //
+// - Word classification. The crate's lexer classifies a run of word
+//   characters whatever the parser expects; a regular lexer here only
+//   tries tokens the parser can take, so a flag where no flag fits
+//   would read as a word. Every run is classified here, by a C port of
+//   lex/word.rs, and a token the parser cannot take is its error. A run
+//   a backslash line join ends is classified the same way, since a
+//   regex cannot look past the backslash for the spacing and LF that
+//   make it a join.
 // - Retained newline versus a suppressed one: the first LF after one of
 //   the five pipes is not a NEWLINE when only spacing, a comment or a
 //   doc stands between (§Comments and logical lines). The pipes are
 //   scanned here so the state knows the last token was one.
-// - The backslash line join, which ends a word: a run before it is
-//   scanned and classified here, since a regex cannot look past the
-//   backslash for the spacing and LF that make it a join.
 // - Comments and docs: `#`, `##` and `##!`, with `###` a comment.
 // - Quoted literals: a prefix is a whole word with no uppercase letter
 //   that is not a keyword, a suffix a whole one-segment name that is not
 //   a keyword, and a decoded quote crosses LF only by a join.
+// - Which LF is a NEWLINE (02-syntax.md §Lines and continuation): one
+//   before a line beginning with a leading operator, one after a
+//   trailing operator (where the parser cannot take a NEWLINE), one
+//   before a line beginning with `where` where the parser takes it, and
+//   any before `else` where the parser takes it, continue the line; a
+//   blank line ends a continuation, and no line continues after a
+//   keyword.
 //
-// Whether the previous token was a pipe: tokens of the regular lexer
-// never cross a line and the scanner sees every LF, so the previous
-// token is the last one scanned here exactly when the scan starts at
-// the column where that one ended.
+// Whether the previous token was a pipe, a keyword or a continued LF:
+// tokens of the regular lexer never cross a line and the scanner sees
+// every LF, so the previous token is the last one scanned here exactly
+// when the scan starts at the column where that one ended.
 
 #include "tree_sitter/alloc.h"
 #include "tree_sitter/parser.h"
@@ -59,12 +72,27 @@ enum TokenType {
   KW_IMPL,
   KW_USE,
   KW_PUB,
+  UPPER_NAME,
+  KW_WHERE,
+  FIELD_NAME,
+};
+
+// What the last token scanned here leaves pending, valid only for a
+// scan that starts at `column`.
+enum Pending {
+  // Nothing: an LF is classified by the next line and the parser.
+  PENDING_NONE,
+  // A pipe, or a comment or doc after one: the next LF is suppressed.
+  PENDING_PIPE,
+  // A continued LF: an LF now would make the line blank, ending the
+  // continuation.
+  PENDING_BREAK,
+  // A keyword: no line continues after one.
+  PENDING_KEYWORD,
 };
 
 typedef struct {
-  // The last token scanned here was a pipe, or a comment or doc after
-  // one, and it ended at `column`.
-  bool continuation;
+  uint8_t pending;
   uint32_t column;
   // The run being scanned; not part of the serialized state.
   int32_t *run;
@@ -274,7 +302,12 @@ static int classify(const int32_t *w, uint32_t n) {
   if (n > 1 && w[0] == '.' && qualified(w + 1, n - 1)) return SELECTOR;
   kind = keyword(w, n);
   if (kind >= 0) return kind;
-  if (qualified(w, n)) return NAME;
+  if (qualified(w, n)) {
+    uint32_t last = n;
+    while (last > 0 && w[last - 1] != '.') last--;
+    if (same(w, n, "where")) return KW_WHERE;
+    return w[last] >= 'A' && w[last] <= 'Z' ? UPPER_NAME : NAME;
+  }
   return WORD;
 }
 
@@ -284,16 +317,16 @@ static void skip(TSLexer *lexer) { lexer->advance(lexer, true); }
 
 static bool accept(Scanner *s, TSLexer *lexer, int kind) {
   lexer->result_symbol = kind;
-  s->continuation = false;
+  s->pending = PENDING_NONE;
   return true;
 }
 
-// A comment, doc or pipe keeps a pipe's continuation; its end column
-// identifies it as the previous token at the next scan.
-static bool keep(Scanner *s, TSLexer *lexer, int kind, bool continuation) {
+// A token that leaves something pending; its end column identifies it
+// as the previous token at the next scan.
+static bool keep(Scanner *s, TSLexer *lexer, int kind, uint8_t pending) {
   lexer->result_symbol = kind;
-  s->continuation = continuation;
-  if (continuation) s->column = lexer->get_column(lexer);
+  s->pending = pending;
+  if (pending != PENDING_NONE) s->column = lexer->get_column(lexer);
   return true;
 }
 
@@ -377,9 +410,25 @@ static bool join_after(TSLexer *lexer) {
   return false;
 }
 
-// A run of word characters. The regular lexer takes it unless a line
-// join ends it, or it is a quote's prefix.
-static bool run(Scanner *s, TSLexer *lexer, const bool *valid) {
+// A run's token, as the crate's lexer classifies it whatever the
+// parser takes: a token the parser cannot take is its error, never a
+// word. `where` is a word of the `type` item only; a selector touching
+// the token before it is a postfix field name.
+static bool classified(Scanner *s, TSLexer *lexer, const bool *valid,
+                       bool touching) {
+  int kind = classify(s->run, s->length);
+  if (kind == KW_WHERE && !valid[KW_WHERE]) kind = NAME;
+  if (kind == SELECTOR && touching && valid[FIELD_NAME]) kind = FIELD_NAME;
+  if (kind >= KW_IF && kind <= KW_PUB) {
+    return keep(s, lexer, kind, PENDING_KEYWORD);
+  }
+  return accept(s, lexer, kind);
+}
+
+// A run of word characters, ended by a boundary or a line join, or a
+// quote's prefix.
+static bool run(Scanner *s, TSLexer *lexer, const bool *valid,
+                bool touching) {
   s->length = 0;
   for (;;) {
     if (lexer->eof(lexer)) break;
@@ -394,13 +443,14 @@ static bool run(Scanner *s, TSLexer *lexer, const bool *valid) {
         continue;
       }
       if (end || next == '\n' || spacing(next)) {
+        // Trailing backslashes that are no join end a word, which the
+        // regular lexer reads, since this scan has moved past them.
         if (!join_after(lexer)) return false;
         if (s->length == 0) {
           lexer->mark_end(lexer);
           return valid[JOIN] && accept(s, lexer, JOIN);
         }
-        int kind = classify(s->run, s->length);
-        return valid[kind] && accept(s, lexer, kind);
+        return classified(s, lexer, valid, touching);
       }
       return false;
     }
@@ -413,7 +463,126 @@ static bool run(Scanner *s, TSLexer *lexer, const bool *valid) {
       prefix(s->run, s->length)) {
     return quote(s, lexer, valid);
   }
-  return false;
+  lexer->mark_end(lexer);
+  if (s->length == 1 && s->run[0] == '-' && lexer->lookahead == '>') {
+    // `->` is matched before word scanning.
+    return false;
+  }
+  return classified(s, lexer, valid, touching);
+}
+
+// Whether the characters ahead, up to a boundary, spell `text` as a
+// whole word. Moves the lexer past what it reads.
+static bool word_ahead(TSLexer *lexer, const char *text) {
+  for (uint32_t i = 0; text[i]; i++) {
+    if (lexer->eof(lexer) || lexer->lookahead != (unsigned char)text[i]) {
+      return false;
+    }
+    advance(lexer);
+  }
+  return lexer->eof(lexer) || boundary(lexer->lookahead);
+}
+
+// After a lone `/`: whether an operand follows on the line, which makes
+// it division (02-syntax.md §Lines and continuation).
+static bool operand_after_slash(TSLexer *lexer) {
+  if (!lexer->eof(lexer) && !boundary(lexer->lookahead)) return false;
+  while (spacing(lexer->lookahead)) advance(lexer);
+  if (lexer->eof(lexer)) return false;
+  int32_t c = lexer->lookahead;
+  switch (c) {
+    case '(': case '[': case '{': case '"': case '\'': case '/':
+      return true;
+    case '-':
+      advance(lexer);
+      return digit(lexer->lookahead);
+    case '+': case '*': case '%':
+      advance(lexer);
+      return !lexer->eof(lexer) && !boundary(lexer->lookahead) &&
+             lexer->lookahead != c;
+    default:
+      break;
+  }
+  return !boundary(c) && c != '\\';
+}
+
+// Whether the line ahead, its spacing skipped, begins with a leading
+// operator: a pipe, `+ - * % ++`, `/` before an operand, a comparison,
+// `=>` or `=`. A negative literal, a flag, `!` and a lone `/` begin a
+// line.
+static bool leading_operator(TSLexer *lexer) {
+  while (spacing(lexer->lookahead)) advance(lexer);
+  if (lexer->eof(lexer)) return false;
+  int32_t c = lexer->lookahead;
+  switch (c) {
+    case '|': case '=': case '<': case '>':
+      return true;
+    case '&':
+      advance(lexer);
+      return lexer->lookahead == '&';
+    case '!':
+      advance(lexer);
+      return lexer->lookahead == '=';
+    case '+':
+      advance(lexer);
+      if (lexer->lookahead == '+') advance(lexer);
+      return lexer->eof(lexer) || boundary(lexer->lookahead);
+    case '-': case '*': case '%':
+      advance(lexer);
+      return lexer->eof(lexer) ||
+             (boundary(lexer->lookahead) && lexer->lookahead != '>');
+    case '/':
+      advance(lexer);
+      return operand_after_slash(lexer);
+    default:
+      return false;
+  }
+}
+
+// Skips blank lines and comment lines ahead; whether the first line
+// with a token begins with the word `text`.
+static bool line_ahead_is(TSLexer *lexer, const char *text, bool blanks) {
+  for (;;) {
+    while (spacing(lexer->lookahead)) advance(lexer);
+    if (lexer->eof(lexer)) return false;
+    if (lexer->lookahead == '#' && blanks) {
+      while (!lexer->eof(lexer) && lexer->lookahead != '\n') advance(lexer);
+    }
+    if (lexer->lookahead == '\n') {
+      if (!blanks) return false;
+      advance(lexer);
+      continue;
+    }
+    return word_ahead(lexer, text);
+  }
+}
+
+// An LF: a NEWLINE, or a CONTINUATION that the parser skips.
+static bool newline(Scanner *s, TSLexer *lexer, const bool *valid,
+                    uint8_t pending) {
+  advance(lexer);
+  lexer->mark_end(lexer);
+  bool line_ends = valid[NEWLINE];
+  if (pending == PENDING_PIPE && valid[CONTINUATION]) {
+    return keep(s, lexer, CONTINUATION, PENDING_BREAK);
+  }
+  if (valid[KW_ELSE] && line_ahead_is(lexer, "else", true)) {
+    return accept(s, lexer, CONTINUATION);
+  }
+  if (pending == PENDING_BREAK || pending == PENDING_KEYWORD) {
+    // Where the parser cannot take it, the NEWLINE is its error.
+    lexer->result_symbol = NEWLINE;
+    s->pending = PENDING_NONE;
+    return true;
+  }
+  if (valid[KW_WHERE] && line_ahead_is(lexer, "where", false)) {
+    return keep(s, lexer, CONTINUATION, PENDING_BREAK);
+  }
+  if (leading_operator(lexer)) {
+    return keep(s, lexer, CONTINUATION, PENDING_BREAK);
+  }
+  if (!line_ends) return keep(s, lexer, CONTINUATION, PENDING_BREAK);
+  return accept(s, lexer, NEWLINE);
 }
 
 void *tree_sitter_fipe_external_scanner_create(void) {
@@ -429,7 +598,7 @@ void tree_sitter_fipe_external_scanner_destroy(void *payload) {
 unsigned tree_sitter_fipe_external_scanner_serialize(void *payload,
                                                      char *buffer) {
   Scanner *s = payload;
-  buffer[0] = (char)s->continuation;
+  buffer[0] = (char)s->pending;
   memcpy(buffer + 1, &s->column, sizeof(s->column));
   return 1 + sizeof(s->column);
 }
@@ -438,10 +607,10 @@ void tree_sitter_fipe_external_scanner_deserialize(void *payload,
                                                    const char *buffer,
                                                    unsigned length) {
   Scanner *s = payload;
-  s->continuation = false;
+  s->pending = PENDING_NONE;
   s->column = 0;
   if (length == 1 + sizeof(s->column)) {
-    s->continuation = buffer[0];
+    s->pending = (uint8_t)buffer[0];
     memcpy(&s->column, buffer + 1, sizeof(s->column));
   }
 }
@@ -449,21 +618,19 @@ void tree_sitter_fipe_external_scanner_deserialize(void *payload,
 bool tree_sitter_fipe_external_scanner_scan(void *payload, TSLexer *lexer,
                                             const bool *valid) {
   Scanner *s = payload;
-  bool continuation =
-      s->continuation && lexer->get_column(lexer) == s->column;
+  uint8_t pending =
+      lexer->get_column(lexer) == s->column ? s->pending : PENDING_NONE;
+  bool touching = true;
   while (spacing(lexer->lookahead) || lexer->lookahead == 0xFEFF) {
     skip(lexer);
+    touching = false;
   }
   if (lexer->eof(lexer)) return false;
   int32_t c = lexer->lookahead;
   switch (c) {
     case '\n':
-      advance(lexer);
-      lexer->mark_end(lexer);
-      if (continuation && valid[CONTINUATION]) {
-        return accept(s, lexer, CONTINUATION);
-      }
-      return valid[NEWLINE] && accept(s, lexer, NEWLINE);
+      if (!valid[NEWLINE] && !valid[CONTINUATION]) return false;
+      return newline(s, lexer, valid, pending);
     case '#': {
       advance(lexer);
       int kind = COMMENT;
@@ -479,7 +646,9 @@ bool tree_sitter_fipe_external_scanner_scan(void *payload, TSLexer *lexer,
       }
       while (!lexer->eof(lexer) && lexer->lookahead != '\n') advance(lexer);
       lexer->mark_end(lexer);
-      return valid[kind] && keep(s, lexer, kind, continuation);
+      // A comment after a pipe keeps it pending; a comment on a line
+      // after a continued LF makes that line blank.
+      return valid[kind] && keep(s, lexer, kind, pending);
     }
     case '|': {
       advance(lexer);
@@ -489,19 +658,19 @@ bool tree_sitter_fipe_external_scanner_scan(void *payload, TSLexer *lexer,
       if (lexer->lookahead == '|') kind = OR;
       if (kind != PIPE) advance(lexer);
       lexer->mark_end(lexer);
-      return valid[kind] && keep(s, lexer, kind, true);
+      return valid[kind] && keep(s, lexer, kind, PENDING_PIPE);
     }
     case '&':
       advance(lexer);
       if (lexer->lookahead != '&') return false;
       advance(lexer);
       lexer->mark_end(lexer);
-      return valid[AND] && keep(s, lexer, AND, true);
+      return valid[AND] && keep(s, lexer, AND, PENDING_PIPE);
     case '"':
     case '\'':
       return quote(s, lexer, valid);
     default:
-      if (c == '\\' || !boundary(c)) return run(s, lexer, valid);
+      if (c == '\\' || !boundary(c)) return run(s, lexer, valid, touching);
       return false;
   }
 }

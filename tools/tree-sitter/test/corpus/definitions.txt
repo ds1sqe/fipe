@@ -1,0 +1,271 @@
+================================================================================
+A module doc, item docs and an exported arm list
+================================================================================
+##! Files.
+use fs
+
+## The largest files.
+## - depth: how far down to look
+pub biggest = (depth = 1) dir =>
+    ls -l -depth depth dir | sort -by .size -desc | take 10 | map .name
+
+--------------------------------------------------------------------------------
+
+(file
+  (inner_doc)
+  (import
+    (name))
+  (doc)
+  (doc)
+  (binding
+    (name)
+    (arms
+      (arm
+        (default_pattern
+          (name)
+          (integer))
+        (name)
+        (pipe
+          (pipe
+            (pipe
+              (application
+                (name)
+                (flag_argument
+                  (flag))
+                (flag_argument
+                  (flag))
+                (name)
+                (name))
+              (application
+                (name)
+                (flag_argument
+                  (flag))
+                (selector)
+                (flag_argument
+                  (flag))))
+            (application
+              (name)
+              (integer)))
+          (application
+            (name)
+            (selector)))))))
+
+================================================================================
+A type with documented fields
+================================================================================
+type Point {
+    ## Horizontal, in cells.
+    pub x: I64,
+    ## Vertical, in cells.
+    pub y: I64,
+}
+
+--------------------------------------------------------------------------------
+
+(file
+  (type_item
+    (upper_name)
+    (type_body
+      (doc)
+      (field_declaration
+        (name)
+        (named_type
+          (upper_name)))
+      (doc)
+      (field_declaration
+        (name)
+        (named_type
+          (upper_name))))))
+
+================================================================================
+Imports
+================================================================================
+use fs
+use x.inc x.Point
+use text 2
+
+--------------------------------------------------------------------------------
+
+(file
+  (import
+    (name))
+  (import
+    (name)
+    (upper_name))
+  (import
+    (name)
+    (version)))
+
+================================================================================
+Types with constructors, parameters, bases and limits
+================================================================================
+type Shape { Circle(r: F64), Rect(w: F64, h: F64), Dot }
+type Box<T: Ord = I64> { v: T }
+type V: Vec<U8> where self.len < 5
+type Rd<Api>
+
+--------------------------------------------------------------------------------
+
+(file
+  (type_item
+    (upper_name)
+    (type_body
+      (constructor
+        (upper_name)
+        (field_declaration
+          (name)
+          (named_type
+            (upper_name))))
+      (constructor
+        (upper_name)
+        (field_declaration
+          (name)
+          (named_type
+            (upper_name)))
+        (field_declaration
+          (name)
+          (named_type
+            (upper_name))))
+      (constructor
+        (upper_name))))
+  (type_item
+    (upper_name)
+    (type_parameters
+      (type_parameter
+        (upper_name)
+        (named_type
+          (upper_name))
+        (named_type
+          (upper_name))))
+    (type_body
+      (field_declaration
+        (name)
+        (named_type
+          (upper_name)))))
+  (type_item
+    (upper_name)
+    (named_type
+      (upper_name)
+      (type_arguments
+        (named_type
+          (upper_name))))
+    (limits
+      (binary
+        (name)
+        (integer))))
+  (type_item
+    (upper_name)
+    (type_parameters
+      (type_parameter
+        (upper_name)))))
+
+================================================================================
+Impls with members, a claim and a written constructor
+================================================================================
+impl Point { x (y = 0) => Self { x, y }, pub origin = Self 0 0, show: Self -> String }
+impl Point: Show { show = self => "p" }
+
+--------------------------------------------------------------------------------
+
+(file
+  (impl_item
+    (named_type
+      (upper_name))
+    (arm
+      (name)
+      (default_pattern
+        (name)
+        (integer))
+      (record
+        (upper_name)
+        (field_value
+          (name))
+        (field_value
+          (name))))
+    (impl_member
+      (name)
+      (application
+        (upper_name)
+        (integer)
+        (integer)))
+    (impl_member
+      (name)
+      (function_type
+        (named_type
+          (upper_name))
+        (named_type
+          (upper_name)))))
+  (impl_item
+    (named_type
+      (upper_name))
+    (named_type
+      (upper_name))
+    (impl_member
+      (name)
+      (arms
+        (arm
+          (name)
+          (string))))))
+
+================================================================================
+Declaration forms
+================================================================================
+pub len: Vec<a> -> Natural
+pub show: Show a => a -> String
+ls: (path: Src = ./) -> (long: Bool = False) -> Vec<Entry>
+x: [T; n + 1] = y
+
+--------------------------------------------------------------------------------
+
+(file
+  (declaration
+    (name)
+    (function_type
+      (named_type
+        (upper_name)
+        (type_arguments
+          (named_type
+            (name))))
+      (named_type
+        (upper_name))))
+  (declaration
+    (name)
+    (qualified_type
+      (constraint
+        (named_type
+          (upper_name))
+        (name))
+      (function_type
+        (named_type
+          (name))
+        (named_type
+          (upper_name)))))
+  (declaration
+    (name)
+    (function_type
+      (labeled_type
+        (name)
+        (named_type
+          (upper_name))
+        (path))
+      (function_type
+        (labeled_type
+          (name)
+          (named_type
+            (upper_name))
+          (upper_name))
+        (named_type
+          (upper_name)
+          (type_arguments
+            (named_type
+              (upper_name)))))))
+  (binding
+    (name)
+    (array_type
+      (named_type
+        (upper_name))
+      (number_sum
+        (named_type
+          (name))
+        (integer)))
+    (name)))

@@ -1,0 +1,157 @@
+================================================================================
+An arm list in braces
+================================================================================
+find x | {
+    [:e] if e.size > 0 => e.name,
+    [:_] => "empty",
+    [!] => "-",
+}
+
+--------------------------------------------------------------------------------
+
+(file
+  (pipe
+    (application
+      (name)
+      (name))
+    (arms
+      (arm
+        (outcome_pattern
+          (name))
+        (binary
+          (name)
+          (integer))
+        (name))
+      (arm
+        (outcome_pattern
+          (name))
+        (string))
+      (arm
+        (outcome_pattern)
+        (string)))))
+
+================================================================================
+An arm list in parentheses
+================================================================================
+find x | ([:e] => e.name, [!] => "-")
+
+--------------------------------------------------------------------------------
+
+(file
+  (pipe
+    (application
+      (name)
+      (name))
+    (arms
+      (arm
+        (outcome_pattern
+          (name))
+        (name))
+      (arm
+        (outcome_pattern)
+        (string)))))
+
+================================================================================
+A curried arm list with a guard
+================================================================================
+max = a b if a > b => a, _ b => b
+
+--------------------------------------------------------------------------------
+
+(file
+  (binding
+    (name)
+    (arms
+      (arm
+        (name)
+        (name)
+        (binary
+          (name)
+          (name))
+        (name))
+      (arm
+        (name)
+        (name)
+        (name)))))
+
+================================================================================
+A comma carries a newline over
+================================================================================
+max = a b if a > b => a,
+  _ b => b
+
+--------------------------------------------------------------------------------
+
+(file
+  (binding
+    (name)
+    (arms
+      (arm
+        (name)
+        (name)
+        (binary
+          (name)
+          (name))
+        (name))
+      (arm
+        (name)
+        (name)
+        (name)))))
+
+================================================================================
+A parameter with a default
+================================================================================
+ls: Rd -> Bool -> Vec<Entry> = dir (long = False) => long
+
+--------------------------------------------------------------------------------
+
+(file
+  (binding
+    (name)
+    (function_type
+      (named_type
+        (upper_name))
+      (function_type
+        (named_type
+          (upper_name))
+        (named_type
+          (upper_name)
+          (type_arguments
+            (named_type
+              (upper_name))))))
+    (arms
+      (arm
+        (name)
+        (default_pattern
+          (name)
+          (upper_name))
+        (name)))))
+
+================================================================================
+An uppercase name takes one payload
+================================================================================
+f = Just e rest => e
+g = Just Just e => e
+
+--------------------------------------------------------------------------------
+
+(file
+  (binding
+    (name)
+    (arms
+      (arm
+        (constructor_pattern
+          (upper_name)
+          (name))
+        (name)
+        (name))))
+  (binding
+    (name)
+    (arms
+      (arm
+        (constructor_pattern
+          (upper_name)
+          (constructor_pattern
+            (upper_name)
+            (name)))
+        (name)))))

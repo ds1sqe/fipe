@@ -1,8 +1,10 @@
 //! The grammar's leaves against `fipe::lex`: for every source the crate
-//! lexes without a diagnostic, the grammar's flat token rule yields the
-//! same tokens, as (kind, byte span), and the same comment spans.
-//! Suppressed newlines and line joins are hidden in the tree, as they
-//! yield no token from the crate.
+//! lexes without a diagnostic, the tree's tokens are the crate's, as
+//! (kind, byte span), and so are the comment spans. Newlines are hidden
+//! in the tree, which settles continuation itself, and are left out on
+//! both sides. A source the crate parses must have no error node; a
+//! lexical row that is no well-formed line is compared through the
+//! tokens of its error nodes.
 
 use fipe::lex::lex;
 use fipe::token::{Kind, Written};
@@ -25,7 +27,14 @@ fn kind(kind: &Kind) -> Option<String> {
     Some(match kind {
         Kind::Kw(keyword) => keyword.spelling().to_string(),
         Kind::Symbol(symbol) => symbol.spelling().to_string(),
-        Kind::Name(_) => "name".into(),
+        Kind::Name(name) => {
+            let last = name.last().map_or("", String::as_str);
+            if last.starts_with(|c: char| c.is_ascii_uppercase()) {
+                "upper_name".into()
+            } else {
+                "name".into()
+            }
+        }
         Kind::Word(_) => "word".into(),
         Kind::Flag(_) => "flag".into(),
         Kind::Path(_) => "path".into(),
@@ -42,8 +51,7 @@ fn kind(kind: &Kind) -> Option<String> {
         },
         Kind::Doc(_) => "doc".into(),
         Kind::InnerDoc(_) => "inner_doc".into(),
-        Kind::Newline => "newline".into(),
-        Kind::Eof => return None,
+        Kind::Newline | Kind::Eof => return None,
     })
 }
 
@@ -62,9 +70,26 @@ fn expected(text: &str) -> Option<(Tokens, Spans)> {
     Some((tokens, comments))
 }
 
-/// The grammar's leaves and comments; `Err` names an error or missing
-/// node.
-fn grammar(text: &str) -> Result<(Tokens, Spans), String> {
+/// The grammar's node kind as the crate's token kind: a postfix field
+/// name is a selector, the record pattern's rest a word, an import's
+/// version an integer and the root path the symbol `/`.
+fn token_kind(kind: &str, text: &str) -> String {
+    match kind {
+        "field_name" => "selector".into(),
+        "rest_pattern" => "word".into(),
+        "version" => "integer".into(),
+        "path" if text == "/" => "/".into(),
+        // `where` is a name to the lexer, a word of the `type` item to
+        // the parser.
+        "where" => "name".into(),
+        _ => kind.into(),
+    }
+}
+
+/// The grammar's leaves and comments. With `strict`, `Err` names an
+/// error or missing node; otherwise the leaves of error nodes count and
+/// missing nodes, which hold no text, do not.
+fn grammar(text: &str, strict: bool) -> Result<(Tokens, Spans), String> {
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&tree_sitter_fipe::LANGUAGE.into())
@@ -75,7 +100,7 @@ fn grammar(text: &str) -> Result<(Tokens, Spans), String> {
     let mut cursor = tree.walk();
     loop {
         let node = cursor.node();
-        if node.is_error() || node.is_missing() {
+        if strict && (node.is_error() || node.is_missing()) {
             return Err(format!(
                 "{} at {}..{}",
                 node.kind(),
@@ -83,12 +108,14 @@ fn grammar(text: &str) -> Result<(Tokens, Spans), String> {
                 node.end_byte()
             ));
         }
-        if node.child_count() == 0 && node.kind() != "file" {
+        let leaf = node.child_count() == 0 && node.kind() != "file";
+        if leaf && !node.is_missing() && !node.is_error() {
             let span = (node.start_byte(), node.end_byte());
             if node.kind() == "comment" {
                 comments.push(span);
             } else {
-                tokens.push((node.kind().to_string(), span.0, span.1));
+                let kind = token_kind(node.kind(), &text[span.0..span.1]);
+                tokens.push((kind, span.0, span.1));
             }
         }
         if cursor.goto_first_child() {
@@ -96,20 +123,35 @@ fn grammar(text: &str) -> Result<(Tokens, Spans), String> {
         }
         while !cursor.goto_next_sibling() {
             if !cursor.goto_parent() {
+                tokens.sort_by_key(|t| (t.1, t.2));
                 return Ok((tokens, comments));
             }
         }
     }
 }
 
-/// Compare one source; `false` when the crate rejects it.
+/// Compare one source; `false` when the crate rejects it. A source the
+/// crate parses must parse here without an error node.
 fn compare(label: &str, text: &str) -> bool {
     let Some(expected) = expected(text) else {
         return false;
     };
-    let found = grammar(text)
+    let strict = fipe::parse::parse(lex(text)).is_ok();
+    let found = grammar(text, strict)
         .unwrap_or_else(|error| panic!("{label}: {error}\n{text}"));
-    assert_eq!(found.0, expected.0, "{label}: tokens\n{text}");
+    if found.0 != expected.0 {
+        let at = found
+            .0
+            .iter()
+            .zip(&expected.0)
+            .position(|(a, b)| a != b)
+            .unwrap_or_else(|| found.0.len().min(expected.0.len()));
+        panic!(
+            "{label}: tokens differ at {at}: grammar {:?}, crate {:?}\n{text}",
+            found.0.get(at),
+            expected.0.get(at)
+        );
+    }
     assert_eq!(found.1, expected.1, "{label}: comments\n{text}");
     true
 }
@@ -264,7 +306,7 @@ fn a_suffix_ended_by_a_line_join_is_a_name_of_its_own() {
     let text = "\"a\"i\\\nx\n";
     let (crate_tokens, _) = expected(text).expect("the crate accepts it");
     assert_eq!(crate_tokens[0], ("string".to_string(), 0, 4));
-    let (tokens, _) = grammar(text).expect("no error node");
+    let (tokens, _) = grammar(text, true).expect("no error node");
     assert_eq!(tokens[0], ("string".to_string(), 0, 3));
     assert_eq!(tokens[1], ("name".to_string(), 3, 4));
 }

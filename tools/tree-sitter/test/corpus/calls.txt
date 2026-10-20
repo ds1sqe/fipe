@@ -1,0 +1,120 @@
+================================================================================
+Flags and operands in order
+================================================================================
+ls -l -c=80 -c 80 /etc
+
+--------------------------------------------------------------------------------
+
+(file
+  (application
+    (name)
+    (flag_argument
+      (flag))
+    (flag_argument
+      (flag)
+      (integer))
+    (flag_argument
+      (flag))
+    (integer)
+    (path)))
+
+================================================================================
+Touching parentheses are an argument list
+================================================================================
+f(a,b)
+f()
+f (x)
+f (a, b)
+
+--------------------------------------------------------------------------------
+
+(file
+  (call
+    (name)
+    (name)
+    (name))
+  (call
+    (name))
+  (application
+    (name)
+    (group
+      (name)))
+  (application
+    (name)
+    (tuple
+      (name)
+      (name))))
+
+================================================================================
+Constructors are called like functions
+================================================================================
+Point 3 4
+Point -y 4 -x 3
+Point(3, 4)
+Width
+Point.line 2
+
+--------------------------------------------------------------------------------
+
+(file
+  (application
+    (upper_name)
+    (integer)
+    (integer))
+  (application
+    (upper_name)
+    (flag_argument
+      (flag))
+    (integer)
+    (flag_argument
+      (flag))
+    (integer))
+  (call
+    (upper_name)
+    (integer)
+    (integer))
+  (upper_name)
+  (application
+    (name)
+    (integer)))
+
+================================================================================
+Touching selectors and separated selectors
+================================================================================
+(e).name
+f().name
+map .name
+
+--------------------------------------------------------------------------------
+
+(file
+  (field
+    (group
+      (name))
+    (field_name))
+  (field
+    (call
+      (name))
+    (field_name))
+  (application
+    (name)
+    (selector)))
+
+================================================================================
+A record pattern's rest
+================================================================================
+Pt { x, y: 1, .. } = p
+
+--------------------------------------------------------------------------------
+
+(file
+  (binding
+    (record_pattern
+      (upper_name)
+      (pattern_field
+        (name))
+      (pattern_field
+        (name)
+        (integer))
+      (rest_pattern))
+    (name)))
