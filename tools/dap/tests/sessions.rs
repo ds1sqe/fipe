@@ -34,6 +34,7 @@ fn drive(requests: &[Value]) -> Vec<Value> {
     let mut sent = Vec::new();
     for request in requests {
         let control = session.handle(request);
+        session.settle();
         sent.extend(session.out.take());
         if control == Control::Exit {
             break;
@@ -206,5 +207,22 @@ fn the_binary_speaks_the_protocol_over_stdio() {
         sent.push(message);
     }
     assert!(child.wait().unwrap().success());
-    assert_eq!(sent, drive(script["requests"].as_array().unwrap()));
+    // The binary reads requests while a program runs, so a request may
+    // be answered between two of the run's events: compare the messages
+    // without their order and sequence numbers.
+    let unordered = |messages: Vec<Value>| {
+        let mut texts: Vec<String> = messages
+            .into_iter()
+            .map(|mut message| {
+                message.as_object_mut().unwrap().remove("seq");
+                message.to_string()
+            })
+            .collect();
+        texts.sort();
+        texts
+    };
+    assert_eq!(
+        unordered(sent),
+        unordered(drive(script["requests"].as_array().unwrap()))
+    );
 }

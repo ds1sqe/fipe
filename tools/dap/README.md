@@ -35,15 +35,33 @@ adapter shows is the VM's and every stop is one the VM took
 
 | Request | What it does |
 | --- | --- |
-| `initialize` | answers `supportsConfigurationDoneRequest`, then sends `initialized` |
-| `launch` | checks and lowers the program; a program that does not check fails the request |
-| `configurationDone` | runs the program: one `output` event per host call, written as the trace writes it; `exited` and `terminated` at its end; `stopped` with reason `exception` and the located Fault otherwise |
+| `initialize` | answers `supportsConfigurationDoneRequest`, `supportsBreakpointLocationsRequest` and `supportsExceptionInfoRequest` |
+| `launch` | checks and lowers the program, then sends `initialized`; a program that does not check fails the request, naming its first diagnostic in words; `stopOnEntry` stops before the first node |
+| `setBreakpoints` | a line, or a line and the column of a pipe mark (`\|`, `\|:`, `\|!`, `\|\|`, `&&`) for a stage; a column with no mark, or a line nothing runs on, is not verified |
+| `breakpointLocations` | the pipe marks of the lines asked for: the stage columns |
+| `configurationDone` | runs the program to a breakpoint, its end or its Fault |
+| `continue` | runs to the next breakpoint, the end or a Fault |
+| `next` | to the next stage or line in this frame, or back in a caller |
+| `stepIn` | as `next`, or into the body of the function a stage or call enters (a host call or a prelude operation has none, and is stepped over) |
+| `stepOut` | back into the caller |
+| `pause` | stops a running program at its next stop |
 | `threads` | the one thread, `1` |
+| `stackTrace` | the body frames, innermost first, named by their definition, `main`, a module's init or `arm at line:column`; at a pipe the column is its mark; after a Fault, one frame where it happened |
+| `scopes` | Locals (named slots and spots), Captures (a closure's), Pipe (the top frame's pipe: `mark`, `in`, `side`, `stage`, `out`), Effects (the host calls so far with their replies) and Budget (`remaining`, `budget`, `charged`) |
+| `variables` | a scope's items; a record opens by field label, a sequence or tuple by index |
+| `evaluate` | the value of a name bound in the frame (a local, then a capture); never an expression, and not a module-level binding, which the machine does not expose |
+| `exceptionInfo` | the Fault's located description and reason |
 | `disconnect` | ends the session |
 
-Breakpoints, stepping, scopes and `evaluate` are not supported yet.
+Every value shown is the VM's own, written by the crate's structural
+renderer; every stop is one the VM took. Stopping changes no
+observation: the host calls of a stepped session are those of a run.
 
 ## Checks
+
+The sessions are scripted in `tests/sessions.rs` and
+`tests/stepping.rs`.
+
 
 ```sh
 cargo fmt --check
