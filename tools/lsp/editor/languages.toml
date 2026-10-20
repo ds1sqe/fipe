@@ -1,0 +1,16 @@
+# Helix: add to ~/.config/helix/languages.toml, with your paths. The
+# server needs a host directory; this one is the repository's
+# conformance host. Highlighting comes from tools/tree-sitter.
+
+[[language]]
+name = "fipe"
+scope = "source.fipe"
+file-types = ["fipe"]
+comment-token = "#"
+indent = { tab-width = 4, unit = "    " }
+language-servers = ["fipe-lsp"]
+
+[language-server.fipe-lsp]
+command = "fipe-lsp"
+args = ["--host", "/path/to/fipe/tests/fixtures/host"]
+config = { host = "/path/to/fipe/tests/fixtures/host" }
