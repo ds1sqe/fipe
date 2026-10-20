@@ -35,6 +35,11 @@ pub struct Session {
     debuggee: Option<Box<Debuggee>>,
     /// Whether `launch` asked to stop at the first stop.
     entry: bool,
+    /// Whether the client counts lines, and columns, from zero
+    /// (`linesStartAt1` / `columnsStartAt1` false); the adapter counts
+    /// from one inside and converts at the wire.
+    lines_from_zero: bool,
+    columns_from_zero: bool,
     /// The messages to send.
     pub out: Outgoing,
 }
@@ -44,18 +49,35 @@ impl Session {
     /// request that resumes the program leaves it running: the loop
     /// calls [`Session::advance`] until it stops.
     pub fn handle(&mut self, request: &Value) -> Control {
-        let command = request["command"].as_str().unwrap_or_default();
-        let arguments = &request["arguments"];
+        if !request.is_object() || request["type"] != "request" {
+            self.malformed("a message the adapter reads is a request object");
+            return Control::Continue;
+        }
+        let Some(command) = request["command"].as_str() else {
+            self.out.respond(
+                request,
+                Err(String::from("a request needs a command")),
+            );
+            return Control::Continue;
+        };
+        let arguments = &self.incoming(command, &request["arguments"]);
         let result = match command {
-            "initialize" => Ok(json!({
-                "supportsConfigurationDoneRequest": true,
-                "supportsBreakpointLocationsRequest": true,
-                "supportsExceptionInfoRequest": true,
-            })),
+            "initialize" => {
+                self.lines_from_zero =
+                    arguments["linesStartAt1"].as_bool() == Some(false);
+                self.columns_from_zero =
+                    arguments["columnsStartAt1"].as_bool() == Some(false);
+                Ok(json!({
+                    "supportsConfigurationDoneRequest": true,
+                    "supportsBreakpointLocationsRequest": true,
+                    "supportsExceptionInfoRequest": true,
+                }))
+            }
             "launch" => match launch(arguments) {
                 Ok(debuggee) => {
                     self.debuggee = Some(Box::new(debuggee));
-                    self.entry = arguments["stopOnEntry"].as_bool() == Some(true);
+                    self.entry =
+                        arguments["stopOnEntry"].as_bool() == Some(true);
                     self.out.respond(request, Ok(Value::Null));
                     self.out.event("initialized", Value::Null);
                     return Control::Continue;
@@ -71,16 +93,78 @@ impl Session {
                     Ok(Value::Null)
                 })
             }
-            "threads" => Ok(json!({ "threads": [{ "id": THREAD, "name": "main" }] })),
+            "threads" => {
+                Ok(json!({ "threads": [{ "id": THREAD, "name": "main" }] }))
+            }
+            "setBreakpoints" | "breakpointLocations" => {
+                self.breakpoints(command, arguments)
+            }
+            "continue" | "next" | "stepIn" | "stepOut" if self.stopped() => {
+                // A Faulted run cannot go on: resuming it ends it.
+                self.out.respond(request, Ok(Value::Null));
+                if let Some(debuggee) = self.debuggee.as_mut() {
+                    debuggee.end(&mut self.out);
+                }
+                return Control::Continue;
+            }
+            "continue" | "next" | "stepIn" | "stepOut" => {
+                self.with(|debuggee| {
+                    debuggee.resume(command)?;
+                    Ok(if command == "continue" {
+                        json!({ "allThreadsContinued": true })
+                    } else {
+                        Value::Null
+                    })
+                })
+            }
+            "pause" => self.with(|debuggee| {
+                if debuggee.running() {
+                    debuggee.pause();
+                    Ok(Value::Null)
+                } else {
+                    Err(String::from("the program is not running"))
+                }
+            }),
+            "stackTrace" | "scopes" | "variables" | "evaluate"
+            | "exceptionInfo" => self.inspect(command, arguments),
+            "disconnect" => {
+                self.out.respond(request, Ok(Value::Null));
+                self.debuggee = None;
+                return Control::Exit;
+            }
+            _ => Err(format!("unsupported: {command}")),
+        };
+        let result = result.map(|mut body| {
+            self.outgoing(command, &mut body);
+            body
+        });
+        self.out.respond(request, result);
+        Control::Continue
+    }
+
+    /// Answer `setBreakpoints` or `breakpointLocations`.
+    fn breakpoints(
+        &mut self,
+        command: &str,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        match command {
             "setBreakpoints" => {
-                let path = PathBuf::from(arguments["source"]["path"].as_str().unwrap_or_default());
-                let requested = arguments["breakpoints"].as_array().cloned().unwrap_or_default();
+                let path = PathBuf::from(
+                    arguments["source"]["path"].as_str().unwrap_or_default(),
+                );
+                let requested = arguments["breakpoints"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
                 self.with(|debuggee| {
                     Ok(json!({ "breakpoints": debuggee.set_breakpoints(&path, &requested) }))
                 })
             }
             "breakpointLocations" => {
-                let path = PathBuf::from(arguments["source"]["path"].as_str().unwrap_or_default());
+                let path = PathBuf::from(
+                    arguments["source"]["path"].as_str().unwrap_or_default(),
+                );
                 let from = number(&arguments["line"]);
                 let to = if arguments["endLine"].is_u64() {
                     number(&arguments["endLine"])
@@ -91,30 +175,31 @@ impl Session {
                     Ok(json!({ "breakpoints": debuggee.locations(&path, from, to) }))
                 })
             }
-            "continue" | "next" | "stepIn" | "stepOut" => self.with(|debuggee| {
-                debuggee.resume(command)?;
-                Ok(if command == "continue" {
-                    json!({ "allThreadsContinued": true })
-                } else {
-                    Value::Null
-                })
-            }),
-            "pause" => self.with(|debuggee| {
-                if debuggee.running() {
-                    debuggee.pause();
-                    Ok(Value::Null)
-                } else {
-                    Err(String::from("the program is not running"))
-                }
-            }),
+            _ => unreachable!("not a breakpoint request: {command}"),
+        }
+    }
+
+    /// Answer a request that reads the stopped run: `stackTrace`,
+    /// `scopes`, `variables`, `evaluate` or `exceptionInfo`.
+    fn inspect(
+        &mut self,
+        command: &str,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        match command {
             "stackTrace" => self.with(|debuggee| {
                 let frames = debuggee.stack();
                 Ok(json!({ "totalFrames": frames.len(), "stackFrames": frames }))
             }),
-            "scopes" => {
-                let frame = number(&arguments["frameId"]);
-                self.with(|debuggee| Ok(json!({ "scopes": debuggee.scopes(frame) })))
-            }
+            "scopes" => frame(arguments).map_or_else(
+                || Err(String::from("scopes needs a frameId")),
+                |frame| {
+                    self.with(|debuggee| {
+                        debuggee.frame(frame)?;
+                        Ok(json!({ "scopes": debuggee.scopes(frame) }))
+                    })
+                },
+            ),
             "variables" => {
                 let reference = arguments["variablesReference"].as_u64().unwrap_or(0);
                 self.with(|debuggee| {
@@ -125,23 +210,82 @@ impl Session {
             }
             "evaluate" => {
                 let expression = arguments["expression"].as_str().unwrap_or_default().to_string();
-                let frame = number(&arguments["frameId"]);
-                self.with(|debuggee| debuggee.evaluate(&expression, frame))
+                let frame = if arguments["frameId"].is_null() {
+                    Some(0)
+                } else {
+                    frame(arguments)
+                };
+                frame.map_or_else(
+                    || Err(String::from("frameId is not a frame")),
+                    |frame| {
+                        self.with(|debuggee| {
+                            debuggee.frame(frame)?;
+                            debuggee.evaluate(&expression, frame)
+                        })
+                    },
+                )
             }
             "exceptionInfo" => self.with(|debuggee| {
                 debuggee
                     .exception()
                     .ok_or_else(|| String::from("the program did not stop on a Fault"))
             }),
-            "disconnect" => {
-                self.out.respond(request, Ok(Value::Null));
-                self.debuggee = None;
-                return Control::Exit;
+            _ => unreachable!("not an inspection: {command}"),
+        }
+    }
+
+    /// Tell the client a frame on the input could not be read; the
+    /// session goes on.
+    pub fn malformed(&mut self, why: &str) {
+        self.out.event(
+            "output",
+            json!({
+                "category": "important",
+                "output": format!("ignored a malformed message: {why}\n"),
+            }),
+        );
+    }
+
+    /// A request's arguments with the client's line and column numbers
+    /// counted from one, as the adapter counts.
+    fn incoming(&self, command: &str, arguments: &Value) -> Value {
+        let mut arguments = arguments.clone();
+        let (lines, columns) = (self.lines_from_zero, self.columns_from_zero);
+        if lines || columns {
+            match command {
+                "setBreakpoints" => {
+                    if let Some(all) = arguments["breakpoints"].as_array_mut() {
+                        for breakpoint in all {
+                            shift(breakpoint, lines, columns, 1);
+                        }
+                    }
+                }
+                "breakpointLocations" => {
+                    shift(&mut arguments, lines, columns, 1);
+                }
+                _ => {}
             }
-            _ => Err(format!("unsupported: {command}")),
+        }
+        arguments
+    }
+
+    /// A response body with line and column numbers counted as the
+    /// client counts.
+    fn outgoing(&self, command: &str, body: &mut Value) {
+        let (lines, columns) = (self.lines_from_zero, self.columns_from_zero);
+        if !(lines || columns) {
+            return;
+        }
+        let key = match command {
+            "setBreakpoints" | "breakpointLocations" => "breakpoints",
+            "stackTrace" => "stackFrames",
+            _ => return,
         };
-        self.out.respond(request, result);
-        Control::Continue
+        if let Some(all) = body[key].as_array_mut() {
+            for item in all {
+                shift(item, lines, columns, -1);
+            }
+        }
     }
 
     /// Run the program on for at most `stops` stops.
@@ -185,6 +329,32 @@ impl Session {
     }
 }
 
+/// Move the line fields (`line`, `endLine`) and column fields
+/// (`column`, `endColumn`) of `value` by `by`, those of each kind only
+/// when the client counts it from zero.
+fn shift(value: &mut Value, lines: bool, columns: bool, by: i64) {
+    for (key, moved) in [
+        ("line", lines),
+        ("endLine", lines),
+        ("column", columns),
+        ("endColumn", columns),
+    ] {
+        if !moved {
+            continue;
+        }
+        if let Some(number) = value[key].as_i64() {
+            value[key] = json!((number + by).max(0));
+        }
+    }
+}
+
+/// A request's `frameId` as a frame index, when it is one.
+fn frame(arguments: &Value) -> Option<usize> {
+    arguments["frameId"]
+        .as_u64()
+        .and_then(|frame| usize::try_from(frame).ok())
+}
+
 fn number(value: &Value) -> usize {
     value
         .as_u64()
@@ -198,6 +368,14 @@ fn number(value: &Value) -> usize {
 /// host call fails), `budget` (units; without one the run is
 /// unbounded) and `stopOnEntry`.
 fn launch(arguments: &Value) -> Result<Debuggee, String> {
+    let budget = match &arguments["budget"] {
+        Value::Null => None,
+        budget => Some(budget.as_u64().ok_or_else(|| {
+            format!(
+                "launch: the budget is a natural number of units, not {budget}"
+            )
+        })?),
+    };
     let path = arguments["program"]
         .as_str()
         .map(PathBuf::from)
@@ -236,7 +414,7 @@ fn launch(arguments: &Value) -> Result<Debuggee, String> {
         fipe::compile::compile(&unit),
         files,
         replay,
-        arguments["budget"].as_u64(),
+        budget,
     ))
 }
 

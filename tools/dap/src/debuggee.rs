@@ -13,7 +13,7 @@ use fipe::{
     embed::{Reply, Request},
     ir::{Kind, Tables},
     mir::Program,
-    value::{structural::show, Value},
+    value::{structural::show, Prelude, Value},
     vm::{Fault, Frame, Machine, Stop},
 };
 use serde_json::{json, Value as Json};
@@ -101,6 +101,8 @@ pub struct Debuggee {
     at_pipes: Vec<Option<usize>>,
     /// The node of the stop the client sees.
     current: Option<usize>,
+    /// How many of the machine's main-line values were sent.
+    sent_lines: usize,
     references: References,
 }
 
@@ -131,6 +133,7 @@ impl Debuggee {
             lines: Vec::new(),
             at_pipes: Vec::new(),
             current: None,
+            sent_lines: 0,
             references: References::default(),
         }
     }
@@ -199,6 +202,12 @@ impl Debuggee {
     }
 
     /// Run on for at most `stops` stops, sending what the client sees.
+    ///
+    /// Output events: `stdout` and `stderr` carry the program's output,
+    /// each top-level line's value by the conformance host's policy
+    /// (`tests/fixtures/host/commands.fipe`); `console` carries the
+    /// trace's lines, each host call with its reply and then the run's
+    /// value or Fault, as `tests/fixtures/traces/README.md` states them.
     pub fn advance(&mut self, stops: usize, out: &mut Outgoing) {
         for _ in 0..stops {
             if !self.running() {
@@ -209,27 +218,28 @@ impl Debuggee {
                 self.stopped("pause", &[], out);
                 return;
             }
-            match self.machine.next_stop() {
+            let stop = self.machine.next_stop();
+            self.send_lines(out);
+            match stop {
                 Stop::Before(node) => self.at(node, None, out),
                 Stop::After(node, value) => self.at(node, Some(value), out),
                 Stop::Request(request) => self.call(&request, out),
                 Stop::Done(Ok(value)) => {
-                    // The run's value, written as the trace's first line
-                    // writes it, so a session can be compared with a run.
                     let line = format!(
                         "value {}\n",
                         show(&value, &self.program.tables.borrow())
                     );
-                    out.event(
-                        "output",
-                        json!({ "category": "console", "output": line }),
-                    );
+                    output(out, "console", &line);
                     out.event("exited", json!({ "exitCode": 0 }));
                     out.event("terminated", Json::Null);
                     self.phase = Phase::Ended;
                 }
                 Stop::Done(Err(fault)) => {
                     let description = self.located(&fault);
+                    // The conformance host writes a Fault to the error
+                    // output; the trace ends with it.
+                    output(out, "console", &format!("{description}\n"));
+                    output(out, "stderr", &format!("{description}\n"));
                     out.event(
                         "stopped",
                         json!({
@@ -246,6 +256,69 @@ impl Debuggee {
         }
     }
 
+    /// Send the values of the top-level lines that ended since the last
+    /// stop: `()` and `Nothing` write nothing, `Just v` and `Ok v` write
+    /// `v` and `Err e` writes `e` to `stderr`, anything else itself.
+    fn send_lines(&mut self, out: &mut Outgoing) {
+        let lines = self.machine.lines();
+        if lines.len() <= self.sent_lines {
+            return;
+        }
+        let tables = self.program.tables.borrow();
+        let prelude = Prelude::new(&tables);
+        for (_, value) in &lines[self.sent_lines..] {
+            let (category, value) = match value {
+                Value::Record(record)
+                    if Some(record.meaning) == prelude.maybe =>
+                {
+                    match record.fields.first() {
+                        Some(value) => ("stdout", value),
+                        None => continue,
+                    }
+                }
+                Value::Record(record)
+                    if Some(record.meaning) == prelude.result =>
+                {
+                    let category = if record.constructor == 0 {
+                        "stdout"
+                    } else {
+                        "stderr"
+                    };
+                    (category, &record.fields[0])
+                }
+                value => ("stdout", value),
+            };
+            if *value != Value::Unit {
+                output(out, category, &format!("{}\n", show(value, &tables)));
+            }
+        }
+        self.sent_lines = lines.len();
+    }
+
+    /// End a run that stopped on a Fault: it cannot go on.
+    pub fn end(&mut self, out: &mut Outgoing) {
+        out.event("exited", json!({ "exitCode": 1 }));
+        out.event("terminated", Json::Null);
+        self.phase = Phase::Ended;
+    }
+
+    /// Whether `frame` is a frame of the stop the client sees.
+    ///
+    /// # Errors
+    /// When it is not.
+    pub fn frame(&self, frame: usize) -> Result<(), String> {
+        let count = if matches!(self.phase, Phase::Faulted(_)) {
+            1
+        } else {
+            self.body_frames().len()
+        };
+        if frame < count {
+            Ok(())
+        } else {
+            Err(format!("no frame {frame}"))
+        }
+    }
+
     /// Answer a host call from the replay and send its trace line.
     fn call(&mut self, request: &Request, out: &mut Outgoing) {
         let tables = self.program.tables.borrow();
@@ -256,10 +329,7 @@ impl Debuggee {
             Err(message) => write!(line, " -> failure {message:?}").unwrap(),
         }
         drop(tables);
-        out.event(
-            "output",
-            json!({ "category": "stdout", "output": format!("{line}\n") }),
-        );
+        output(out, "console", &format!("{line}\n"));
         self.effects.push(line);
         self.machine.answer(Reply::Value(reply));
     }
@@ -936,6 +1006,11 @@ fn count(value: &Json) -> usize {
         .as_u64()
         .and_then(|number| usize::try_from(number).ok())
         .unwrap_or(0)
+}
+
+/// An output event of `category`.
+fn output(out: &mut Outgoing, category: &str, text: &str) {
+    out.event("output", json!({ "category": category, "output": text }));
 }
 
 fn scope(name: &str, reference: u64) -> Json {

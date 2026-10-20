@@ -2,11 +2,10 @@
 //! binary runs.
 use fipe_dap::session::{Control, Session};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+mod common;
 
-fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
+use common::root;
+use std::path::PathBuf;
 
 /// A session with its requests numbered as they are sent.
 struct Client {
@@ -513,16 +512,6 @@ fn an_arm_binding_and_module_values_are_shown_by_name() {
     assert_eq!(client.sent.last().unwrap()["event"], "terminated");
 }
 
-/// The lines of an example's trace fixture.
-fn fixture(name: &str) -> Vec<String> {
-    let path = root().join(format!("tests/fixtures/traces/{name}.txt"));
-    std::fs::read_to_string(path)
-        .unwrap()
-        .lines()
-        .map(|line| format!("{line}\n"))
-        .collect()
-}
-
 #[test]
 fn a_session_stepped_line_by_line_observes_what_a_run_does() {
     for name in [
@@ -577,27 +566,16 @@ fn a_session_stepped_line_by_line_observes_what_a_run_does() {
                 .map(|m| m["body"]["output"].as_str().unwrap().to_string())
                 .collect()
         };
-        let fixture = fixture(name);
-        let calls: Vec<String> = fixture
-            .iter()
-            .filter(|line| line.starts_with("call "))
-            .cloned()
-            .collect();
-        assert_eq!(output("stdout"), calls, "{name}: the host calls");
-        match fault {
-            Some(description) => {
-                assert_eq!(format!("{description}\n"), fixture[0], "{name}");
-                // The conformance host writes a Fault to the error output.
-                let error = fixture.last().unwrap();
-                assert_eq!(
-                    *error,
-                    format!("error {:?}\n", fixture[0]),
-                    "{name}"
-                );
-            }
-            None => {
-                assert_eq!(output("console"), [fixture[0].clone()], "{name}");
-            }
+        let expected = common::expected(name);
+        assert_eq!(output("console"), expected.console, "{name}: the trace");
+        assert_eq!(output("stdout").concat(), expected.success, "{name}");
+        assert_eq!(output("stderr").concat(), expected.error, "{name}");
+        if let Some(description) = fault {
+            assert_eq!(
+                &format!("{description}\n"),
+                expected.console.last().unwrap(),
+                "{name}"
+            );
         }
     }
 }

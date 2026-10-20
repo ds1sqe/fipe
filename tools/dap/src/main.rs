@@ -3,7 +3,7 @@
 //! A running program advances in slices, so a `pause` that arrives
 //! meanwhile is seen between them.
 use fipe_dap::{
-    protocol,
+    protocol::{self, Incoming},
     session::{Control, Session},
 };
 use std::{
@@ -19,8 +19,11 @@ fn main() {
     let (requests, received) = mpsc::channel();
     thread::spawn(move || {
         let mut input = BufReader::new(io::stdin());
-        while let Ok(Some(message)) = protocol::read(&mut input) {
-            if requests.send(message).is_err() {
+        // A malformed frame is handed on too, so the session answers it
+        // and the input goes on; only the end of the input or a failed
+        // read ends the reader.
+        while let Ok(Some(incoming)) = protocol::read(&mut input) {
+            if requests.send(incoming).is_err() {
                 break;
             }
         }
@@ -40,9 +43,14 @@ fn main() {
                 Err(_) => return,
             }
         };
-        let control = request
-            .as_ref()
-            .map_or(Control::Continue, |request| session.handle(request));
+        let control = match &request {
+            Some(Incoming::Message(request)) => session.handle(request),
+            Some(Incoming::Malformed(why)) => {
+                session.malformed(why);
+                Control::Continue
+            }
+            None => Control::Continue,
+        };
         if session.running() {
             session.advance(SLICE);
         }
