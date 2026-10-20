@@ -44,6 +44,8 @@ mod compile_phase;
 mod coverage;
 #[path = "check/outcomes.rs"]
 mod outcomes;
+#[path = "check/words.rs"]
+mod words;
 
 #[test]
 fn a_module_with_a_malformed_line_types_the_rest_and_is_no_unit() {

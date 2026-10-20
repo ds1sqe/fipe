@@ -86,7 +86,7 @@ Recovery resumes at a retained newline that ends a line, at the enclosing
 closer or at EOF; a carried-over newline is not a recovery point. A missing
 comma before a line break inside a list is `CommaBeforeLineBreak`, spanning
 the newline; `|!` in a type is `EitherNot`. Reasons and spans are stable;
-wording is the host's.
+a reason's `Display`, `parse::Expected`'s included, is its words.
 
 Integer forms retain radix and written digit count, excluding underscores
 and the sign or radix prefix; leading zeros count. The syntax literal

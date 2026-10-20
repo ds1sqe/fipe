@@ -73,7 +73,7 @@ impl fmt::Display for Reason {
         match self {
             Self::Lexical(reason) => reason.fmt(f),
             Self::InvalidTokenStream => f.write_str("invalid token stream"),
-            Self::Expected(expected) => write!(f, "expected {expected:?}"),
+            Self::Expected(expected) => write!(f, "expected {expected}"),
             Self::OperatorInArguments => {
                 f.write_str("group an operator expression used as an argument")
             }

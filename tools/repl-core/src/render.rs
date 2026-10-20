@@ -6,9 +6,7 @@ use alloc::{
     string::{String, ToString},
 };
 use fipe::{
-    decl, infer, ir,
-    parse::{self, Expected},
-    resolve,
+    decl, infer, ir, parse, resolve,
     token::{Source, Span},
     value::{structural, Reason, Value},
 };
@@ -22,17 +20,7 @@ pub fn value(value: &Value, tables: &ir::Tables) -> String {
 /// A Fault's reason in words; a refuted entry names its limit and the
 /// value, as the checker's refutation does, the caret giving the place.
 pub fn fault(reason: &Reason, tables: &ir::Tables) -> String {
-    match reason {
-        Reason::Failed { entry, value } => {
-            let entry = &tables.entries[*entry];
-            if matches!(entry.predicate, ir::Predicate::Nonzero { .. }) {
-                format!("division by zero: divisor is {value}")
-            } else {
-                format!("refuted entry against {}: {value}", entry.label)
-            }
-        }
-        other => other.to_string(),
-    }
+    reason.describe(tables)
 }
 
 /// The text a reason's own spans index: the session's accepted lines,
@@ -57,261 +45,30 @@ impl Context<'_> {
 }
 
 pub fn syntax(reason: parse::Reason) -> String {
-    use parse::Reason as R;
-    match reason {
-        R::Expected(expected) => format!("expected {}", thing(expected)),
-        R::Lexical(_)
-        | R::InvalidTokenStream
-        | R::OperatorInArguments
-        | R::ApplicationInOperator
-        | R::ChainedComparison
-        | R::FlagValueMustTouch
-        | R::ArmsNeedGroup
-        | R::MixedArmsAndLines
-        | R::InvalidRestPattern
-        | R::CommaBeforeLineBreak
-        | R::NestingLimit
-        | R::DepthLimit
-        | R::BindingValue
-        | R::UnattachedDoc
-        | R::InnerDocPosition
-        | R::EitherNot => reason.to_string(),
-    }
-}
-
-fn thing(expected: Expected) -> String {
-    match expected {
-        Expected::Expression => "an expression".into(),
-        Expected::Pattern => "a pattern".into(),
-        Expected::Type => "a type".into(),
-        Expected::Name => "a name".into(),
-        Expected::UnqualifiedName => "a name without dots".into(),
-        Expected::NonnegativeInteger => "a non-negative integer".into(),
-        Expected::LineEnd => "the end of the line".into(),
-        Expected::Symbol(symbol) => symbol.to_string(),
-    }
+    reason.to_string()
 }
 
 pub fn resolve(reason: &resolve::Reason, at: &Context) -> String {
-    use resolve::Reason as R;
     match reason {
-        R::DefaultScope => "a default may name earlier spots and module-level names, not an enclosing function’s locals".into(),
-        R::SelfDefault => "a default may not name the binding it belongs to".into(),
-        R::UnknownName => "unknown name".into(),
-        R::NoGate { name } => format!("`{name}` has no test, so it is no gate: annotate the place, `x: {name} = …`, or write `to<{name}>`"),
-        R::UnknownType => "unknown type".into(),
-        R::ImportCycle => "import cycle".into(),
-        R::NoMain => "a used module has no main".into(),
-        R::CaseRule { uppercase: true } => {
-            "a type or constructor name starts uppercase".into()
+        resolve::Reason::Duplicate { first } => {
+            format!("{reason}: first defined at {}", at.site(*first))
         }
-        R::CaseRule { uppercase: false } => {
-            "a binding, field or parameter name starts lowercase".into()
-        }
-        R::Duplicate { first } => {
-            format!("already defined: first defined at {}", at.site(*first))
-        }
-        R::DeclarationForm => {
-            "a declaration form, allowed only in host files".into()
-        }
-        R::SelfOutsideBody => "`Self` outside a type or impl body".into(),
-        R::UnknownModule => "unknown module".into(),
-        R::NotExported => "the module exports no such name".into(),
-        R::UnknownMember => "no such member".into(),
-        R::LimitedImpl => "a limited type has no impl".into(),
-        R::ImplOutsideModule => "impl of a type from another module".into(),
-        R::UnknownField => "the type declares no such field".into(),
-        R::PrivateField { field } => format!("field `{field}` is private"),
-        R::PrivateMember { member } => format!("member `{member}` is private"),
-        R::NotYetChecked { form } => format!("{form} is not yet checked"),
-        R::TimingForm => String::from("a timing form takes exactly one operand; its name is not a value or pattern"),
-        R::NumericName { upper } => {
-            format!("numeric types are uppercase: write `{upper}`")
-        }
+        other => other.to_string(),
     }
 }
 
 pub fn infer(reason: &infer::Reason) -> String {
-    use infer::Reason as R;
-    match reason {
-        R::Mismatch {
-            expected,
-            actual: fipe::types::Type::Array { .. },
-            ..
-        } if matches!(expected, fipe::types::Type::Named { name, .. } if name.origin == fipe::resolve::Origin::Prelude && name.name == "Vec") =>
-        {
-            format!("a bound array cannot enter {expected}; use to<{expected}>")
-        }
-        R::Mismatch {
-            expected, actual, ..
-        } => format!(
-            "expected {}, found {}",
-            expected.beside(actual),
-            actual.beside(expected)
-        ),
-        R::CallReading { style } => match style {
-            fipe::ast::CallStyle::Space => {
-                "written as one tuple argument; the argument-list reading binds"
-                    .into()
-            }
-            fipe::ast::CallStyle::Parenthesized => {
-                "written as an argument list; the tuple reading binds".into()
-            }
-        },
-        R::TypeDepth => "inferred type nesting limit exceeded".into(),
-        R::Occurs => "a type that would contain itself".into(),
-        R::NothingPayload => "Nothing has no payload".into(),
-        R::OutcomeText { family } => {
-            format!("{family} cannot enter a text place; use || or |:")
-        }
-        R::UnknownFamily => "no outcome family is known here".into(),
-        R::ClaimBlock { claim, problem } => format!("claim {claim} {problem}"),
-        R::MissingClaim { ty, claim } => {
-            format!("{ty} does not have a ready claim for {claim}")
-        }
-        R::MissingMember { ty, name } => format!("missing member {ty}.{name}"),
-        R::NoField { ty, .. } => format!("no such field or member on {ty}"),
-        R::Conversion {
-            source,
-            target,
-            candidates,
-        } => {
-            if matches!(
-                target,
-                fipe::types::Type::Var(_) | fipe::types::Type::Rigid(_)
-            ) {
-                return "conversion needs a known target meaning".into();
-            }
-            let choices = if candidates.is_empty() {
-                String::new()
-            } else {
-                // Each candidate is written beside the others and the
-                // two sides, so names of different declarations show
-                // their modules.
-                let context = fipe::types::Type::Tuple(
-                    candidates
-                        .iter()
-                        .chain(source)
-                        .chain([target])
-                        .cloned()
-                        .collect(),
-                );
-                let choices = candidates
-                    .iter()
-                    .map(|candidate| candidate.beside(&context).to_string())
-                    .collect::<alloc::vec::Vec<_>>()
-                    .join(", ");
-                format!("; candidates: {choices}")
-            };
-            match source {
-                Some(source) if !matches!(source, fipe::types::Type::Var(_) | fipe::types::Type::Rigid(_)) => format!("no conversion or member of {target} accepts {source}{choices}"),
-                _ => format!("{target} needs a known argument meaning{choices}"),
-            }
-        }
-        R::ConflictingConversion => {
-            "a conversion for this source meaning is already declared".into()
-        }
-        R::NoCommonMeaning { forms } => {
-            format!("no meaning reads all literal forms: {}", forms.join(", "))
-        }
-        R::NotAFunction => "not a function".into(),
-        R::ExtraArgument => "one argument too many".into(),
-        R::IfWithoutElse => "an `if` without `else` is `()`, so its body may have no value: add an `else`".into(),
-        R::LiteralApplied => "a literal takes no operands".into(),
-        R::PositionalBool => "a Bool spot takes no positional operand: pipe the value in, `value | f`, or write the spot's flag".into(),
-        R::UnknownSpot { name } => format!("no spot named `{name}`"),
-        R::FlagOperand { name } => {
-            format!("flag `{name}` needs an operand: `-{name} value`")
-        }
-        R::DuplicateSupply { name } => {
-            format!("duplicate supply: spot `{name}` is already filled")
-        }
-        R::Spots { problem } => spot_problem(problem),
-        R::DeclarationValue { name, .. } => {
-            format!("declared value `{name}` does not type check")
-        }
-        R::Default { name, cause } => match cause {
-            Some(cause) => format!(
-                "default for spot `{name}` does not meet its type: {}",
-                infer(cause)
-            ),
-            None => format!(
-                "default for spot `{name}` does not meet its type: a name does not resolve"
-            ),
-        },
-        R::NonBoolChaining => {
-            "a chained flag needs only Bool spots and no value".into()
-        }
-        R::FilledSpot => "no open spot to fill".into(),
-        R::OpenSpot => "`|!` on Maybe needs a value, not an open spot".into(),
-        R::NeedsMaybeOrResult => {
-            "`||` and `&&` need Bool, Maybe or Result on their left".into()
-        }
-        R::NeedsOutcome => {
-            "`|:` and `|!` need Maybe, Result or Either on their left".into()
-        }
-        R::NotYetChecked { form } => format!("not yet checked: {form}"),
-        R::Discarded => "a line before the last must be ()".into(),
-        R::MissingField { name } => format!("missing field `{name}`"),
-        R::Limit { message } => message.clone(),
-        R::OutOfRange => "integer out of range for its type".into(),
-        R::NotExact { ty } if integer_meaning(ty) => {
-            "not an integer: a literal at an integer place must be exact".into()
-        }
-        R::NotExact { ty } => {
-            format!("not exact: {ty} cannot hold this literal exactly")
-        }
-        R::NoBracketForm { ty } => format!(
-            "`[:…]` and `[!…]` need a Maybe or Result place; {ty} has no bracket form"
-        ),
-        R::FamilyClash { left, right } => {
-            format!("`||` mixes two outcome families: {left} and {right}")
-        }
-        R::NoPayload { name } => format!("`{name}` takes no payload"),
-        R::MissingPayload { good, ty } => format!(
-            "`[{}]` needs a payload of {ty}",
-            if *good { ':' } else { '!' }
-        ),
-        R::Ambiguous { class } => {
-            format!("ambiguous: `{class}` on an unknown type")
-        }
-        R::ImportCycle => "import cycle".into(),
-        R::PrivateMember { member } => format!("member `{member}` is private"),
-        R::PrivateField { field } => format!("field `{field}` is private"),
-        R::NoConstructor { field } => format!(
-            "no constructor outside the module: private field `{field}` has no default"
-        ),
-    }
-}
-
-/// Whether a type's meaning is `Integer`, through its limits.
-fn integer_meaning(ty: &fipe::types::Type) -> bool {
-    match ty {
-        fipe::types::Type::Limited { meaning, .. } => integer_meaning(meaning),
-        fipe::types::Type::Named { name, .. } => {
-            name.origin == fipe::resolve::Origin::Prelude
-                && name.name == "Integer"
-        }
-        _ => false,
-    }
+    reason.to_string()
 }
 
 /// A host declaration file's reason; `text` is that file.
 pub fn declaration(reason: &decl::Reason, text: &str) -> String {
-    use decl::Reason as R;
     match reason {
-        R::Syntax(reason) => syntax(*reason),
-        R::ClaimBlock { problem } => format!("invalid claim block: {problem}"),
-        R::Spots { problem } => spot_problem(problem),
-        R::UnknownDocSpot { name } => {
-            format!("doc names unknown spot `{name}`")
-        }
-        R::NotDeclaration => "not a declaration or `name = value`".into(),
-        R::Duplicate { first } => {
+        decl::Reason::Duplicate { first } => {
             let (line, col) = Source::new(text).line_col(first.start);
-            format!("already declared: first declared at {line}:{col}")
+            format!("{reason}: first declared at {line}:{col}")
         }
-        R::NotYetChecked { form } => format!("{form} is not yet checked"),
+        other => other.to_string(),
     }
 }
 
@@ -408,57 +165,5 @@ pub fn settled(settled: &fipe::check::Settled, test: Option<&str>) -> String {
 
 /// A compile-time evaluation that refuted its test or Faulted.
 pub fn compile(what: &fipe::check::Evaluated, reason: &Reason) -> String {
-    use fipe::check::Evaluated;
-    match (what, reason) {
-        (
-            Evaluated::Entry {
-                limit,
-                value: Some(value),
-            },
-            Reason::Failed { .. },
-        ) => format!("refuted entry against {limit}: {value}"),
-        (
-            Evaluated::Entry {
-                limit,
-                value: Some(value),
-            },
-            reason,
-        ) => format!(
-            "refuted entry against {limit}: the test Faults on {value}: {reason}"
-        ),
-        (Evaluated::Entry { limit, value: None }, Reason::Budget) => format!(
-            "the compile-time test of {limit} is not settled: \
-             the compile budget is exhausted"
-        ),
-        (Evaluated::Entry { limit, value: None }, reason) => format!(
-            "the value entering {limit} Faults at compile time: {reason}"
-        ),
-        (Evaluated::Literal { meaning }, reason) => {
-            format!("the literal Faults reading {meaning}: {reason}")
-        }
-        (Evaluated::Demand, Reason::Budget) => String::from(
-            "the value demanded at compile time is not ready: \
-             the compile budget is exhausted",
-        ),
-        (Evaluated::Demand, reason) => {
-            format!("the value demanded at compile time Faults: {reason}")
-        }
-        (Evaluated::Sequence { meaning }, reason) => {
-            format!("the sequence of {meaning} Faults on this bracket: {reason}")
-        }
-    }
-}
-
-fn spot_problem(problem: &fipe::decl::SpotProblem) -> String {
-    match problem {
-        fipe::decl::SpotProblem::Duplicate(name) => {
-            format!("spot `{name}` is declared twice")
-        }
-        fipe::decl::SpotProblem::AmbiguousFlag(letter) => {
-            format!("more than one Bool spot starts with `{letter}`")
-        }
-        fipe::decl::SpotProblem::SelfNotLast => {
-            "a supplied member must take `self` last".into()
-        }
-    }
+    what.describe(reason)
 }

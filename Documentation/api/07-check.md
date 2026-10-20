@@ -14,6 +14,12 @@ check::Evaluated = Entry { limit: String, value: Option<String> }
 check::Settled { check: typed::Check, value: String }
 ~~~
 
+Every reason reads in words through `Display`: `resolve::Reason`,
+`infer::Reason`, `decl::Reason` and `decl::SpotProblem`. A duplicate
+says what is duplicated; where the first stands is the renderer's, from
+its span. `Evaluated::describe(reason)` words a compile-time refutation
+or Fault: "refuted entry against Even: 3".
+
 The inputs are parsed modules and loaded declarations, as for resolution
 and inference. The file-loading request loop belongs to `Session`.
 Resolution, inference, limits and coverage precede lowering. An error

@@ -235,7 +235,7 @@ A host call's bytes are not charged.
 
 An `Enter` tests every component its entry's path reaches from the
 value, in order; the first failure is `Reason::Failed { entry, value }`,
-the value in the language's spelling. `Observation` is what every
+which `Reason::describe(tables)` words with the entry's limit. `Observation` is what every
 backend must reproduce from the same unit and replies on a run no budget
 stops; where a budget stops a run, and the units charged, are the VM's
 and not part of it. A driver assembles it from its trace and the bytes
