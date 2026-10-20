@@ -8,11 +8,14 @@ use fipe::{
     lex::lex,
     mir::Program,
     parse::parse,
-    vm::{Machine, Observation, Stop},
+    value::{structural, Prelude, Value},
+    vm::{Fault, Machine, Observation, Stop},
 };
 
 #[path = "host/examples.rs"]
 mod examples;
+#[path = "host/outputs.rs"]
+mod outputs;
 #[path = "host/replies.rs"]
 mod replies;
 #[path = "host/stepping.rs"]
@@ -57,29 +60,31 @@ fn program(source: &str, files: &[(&str, &str)]) -> Program {
 }
 
 /// Run a program under a budget, answering each host call from the
-/// conformance host's replies; the observation and the units charged.
-fn observe(program: &Program, budget: Option<u64>) -> (Observation, u64) {
+/// conformance host and applying its sink policy; the observation and
+/// the units charged. `main` is the program's source, where a Fault in
+/// it is located.
+fn observe(
+    program: &Program,
+    budget: Option<u64>,
+    main: &str,
+) -> (Observation, u64) {
     let mut machine = Machine::new(budget);
+    let mut host = replies::Host::default();
     let mut trace = Vec::new();
     let mut outcome = machine.run(program);
     let result = loop {
         match outcome {
             Outcome::Done(result) => break result,
             Outcome::Request(request) => {
-                let reply = Reply::Value(replies::answer(
-                    &program.tables.borrow(),
-                    &request,
-                ));
+                let reply = Reply::Value(
+                    host.answer(&program.tables.borrow(), &request),
+                );
                 trace.push((request, reply.clone()));
                 outcome = machine.reply(program, reply);
             }
         }
     };
-    let observation = Observation {
-        result,
-        trace,
-        output: Vec::new(),
-    };
+    let observation = finish(program, main, result, trace, host);
     (observation, machine.charged())
 }
 
@@ -88,8 +93,10 @@ fn observe(program: &Program, budget: Option<u64>) -> (Observation, u64) {
 fn observe_stepped(
     program: &Program,
     budget: Option<u64>,
+    main: &str,
 ) -> (Observation, u64, Vec<Stop>) {
     let mut machine = Machine::new(budget);
+    let mut host = replies::Host::default();
     let mut trace = Vec::new();
     let mut stops = Vec::new();
     machine.begin(program);
@@ -99,20 +106,66 @@ fn observe_stepped(
         match stop {
             Stop::Done(result) => break result,
             Stop::Request(request) => {
-                let reply = Reply::Value(replies::answer(
-                    &program.tables.borrow(),
-                    &request,
-                ));
+                let reply = Reply::Value(
+                    host.answer(&program.tables.borrow(), &request),
+                );
                 trace.push((request, reply.clone()));
                 machine.answer(reply);
             }
             Stop::Before(_) | Stop::After(..) => {}
         }
     };
-    let observation = Observation {
+    let observation = finish(program, main, result, trace, host);
+    (observation, machine.charged(), stops)
+}
+
+/// The observation of a finished run under the sink policy: the run's
+/// value written to the success output (an `Err` to the error output),
+/// a Fault, located, to the error output.
+fn finish(
+    program: &Program,
+    main: &str,
+    result: Result<Value, Fault>,
+    trace: Vec<(fipe::embed::Request, Reply)>,
+    host: replies::Host,
+) -> Observation {
+    let tables = program.tables.borrow();
+    let prelude = Prelude::new(&tables);
+    let mut success = host.success;
+    let mut error = Vec::new();
+    // `()` writes nothing, unwrapped or not.
+    let line = |out: &mut Vec<u8>, value: &Value| {
+        if *value != Value::Unit {
+            out.extend(structural::show(value, &tables).bytes());
+            out.push(b'\n');
+        }
+    };
+    match &result {
+        Ok(Value::Record(record)) if Some(record.meaning) == prelude.maybe => {
+            if let Some(value) = record.fields.first() {
+                line(&mut success, value);
+            }
+        }
+        Ok(Value::Record(record)) if Some(record.meaning) == prelude.result => {
+            let out = if record.constructor == 0 {
+                &mut success
+            } else {
+                &mut error
+            };
+            line(out, &record.fields[0]);
+        }
+        Ok(value) => line(&mut success, value),
+        Err(fault) => {
+            let sources = trace::Sources::of(main);
+            error.extend(trace::located(fault, &tables, &sources).bytes());
+            error.push(b'\n');
+        }
+    }
+    drop(tables);
+    Observation {
         result,
         trace,
-        output: Vec::new(),
-    };
-    (observation, machine.charged(), stops)
+        success,
+        error,
+    }
 }

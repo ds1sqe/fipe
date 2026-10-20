@@ -174,7 +174,8 @@ fn replaying_one_script_twice_gives_equal_observations() {
         .reply("commands.find", Ok(prelude(&program).nothing()));
     let first = observe(&program, Some(1 << 20), script.clone());
     assert_eq!(first, observe(&program, Some(1 << 20), script.clone()));
-    assert_eq!(first.output, Vec::<u8>::new());
+    assert_eq!(first.success, Vec::<u8>::new());
+    assert_eq!(first.error, Vec::<u8>::new());
     // Charges are the VM's metering, not an observation: an unbounded
     // run observes the same.
     assert_eq!(first, observe(&program, None, script));

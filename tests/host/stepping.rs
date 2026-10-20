@@ -17,7 +17,7 @@ find PATH |: cat |! log \"no config\" || default_config
 fn pipes(path: &str) -> Vec<(&'static str, String)> {
     let source = OUTCOMES.replace("PATH", path);
     let program = program(&source, &[]);
-    let (_, _, stops) = observe_stepped(&program, None);
+    let (_, _, stops) = observe_stepped(&program, None, &source);
     let tables = program.tables.borrow();
     stops
         .iter()
@@ -63,8 +63,9 @@ fn a_stepped_run_stops_after_each_marked_pipe_on_a_miss() {
 
 #[test]
 fn a_stepped_run_stops_before_each_node_it_runs_and_after_its_writes() {
-    let program = program("f = n => n + 1\nf 41", &[]);
-    let (observation, _, stops) = observe_stepped(&program, None);
+    let source = "f = n => n + 1\nf 41";
+    let program = program(source, &[]);
+    let (observation, _, stops) = observe_stepped(&program, None, source);
     assert_eq!(
         observation.result.map(|value| format!("{value:?}")).ok(),
         Some(String::from("Int(42)"))
@@ -93,8 +94,9 @@ fn a_stepped_run_observes_and_charges_what_a_run_does() {
     for (name, source) in super::examples::EXAMPLES {
         let program =
             program(source, &[("geometry", super::examples::GEOMETRY)]);
-        let (run, charged) = observe(&program, None);
-        let (stepped, stepped_charged, _) = observe_stepped(&program, None);
+        let (run, charged) = observe(&program, None, source);
+        let (stepped, stepped_charged, _) =
+            observe_stepped(&program, None, source);
         assert_eq!(stepped, run, "{name}");
         assert_eq!(stepped_charged, charged, "{name}");
     }
@@ -104,9 +106,9 @@ fn a_stepped_run_observes_and_charges_what_a_run_does() {
 fn a_stepped_run_under_a_budget_faults_where_a_run_does() {
     let source = super::examples::EXAMPLES[0].1;
     let program = program(source, &[("geometry", super::examples::GEOMETRY)]);
-    let (_, charged) = observe(&program, None);
-    let (run, _) = observe(&program, Some(charged / 2));
-    let (stepped, _, _) = observe_stepped(&program, Some(charged / 2));
+    let (_, charged) = observe(&program, None, source);
+    let (run, _) = observe(&program, Some(charged / 2), source);
+    let (stepped, _, _) = observe_stepped(&program, Some(charged / 2), source);
     assert_eq!(stepped, run);
     assert_eq!(
         stepped.result.expect_err("the budget stops it").reason,

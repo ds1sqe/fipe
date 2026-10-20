@@ -2,13 +2,13 @@
 //! result first, a value in the language's spelling or a Fault located
 //! as line:column in the source it names; then each host call with its
 //! arguments, the `with` environment open at the call and the reply, in
-//! order; then the success and error output.
+//! order; then the success and error output, each as one quoted line.
 use fipe::{
     embed::{Reply, Request},
     ir::Tables,
     token::Source,
     value::structural::show,
-    vm::Observation,
+    vm::{Fault, Observation},
 };
 use std::fmt::Write as _;
 
@@ -17,7 +17,16 @@ use std::fmt::Write as _;
 /// the prelude.
 pub struct Sources<'a>(pub Vec<(&'a str, &'a str)>);
 
-impl Sources<'_> {
+impl<'a> Sources<'a> {
+    /// The sources of a program whose own source is `main`, with the
+    /// documentation's `geometry` module.
+    pub fn of(main: &'a str) -> Self {
+        Sources(vec![
+            ("main", main),
+            ("geometry", super::examples::GEOMETRY),
+        ])
+    }
+
     fn text(&self, namespace: &str) -> &str {
         if namespace == "prelude" {
             return fipe::decl::prelude_source();
@@ -50,16 +59,7 @@ pub fn write(
     let mut out = String::new();
     match &observation.result {
         Ok(value) => writeln!(out, "value {}", show(value, tables)),
-        Err(fault) => {
-            let namespace = &tables.namespaces[fault.namespace];
-            let (line, column) =
-                Source::new(sources.text(namespace)).line_col(fault.span.start);
-            writeln!(
-                out,
-                "fault in {namespace} at {line}:{column}: {}",
-                fault.reason
-            )
-        }
+        Err(fault) => writeln!(out, "{}", located(fault, tables, sources)),
     }
     .unwrap();
     for (request, reply) in &observation.trace {
@@ -97,11 +97,20 @@ pub fn write(
         }
         .unwrap();
     }
-    writeln!(
-        out,
-        "output {:?}",
-        String::from_utf8_lossy(&observation.output)
-    )
-    .unwrap();
+    for (label, bytes) in [
+        ("success", &observation.success),
+        ("error", &observation.error),
+    ] {
+        writeln!(out, "{label} {:?}", String::from_utf8_lossy(bytes)).unwrap();
+    }
     out
+}
+
+/// A Fault located in the source its namespace names: `fault in
+/// <namespace> at <line>:<column>: <reason>`.
+pub fn located(fault: &Fault, tables: &Tables, sources: &Sources) -> String {
+    let namespace = &tables.namespaces[fault.namespace];
+    let (line, column) =
+        Source::new(sources.text(namespace)).line_col(fault.span.start);
+    format!("fault in {namespace} at {line}:{column}: {}", fault.reason)
 }

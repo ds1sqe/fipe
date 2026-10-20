@@ -15,4 +15,5 @@ call commands.read ("./notes.md") -> Ok (Entry "notes.md" "./notes.md" 29 60)
 call commands.cat (Entry "notes.md" "./notes.md" 29 60) -> "# Notes\n\nbuy milk\n\ncall home\n"
 call commands.read ("./notes.md") -> Ok (Entry "notes.md" "./notes.md" 29 60)
 call commands.cat (Entry "notes.md" "./notes.md" 29 60) -> "# Notes\n\nbuy milk\n\ncall home\n"
-output ""
+success "3\n"
+error ""

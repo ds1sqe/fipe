@@ -35,9 +35,8 @@ pub const EXAMPLES: &[(&str, &str)] = &[
 /// An example's trace, run once, with no budget.
 fn traced(source: &str) -> String {
     let program = program(source, &[("geometry", GEOMETRY)]);
-    let (observation, _) = observe(&program, None);
-    let sources =
-        trace::Sources(vec![("main", source), ("geometry", GEOMETRY)]);
+    let (observation, _) = observe(&program, None, source);
+    let sources = trace::Sources::of(source);
     let tables = program.tables.borrow();
     trace::write(&observation, &tables, &sources)
 }
@@ -68,12 +67,12 @@ fn each_example_replays_its_trace_byte_for_byte() {
 fn a_smaller_budget_cuts_the_trace_at_the_unpaid_action() {
     let source = EXAMPLES[0].1;
     let program = program(source, &[("geometry", GEOMETRY)]);
-    let (full, charged) = observe(&program, None);
+    let (full, charged) = observe(&program, None, source);
     assert!(full.result.is_ok(), "{:?}", full.result);
     assert!(full.trace.len() > 2);
     // Half the units: the run stops partway, at a Budget Fault located
     // on the action that could not be paid.
-    let (cut, _) = observe(&program, Some(charged / 2));
+    let (cut, _) = observe(&program, Some(charged / 2), source);
     let fault = cut.result.as_ref().expect_err("the budget stops it");
     assert_eq!(fault.reason, Reason::Budget);
     assert!(cut.trace.len() < full.trace.len());
@@ -82,7 +81,7 @@ fn a_smaller_budget_cuts_the_trace_at_the_unpaid_action() {
     assert_eq!(cut.trace[..], full.trace[..cut.trace.len()]);
     // One unit short of the whole run: every call happened, then the
     // run stops before its end.
-    let (short, _) = observe(&program, Some(charged - 1));
+    let (short, _) = observe(&program, Some(charged - 1), source);
     assert_eq!(short.result.as_ref().unwrap_err().reason, Reason::Budget);
     assert!(short.trace.iter().zip(&full.trace).all(|(a, b)| a == b));
     assert!(matches!(full.trace[0].0, Request::Call { .. }));

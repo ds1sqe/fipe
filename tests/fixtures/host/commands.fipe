@@ -1,5 +1,15 @@
 # The conformance host's command namespace: its bare commands, bindings
 # and the types they share. Every name is implemented by the host.
+#
+# Its sink policy, under which the trace fixtures run: `put to bytes`
+# and `append to bytes` with `to` the `out` sink write to the success
+# output; any other sink is a named in-memory file, replaced by `put`,
+# extended by `append` and read by a later `cat`. The run's value is
+# written as its `show` and a newline to the success output, nothing
+# for `()`; `Ok v` and `Just v` write `v`, `Nothing` nothing, and
+# `Err e` writes `show e` and a newline to the error output. A Fault
+# writes its reason, located as namespace and line:column, and a
+# newline to the error output.
 use fs
 
 ## A resource admitted by the host.

@@ -201,8 +201,8 @@ budget(&self) -> Option<u64>
 set_budget(&mut self, budget: Option<u64>)
 withdraw(&mut self, withdrawn: &session::Withdrawn)
 vm::Fault { span: token::Span, namespace: usize, reason: value::Reason }
-vm::Observation { result: Result<Value, Fault>,
-                  trace: Vec<(Request, Reply)>, output: Vec<u8> }
+vm::Observation { result: Result<Value, Fault>, trace: Vec<(Request,
+                  Reply)>, success: Vec<u8>, error: Vec<u8> }
 ~~~
 
 One machine serves a session: its globals are the accepted lines'
@@ -238,8 +238,8 @@ value, in order; the first failure is `Reason::Failed { entry, value }`,
 the value in the language's spelling. `Observation` is what every
 backend must reproduce from the same unit and replies on a run no budget
 stops; where a budget stops a run, and the units charged, are the VM's
-and not part of it. A driver assembles it from its trace, and `output`
-stays empty until the host chapter's output exists.
+and not part of it. A driver assembles it from its trace and the bytes
+its sink policy wrote ([embedding](09-embed.md) §Requests and replies).
 
 ## What follows
 

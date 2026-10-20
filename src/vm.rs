@@ -57,13 +57,14 @@ pub struct Fault {
 /// Every backend must reproduce it from the same unit and host replies
 /// on a run no budget stops (`09-host.md` §Backend equivalence); where
 /// a budget stops a run, and what it charged, are not part of it. A
-/// host driver assembles it; `output` stays empty until the host's
-/// output exists.
+/// host driver assembles it: the success and error output are the
+/// bytes its sink policy wrote.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Observation {
     pub result: Result<Value, Fault>,
     pub trace: Vec<(Request, Reply)>,
-    pub output: Vec<u8>,
+    pub success: Vec<u8>,
+    pub error: Vec<u8>,
 }
 
 /// Where a stepped run stopped ([`Machine::begin`]).

@@ -101,7 +101,8 @@ pub fn observe_charged(
     let observation = Observation {
         result,
         trace,
-        output: Vec::new(),
+        success: Vec::new(),
+        error: Vec::new(),
     };
     (observation, machine.charged())
 }

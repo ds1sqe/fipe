@@ -22,6 +22,9 @@ a returned `Request`; the driver performs it and passes the answer to
 | `File { stem }`: the source of file module `stem`; the driver maps the stem to a path | the text, or `None` when absent |
 | `Call { declaration, arguments, environment }`: a run calls the host declaration `tables.declarations[declaration]` with its arguments in spot order, under the `with` keys (`tables.keys`) and values open, outermost first | `Value(Ok(value))`, or `Value(Err(message))`, which Faults the run with `Host` at the call |
 
+Sink policy is the host's; the conformance host's, under which the
+trace fixtures run, heads `tests/fixtures/host/commands.fipe`.
+
 ## Stepping
 
 ~~~text

@@ -9,4 +9,5 @@ call commands.read ("./x") -> Ok "./x"
 call commands.find ("./x") -> Nothing
 call commands.read ("./cache") -> Ok "./cache"
 call commands.find ("./cache") -> Nothing
-output ""
+success ""
+error ""

@@ -5,4 +5,5 @@ call text.trim ("world") -> "world"
 call text.trim ("name") -> "name"
 call commands.read ("./letters") -> Ok "./letters"
 call commands.put ("./letters", [97, 10, 98, 10, 99]) -> ()
-output ""
+success ""
+error ""

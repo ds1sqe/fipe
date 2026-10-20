@@ -12,4 +12,5 @@ call commands.read ("./listing") with cwd "/tmp" -> Ok "./listing"
 call commands.put ("./listing", [91, 34, 110, 111, 116, 101, 115, 46, 109, 100, 34, 44, 32, 34, 110, 97, 109, 101, 115, 34, 93]) with cwd "/tmp" -> ()
 call commands.read ("./names") with lang "C" -> Ok (Entry "names" "./names" 13 60)
 call commands.cat (Entry "names" "./names" 13 60) with lang "C" -> "zoe\nadam\nmia\n"
-output ""
+success ""
+error ""

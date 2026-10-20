@@ -1416,10 +1416,14 @@ fn a_fault_in_a_host_default_is_located_in_the_declaration_file() {
     let outs = repl.feed(b"a = 1\n\n:host\n");
     host(&mut repl, outs);
     let text = written(repl.feed(b"ls\n\n"));
-    assert!(
-        text.contains("fault at tests/fixtures/host/commands.fipe:39:"),
-        "{text}"
-    );
+    // The line of `ls`'s declaration, whose `path` default Faults.
+    let line = include_str!("../../../tests/fixtures/host/commands.fipe")
+        .lines()
+        .position(|line| line.starts_with("pub ls:"))
+        .unwrap()
+        + 1;
+    let at = format!("fault at tests/fixtures/host/commands.fipe:{line}:");
+    assert!(text.contains(&at), "{text}");
 }
 
 #[test]
