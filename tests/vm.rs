@@ -44,3 +44,5 @@ mod outcomes;
 mod suspend;
 #[path = "vm/text.rs"]
 mod text;
+#[path = "vm/withdraw.rs"]
+mod withdraw;

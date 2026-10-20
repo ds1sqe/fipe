@@ -67,16 +67,16 @@ fn fault_gives_its_message_as_the_reason() {
 }
 
 #[test]
-fn a_value_whose_line_faulted_before_binding_it_faults_where_read() {
+fn a_line_whose_run_faults_is_withdrawn_and_its_name_given_again() {
     let lines = session(&[
         "stop = n => fault \"stop\"",
         "x: Integer = stop 1",
         "y = 2",
+        "x = 3",
         "x + 1",
         "y",
     ]);
     assert_eq!(lines[1], "fault: stop");
-    assert!(lines[3].starts_with("fault: "), "{lines:?}");
-    assert!(lines[3].contains("has no value"), "{lines:?}");
-    assert_eq!(lines[4], "2");
+    assert_eq!(lines[4], "4");
+    assert_eq!(lines[5], "2");
 }

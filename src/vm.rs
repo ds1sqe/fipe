@@ -30,6 +30,7 @@ mod walk;
 use crate::{
     embed::{Outcome, Reply, Request},
     ir, mir,
+    session::Withdrawn,
     token::Span,
     value::{Prelude, Reason, Value},
 };
@@ -157,6 +158,18 @@ impl Machine {
     /// The budget of the runs to come; `None` is unbounded.
     pub const fn set_budget(&mut self, budget: Option<u64>) {
         self.budget = budget;
+    }
+
+    /// Forget what a session line withdrawn after its run Faulted
+    /// added: its values and the module inits it ran, so that giving
+    /// the line again runs them again.
+    pub fn withdraw(&mut self, withdrawn: &Withdrawn) {
+        self.globals.truncate(withdrawn.definitions);
+        self.initialized.truncate(withdrawn.modules);
+        // Both are found per tables length, which the next line may
+        // reach again with other contents.
+        self.natives = None;
+        self.prelude = None;
     }
 
     /// The frames of the run in progress, the innermost last; empty

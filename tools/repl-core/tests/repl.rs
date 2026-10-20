@@ -194,13 +194,17 @@ fn a_vertical_pipeline_is_one_entry() {
     let text = written(repl.feed(
         b"ls -l /var/log\n    | filter (e => e.size > 1)\n    | map .name\n:t\n",
     ));
-    // The line runs and asks the host, which the REPL does not wire yet.
+    // The line runs and asks the host, which the REPL does not wire yet;
+    // its run Faults, so the line is withdrawn.
     assert_eq!(
         text,
         "fault at 1:7: host: no host for commands.read\nls -l /var/log\n      \
-         ^^^^^^^^\nls -l /var/log | filter (e => e.size > 1) | map .name: \
-         Vec<String>\nfipe> "
+         ^^^^^^^^\nno accepted line\nfipe> "
     );
+    let text = written(repl.feed(
+        b"names = _ => ls -l /var/log\n    | filter (e => e.size > 1)\n    | map .name\n:t\n",
+    ));
+    assert!(text.starts_with("names: a -> Vec<String>\n"), "{text}");
 }
 
 #[test]
@@ -380,8 +384,10 @@ fn a_pipeline_typed_line_by_line_is_one_entry() {
     let mut repl = Repl::new();
     let outs = repl.feed(b":host\n");
     host(&mut repl, outs);
+    // Inside a function, so the line stands although the REPL wires no
+    // host for `ls`.
     for line in [
-        "ls -l /var/log\n",
+        "f = _ => ls -l /var/log\n",
         "    | filter (e => e.size > 1_000_000)\n",
         "    | sort -by .size -desc\n",
         "    | take 10\n",
@@ -390,7 +396,7 @@ fn a_pipeline_typed_line_by_line_is_one_entry() {
         assert_eq!(written(repl.feed(line.as_bytes())), "....> ", "{line}");
     }
     let text = written(repl.feed(b":t\n"));
-    assert!(text.ends_with(": Vec<String>\nfipe> "), "{text}");
+    assert!(text.starts_with("f: a -> Vec<String>\n"), "{text}");
     assert_eq!(repl.feed(b"x = 1\n"), [Out::Write(b"....> ".to_vec())]);
     let text = written(repl.feed(b":r ls\n"));
     assert_eq!(text.matches("ls: value").count(), 1, "{text}");
@@ -882,7 +888,9 @@ fn timing_and_holding_facts_are_visible_on_both_driver_paths() {
     let mut repl = Repl::new();
     let outs = repl.feed(b":host\n");
     host(&mut repl, outs);
-    let text = written(repl.feed(b"use cli config\ntype Port: Integer where 0 < self, self <= config.max_port\nport: Port = cli.port\n:t port\n:checks port\nx = Compile (2 + 3)\n:t x\nrgb = cli.rgb\n:t rgb\n"));
+    // A line reading the host Faults, since the REPL wires none, and is
+    // withdrawn: `:t` on the line itself shows its facts.
+    let text = written(repl.feed(b"use cli config\ntype Port: Integer where 0 < self, self <= config.max_port\n:t port: Port = cli.port\nport: Port = ([8080] | head)\n:checks port\nx = Compile (2 + 3)\n:t x\n:t rgb = cli.rgb\n"));
     assert!(text.contains("known at init"), "{text}");
     assert!(text.contains("init, once:"), "{text}");
     assert!(text.contains("against Port: 0 < self"), "{text}");
@@ -1170,7 +1178,8 @@ fn a_fault_names_its_line_and_column() {
     );
     let text = written(repl.feed(b"f = n => 10 / n\n\nf 0\n\n"));
     assert!(
-        text.contains("fault at line 2, 1:15: division by zero: divisor is 0"),
+        // The faulted first line was withdrawn, so `f` stands on line 1.
+        text.contains("fault at line 1, 1:15: division by zero: divisor is 0"),
         "{text}"
     );
 }
@@ -1305,15 +1314,48 @@ impl Vec2: Zero { zero = Self 0.0 0.0 }\n\n";
 }
 
 #[test]
-fn a_name_whose_line_faulted_first_has_no_value_when_read() {
+fn a_load_whose_module_faults_is_withdrawn_and_asks_again() {
+    let mut repl = Repl::new();
+    assert_eq!(repl.feed(b":load m\n"), [Out::File("m.fipe".into())]);
+    let text = written(repl.file("m.fipe", Some("pub a = (1.0 / 0.0)\n")));
+    assert!(text.contains("the result is not finite"), "{text}");
+    let text = written(repl.feed(b"m.a\n\n"));
+    assert!(text.starts_with("1:1: unknown name"), "{text}");
+    assert_eq!(repl.feed(b":load m\n"), [Out::File("m.fipe".into())]);
+    assert_eq!(
+        written(repl.file("m.fipe", Some("pub a = 2.5\n"))),
+        "fipe> "
+    );
+    assert_eq!(written(repl.feed(b"m.a\n\n")), "2.5\nfipe> ");
+}
+
+#[test]
+fn a_withdrawn_load_leaves_its_path_free() {
+    let mut repl = Repl::new();
+    let outs = repl.feed(b":load a/m\n");
+    assert_eq!(outs, [Out::File("a/m.fipe".into())]);
+    let text = written(repl.file("a/m.fipe", Some("pub a = (1.0 / 0.0)\n")));
+    assert!(text.contains("the result is not finite"), "{text}");
+    let outs = repl.feed(b":load b/m\n");
+    assert_eq!(outs, [Out::File("b/m.fipe".into())]);
+    let text = written(repl.file("b/m.fipe", Some("pub a = 2.5\n")));
+    assert_eq!(text, "fipe> ");
+    assert_eq!(written(repl.feed(b"m.a\n\n")), "2.5\nfipe> ");
+}
+
+#[test]
+fn a_line_whose_run_faults_is_withdrawn() {
     let mut repl = Repl::new();
     let text = written(
         repl.feed(b"stop = n => fault \"stop\"\n\nx: Integer = stop 1\n\n"),
     );
     assert!(text.contains("stop"), "{text}");
-    let text = written(repl.feed(b"x + 1\n\n"));
-    assert!(
-        text.contains("x has no value: its line ended before binding it"),
-        "{text}"
+    assert_eq!(
+        written(repl.feed(b"x + 1\n\n")),
+        "1:1: unknown name\nx + 1\n^\nfipe> "
     );
+    assert_eq!(written(repl.feed(b"x = 1\n\nx + 1\n\n")), "2\nfipe> ");
+    // `:t` reads the last line that stood.
+    let text = written(repl.feed(b"y = (1.0 / 0.0)\n\n:t\n\n"));
+    assert!(text.contains("x + 1: Integer\n"), "{text}");
 }

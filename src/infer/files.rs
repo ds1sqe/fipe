@@ -98,6 +98,17 @@ impl FileCache {
         });
     }
 
+    /// Drop every declared expression and value whose origin is gone:
+    /// a withdrawn line's, or a file it loaded.
+    pub fn forget(&self, gone: impl Fn(&crate::resolve::Origin) -> bool) {
+        self.expressions
+            .borrow_mut()
+            .retain(|(origin, _), _| !gone(origin));
+        self.values
+            .borrow_mut()
+            .retain(|(origin, _), _| !gone(origin));
+    }
+
     /// A copy of what `end_unit` keeps.
     #[must_use]
     pub fn inherit(&self) -> Self {

@@ -49,7 +49,8 @@ pub fn shown(source: &str) -> String {
 }
 
 /// Lines accepted one by one through a session, each run on the one
-/// machine: each line's value or Fault, rendered.
+/// machine, a line whose run Faults withdrawn: each line's value or
+/// Fault, rendered.
 pub fn session(lines: &[&str]) -> Vec<String> {
     let mut session = Session::new(Declarations::new());
     let mut machine = Machine::new(Some(BUDGET));
@@ -68,7 +69,12 @@ pub fn session(lines: &[&str]) -> Vec<String> {
                 Outcome::Done(Ok(value)) => {
                     structural::show(&value, &program.tables.borrow())
                 }
-                Outcome::Done(Err(fault)) => format!("fault: {}", fault.reason),
+                Outcome::Done(Err(fault)) => {
+                    let line = report.accepted.expect("an accepted line");
+                    let withdrawn = session.withdraw(line).expect("the last");
+                    machine.withdraw(&withdrawn);
+                    format!("fault: {}", fault.reason)
+                }
                 Outcome::Request(request) => panic!("{line}: {request:?}"),
             }
         })

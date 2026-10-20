@@ -126,11 +126,6 @@ pub enum Reason {
     Cast,
     /// A block coverage excluded was reached: a crate defect.
     Unreachable,
-    /// A session line read a value definition whose own line's run
-    /// ended before binding it.
-    Unbound {
-        definition: usize,
-    },
     Host(String),
     /// The language's `fault`.
     Message(String),
@@ -148,9 +143,6 @@ impl fmt::Display for Reason {
             }
             Self::Cast => f.write_str("the cast failed"),
             Self::Unreachable => f.write_str("an excluded block was reached"),
-            Self::Unbound { definition } => {
-                write!(f, "definition {definition} has no value: its line ended before binding it")
-            }
             Self::Host(message) => write!(f, "host: {message}"),
             Self::Message(message) => f.write_str(message),
         }

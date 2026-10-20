@@ -72,6 +72,21 @@ pub struct Mark {
     pub(super) home: Option<Origin>,
 }
 
+/// A session line's mark and the writes it made to what existed before
+/// it: what undoes the line.
+#[derive(Clone, Debug)]
+pub struct Journal {
+    pub(super) mark: Mark,
+    pub(super) undos: Vec<Undo>,
+}
+
+impl Journal {
+    /// How many value definitions and modules stood before the line.
+    pub const fn before(&self) -> (usize, usize) {
+        (self.mark.definitions, self.mark.modules)
+    }
+}
+
 /// A write a session line made to something that existed before it,
 /// with what was there.
 #[derive(Clone, Debug)]
@@ -113,12 +128,25 @@ impl Index {
             home: self.home.clone(),
         };
         drop(tables);
-        self.journal = Some((mark, Vec::new()));
+        self.journal = Some(Journal {
+            mark,
+            undos: Vec::new(),
+        });
     }
 
-    /// Keep the line: the journal is dropped.
-    pub fn commit(&mut self) {
-        self.journal = None;
+    /// Keep the line. Its journal is returned: given back to `withdraw`
+    /// before another line is kept, it undoes the line.
+    ///
+    /// # Panics
+    /// If no line was begun.
+    pub const fn commit(&mut self) -> Journal {
+        self.journal.take().expect("a line was begun")
+    }
+
+    /// Undo a kept line, given its journal, while no line kept after it
+    /// stands.
+    pub fn withdraw(&mut self, journal: Journal) {
+        self.undo(journal);
     }
 
     /// Journal a write, when a line may be refused.
@@ -126,11 +154,11 @@ impl Index {
         &mut self,
         undo: impl FnOnce(&Self, &Mark) -> Option<Undo>,
     ) {
-        let Some((mark, _)) = &self.journal else {
+        let Some(Journal { mark, .. }) = &self.journal else {
             return;
         };
         if let Some(undo) = undo(self, mark) {
-            if let Some((_, undos)) = &mut self.journal {
+            if let Some(Journal { undos, .. }) = &mut self.journal {
                 undos.push(undo);
             }
         }
@@ -145,12 +173,16 @@ impl Index {
         });
     }
 
-    /// Undo the line begun last: every journaled write in reverse, then
-    /// every table and collection back to its mark.
+    /// Undo the line begun last.
     pub fn rollback(&mut self) {
-        let Some((mark, undos)) = self.journal.take() else {
-            return;
-        };
+        if let Some(journal) = self.journal.take() {
+            self.undo(journal);
+        }
+    }
+
+    /// Every journaled write in reverse, then every table and collection
+    /// back to its mark.
+    fn undo(&mut self, Journal { mark, undos }: Journal) {
         let line = self.home.clone();
         {
             let mut tables = self.tables.borrow_mut();

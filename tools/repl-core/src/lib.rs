@@ -84,6 +84,9 @@ pub struct Repl {
     host_texts: Vec<String>,
     /// Paths `:load` chose for module names; others are `<name>.fipe`.
     paths: Vec<(String, String)>,
+    /// How many file texts, and which paths, stood before the line in
+    /// progress: what a withdrawn line leaves.
+    before: (usize, Vec<(String, String)>),
     /// Whether the last output was a prompt, which exit ends with LF.
     prompted: bool,
     /// The last accepted line, for `:t` and `:r`.
@@ -157,6 +160,7 @@ impl Repl {
             files: Vec::new(),
             host_texts: Vec::new(),
             paths: Vec::new(),
+            before: (0, Vec::new()),
             prompted: false,
             last: None,
             parsed: None,
@@ -497,6 +501,7 @@ impl Repl {
             let text = format!("{file}: already loaded as `{name}`\n");
             return out.write(text.as_bytes());
         }
+        self.before = (self.files.len(), self.paths.clone());
         if name != file {
             out.write(format!("{file} as {name}\n").as_bytes());
         }
@@ -513,6 +518,10 @@ impl Repl {
     }
 
     fn start(&mut self, text: &str, mode: Mode, out: &mut Outs) {
+        // `load` noted what stood before it changed `paths`.
+        if matches!(mode, Mode::Accept) {
+            self.before = (self.files.len(), self.paths.clone());
+        }
         let outcome = match mode {
             Mode::Accept | Mode::Load => self.session.line(text),
             Mode::Resolve | Mode::Types | Mode::Ir | Mode::Mir => {
@@ -563,8 +572,9 @@ impl Repl {
         }
         match mode {
             Mode::Accept | Mode::Load => {
-                if report.diagnostics.iter().all(from_file) {
-                    self.execute(&report, &text, out);
+                if report.diagnostics.iter().all(from_file)
+                    && self.execute(&report, &text, out)
+                {
                     self.last = Some((report, text));
                 }
             }
@@ -576,9 +586,12 @@ impl Repl {
     }
 
     /// Run an accepted line on the machine: its value in the language's
-    /// spelling, nothing for `()`, or the Fault where it happened.
-    fn execute(&mut self, report: &Report, text: &str, out: &mut Outs) {
-        let Some(unit) = &report.unit else { return };
+    /// spelling, nothing for `()`, or the Fault where it happened, after
+    /// which the line is withdrawn. Whether the line stands.
+    fn execute(&mut self, report: &Report, text: &str, out: &mut Outs) -> bool {
+        let Some(unit) = &report.unit else {
+            return true;
+        };
         let program = fipe::compile::compile(unit);
         let mut outcome = self.machine.run(&program);
         // No host is wired yet: each host call fails, naming its
@@ -597,19 +610,29 @@ impl Repl {
             };
             outcome = self.machine.reply(&program, Reply::Value(Err(message)));
         }
-        if self.replaying {
-            return;
-        }
         match outcome {
-            Outcome::Done(Ok(Value::Unit)) => (),
             Outcome::Done(Ok(value)) => {
-                let shown = render::value(&value, &program.tables.borrow());
-                out.write(format!("{}\n", visible(&shown)).as_bytes());
+                if !self.replaying && !matches!(value, Value::Unit) {
+                    let shown = render::value(&value, &program.tables.borrow());
+                    out.write(format!("{}\n", visible(&shown)).as_bytes());
+                }
+                true
             }
             Outcome::Done(Err(fault)) => {
-                let reason =
-                    render::fault(&fault.reason, &program.tables.borrow());
-                self.fault(&fault, &reason, report.offset, text, out);
+                if !self.replaying {
+                    let reason =
+                        render::fault(&fault.reason, &program.tables.borrow());
+                    self.fault(&fault, &reason, report.offset, text, out);
+                }
+                if let Some(withdrawn) =
+                    report.accepted.and_then(|line| self.session.withdraw(line))
+                {
+                    self.machine.withdraw(&withdrawn);
+                    let (files, paths) = core::mem::take(&mut self.before);
+                    self.files.truncate(files);
+                    self.paths = paths;
+                }
+                false
             }
             Outcome::Request(_) => unreachable!("every request was answered"),
         }
@@ -763,6 +786,7 @@ impl Repl {
 
     /// Accept a line again, answering its `use` requests from the cache.
     fn replay(&mut self, line: &str) -> Report {
+        self.before = (self.files.len(), self.paths.clone());
         let mut outcome = self.session.line(line);
         loop {
             match outcome {

@@ -12,7 +12,7 @@ use crate::{
     resolve::{Definition, Origin, Resolved, Target},
     token::Span,
     typed::Typed,
-    types::Subst,
+    types::{Subst, Type},
 };
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
@@ -71,13 +71,15 @@ impl Frame {
         }
     }
 
-    /// Freeze a checked line as the next accepted one.
+    /// Freeze a checked line as the next accepted one. What it replaced
+    /// is returned: given back to `withdraw` while it is the last line,
+    /// it takes the line back.
     pub fn accept(
         &mut self,
         module: Module,
         resolved: Resolved,
         typed: &Typed,
-    ) {
+    ) -> Undo {
         let index = self.lines.len();
         let mut delta = delta(index, &module, &resolved, typed);
         delta.weak = rebase_weak(&typed.weak, index);
@@ -85,7 +87,7 @@ impl Frame {
         for (_, known) in &mut delta.facts {
             known.rehome(&Origin::Line(index));
         }
-        self.add(index, &delta);
+        let undo = self.add(index, delta);
         let mut typed = typed.clone();
         for (_, known) in &mut typed.facts {
             known.rehome(&Origin::Line(index));
@@ -97,19 +99,116 @@ impl Frame {
             resolved,
             typed,
         });
+        undo
     }
 
-    fn add(&mut self, index: usize, delta: &Delta) {
-        self.values.extend(delta.values.iter().cloned());
-        self.types.extend(delta.types.iter().cloned());
-        self.locals.extend(delta.locals.iter().cloned());
-        self.facts.extend(delta.facts.iter().cloned());
+    /// Take back the last accepted line, given what its `accept`
+    /// returned.
+    pub fn withdraw(&mut self, undo: Undo) {
+        self.lines.pop();
+        restore(&mut self.values, undo.values);
+        restore(&mut self.types, undo.types);
+        restore(&mut self.locals, undo.locals);
+        restore(&mut self.facts, undo.facts);
+        restore(&mut self.members, undo.members);
+        restore(&mut self.constructors, undo.constructors);
+        for owner in undo.impls.iter().rev() {
+            if let Some(lines) = self.impls.get_mut(owner) {
+                lines.pop();
+                if lines.is_empty() {
+                    self.impls.remove(owner);
+                }
+            }
+        }
+        let mut bindings = self.weak.bindings().to_vec();
+        bindings.resize(undo.weak.count, None);
+        for (index, old) in undo.weak.changed {
+            bindings[index] = old;
+        }
+        self.weak = Subst::from_bindings(bindings);
+    }
+
+    fn add(&mut self, index: usize, delta: Delta) -> Undo {
         for owner in &delta.impls {
             self.impls.entry(owner.clone()).or_default().push(index);
         }
-        self.members.extend(delta.members.iter().cloned());
-        self.constructors.extend(delta.constructors.iter().cloned());
-        self.weak = delta.weak.clone();
+        Undo {
+            values: insert(&mut self.values, delta.values),
+            types: insert(&mut self.types, delta.types),
+            locals: insert(&mut self.locals, delta.locals),
+            facts: insert(&mut self.facts, delta.facts),
+            impls: delta.impls,
+            members: insert(&mut self.members, delta.members),
+            constructors: insert(&mut self.constructors, delta.constructors),
+            weak: weak_undo(
+                &core::mem::replace(&mut self.weak, delta.weak),
+                &self.weak,
+            ),
+        }
+    }
+}
+
+/// What an accepted line replaced in the frame: each key it wrote with
+/// the value before, in writing order.
+#[derive(Clone, Debug)]
+pub struct Undo {
+    values: Vec<(String, Option<Target>)>,
+    types: Vec<(String, Option<Target>)>,
+    locals: Vec<(Site, Option<Local>)>,
+    facts: Vec<(Site, Option<crate::limits::known::Known>)>,
+    impls: Vec<Owner>,
+    members: Vec<((Owner, String), Option<Site>)>,
+    constructors: Vec<(Owner, Option<Site>)>,
+    weak: WeakUndo,
+}
+
+/// What a line changed in the weak variables, which every line carries
+/// in full: how many there were, and each of those it solved with its
+/// value before.
+#[derive(Clone, Debug)]
+struct WeakUndo {
+    count: usize,
+    changed: Vec<(usize, Option<Type>)>,
+}
+
+fn weak_undo(before: &Subst, after: &Subst) -> WeakUndo {
+    let (before, after) = (before.bindings(), after.bindings());
+    WeakUndo {
+        count: before.len(),
+        changed: before
+            .iter()
+            .enumerate()
+            .filter(|(index, old)| after.get(*index) != Some(*old))
+            .map(|(index, old)| (index, old.clone()))
+            .collect(),
+    }
+}
+
+/// Write each entry, returning what each key held before.
+fn insert<K: Ord + Clone, V>(
+    map: &mut BTreeMap<K, V>,
+    entries: Vec<(K, V)>,
+) -> Vec<(K, Option<V>)> {
+    entries
+        .into_iter()
+        .map(|(key, value)| {
+            let old = map.insert(key.clone(), value);
+            (key, old)
+        })
+        .collect()
+}
+
+/// Put back what `insert` replaced, the last write first.
+fn restore<K: Ord, V>(map: &mut BTreeMap<K, V>, entries: Vec<(K, Option<V>)>) {
+    for (key, old) in entries.into_iter().rev() {
+        match old {
+            Some(old) => {
+                map.insert(key, old);
+            }
+            None => {
+                map.remove(&key);
+            }
+        }
     }
 }
 

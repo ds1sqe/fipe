@@ -7,6 +7,7 @@ mod expressions;
 mod gates;
 mod patterns;
 mod session;
+pub use session::Journal;
 
 use crate::{
     ir,
@@ -42,7 +43,7 @@ pub struct Index {
     source_modules: BTreeMap<Origin, Rc<crate::ast::Module>>,
     /// While a session line may still be refused: its mark and the
     /// writes it made to what existed before it.
-    journal: Option<(session::Mark, Vec<session::Undo>)>,
+    journal: Option<session::Journal>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

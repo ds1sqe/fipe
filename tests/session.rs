@@ -1136,3 +1136,45 @@ fn a_default_names_an_earlier_line() {
     ok(&mut session, "g = (n = (id 1)) => n");
     assert_eq!(query(&mut session, "y = g"), "Integer");
 }
+
+#[test]
+fn only_the_last_accepted_line_can_be_withdrawn() {
+    let mut session = Session::new(host());
+    let first = ok(&mut session, "a = 1").accepted.unwrap();
+    let second = ok(&mut session, "b = 2").accepted.unwrap();
+    assert_eq!(session.withdraw(first), None, "a later line was accepted");
+    assert!(session.withdraw(second).is_some());
+    assert_eq!(session.withdraw(second), None, "already withdrawn");
+    assert_eq!(session.withdraw(first), None, "never the last again");
+    assert_eq!(session.lines().collect::<Vec<_>>(), ["a = 1"]);
+    // A new line takes the withdrawn line's place, not its token.
+    let third = ok(&mut session, "c = 3").accepted.unwrap();
+    assert_ne!(third, second);
+    assert_eq!(session.withdraw(second), None);
+}
+
+#[test]
+fn a_refused_line_or_a_query_keeps_the_last_line_withdrawable() {
+    let mut session = Session::new(host());
+    let line = ok(&mut session, "a = 1").accepted.unwrap();
+    let refused = done(session.line("a + \"x\""));
+    assert_ne!(refused.diagnostics, []);
+    assert_eq!(refused.accepted, None);
+    assert_eq!(query(&mut session, "z = a"), "Integer");
+    assert!(session.withdraw(line).is_some());
+    assert_eq!(session.source(), "");
+    assert_eq!(unknown_name(&done(session.line("a"))), [span(0, 1)]);
+}
+
+#[test]
+#[should_panic(expected = "no line awaits a reply")]
+fn withdrawing_abandons_a_line_awaiting_a_reply() {
+    let mut session = Session::new(host());
+    let line = ok(&mut session, "a = 1").accepted.unwrap();
+    assert!(matches!(
+        session.line("use missing"),
+        Outcome::Request(Request::File { .. })
+    ));
+    assert!(session.withdraw(line).is_some());
+    let _ = session.reply(Reply::File(None));
+}

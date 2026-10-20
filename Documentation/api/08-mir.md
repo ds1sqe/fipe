@@ -199,6 +199,7 @@ reply(&mut self, program: &mir::Program, reply: Reply)
 charged(&self) -> u64
 budget(&self) -> Option<u64>
 set_budget(&mut self, budget: Option<u64>)
+withdraw(&mut self, withdrawn: &session::Withdrawn)
 vm::Fault { span: token::Span, reason: value::Reason }
 vm::Observation { result: Result<Value, Fault>,
                   trace: Vec<(Request, Reply)>, output: Vec<u8> }
@@ -212,10 +213,10 @@ returns `Request::Call` with the arguments in spot order and the `with`
 environment open at the call; `reply` with the same program continues
 it, a value going where the call wanted it and a failure Faulting
 `Host` at the call. A Fault ends the run where it happens; the host's
-prior effects stand. A line whose run ended before it bound a name
-leaves that global without a value, and a later line that reads it
-Faults `Unbound` there: the name's body is not run again, which would
-repeat the earlier line's effects.
+prior effects stand. A session withdraws a line whose run Faults
+([embedding](09-embed.md) §Session); `withdraw` then forgets the line's
+globals and module inits, so giving the line again reruns them, effects
+included, and every global a run reads has a value or a body.
 
 The budget is per run, `None` for an unbounded one; `charged` reports
 the units of the run in progress or of the last one, bounded or not. A

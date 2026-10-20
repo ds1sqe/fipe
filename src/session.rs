@@ -47,6 +47,40 @@ pub struct Session {
     /// every later line: a declaration module, an accepted line or a
     /// loaded file never changes within a session.
     declared: infer::files::FileCache,
+    /// How many lines the session has accepted, withdrawn ones included:
+    /// the serial of the next [`Accepted`].
+    accepted: u64,
+    /// What undoes the last accepted line, until another is accepted or
+    /// it is withdrawn.
+    last: Option<Last>,
+}
+
+/// A line the session accepted, which the host withdraws with
+/// [`Session::withdraw`] when its run Faults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Accepted {
+    serial: u64,
+}
+
+/// What a withdrawn line had added to the tables: the values and module
+/// inits a machine forgets with [`crate::vm::Machine::withdraw`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Withdrawn {
+    pub(crate) definitions: usize,
+    pub(crate) modules: usize,
+}
+
+/// The last accepted line's undo.
+#[derive(Clone, Debug)]
+struct Last {
+    serial: u64,
+    frame: crate::frame::Undo,
+    /// The index's journal; `None` when the line had no unit.
+    journal: Option<crate::check::lower::Journal>,
+    /// The files the line loaded.
+    loaded: Vec<String>,
+    /// The absent stems before the line.
+    absent: Vec<String>,
 }
 
 impl Clone for Session {
@@ -65,6 +99,8 @@ impl Clone for Session {
             index,
             settled: self.settled.clone(),
             declared: self.declared.inherit(),
+            accepted: self.accepted,
+            last: self.last.clone(),
         }
     }
 }
@@ -82,6 +118,8 @@ struct Pending {
     errors: Vec<Diagnostic>,
     /// Stems of the files this line loaded, checked once it resolves.
     loaded: Vec<String>,
+    /// The session's absent stems when the line began.
+    absent_before: Vec<String>,
 }
 
 /// What one line produced.
@@ -107,6 +145,8 @@ pub struct Report {
     pub settled: Vec<crate::check::Settled>,
     /// Indexed backend input, present only for a diagnostic-free line.
     pub unit: Option<crate::ir::Unit>,
+    /// Present when the line was accepted.
+    pub accepted: Option<Accepted>,
 }
 
 impl Report {
@@ -130,6 +170,7 @@ impl Report {
             checks: Vec::new(),
             settled: Vec::new(),
             unit: None,
+            accepted: None,
         }
     }
 
@@ -178,6 +219,8 @@ impl Session {
             index: None,
             settled: Vec::new(),
             declared: infer::files::FileCache::new(),
+            accepted: 0,
+            last: None,
         }
     }
 
@@ -315,6 +358,41 @@ impl Session {
         self.start(text, true)
     }
 
+    /// Take back the line accepted last, after its run Faulted: the
+    /// session is then as if the line had not been given. `None`, and no
+    /// change, when another line was accepted after it or it was already
+    /// withdrawn. What it returns tells a machine which values to forget.
+    pub fn withdraw(&mut self, line: Accepted) -> Option<Withdrawn> {
+        let last = self.last.take_if(|last| last.serial == line.serial)?;
+        self.pending = None;
+        self.frame.withdraw(last.frame);
+        if let Some((_, start)) = self.lines.pop() {
+            self.source.truncate(start);
+        }
+        self.settled.pop();
+        self.files.retain(|(stem, _)| !last.loaded.contains(stem));
+        self.absent = last.absent;
+        let line = resolve::Origin::Line(self.lines.len());
+        self.declared.forget(|origin| {
+            *origin == line
+                || matches!(origin, resolve::Origin::File(stem)
+                    if last.loaded.contains(stem))
+        });
+        // A line with no unit was never emitted, so nothing ran.
+        let (definitions, modules) = match (last.journal, self.index.as_mut()) {
+            (Some(journal), Some(index)) => {
+                let before = journal.before();
+                index.withdraw(journal);
+                before
+            }
+            _ => (usize::MAX, usize::MAX),
+        };
+        Some(Withdrawn {
+            definitions,
+            modules,
+        })
+    }
+
     /// Check a line without accepting it. An expression line is
     /// generalized, not defaulted: its scheme is the line's
     /// [`Typed::binding`].
@@ -366,6 +444,7 @@ impl Session {
             absent: Vec::new(),
             errors: Vec::new(),
             loaded: Vec::new(),
+            absent_before: self.absent.clone(),
         })
     }
 
@@ -384,7 +463,7 @@ impl Session {
         }
         self.declared.end_unit();
         let cache = &self.declared;
-        let mut diagnostics = pending.errors;
+        let mut diagnostics = core::mem::take(&mut pending.errors);
         for stem in &pending.loaded {
             diagnostics.extend(crate::check::file_errors(
                 stem,
@@ -413,6 +492,7 @@ impl Session {
             file.resolve_errors.is_empty() && file.type_errors.is_empty()
         });
         let mut settled = Vec::new();
+        let mut journal = None;
         let unit = if diagnostics.is_empty() && files_valid {
             if let (Some(resolved), Some(typed)) = (&resolved, &mut typed) {
                 match self.lower(
@@ -422,8 +502,9 @@ impl Session {
                     offset,
                     pending.accept,
                 ) {
-                    Ok((unit, proved)) => {
+                    Ok((unit, proved, kept)) => {
                         settled = proved;
+                        journal = kept;
                         Some(unit)
                     }
                     Err(errors) => {
@@ -440,12 +521,15 @@ impl Session {
         let checks = typed
             .as_ref()
             .map_or_else(Vec::new, |typed| typed.checks.clone());
-        if pending.accept && diagnostics.len() == files {
-            if let (Some(resolved), Some(typed)) = (&resolved, &typed) {
-                self.accept(&pending.text, &module, resolved, typed);
-                self.settled.push(settled.clone());
+        let accepted = match (&resolved, &typed) {
+            (Some(resolved), Some(typed))
+                if pending.accept && diagnostics.len() == files =>
+            {
+                let checked = (&module, resolved, typed);
+                Some(self.accept(pending, checked, settled.clone(), journal))
             }
-        }
+            _ => None,
+        };
         self.declared.end_unit();
         Outcome::Done(Report {
             warnings: report_warnings(typed.as_ref(), offset),
@@ -457,6 +541,7 @@ impl Session {
             checks,
             settled,
             unit,
+            accepted,
         })
     }
 
@@ -468,8 +553,14 @@ impl Session {
         typed: &mut Typed,
         offset: usize,
         accept: bool,
-    ) -> Result<(crate::ir::Unit, Vec<crate::check::Settled>), Vec<Diagnostic>>
-    {
+    ) -> Result<
+        (
+            crate::ir::Unit,
+            Vec<crate::check::Settled>,
+            Option<crate::check::lower::Journal>,
+        ),
+        Vec<Diagnostic>,
+    > {
         // An accepted line is emitted into the session's index, journaled
         // so a refusal by the compile phase undoes it; a query owns a copy.
         let lines = self.frame.lines.len();
@@ -494,15 +585,16 @@ impl Session {
         );
         let judged =
             self.judge(&mut unit, first, (module, resolved), typed, offset);
+        let mut journal = None;
         if accept {
             let index = self.index.as_mut().expect("the session's index");
             if judged.is_ok() {
-                index.commit();
+                journal = Some(index.commit());
             } else {
                 index.rollback();
             }
         }
-        judged.map(|settled| (unit, settled))
+        judged.map(|settled| (unit, settled, journal))
     }
 
     /// Run the compile phase over an emitted line and apply what it
@@ -562,17 +654,29 @@ impl Session {
         }
     }
 
+    /// Keep a checked line, with what undoes it until the next one.
     fn accept(
         &mut self,
-        text: &str,
-        module: &Module,
-        resolved: &Resolved,
-        typed: &Typed,
-    ) {
-        self.frame.accept(module.clone(), resolved.clone(), typed);
-        self.lines.push((String::from(text), self.source.len()));
-        self.source.push_str(text);
+        pending: Pending,
+        (module, resolved, typed): (&Module, &Resolved, &Typed),
+        settled: Vec<crate::check::Settled>,
+        journal: Option<crate::check::lower::Journal>,
+    ) -> Accepted {
+        let frame = self.frame.accept(module.clone(), resolved.clone(), typed);
+        self.lines.push((pending.text.clone(), self.source.len()));
+        self.source.push_str(&pending.text);
         self.source.push_str(SEPARATOR);
+        self.settled.push(settled);
+        let serial = self.accepted;
+        self.accepted += 1;
+        self.last = Some(Last {
+            serial,
+            frame,
+            journal,
+            loaded: pending.loaded,
+            absent: pending.absent_before,
+        });
+        Accepted { serial }
     }
 
     /// The first `use`d module that is neither a host module, nor loaded,

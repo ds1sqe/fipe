@@ -29,6 +29,7 @@ session::Session::new(declarations: decl::Declarations) -> Session
 line(&mut self, text: &str) -> Outcome<Report>
 query(&mut self, text: &str) -> Outcome<Report>
 reply(&mut self, reply: Reply) -> Outcome<Report>
+withdraw(&mut self, line: Accepted) -> Option<Withdrawn>
 strict(&mut self, enabled: bool)
 compile_budget(&mut self, units: u64)
 checks(&self, name: Option<&str>) -> Vec<typed::Check>
@@ -47,8 +48,15 @@ session's own, so a later line may write an impl of its type or read its
 private fields. `line` accepts a line when it has no diagnostic of its
 own; `query` checks without accepting, and generalizes an expression line
 where `line` defaults it, so its scheme is the line's `typed.binding`.
-An accepted line is never taken back: a host that edits one starts a
-new session over the lines before it, from `lines`. `strict(true)` makes each open implicit entry a check error in
+A host that edits an accepted line starts a new session over the lines
+before it, from `lines`. The one line taken back is one whose run
+Faults ([host](../spec/09-host.md) §Compilation units): the host passes
+its `Report::accepted` to `withdraw`, which leaves the session as if the
+line had not been given, files it loaded and absent answers included,
+and gives the `Withdrawn` that `vm::Machine::withdraw` takes. `withdraw`
+returns `None`, changing nothing, unless the line is the last accepted
+one and not already withdrawn; a refused line or a query in between
+leaves it the last. A line awaiting a reply is abandoned. `strict(true)` makes each open implicit entry a check error in
 the line and its file modules; explicit gates remain allowed. It defaults
 to false. `compile_budget(units)` sets the checker's steps each compile-time
 evaluation of later lines may spend ([checking](07-check.md) §The compile
@@ -78,7 +86,7 @@ Report { module: Option<ast::Module>, offset: usize,
          diagnostics: Vec<Diagnostic>, resolved: Option<resolve::Resolved>,
          typed: Option<typed::Typed>, checks: Vec<typed::Check>,
          settled: Vec<check::Settled>, warnings: Vec<typed::Warning>,
-         unit: Option<ir::Unit> }
+         unit: Option<ir::Unit>, accepted: Option<Accepted> }
 Diagnostic = Syntax(parse::Error) | Resolve(resolve::Error)
            | Type(infer::Error) | File { stem: String, error: parse::Error }
            | FileResolve { stem: String, error: resolve::Error }
@@ -97,6 +105,8 @@ of the replied file; a reason's span stays in the text it was found in.
 Resolve and type diagnostics within a file follow source order.
 
 `unit` is present only when all checking stages succeed without any diagnostic.
+`accepted` is present when `line` accepted the line, its token for
+`withdraw`.
 It holds this line and indexes the tables retained by the session; values
 belong to evaluation. [Checking](07-check.md) defines the intermediate form.
 

@@ -244,7 +244,10 @@ impl Index {
         use alloc::collections::BTreeMap;
         // A namespace older than the line, the prelude's, holds nodes
         // the line may rewrite; the journal keeps them.
-        let journaled = self.journal.as_ref().map_or(0, |(mark, _)| mark.nodes);
+        let journaled = self
+            .journal
+            .as_ref()
+            .map_or(0, |journal| journal.mark.nodes);
         let mut kept = Vec::new();
         let tables = Rc::clone(&self.tables);
         let mut tables = tables.borrow_mut();
@@ -335,8 +338,8 @@ impl Index {
             }
         }
         drop(tables);
-        if let Some((_, undos)) = &mut self.journal {
-            undos.extend(kept);
+        if let Some(journal) = &mut self.journal {
+            journal.undos.extend(kept);
         }
     }
 

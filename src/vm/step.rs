@@ -47,21 +47,11 @@ impl Machine {
             .into_iter()
             .find(|definition| self.globals[*definition].is_none())
         {
-            // A global a line stores and an earlier run of it never
-            // stored, since that run ended first: no body may compute it
-            // again, which would repeat the line's effects.
-            let Some(body) = program.globals[definition] else {
-                let node = block
-                    .nodes
-                    .get(index)
-                    .or_else(|| block.nodes.last())
-                    .copied()
-                    .expect("a step has a node");
-                return Err(Fault {
-                    span: Self::span(program, node),
-                    reason: Reason::Unbound { definition },
-                });
-            };
+            // A global only its own line stores: a session withdraws a
+            // line whose run ended before storing it.
+            let body = program.globals[definition].expect(
+                "a global with no value has a body, or its line was withdrawn",
+            );
             let frame = BodyFrame::new(
                 program,
                 body,
