@@ -148,7 +148,9 @@ impl Infer<'_> {
             .casts
             .iter()
             .enumerate()
-            .filter_map(|(index, cast)| Some((index, cast.clone()?)))
+            .filter_map(|(index, cast)| {
+                Some((index, (**cast.as_ref()?).clone()))
+            })
             .collect();
         for (index, cast) in casts {
             let (head, name, result, receiverless) = match cast.row {

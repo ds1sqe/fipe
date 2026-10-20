@@ -119,7 +119,7 @@ impl Pass<'_> {
         let Some(module) = self.owner(&name.origin) else {
             return;
         };
-        let Some(index) = self.declarations_by_name.get(name) else {
+        let Some(index) = self.declarations_by_name().get(name) else {
             return;
         };
         let crate::ast::Entry::Item(item) = &module.entries[*index] else {

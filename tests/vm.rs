@@ -24,6 +24,8 @@ mod calls;
 mod closures;
 #[path = "vm/containers.rs"]
 mod containers;
+#[path = "vm/depth.rs"]
+mod depth;
 #[path = "vm/dispatch.rs"]
 mod dispatch;
 #[path = "vm/entries.rs"]

@@ -217,6 +217,14 @@ impl Store {
         self.tables.borrow()
     }
 
+    /// The first node of the line being emitted, or 0 outside a session
+    /// line: every node from it on is the line's own.
+    pub fn first_node(&self) -> usize {
+        self.journal
+            .as_ref()
+            .map_or(0, |journal| journal.mark.nodes)
+    }
+
     /// The tables an emitted unit shares with later stages.
     pub fn unit(&self) -> Rc<RefCell<ir::Tables>> {
         Rc::clone(&self.tables)

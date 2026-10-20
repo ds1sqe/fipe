@@ -69,8 +69,9 @@ pub struct Typed {
     pub rebuild_types: alloc::collections::BTreeMap<(usize, usize), Type>,
     pub rebuilds: alloc::collections::BTreeMap<(usize, usize), Rebuild>,
     pub modes: alloc::collections::BTreeMap<(usize, usize), Mode>,
-    /// A conversion at each expression's receiving place, if any.
-    pub casts: Vec<Option<Cast>>,
+    /// A conversion at each expression's receiving place, if any; boxed,
+    /// since most expressions have none.
+    pub casts: Vec<Option<alloc::boxed::Box<Cast>>>,
     /// Non-fatal call-spacing diagnostics, in module source coordinates.
     pub warnings: Vec<Warning>,
     /// Binding decisions keyed by the call or stage span in this module.

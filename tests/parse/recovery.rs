@@ -1,7 +1,7 @@
 use super::{errors, module};
 use fipe::{
     lex::{lex, Lexed},
-    parse::{parse, Reason},
+    parse::{parse, Reason, MAX_DEPTH},
     token::{Kind, Source, Span, Symbol, Token},
 };
 
@@ -140,17 +140,27 @@ fn deep_sources_return_a_nesting_diagnostic() {
 
 #[test]
 fn long_flat_syntax_parses_and_drops_without_recursive_ownership() {
+    let deepest = MAX_DEPTH - 1;
     for input in [
-        format!("a{}", " | a".repeat(20_000)),
-        format!("f{}", "()".repeat(20_000)),
+        format!("a{}", " | a".repeat(deepest)),
+        format!("f{}", "()".repeat(deepest)),
         format!("f{}", " a".repeat(20_000)),
-        format!("1{}", " + 1".repeat(20_000)),
+        format!("[1{}]", ", 1".repeat(20_000)),
+        format!("1{}", " + 1".repeat(deepest)),
     ] {
         let parsed = module(&input);
         let copy = parsed.clone();
         assert_eq!(parsed, copy);
         drop(copy);
         drop(parsed);
+    }
+    // A chain past the depth bound is refused without recursing.
+    for input in [
+        format!("a{}", " | a".repeat(20_000)),
+        format!("f{}", "()".repeat(20_000)),
+        format!("1{}", " + 1".repeat(20_000)),
+    ] {
+        assert_eq!(errors(&input)[0].reason, Reason::DepthLimit);
     }
 }
 
@@ -208,4 +218,33 @@ fn a_recovered_error_reports_no_cascade() {
     assert_eq!(Source::new(input).slice(result[0].span), Some("]"));
     // A later entry's own error is still reported.
     assert_eq!(errors("q = (1 ]\ny = (2").len(), 2);
+}
+
+#[test]
+fn a_chain_past_the_depth_bound_is_refused_at_its_operator() {
+    // `0 + 1 + …`: the k-th `+` is k + 1 deep, its operator at 4k - 2.
+    let deepest = format!("0{}", " + 1".repeat(MAX_DEPTH - 1));
+    assert!(parse(lex(&deepest)).is_ok());
+    let past = format!("0{}", " + 1".repeat(MAX_DEPTH));
+    let operator = 4 * MAX_DEPTH - 2;
+    assert_eq!(
+        errors(&past),
+        vec![fipe::parse::Error {
+            span: Span {
+                start: operator,
+                end: operator + 1,
+            },
+            reason: Reason::DepthLimit,
+        }]
+    );
+    let pipeline = format!("0{}", " | f".repeat(MAX_DEPTH));
+    assert_eq!(errors(&pipeline)[0].reason, Reason::DepthLimit);
+}
+
+#[test]
+fn a_deep_expression_is_refused_in_its_own_entry_only() {
+    let input = format!("a = 0{}\nb = 1\n", " + 1".repeat(MAX_DEPTH));
+    let result = errors(&input);
+    assert_eq!(result.len(), 1, "{result:?}");
+    assert_eq!(result[0].reason, Reason::DepthLimit);
 }

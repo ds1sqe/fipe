@@ -47,6 +47,8 @@ pub struct Line {
     pub module: Module,
     pub resolved: Resolved,
     pub typed: Typed,
+    /// The line's bindings, found once when it is accepted.
+    pub(crate) bindings: alloc::rc::Rc<crate::limits::Bindings>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -94,10 +96,12 @@ impl Frame {
         }
         // The weak variables live in the frame, once, not in every line.
         typed.weak = Subst::default();
+        let bindings = alloc::rc::Rc::new(crate::limits::Bindings::of(&module));
         self.lines.push(Line {
             module,
             resolved,
             typed,
+            bindings,
         });
         undo
     }

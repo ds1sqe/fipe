@@ -16,6 +16,11 @@ mod types;
 /// Maximum nested parser frames, independent of the later execution budget.
 pub const MAX_NESTING: usize = 64;
 
+/// Maximum depth of an expression's tree, chains included: `a + b + c`
+/// is three deep. Every later stage handles the deepest expression
+/// admitted on a 2 MiB stack, in debug and release builds.
+pub const MAX_DEPTH: usize = 256;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     pub span: Span,
@@ -39,6 +44,8 @@ pub enum Reason {
     /// A list element ended at a line break that no comma carries over.
     CommaBeforeLineBreak,
     NestingLimit,
+    /// An expression deeper than [`MAX_DEPTH`].
+    DepthLimit,
     /// A second top-level `=`: a binding's value is not a binding.
     BindingValue,
     /// `|!` in a type, where either and not are written `| !`.
@@ -88,6 +95,9 @@ impl fmt::Display for Reason {
                 f.write_str("expected `,` before the line break")
             }
             Self::NestingLimit => f.write_str("parser nesting limit exceeded"),
+            Self::DepthLimit => f.write_str(
+                "expression too deep: bind part of it to a name first",
+            ),
             Self::BindingValue => {
                 f.write_str("a binding's value is not a binding")
             }
@@ -123,6 +133,8 @@ pub fn parse(input: Lexed) -> Result<Module, Vec<Error>> {
         position: 0,
         previous: Span::default(),
         depth: 0,
+        depths: Vec::new(),
+        too_deep: None,
         module: Module {
             span: Span { start: 0, end },
             comments: input.comments,
@@ -219,6 +231,10 @@ struct Parser {
     position: usize,
     previous: Span,
     depth: usize,
+    /// Each expression's tree depth, by its index.
+    depths: Vec<usize>,
+    /// Where the entry being parsed first passed [`MAX_DEPTH`].
+    too_deep: Option<Span>,
     module: Module,
     errors: Vec<Error>,
 }
@@ -234,7 +250,16 @@ impl Parser {
         }
         while !matches!(self.peek(), Kind::Eof) {
             let recorded = self.errors.len();
-            match self.entry() {
+            let entry = self.entry().and_then(|entry| {
+                self.too_deep.map_or(Ok(entry), |span| {
+                    Err(Error {
+                        span,
+                        reason: Reason::DepthLimit,
+                    })
+                })
+            });
+            self.too_deep = None;
+            match entry {
                 Ok(entry) => self.module.entries.push(entry),
                 Err(error) => {
                     // An error recovered inside the entry is its cause;
@@ -732,9 +757,100 @@ impl Parser {
     }
 
     fn expression(&mut self, kind: ExprKind, span: Span) -> ExprId {
+        let depth = 1 + self.below(&kind);
+        if depth > MAX_DEPTH && self.too_deep.is_none() {
+            self.too_deep = Some(match kind {
+                ExprKind::Binary { operator, .. }
+                | ExprKind::Pipe { operator, .. } => operator,
+                _ => span,
+            });
+        }
         let id = ExprId(self.module.expressions.len());
         self.module.expressions.push(ast::Expr { kind, span });
+        self.depths.push(depth);
         id
+    }
+
+    /// The depth of the deepest expression directly under `kind`.
+    fn below(&self, kind: &ExprKind) -> usize {
+        let depth = |id: &ExprId| self.depths[id.0];
+        let deepest = |ids: &[ExprId]| ids.iter().map(depth).max();
+        match kind {
+            ExprKind::Literal(_)
+            | ExprKind::Name(_)
+            | ExprKind::Word(_)
+            | ExprKind::Path(_)
+            | ExprKind::Selector(_)
+            | ExprKind::Instance { .. } => None,
+            ExprKind::Group(ids)
+            | ExprKind::Tuple(ids)
+            | ExprKind::List(ids)
+            | ExprKind::Block(ids) => deepest(ids),
+            ExprKind::Outcome { payload, .. } => payload.as_ref().map(depth),
+            ExprKind::Record { fields, .. } => {
+                fields.iter().map(|field| depth(&field.value)).max()
+            }
+            ExprKind::Call {
+                callee, arguments, ..
+            } => arguments
+                .iter()
+                .filter_map(|argument| match &argument.kind {
+                    ast::ArgumentKind::Positional(value)
+                    | ast::ArgumentKind::Flag {
+                        value: Some(value), ..
+                    } => Some(depth(value)),
+                    ast::ArgumentKind::Flag { value: None, .. } => None,
+                })
+                .chain([depth(callee)])
+                .max(),
+            ExprKind::Field { value, .. }
+            | ExprKind::Not { value, .. }
+            | ExprKind::Bind { value, .. } => Some(depth(value)),
+            ExprKind::Binary { left, right, .. }
+            | ExprKind::Pipe { left, right, .. } => {
+                Some(depth(left).max(depth(right)))
+            }
+            ExprKind::With { value, body, .. } => {
+                Some(depth(value).max(depth(body)))
+            }
+            ExprKind::If {
+                condition,
+                then_body,
+                else_body,
+            } => [Some(condition), Some(then_body), else_body.as_ref()]
+                .into_iter()
+                .flatten()
+                .map(depth)
+                .max(),
+            ExprKind::Arms(arms) => arms
+                .iter()
+                .flat_map(|arm| {
+                    arm.guard
+                        .iter()
+                        .chain([&arm.body])
+                        .map(depth)
+                        .chain(self.default_depths(&arm.patterns))
+                })
+                .max(),
+        }
+        .unwrap_or(0)
+    }
+
+    /// The depths of the defaults written in an arm head's patterns.
+    fn default_depths(&self, patterns: &[PatternId]) -> Vec<usize> {
+        let mut depths = Vec::new();
+        let mut pending: Vec<PatternId> = patterns.to_vec();
+        while let Some(id) = pending.pop() {
+            match &self.module.patterns[id.0].kind {
+                ast::PatternKind::Default { value, .. } => {
+                    depths.push(self.depths[value.0]);
+                }
+                ast::PatternKind::Group(inner) => pending.push(*inner),
+                ast::PatternKind::Tuple(parts) => pending.extend(parts),
+                _ => {}
+            }
+        }
+        depths
     }
 
     fn expr_span(&self, id: ExprId) -> Span {

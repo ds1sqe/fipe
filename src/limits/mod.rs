@@ -25,6 +25,7 @@ use crate::{
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     format,
+    rc::Rc,
     string::{String, ToString},
     vec,
     vec::Vec,
@@ -42,6 +43,63 @@ pub(crate) struct Inputs<'a> {
     pub files: &'a [(String, Module)],
     pub cache: &'a crate::infer::files::FileCache,
     pub frame: Option<&'a Frame>,
+}
+
+/// A module's bindings, found once: by the site of a binding's pattern
+/// (the first such binding), and by a top-level line's name (the last).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Bindings {
+    sites: BTreeMap<Site, ExprId>,
+    names: BTreeMap<String, ExprId>,
+    /// Whether the module writes an `impl`.
+    pub(crate) impls: bool,
+    /// Whether the module declares a type.
+    pub(crate) types: bool,
+}
+
+impl Bindings {
+    pub(crate) fn of(module: &Module) -> Self {
+        let mut bindings = Self::default();
+        for expression in &module.expressions {
+            if let ExprKind::Bind { pattern, value, .. } = expression.kind {
+                let span = module.patterns[pattern.0].span;
+                bindings
+                    .sites
+                    .entry((span.start, span.end))
+                    .or_insert(value);
+            }
+        }
+        bindings.impls = module.entries.iter().any(|entry| {
+            matches!(entry, Entry::Item(item) if matches!(item.kind, ItemKind::Impl { .. }))
+        });
+        bindings.types = module.entries.iter().any(|entry| {
+            matches!(entry, Entry::Item(item) if matches!(item.kind, ItemKind::Type { .. }))
+        });
+        for entry in &module.entries {
+            let Entry::Line(id) = entry else { continue };
+            let ExprKind::Bind { pattern, value, .. } =
+                module.expressions[id.0].kind
+            else {
+                continue;
+            };
+            if let PatternKind::Name(name) = &module.patterns[pattern.0].kind {
+                if let Some(last) = name.segments.last() {
+                    bindings.names.insert(last.clone(), value);
+                }
+            }
+        }
+        bindings
+    }
+
+    /// The value bound by the pattern at `site`.
+    pub(crate) fn site(&self, site: Span) -> Option<ExprId> {
+        self.sites.get(&(site.start, site.end)).copied()
+    }
+
+    /// The value of the module's last top-level binding of `name`.
+    pub(crate) fn name(&self, name: &str) -> Option<ExprId> {
+        self.names.get(name).copied()
+    }
 }
 
 pub(crate) fn check(
@@ -150,6 +208,7 @@ fn declaration_index(
             f.lines
                 .iter()
                 .enumerate()
+                .filter(|(_, l)| l.bindings.types)
                 .map(|(i, l)| (&l.module, Origin::Line(i)))
         }));
     let mut index = BTreeMap::new();
@@ -262,7 +321,10 @@ struct Pass<'a> {
     entry_phase: Option<Phase>,
     purity: core::cell::RefCell<BTreeMap<Target, bool>>,
     purity_cycles: core::cell::Cell<usize>,
-    declarations_by_name: BTreeMap<TypeName, usize>,
+    /// The bindings of each module this pass looked into, by address.
+    bindings: core::cell::RefCell<BTreeMap<usize, Rc<Bindings>>>,
+    /// Each reachable type declaration's entry, found when first read.
+    declarations_by_name: core::cell::OnceCell<BTreeMap<TypeName, usize>>,
     contexts: BTreeMap<usize, (Phase, Frequency, Option<String>)>,
     checks_seen:
         BTreeSet<(Span, Place, Span, Origin, Vec<crate::ir::Projection>)>,
@@ -292,12 +354,8 @@ impl<'a> Pass<'a> {
             entry_phase: None,
             purity: core::cell::RefCell::new(BTreeMap::new()),
             purity_cycles: core::cell::Cell::new(0),
-            declarations_by_name: declaration_index(
-                inputs.module,
-                inputs.declarations,
-                inputs.files,
-                inputs.frame,
-            ),
+            bindings: core::cell::RefCell::new(BTreeMap::new()),
+            declarations_by_name: core::cell::OnceCell::new(),
             contexts: contexts(inputs.module),
             checks_seen: BTreeSet::new(),
             instance: None,
@@ -959,7 +1017,7 @@ impl Pass<'_> {
         name: &TypeName,
     ) -> Option<(&Module, Option<TypeId>, &[Limit])> {
         let module = self.owner(&name.origin)?;
-        let index = *self.declarations_by_name.get(name)?;
+        let index = *self.declarations_by_name().get(name)?;
         let Entry::Item(item) = &module.entries[index] else {
             return None;
         };
@@ -1027,7 +1085,7 @@ impl Pass<'_> {
             return None;
         };
         let name = name.segments.last()?.clone();
-        let local = self.declarations_by_name.contains_key(&TypeName {
+        let local = self.declarations_by_name().contains_key(&TypeName {
             origin: origin.clone(),
             name: name.clone(),
         });
@@ -1056,7 +1114,7 @@ impl Pass<'_> {
                         };
                         self.declaration(name).is_some_and(
                             |(module, base, limits)| {
-                                let meaning = self.declarations_by_name.get(name)
+                                let meaning = self.declarations_by_name().get(name)
                                     .is_some_and(|index| matches!(&module.entries[*index], Entry::Item(item) if matches!(item.kind, ItemKind::Type { members: Some(_), .. })));
                                 (base.is_none() || meaning) && limits.is_empty()
                             },
@@ -1547,7 +1605,8 @@ impl Pass<'_> {
     fn host_fact(&self, origin: &Origin, name: &str) -> Known {
         self.owner(origin)
             .and_then(|module| {
-                phase::binding(module, name)
+                self.bindings_of(module)
+                    .name(name)
                     .map(|id| test(module, id, &Known::default()))
             })
             .unwrap_or_default()
@@ -1706,7 +1765,7 @@ impl Pass<'_> {
         visited.push(name.clone());
         if let Some((module, base, limits)) = self.declaration(name) {
             let has_test = limits.iter().any(|l| matches!(l, Limit::Test(_)));
-            let has_members = self.declarations_by_name.get(name).is_some_and(|i| matches!(&module.entries[*i], Entry::Item(item) if matches!(item.kind, ItemKind::Type { members: Some(_), .. })));
+            let has_members = self.declarations_by_name().get(name).is_some_and(|i| matches!(&module.entries[*i], Entry::Item(item) if matches!(item.kind, ItemKind::Type { members: Some(_), .. })));
             if !has_test
                 && (has_members
                     || limits.iter().any(|l| matches!(l, Limit::Member { .. })))
@@ -2222,4 +2281,39 @@ fn narrow_path(known: &mut Known, path: Vec<String>, range: &Range) {
     part.range
         .get_or_insert_with(Range::unknown)
         .intersect(range);
+}
+
+impl Pass<'_> {
+    fn declarations_by_name(&self) -> &BTreeMap<TypeName, usize> {
+        self.declarations_by_name.get_or_init(|| {
+            declaration_index(
+                self.module,
+                self.declarations,
+                self.files,
+                self.frame,
+            )
+        })
+    }
+
+    /// `module`'s bindings: an accepted line's are kept by the frame,
+    /// any other module's are found once per pass.
+    pub(super) fn bindings_of(&self, module: &Module) -> Rc<Bindings> {
+        let key = core::ptr::from_ref(module) as usize;
+        if let Some(bindings) = self.bindings.borrow().get(&key) {
+            return Rc::clone(bindings);
+        }
+        let bindings =
+            self.frame
+                .and_then(|frame| {
+                    frame.lines.iter().find(|line| {
+                        core::ptr::eq(&raw const line.module, module)
+                    })
+                })
+                .map_or_else(
+                    || Rc::new(Bindings::of(module)),
+                    |line| Rc::clone(&line.bindings),
+                );
+        self.bindings.borrow_mut().insert(key, Rc::clone(&bindings));
+        bindings
+    }
 }

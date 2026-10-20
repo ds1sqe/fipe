@@ -71,7 +71,7 @@ impl State {
     fn undo(&mut self, undo: Undo) {
         match undo {
             Undo::Type(index, old) => self.types[index] = old,
-            Undo::Cast(index, old) => self.casts[index] = old.map(|cast| *cast),
+            Undo::Cast(index, old) => self.casts[index] = old,
             Undo::Binding(index, old) => self.bindings[index] = old,
             Undo::Status(index, old) => self.status[index] = old,
             Undo::Flags(index, solved, assumed) => {
@@ -201,7 +201,7 @@ impl Infer<'_> {
     }
 
     pub(super) fn set_cast(&mut self, index: usize, cast: crate::typed::Cast) {
-        let old = self.state.casts[index].replace(cast).map(Box::new);
+        let old = self.state.casts[index].replace(Box::new(cast));
         self.state.journal(Undo::Cast(index, old));
     }
 

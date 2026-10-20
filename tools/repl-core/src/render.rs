@@ -71,6 +71,7 @@ pub fn syntax(reason: parse::Reason) -> String {
         | R::InvalidRestPattern
         | R::CommaBeforeLineBreak
         | R::NestingLimit
+        | R::DepthLimit
         | R::BindingValue
         | R::UnattachedDoc
         | R::InnerDocPosition

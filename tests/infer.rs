@@ -429,13 +429,14 @@ mod members;
 
 #[test]
 fn long_marked_and_fallback_chains_type_without_deep_recursion() {
-    // Flat chains nest to the left; each element must not take a frame.
-    let marked = "|: f ".repeat(5_000);
+    // Flat chains nest to the left, as deep as the parser admits.
+    let deepest = fipe::parse::MAX_DEPTH - 1;
+    let marked = "|: f ".repeat(deepest);
     let text = format!("f = x => x + 1\nm = Just 1\nm {marked}");
     assert_eq!(ty(&text), "Maybe<Integer>");
-    let fallback = "|| False ".repeat(20_000);
+    let fallback = "|| False ".repeat(deepest);
     assert_eq!(ty(&format!("True {fallback}")), "Bool");
-    let and = "&& True ".repeat(20_000);
+    let and = "&& True ".repeat(deepest);
     assert_eq!(ty(&format!("True {and}")), "Bool");
 }
 

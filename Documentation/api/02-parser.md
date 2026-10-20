@@ -57,7 +57,12 @@ owns those.
 ## Limits and recovery
 
 At most 64 nested frames; deeper input is `NestingLimit`. Flat lists,
-pipelines, operator and postfix chains cost no frame per element. Rules
+pipelines, operator and postfix chains cost the parser no frame per
+element, but each element counts toward its expression's depth: `a + b +
+c` is three deep. An expression deeper than `MAX_DEPTH` (256) is
+`DepthLimit` at the operator or node that passed it, since every later
+stage walks the tree; on a 2 MiB stack each stage handles the deepest
+expression admitted, in debug and release builds. Rules
 inspect at most three tokens ahead, except those that scan for a
 depth-zero token: the binding, arm and constraint rules to the line's
 end, and the tuple rule to its bracket's closer.

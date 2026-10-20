@@ -631,24 +631,7 @@ impl Infer<'_> {
         callee: &super::Callee,
         span: crate::token::Span,
     ) {
-        use crate::ast::ExprKind;
-        // ponytail: linear source lookup; index operators if large modules make this costly.
-        let operands =
-            self.module
-                .expressions
-                .iter()
-                .find_map(|expr| match expr.kind {
-                    ExprKind::Binary {
-                        operator,
-                        left,
-                        right,
-                        ..
-                    } if operator == span => Some((left, Some(right))),
-                    ExprKind::Not { operator, value } if operator == span => {
-                        Some((value, None))
-                    }
-                    _ => None,
-                });
+        let operands = self.operators.get(&span).copied();
         let (Some((left, right)), Some(spots), Some(receiver)) =
             (operands, &callee.spots, callee.self_slot)
         else {

@@ -343,7 +343,7 @@ struct State {
     types: Vec<Option<Type>>,
     entries: Vec<(ExprId, Type, Span, crate::typed::Place)>,
     checks: Vec<crate::typed::Check>,
-    casts: Vec<Option<crate::typed::Cast>>,
+    casts: Vec<Option<alloc::boxed::Box<crate::typed::Cast>>>,
     families: Vec<outcome::Pending>,
     /// Marked-pipe rebuilds whose stage result is not known yet.
     rebuilding: Vec<outcome::Rebuilding>,
@@ -652,6 +652,8 @@ struct Infer<'a> {
     file_cache: &'a files::FileCache,
     indexes: Vec<(&'a Module, index::Index)>,
     expression_ids: BTreeMap<Span, usize>,
+    /// Each operator's operands, by the operator's span.
+    operators: BTreeMap<Span, (crate::ast::ExprId, Option<crate::ast::ExprId>)>,
     /// The session's weak variables, `Var(0)` up to this: free in every
     /// line after the one that left them.
     weak: u32,
@@ -1139,14 +1141,16 @@ impl Infer<'_> {
                 .casts
                 .iter()
                 .map(|cast| {
-                    cast.as_ref().map(|cast| crate::typed::Cast {
-                        operation: cast
-                            .operation
-                            .as_ref()
-                            .map(|operation| operation.applied(subst)),
-                        row: cast.row,
-                        from: subst.apply(&cast.from),
-                        to: subst.apply(&cast.to),
+                    cast.as_ref().map(|cast| {
+                        alloc::boxed::Box::new(crate::typed::Cast {
+                            operation: cast
+                                .operation
+                                .as_ref()
+                                .map(|operation| operation.applied(subst)),
+                            row: cast.row,
+                            from: subst.apply(&cast.from),
+                            to: subst.apply(&cast.to),
+                        })
                     })
                 })
                 .collect(),
@@ -1388,6 +1392,7 @@ impl<'a> Infer<'a> {
             file_cache: cache,
             indexes,
             expression_ids: expression_ids(module),
+            operators: operators(module),
             weak: subst.count(),
             state: State::new(subst, module.expressions.len()),
             items: Vec::new(),
@@ -1395,6 +1400,29 @@ impl<'a> Infer<'a> {
             self_type: None,
         }
     }
+}
+
+/// Each binary or `!` operator's operands, by the operator's span.
+fn operators(
+    module: &Module,
+) -> BTreeMap<Span, (crate::ast::ExprId, Option<crate::ast::ExprId>)> {
+    let mut operators = BTreeMap::new();
+    for expr in &module.expressions {
+        let (operator, operands) = match expr.kind {
+            crate::ast::ExprKind::Binary {
+                operator,
+                left,
+                right,
+                ..
+            } => (operator, (left, Some(right))),
+            crate::ast::ExprKind::Not { operator, value } => {
+                (operator, (value, None))
+            }
+            _ => continue,
+        };
+        operators.entry(operator).or_insert(operands);
+    }
+    operators
 }
 
 fn expression_ids(module: &Module) -> BTreeMap<Span, usize> {

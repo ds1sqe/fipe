@@ -166,6 +166,19 @@ impl Infer<'_> {
         // A prelude word that walks its argument (`show`, `sort`, `sum`)
         // performs a member of each value it meets; a backend finds a
         // written one through these rows, never by a label.
+        let mut words = alloc::collections::BTreeMap::new();
+        for expr in &self.module.expressions {
+            // `read<Point>` is the word with type arguments.
+            if let crate::ast::ExprKind::Name(name)
+            | crate::ast::ExprKind::Instance { name, .. } = &expr.kind
+            {
+                if let Some(last) = name.segments.last() {
+                    words
+                        .entry((expr.span.start, expr.span.end))
+                        .or_insert(last);
+                }
+            }
+        }
         for (site, selected) in &self.state.selected {
             let Selected::Declared {
                 origin: crate::resolve::Origin::Prelude,
@@ -174,18 +187,7 @@ impl Infer<'_> {
             else {
                 continue;
             };
-            let Some(word) = self.module.expressions.iter().find_map(|expr| {
-                // `read<Point>` is the word with type arguments.
-                match &expr.kind {
-                    crate::ast::ExprKind::Name(name)
-                    | crate::ast::ExprKind::Instance { name, .. }
-                        if (expr.span.start, expr.span.end) == *site =>
-                    {
-                        name.segments.last()
-                    }
-                    _ => None,
-                }
-            }) else {
+            let Some(word) = words.get(site).copied() else {
                 continue;
             };
             for request in walked_members(word) {

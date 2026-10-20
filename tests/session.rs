@@ -358,9 +358,18 @@ fn a_loaded_file_s_own_use_is_requested() {
 #[test]
 fn a_long_flat_chain_does_not_overflow() {
     let mut session = Session::new(host());
-    for term in [" + 1", " | (x => x)"] {
-        let text = format!("1{}", term.repeat(20_000));
+    // Each stage sits one above the last and above its operand: `1` is
+    // one deep, `(x => x)` three.
+    let deepest = fipe::parse::MAX_DEPTH;
+    for (term, operand) in [(" + 1", 1), (" | (x => x)", 3)] {
+        let text = format!("1{}", term.repeat(deepest - operand));
         assert_eq!(query(&mut session, &text), "Integer");
+        // Past the bound the line is a syntax error, never an overflow.
+        let report = done(session.query(&format!("1{}", term.repeat(20_000))));
+        let [Diagnostic::Syntax(error)] = report.diagnostics.as_slice() else {
+            panic!("{:?}", report.diagnostics)
+        };
+        assert_eq!(error.reason, fipe::parse::Reason::DepthLimit);
     }
 }
 

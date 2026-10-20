@@ -1595,6 +1595,7 @@ impl<'a> Infer<'a> {
             file_cache: self.file_cache,
             indexes: self.indexes.clone(),
             expression_ids: super::expression_ids(module),
+            operators: super::operators(module),
             weak: self.weak,
             state: State::new(subst, module.expressions.len()),
             items: Vec::new(),

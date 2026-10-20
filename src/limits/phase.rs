@@ -2,9 +2,7 @@ use super::{
     Error, ExprId, ExprKind, Module, Origin, Pass, Phase, Span, Target,
     TypeReason,
 };
-use crate::ast::{
-    ArgumentKind, Entry, ImplMember, ItemKind, PatternKind, TypeId, TypeKind,
-};
+use crate::ast::{ArgumentKind, Entry, ImplMember, ItemKind, TypeId, TypeKind};
 use alloc::{format, vec::Vec};
 
 impl Pass<'_> {
@@ -129,7 +127,11 @@ impl Pass<'_> {
             Some(Target::Value { origin, name })
                 if matches!(origin, Origin::Host(_) | Origin::Commands) =>
             {
-                if self.owner(origin).and_then(|m| binding(m, name)).is_some() {
+                if self
+                    .owner(origin)
+                    .and_then(|m| self.bindings_of(m).name(name))
+                    .is_some()
+                {
                     Phase::Compile
                 } else {
                     self.site_phase(span)
@@ -410,7 +412,7 @@ impl Pass<'_> {
                 visited,
             ),
             Target::Local { site } => {
-                if let Some(value) = binding_site(module, *site) {
+                if let Some(value) = self.bindings_of(module).site(*site) {
                     let key = Target::Value {
                         origin,
                         name: format!("@{}:{}", site.start, site.end),
@@ -483,15 +485,23 @@ impl Pass<'_> {
                 "log" | "sin" | "cos" | "atan2" | "hypot"
             ),
             Target::Local { site } => {
-                if let Some((module, resolved, value)) =
-                    core::iter::once((self.module, self.resolved))
-                        .chain(self.frame.into_iter().flat_map(|f| {
-                            f.lines.iter().map(|l| (&l.module, &l.resolved))
-                        }))
-                        .find_map(|(m, r)| {
-                            binding_site(m, *site).map(|v| (m, r, v))
-                        })
-                {
+                // This line's sites, then the one accepted line whose
+                // text holds the site: lines lie in order in the session.
+                let found = self
+                    .bindings_of(self.module)
+                    .site(*site)
+                    .map(|value| (self.module, self.resolved, value))
+                    .or_else(|| {
+                        let lines = &self.frame?.lines;
+                        let after = lines.partition_point(|line| {
+                            line.module.span.start <= site.start
+                        });
+                        let line = lines.get(after.checked_sub(1)?)?;
+                        line.bindings
+                            .site(*site)
+                            .map(|value| (&line.module, &line.resolved, value))
+                    });
+                if let Some((module, resolved, value)) = found {
                     self.pure_tree(module, resolved, value, visited)
                 } else {
                     true
@@ -501,7 +511,7 @@ impl Pass<'_> {
                 let Some(module) = self.owner(origin) else {
                     return false;
                 };
-                let Some(value) = binding(module, name) else {
+                let Some(value) = self.bindings_of(module).name(name) else {
                     return false;
                 };
                 if *origin == Origin::This {
@@ -653,12 +663,33 @@ impl Pass<'_> {
             self.purity_cycles.set(self.purity_cycles.get() + 1);
             return true;
         }
-        visited.push(key);
+        if let Some(pure) = self.purity.borrow().get(&key) {
+            return *pure;
+        }
+        let cycles = self.purity_cycles.get();
+        visited.push(key.clone());
+        let pure = self.pure_member_uncached(name, owner, visited);
+        if !pure || self.purity_cycles.get() == cycles {
+            self.purity.borrow_mut().insert(key, pure);
+        }
+        pure
+    }
+
+    /// Whether every written `name` member of `owner` (of any type when
+    /// `None`) is pure; only accepted lines that write an `impl` are
+    /// read.
+    fn pure_member_uncached(
+        &self,
+        name: &str,
+        owner: Option<&crate::types::TypeName>,
+        visited: &mut Vec<Target>,
+    ) -> bool {
         let modules = core::iter::once((self.module, Origin::This))
             .chain(self.frame.into_iter().flat_map(|f| {
                 f.lines
                     .iter()
                     .enumerate()
+                    .filter(|(_, l)| l.bindings.impls)
                     .map(|(i, l)| (&l.module, Origin::Line(i)))
             }))
             .chain(self.files.iter().map(|(n, m)| (m, Origin::File(n.clone()))))
@@ -897,22 +928,6 @@ impl Pass<'_> {
             _ => Vec::new(),
         }
     }
-}
-
-pub(super) fn binding(module: &Module, name: &str) -> Option<ExprId> {
-    module.entries.iter().rev().find_map(|entry| {
-        let Entry::Line(id) = entry else { return None; };
-        let ExprKind::Bind { pattern, value, .. } = module.expressions[id.0].kind else { return None; };
-        matches!(&module.patterns[pattern.0].kind, PatternKind::Name(n) if n.segments.last().is_some_and(|n| n == name)).then_some(value)
-    })
-}
-fn binding_site(module: &Module, site: Span) -> Option<ExprId> {
-    module.expressions.iter().find_map(|e| {
-        let ExprKind::Bind { pattern, value, .. } = e.kind else {
-            return None;
-        };
-        (module.patterns[pattern.0].span == site).then_some(value)
-    })
 }
 
 impl Pass<'_> {

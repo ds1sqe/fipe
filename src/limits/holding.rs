@@ -339,7 +339,7 @@ impl Pass<'_> {
         let Some((module, _, _)) = self.declaration(name) else {
             return Vec::new();
         };
-        let Some(index) = self.declarations_by_name.get(name) else {
+        let Some(index) = self.declarations_by_name().get(name) else {
             return Vec::new();
         };
         let Entry::Item(item) = &module.entries[*index] else {

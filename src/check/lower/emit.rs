@@ -229,6 +229,7 @@ impl Index {
 
     pub(super) fn captures(&mut self, scope: &Scope) {
         use alloc::collections::BTreeMap;
+        let first_node = self.store.first_node();
         let tables = self.store.tables();
         let functions: Vec<_> = scope
             .nodes
@@ -250,7 +251,14 @@ impl Index {
             .collect();
         let mut events: Vec<_> =
             functions.iter().map(|index| (*index, true)).collect();
-        events.extend(tables.nodes.iter().enumerate().filter_map(
+        // A function this line emitted has its locals among the line's
+        // own nodes; only an older namespace's needs the whole table.
+        let from = if functions.iter().all(|index| *index >= first_node) {
+            first_node
+        } else {
+            0
+        };
+        events.extend(tables.nodes.iter().enumerate().skip(from).filter_map(
             |(index, node)| {
                 (node.namespace == namespace
                     && matches!(

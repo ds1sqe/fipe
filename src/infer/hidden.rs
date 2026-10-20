@@ -36,10 +36,15 @@ impl Infer<'_> {
                 )
             })
             .collect();
+        // Each body is found once, and a pass reads the indices this pass
+        // already added, so a chain of references settles in one pass
+        // in source order; the loop ends when a pass adds nothing.
+        let bodies = self.binding_bodies();
+        let reads = self.read_casts();
         loop {
-            let previous = hidden.clone();
+            let mut changed = false;
             for (site, scheme) in schemes {
-                let Some(span) = self.binding_body(*site) else {
+                let Some(span) = bodies.get(site).copied() else {
                     continue;
                 };
                 let parameters = self
@@ -54,114 +59,154 @@ impl Infer<'_> {
                             .map(|var| Type::Var(*var))
                             .collect()
                     });
-                for (index, parameter) in parameters.iter().enumerate() {
-                    if self.hidden_in(span, parameter, &previous)
-                        && !hidden[site].contains(&index)
-                    {
-                        hidden
-                            .get_mut(site)
-                            .expect("binding indexed")
-                            .push(index);
-                    }
+                let added: Vec<usize> = parameters
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, parameter)| {
+                        !hidden[site].contains(index)
+                            && self.hidden_in(span, parameter, &reads, &hidden)
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                if !added.is_empty() {
+                    changed = true;
+                    let indices =
+                        hidden.get_mut(site).expect("binding indexed");
+                    indices.extend(added);
+                    indices.sort_unstable();
                 }
-                hidden
-                    .get_mut(site)
-                    .expect("binding indexed")
-                    .sort_unstable();
             }
-            if hidden == previous {
+            if !changed {
                 return hidden;
             }
         }
     }
 
-    fn binding_body(&self, site: Site) -> Option<Span> {
+    /// The body of each name binding and item, by its site; a binding
+    /// written in the module before an item of the same site.
+    fn binding_bodies(&self) -> BTreeMap<Site, Span> {
+        let mut bodies = BTreeMap::new();
         for expression in &self.module.expressions {
             if let ExprKind::Bind { pattern, value, .. } = expression.kind {
                 let pattern = &self.module.patterns[pattern.0];
-                if matches!(pattern.kind, PatternKind::Name(_))
-                    && (pattern.span.start, pattern.span.end) == site
-                {
-                    return Some(self.module.expressions[value.0].span);
+                if matches!(pattern.kind, PatternKind::Name(_)) {
+                    bodies
+                        .entry((pattern.span.start, pattern.span.end))
+                        .or_insert(self.module.expressions[value.0].span);
                 }
             }
         }
-        self.items.iter().find_map(|item| {
-            if (item.site.start, item.site.end) != site {
-                return None;
-            }
-            match item.body.as_ref()? {
-                super::Body::Value(value) => {
-                    Some(self.module.expressions[value.0].span)
+        for item in &self.items {
+            let span = match item.body.as_ref() {
+                Some(super::Body::Value(value)) => {
+                    self.module.expressions[value.0].span
                 }
-                super::Body::Arms(arms) => Some(Span {
-                    start: arms.first()?.span.start,
-                    end: arms.last()?.span.end,
-                }),
-            }
-        })
+                Some(super::Body::Arms(arms)) => {
+                    let (Some(first), Some(last)) = (arms.first(), arms.last())
+                    else {
+                        continue;
+                    };
+                    Span {
+                        start: first.span.start,
+                        end: last.span.end,
+                    }
+                }
+                None => continue,
+            };
+            bodies
+                .entry((item.site.start, item.site.end))
+                .or_insert(span);
+        }
+        bodies
     }
 
+    /// The read casts with their expression's span, by start.
+    fn read_casts(&self) -> Vec<(Span, &Type)> {
+        let mut reads: Vec<_> = self
+            .state
+            .casts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cast)| {
+                let cast = cast.as_ref()?;
+                (cast.row == crate::typed::CastRow::Read)
+                    .then(|| (self.module.expressions[index].span, &cast.to))
+            })
+            .collect();
+        reads.sort_by_key(|(span, _)| span.start);
+        reads
+    }
+
+    /// Whether `parameter` is hidden in the body at `span`: read by a
+    /// cast or selected by an operation inside it.
     fn hidden_in(
         &self,
         span: Span,
         parameter: &Type,
+        reads: &[(Span, &Type)],
         hidden: &BTreeMap<Site, Vec<usize>>,
     ) -> bool {
         let contains =
             |ty: &Type| super::dot::contains_type(&self.apply(ty), parameter);
-        self.state.casts.iter().enumerate().any(|(index, cast)| {
-            let site = self.module.expressions[index].span;
-            span.start <= site.start
-                && site.end <= span.end
-                && cast.as_ref().is_some_and(|cast| {
-                    cast.row == crate::typed::CastRow::Read
-                        && contains(&cast.to)
-                })
-        }) || self.state.selected.iter().any(|(site, selected)| {
-            if site.0 < span.start || site.1 > span.end {
-                return false;
-            }
-            match selected {
-                Selected::Static { head, .. } => contains(head),
-                Selected::Derived {
-                    ty,
-                    kind: crate::ir::Derived::Default,
-                } => contains(ty),
-                Selected::Declared { .. } => {
-                    let Some(ty) = self.state.callee_types.get(site) else {
+        let first = reads.partition_point(|(site, _)| site.start < span.start);
+        reads[first..]
+            .iter()
+            .take_while(|(site, _)| site.start <= span.end)
+            .any(|(site, to)| site.end <= span.end && contains(to))
+            || self
+                .state
+                .selected
+                .range((span.start, 0)..=(span.end, usize::MAX))
+                .any(|(site, selected)| {
+                    if site.1 > span.end {
                         return false;
-                    };
-                    let mut result = ty;
-                    while let Type::Function {
-                        parameter: input,
-                        result: output,
-                    } = result
-                    {
-                        if contains(input) {
-                            return false;
-                        }
-                        result = output;
                     }
-                    contains(result)
-                }
-                Selected::Value {
-                    origin,
-                    site: definition,
-                } => {
-                    let positions =
-                        self.reference_hidden(origin, *definition, hidden);
-                    self.state.meaning_arguments.get(site).is_some_and(
-                        |arguments| {
-                            positions.iter().any(|index| {
-                                arguments.get(*index).is_some_and(contains)
-                            })
-                        },
-                    )
-                }
-                _ => false,
-            }
-        })
+                    match selected {
+                        Selected::Static { head, .. } => contains(head),
+                        Selected::Derived {
+                            ty,
+                            kind: crate::ir::Derived::Default,
+                        } => contains(ty),
+                        Selected::Declared { .. } => {
+                            let Some(ty) = self.state.callee_types.get(site)
+                            else {
+                                return false;
+                            };
+                            let mut result = ty;
+                            while let Type::Function {
+                                parameter: input,
+                                result: output,
+                            } = result
+                            {
+                                if contains(input) {
+                                    return false;
+                                }
+                                result = output;
+                            }
+                            contains(result)
+                        }
+                        Selected::Value {
+                            origin,
+                            site: definition,
+                        } => {
+                            let positions = self.reference_hidden(
+                                origin,
+                                *definition,
+                                hidden,
+                            );
+                            self.state.meaning_arguments.get(site).is_some_and(
+                                |arguments| {
+                                    positions.iter().any(|index| {
+                                        arguments
+                                            .get(*index)
+                                            .is_some_and(contains)
+                                    })
+                                },
+                            )
+                        }
+                        _ => false,
+                    }
+                })
     }
 
     fn reference_hidden(
