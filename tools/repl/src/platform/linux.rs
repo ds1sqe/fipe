@@ -46,7 +46,7 @@ const CHUNK: usize = 64 << 20;
 const MAPPED: usize = 64 << 10;
 const PAGE: usize = 4096;
 
-fn mapped(layout: Layout) -> bool {
+const fn mapped(layout: Layout) -> bool {
     layout.size() >= MAPPED && layout.align() <= 4096
 }
 

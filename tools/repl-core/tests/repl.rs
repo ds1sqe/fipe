@@ -1126,7 +1126,7 @@ fn ast_shows_visibility_versions_and_member_annotations() {
     let mut repl = Repl::new();
     repl.feed(b"use text 2\n\n");
     let text = written(repl.file("text.fipe", Some("pub x = 1\n")));
-    assert!(!text.is_empty());
+    assert_ne!(text, "");
     assert!(written(repl.feed(b":ast\n")).contains("Use text version 2"));
 }
 

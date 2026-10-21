@@ -1,11 +1,12 @@
 use super::{ir::meaning, Outs};
 use alloc::{format, string::String, vec::Vec};
+use core::fmt::Write as _;
 use fipe::{
     ir::{Derived, Kind, Predicate, Tables, Unit},
     mir::{Callee, Operand, Program, Rvalue, Statement, Terminator, Witness},
 };
 
-pub(super) fn render(unit: Option<&Unit>, out: &mut Outs) {
+pub fn render(unit: Option<&Unit>, out: &mut Outs) {
     let Some(unit) = unit else {
         out.write(b"no checked unit\n");
         return;
@@ -50,7 +51,7 @@ pub(super) fn render(unit: Option<&Unit>, out: &mut Outs) {
             let mut head = format!("  block {index}");
             let mut statements = block.statements.iter();
             if let Some(Statement::Charge(count)) = block.statements.first() {
-                head.push_str(&format!(" charges {}", count.len()));
+                let _ = write!(head, " charges {}", count.len());
                 statements.next();
             }
             out.write(format!("{head}\n").as_bytes());

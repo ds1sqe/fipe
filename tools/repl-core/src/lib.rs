@@ -44,6 +44,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use core::fmt::Write as _;
 pub use fipe::check::COMPILE_BUDGET;
 use fipe::{
     ast::{Entry, ExprKind},
@@ -105,6 +106,8 @@ pub enum Out {
     Exit,
 }
 
+// The flags are independent session facts, not one state machine.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Repl {
     session: Session,
     /// The session's declarations, for completion.
@@ -226,14 +229,14 @@ impl Repl {
     }
 
     /// Reject open implicit checks, including after a host reload.
-    pub fn strict(&mut self, enabled: bool) {
+    pub const fn strict(&mut self, enabled: bool) {
         self.strict = enabled;
         self.session.strict(enabled);
     }
 
     /// The charge units each compile-time evaluation may spend,
     /// including after a host reload.
-    pub fn compile_budget(&mut self, units: u64) {
+    pub const fn compile_budget(&mut self, units: u64) {
         self.compile_budget = units;
         self.session.compile_budget(units);
     }
@@ -262,7 +265,7 @@ impl Repl {
 
     /// The prompt for the next line: `....> ` while an entry is held.
     #[must_use]
-    pub fn prompt(&self) -> &'static str {
+    pub const fn prompt(&self) -> &'static str {
         if self.entry.is_empty() {
             PROMPT
         } else {
@@ -361,7 +364,7 @@ impl Repl {
                     continue;
                 }
                 self.entry = line.to_string();
-                self.continuation = continuation(code(line), lex(code(line)));
+                self.continuation = continuation(code(line), &lex(code(line)));
             } else if blank && !self.continuation.open {
                 self.submit(out);
                 continue;
@@ -392,12 +395,12 @@ impl Repl {
     fn extend(&mut self, line: &str) {
         if self.continuation.quote.is_none() && !self.continuation.doc {
             let depth = self.continuation.depth;
-            self.continuation = continuation(line, lex(line));
+            self.continuation = continuation(line, &lex(line));
             self.continuation.depth += depth;
             self.continuation.open |= self.continuation.depth > 0;
         } else if self.continuation.quote != Some('\'') || line.contains('\'') {
             self.continuation =
-                continuation(code(&self.entry), lex(code(&self.entry)));
+                continuation(code(&self.entry), &lex(code(&self.entry)));
         }
     }
 
@@ -551,12 +554,13 @@ impl Repl {
                         format!("{stem}:"),
                         0,
                     ),
-                    _ => {
-                        sources.range(..=check.place.start).next_back().map_or(
-                            (self.session.source(), String::new(), 0),
+                    _ => sources
+                        .range(..=check.place.start)
+                        .next_back()
+                        .map_or_else(
+                            || (self.session.source(), String::new(), 0),
                             |(offset, text)| (*text, String::new(), *offset),
-                        )
-                    }
+                        ),
                 };
                 let (line, column) =
                     Source::new(source).line_col(check.place.start - offset);
@@ -846,9 +850,10 @@ impl Repl {
                     let word = line
                         .get(error.span.start..error.span.end)
                         .unwrap_or_default();
-                    reason.push_str(&format!(
+                    let _ = write!(
+                        reason,
                         "; `{word}` is text here: no name `{word}` is bound"
-                    ));
+                    );
                 }
                 if error.reason == fipe::infer::Reason::LiteralApplied {
                     let word = line
@@ -1228,8 +1233,8 @@ fn code(entry: &str) -> &str {
         })
 }
 
-fn continuation(code: &str, lexed: Lexed) -> Continuation {
-    let quote = open_quote(code, &lexed);
+fn continuation(code: &str, lexed: &Lexed) -> Continuation {
+    let quote = open_quote(code, lexed);
     let tokens = &lexed.tokens;
     let doc = pending_doc(tokens);
     let mut result = Continuation {

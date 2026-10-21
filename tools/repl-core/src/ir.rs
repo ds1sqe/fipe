@@ -2,7 +2,7 @@ use super::Outs;
 use alloc::{format, string::String, vec::Vec};
 use fipe::ir::{Kind, Tables, Type, Unit};
 
-pub(super) fn render(unit: Option<&Unit>, out: &mut Outs) {
+pub fn render(unit: Option<&Unit>, out: &mut Outs) {
     let Some(unit) = unit else {
         out.write(b"no checked unit\n");
         return;
@@ -160,7 +160,7 @@ const fn rebuilt(rebuild: fipe::ir::Rebuild) -> &'static str {
     }
 }
 
-pub(super) fn meaning(ty: &Type, tables: &Tables) -> String {
+pub fn meaning(ty: &Type, tables: &Tables) -> String {
     match ty {
         Type::Unit => String::from("()"),
         Type::Meaning { index, arguments } => {

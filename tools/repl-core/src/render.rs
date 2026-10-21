@@ -5,6 +5,7 @@ use alloc::{
     format,
     string::{String, ToString},
 };
+use core::fmt::Write as _;
 use fipe::{
     decl, infer, ir, parse, resolve,
     token::{Source, Span},
@@ -129,7 +130,7 @@ pub fn check(
         Place::Payload => String::from("a payload"),
     };
     if let Some(location) = location {
-        place.push_str(&format!(" at {location}"));
+        let _ = write!(place, " at {location}");
     }
     for fact in check.known.to_string().lines() {
         place.push_str(", ");
