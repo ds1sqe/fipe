@@ -61,7 +61,7 @@ each once a defect: a row stays so the defect cannot return.
 | missing claim on `Integer`; `1 ++ 2` | no promise of a future block; missing `concat` named |
 | `:r x`, bare `:load`, top-level `Self` | readable resolution; path usage; uppercase `Self` diagnostic |
 | opaque supplied type claiming `Eq`, `Ord`, `Show` or `Default` without members | declaration error; no derivation without a body |
-| claimed `Vec<Integer>`, `Maybe<Integer>` or function member narrowed to `U8`; `Len.len = self => -1` | meaning checked; unimplemented function-limit proof stays open as narrowing |
+| claimed `Vec<Integer>`, `Maybe<Integer>` or function member narrowed to `U8`; `Len.len = self => -1` | meaning checked; a member parameter narrower than the claim's is a check error, and `len` is refuted: `-1` is not `Natural` (rule 8) *narrowing* |
 | `kf: Key a => a -> Bool = p => p == p`, `Key: Eq & Show`, `kf 1` | written combination met by its parts |
 | session `type S: Show { f: Integer -> Integer }`, then its `Show` block | type line accepted; claim pending until block |
 | `g: Show -> String = s => s.show`; `h = n => g (n + 1)`; `h 2.5` | accepted; packing does not fix the outer parameter to `Integer` |
@@ -88,7 +88,7 @@ each once a defect: a row stays so the defect cannot return.
 | parameterized record fields: `type Pair<A, B> { first: A, second: B }` LF `p: Pair<U8, U8> = Pair 300 400` | both fields enter their limits |
 | bound tuple parts: `t = (1, 300)` LF `ends: U8 * U8 = t` | refuted at the second part |
 | union meaning: `id: U8 \| String = 300` | refuted; String cannot prove an Integer value |
-| function limit narrowing: `f: U8 -> U8 = n => n` LF `apply = g x => g x` LF `y = apply f 300` LF `:checks y` | open narrowing; strict refuses the implicit entry |
+| function limit narrowing: `f: U8 -> U8 = n => n` LF `apply = g x => g x` LF `y = apply f 300` LF `:checks y` | refuted at check in every mode: at `apply`'s variable `f`'s parameter `U8` meets 300 (rule 8); `y` is not bound *narrowing* |
 | fault in a test: `type Q: Integer where 10 / self < 5` LF `z: Q = 0` | refuted test; no separate divisor entry |
 | field default fault: `type R { n: Integer, d: Integer = (10 / n) }` LF `R 0`; `R 2`; `k => R k` | refuted; proved; one entry per construction, none at the declaration |
 | cast value facts: `type Three: String where self.len == 3` LF `c: Three = [1, 2, 3]`; `d: Three = (1, 2)` | open entries; the list's length and the tuple's parts are not the text's |
@@ -115,7 +115,7 @@ each once a defect: a row stays so the defect cannot return.
 | record pattern field type: `type P2 { a: Integer, b: String }` LF `f = (P2 x) => x` LF `:t f` | the payload binds at the first field type, Integer |
 | limit purity: `type T: Integer where self > (ls \| len)` | impure limit is a check error |
 | generic divisor: `dv = a b => a / b` LF `:checks dv` | one conditional zero check per call when Integer |
-| claim result limit: `type L1: Len { n: Natural }` LF `impl L1: Len { len = self => self.n }` LF `:checks` | accepted with narrowing open, no meaning mismatch |
+| claim result limit: `type L1: Len { n: Natural }` LF `impl L1: Len { len = self => self.n }` LF `:checks` | accepted, no meaning mismatch; `len` proved by its body, no open entry *narrowing* |
 | operator bracket place: `xs: Vec<Integer> = [1]` LF `ys = xs ++ [4]` LF `:t ys` | bracket fills the known Vec place; result is Vec<Integer> |
 | continued holding type: `type N: Integer & Bits<8>` LF `where 0 <= self, self < 256` LF `n: N = 255` | where continues the preceding type in the REPL |
 | unit holding: `type P: Bits<8> { a: (), b: U8 }` | unit holds zero bits; type fits |

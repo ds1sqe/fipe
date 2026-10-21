@@ -124,7 +124,8 @@ eval, per call: the result, range 0..510, against U8 (unknown input)
 
 Known of a value: a range `[lo, hi]` when it is an `Integer` or a length,
 its ends finite or not; the names of the limited types it has passed; its
-parts. Known of a function: its parameter and result limits.
+parts. Known of a function: its parameter and result limits. Rules 4
+to 8 are ruled (2026-10-21).
 
 1. **Exact.** A literal is known exactly, a float after rounding; a list
    literal has its length, a text literal the length `String.len` gives,
@@ -151,31 +152,39 @@ parts. Known of a function: its parameter and result limits.
    `!=` narrows only at an end of the range. `&&` narrows by both sides,
    its right side already by the left; `||` narrows the else branch by
    both negations; `!` swaps. An else branch and the later arms take the
-   negation where it is one range of one name. A literal pattern and a
-   gate pattern narrow their arm. `fault` never returns, so its branch is
-   empty. Branches join: the smallest range that holds both, the names
-   both have. Nothing else leaves a branch.
+   negation where it is one range of one name; a later arm takes a
+   guard's negation at the same parameter position. A gate pattern
+   narrows its arm. A literal pattern narrows a piped bare `Integer` name
+   to itself in its arm and by `!=` in the later arms. `fault` never
+   returns, so its branch is empty. Branches join: the smallest range
+   that holds both, the names both have. Nothing else leaves a branch.
 5. **Calls.** A call is known by the declared result's limits and by the
-   body, taken once at the declared parameter limits. A cycle of
-   undeclared results is unknown.
+   body, taken once at the declared parameter limits. The body is read
+   for a function of the checked unit, its file modules or an earlier
+   session line; a prelude or host function is known by its declared
+   limits only. A cycle of undeclared results is unknown.
 6. **Variables.** At a call, what comes out at a type variable is the join
    of what went in at it and of the declared result limits of each
    function argument that returns it. It is unknown when something can
    produce that type unseen: a limit of the scheme whose member's result
    holds it, or a function argument that returns it with no declared
    limit. An arm list written as the argument takes what is known at its
-   parameter.
+   parameter. With nothing going in, it is unknown, not dead.
 7. **Parts.** A construction is known by its parts; a marked pipe joins
    its branches.
 8. **Functions.** A function value enters a place of function type only
    when proved: parameters wider, results narrower, flipping at each
-   arrow; at a variable, against what is known there. A member meets a
-   member limit by the same proof, so a member with a narrower parameter
-   does not. A call tests its argument against the known parameter
-   limits; branches meet parameters and join results. An arm list with no
-   signature has no parameter limits and is known by its body; only a
-   function value from a place without limits is unknown, and calling it
-   is a check error.
+   arrow; at a variable, against what is known there, so `apply f 300`
+   with `f: U8 -> U8` is refuted. A function's entry unproved is a check
+   error in every mode (§Modes). A member meets a member limit by the same proof, so a
+   member with a narrower parameter does not. A call tests its argument
+   against the known parameter limits, an argument not known to fit
+   being an open entry as at any place; branches meet parameters and join
+   results. A partial call `f a` is known by the remaining parameter
+   limits and the result limits. An arm list with no signature has no
+   parameter limits and is known by its body; only a function value from
+   a place without limits is unknown, and calling it gives an unknown
+   result.
 9. A limit is required only where written. It never moves backward to a
    parameter.
 10. Anything else is unknown.
