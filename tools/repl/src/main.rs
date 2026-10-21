@@ -32,6 +32,7 @@ use alloc::{collections::VecDeque, format, string::String, vec::Vec};
 use core::fmt::Write as _;
 use fipe_repl_core::{
     edit::{Editor, Event, Keys, View},
+    highlight::Class,
     Out, Repl, BUDGET, COMPILE_BUDGET,
 };
 
@@ -137,8 +138,11 @@ fn piped(repl: &mut Repl, mut outs: VecDeque<Out>) {
 }
 
 /// Keys from a terminal in raw mode, through the line editor; each
-/// line entered is fed with its LF.
+/// line entered is fed with its LF. The line is coloured by token class
+/// unless `NO_COLOR` is set.
 fn edited(repl: &mut Repl, mut outs: VecDeque<Out>) {
+    let color = !platform::no_color();
+    let draw = |view: &View| draw(view, color);
     let mut editor = Editor::new();
     let mut keys = Keys::new();
     let mut buffer = [0; 256];
@@ -154,20 +158,26 @@ fn edited(repl: &mut Repl, mut outs: VecDeque<Out>) {
             return;
         }
         for key in keys.push(&buffer[..read]) {
-            match editor.key(key) {
-                Event::None => continue,
+            let mut event = editor.key(key);
+            if let Event::Complete(before) = event {
+                event = editor.complete(repl.complete(&before));
+            }
+            match event {
+                Event::None | Event::Complete(_) => continue,
                 Event::Draw => {
+                    draw(&editor.view());
+                    continue;
+                }
+                Event::List(candidates) => {
+                    let list = candidates.join("  ");
+                    platform::write(format!("\n{list}\n").as_bytes());
                     draw(&editor.view());
                     continue;
                 }
                 Event::Line(mut line) => {
                     let prompt = repl.prompt();
                     let cursor = prompt.len() + line.chars().count();
-                    draw(&View {
-                        prompt,
-                        text: line.clone(),
-                        cursor,
-                    });
+                    draw(&View::new(prompt, line.clone(), cursor));
                     platform::write(b"\n");
                     line.push('\n');
                     outs.extend(repl.feed(line.as_bytes()));
@@ -191,15 +201,42 @@ fn edited(repl: &mut Repl, mut outs: VecDeque<Out>) {
 }
 
 /// Redraw the line in place: to its start, the prompt and text, clear
-/// the rest, then the cursor to its column.
-fn draw(view: &View) {
+/// the rest, then the cursor to its column, which counts text only.
+fn draw(view: &View, color: bool) {
     // ponytail: a line wider than the terminal wraps and the redraw
     // misses the rows above; track rows when long lines matter.
-    let mut bytes = format!("\r{}{}\x1b[K\r", view.prompt, view.text);
+    let mut bytes = format!("\r{}", view.prompt);
+    if color {
+        let chars: Vec<char> = view.text.chars().collect();
+        let mut at = 0;
+        for (range, class) in &view.classes {
+            bytes.extend(&chars[at..range.start]);
+            let _ = write!(bytes, "\x1b[{}m", sgr(*class));
+            bytes.extend(&chars[range.clone()]);
+            bytes.push_str("\x1b[0m");
+            at = range.end;
+        }
+        bytes.extend(&chars[at..]);
+    } else {
+        bytes.push_str(&view.text);
+    }
+    bytes.push_str("\x1b[K\r");
     if view.cursor > 0 {
         let _ = write!(bytes, "\x1b[{}C", view.cursor);
     }
     platform::write(bytes.as_bytes());
+}
+
+/// The SGR foreground of a token class.
+const fn sgr(class: Class) -> u8 {
+    match class {
+        Class::Keyword => 35,
+        Class::String => 32,
+        Class::Number => 33,
+        Class::Comment => 90,
+        Class::Constructor => 36,
+        Class::Operator => 34,
+    }
 }
 
 /// Bytes from stdin; 0 at end of input. A read error ends the REPL.

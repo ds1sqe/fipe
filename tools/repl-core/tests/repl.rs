@@ -1471,7 +1471,7 @@ fn conversion_candidates_name_the_line_of_a_shadowed_type() {
 }
 
 mod line_editor {
-    use fipe_repl_core::edit::{Editor, Event, Key, Keys};
+    use fipe_repl_core::edit::{Completion, Editor, Event, Key, Keys};
     use fipe_repl_core::Repl;
 
     /// An editor after typing `text`.
@@ -1633,6 +1633,7 @@ mod line_editor {
                 Key::Backspace,
                 Key::Enter,
                 Key::Enter,
+                Key::Tab,
             ]
         );
     }
@@ -1654,5 +1655,131 @@ mod line_editor {
         assert_eq!(repl.prompt(), "....> ");
         assert_eq!(super::written(repl.interrupt()), "fipe> ");
         assert_eq!(super::written(repl.feed(b"2\n\n")), "2\nfipe> ");
+    }
+
+    /// The candidates for the line typed so far.
+    fn candidates(repl: &Repl, before: &str) -> (String, Vec<String>) {
+        let completion = repl.complete(before);
+        (completion.partial, completion.candidates)
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| String::from(*name)).collect()
+    }
+
+    #[test]
+    fn tab_completes_a_host_module_member() {
+        let mut repl = Repl::new();
+        let outs = repl.feed(b":host\n");
+        super::host(&mut repl, outs);
+        let found = candidates(&repl, "fs.li");
+        assert_eq!(found, ("li".into(), names(&["list"])));
+        assert!(candidates(&repl, "f").1.contains(&"fs".into()));
+    }
+
+    #[test]
+    fn tab_completes_commands_at_a_line_s_start() {
+        let repl = Repl::new();
+        assert_eq!(
+            candidates(&repl, " :ho"),
+            (":ho".into(), names(&[":host"]))
+        );
+        assert_eq!(candidates(&repl, ":").1.len(), 9);
+    }
+
+    #[test]
+    fn tab_completes_session_names_and_prelude_names() {
+        let mut repl = Repl::new();
+        repl.feed(b"zeta_one = 1\nzeta_two = 2\n\ntype Zed { Zork }\n\n");
+        let found = candidates(&repl, "1 + zeta_");
+        assert_eq!(found.1, names(&["zeta_one", "zeta_two"]));
+        assert_eq!(candidates(&repl, "Zo").1, names(&["Zork"]));
+        assert!(candidates(&repl, "le").1.contains(&"len".into()));
+        assert_eq!(candidates(&repl, "\"zeta_").1, names(&[]));
+        assert_eq!(candidates(&repl, "1 + ").1, names(&[]));
+    }
+
+    #[test]
+    fn tab_completes_a_value_s_fields_and_impl_members() {
+        let mut repl = Repl::new();
+        repl.feed(
+            b"type Pt { px: Integer, py: Integer }\n\
+              impl Pt { pnorm = self => self.px + self.py }\n\
+              \n\
+              here = Pt { px: 1, py: 2 }\n\n",
+        );
+        let found = candidates(&repl, "here.p");
+        assert_eq!(found, ("p".into(), names(&["pnorm", "px", "py"])));
+    }
+
+    #[test]
+    fn one_candidate_inserts_several_insert_their_prefix_then_list() {
+        let mut editor = typed("x = fs.li");
+        assert_eq!(editor.key(Key::Tab), Event::Complete("x = fs.li".into()));
+        let one = Completion {
+            partial: "li".into(),
+            candidates: names(&["list"]),
+        };
+        assert_eq!(editor.complete(one), Event::Draw);
+        assert_eq!(state(&editor), ("x = fs.list".into(), 11));
+        let mut editor = typed("ze");
+        let several = Completion {
+            partial: "ze".into(),
+            candidates: names(&["zeta_one", "zeta_two"]),
+        };
+        editor.key(Key::Tab);
+        assert_eq!(editor.complete(several.clone()), Event::Draw);
+        assert_eq!(state(&editor), ("zeta_".into(), 5));
+        editor.key(Key::Tab);
+        let rest = Completion {
+            partial: "zeta_".into(),
+            ..several.clone()
+        };
+        assert_eq!(
+            editor.complete(rest.clone()),
+            Event::List(several.candidates)
+        );
+        editor.key(Key::Char('o'));
+        editor.key(Key::Backspace);
+        editor.key(Key::Tab);
+        assert_eq!(editor.complete(rest), Event::None);
+        assert_eq!(editor.complete(Completion::default()), Event::None);
+    }
+
+    #[test]
+    fn the_view_classes_the_line_by_token() {
+        use fipe_repl_core::highlight::Class;
+        let editor = typed("if é | Just 1.5 ++ \"a\" # note");
+        let view = editor.view();
+        let spelled: Vec<(String, Class)> = view
+            .classes
+            .iter()
+            .map(|(range, class)| {
+                (
+                    view.text
+                        .chars()
+                        .skip(range.start)
+                        .take(range.len())
+                        .collect(),
+                    *class,
+                )
+            })
+            .collect();
+        assert_eq!(
+            spelled,
+            [
+                ("if".into(), Class::Keyword),
+                ("é".into(), Class::String),
+                ("|".into(), Class::Operator),
+                ("Just".into(), Class::Constructor),
+                ("1.5".into(), Class::Number),
+                ("++".into(), Class::Operator),
+                ("\"a\"".into(), Class::String),
+                ("# note".into(), Class::Comment),
+            ]
+        );
+        let open = typed("x = 'abc");
+        let last = open.view().classes.last().cloned();
+        assert_eq!(last, Some((4..8, Class::String)));
     }
 }

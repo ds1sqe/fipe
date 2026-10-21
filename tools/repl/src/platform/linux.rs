@@ -268,6 +268,32 @@ pub fn args() -> Vec<String> {
         .collect()
 }
 
+/// Whether `NO_COLOR` is set to a non-empty value.
+pub fn no_color() -> bool {
+    let stack = STACK.load(Ordering::Relaxed) as *const usize;
+    if stack.is_null() {
+        return false;
+    }
+    // SAFETY: after `argc` and its `argv` pointers and their NULL, the
+    // kernel's initial stack holds the environment's pointers to
+    // NUL-terminated strings up to a NULL, living for the whole run.
+    let mut at = unsafe { stack.add(2 + *stack) };
+    loop {
+        // SAFETY: as above; `at` stops at the NULL.
+        let entry = unsafe { *at };
+        if entry == 0 {
+            return false;
+        }
+        // SAFETY: as above.
+        let entry = unsafe { CStr::from_ptr(entry as _) }.to_bytes();
+        if let Some(value) = entry.strip_prefix(b"NO_COLOR=") {
+            return !value.is_empty();
+        }
+        // SAFETY: as above, before the NULL.
+        at = unsafe { at.add(1) };
+    }
+}
+
 /// The kernel enters with rsp 16-byte aligned at `argc`; a call
 /// realigns it for the Rust function.
 #[unsafe(naked)]

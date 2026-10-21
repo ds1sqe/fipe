@@ -30,7 +30,9 @@
 
 extern crate alloc;
 
+mod complete;
 pub mod edit;
+pub mod highlight;
 mod ir;
 mod mir;
 mod render;
@@ -61,6 +63,9 @@ pub const BUDGET: u64 = 1 << 20;
 const MORE: &str = "....> ";
 const HOST_DIR: &str = "tests/fixtures/host";
 /// The command namespace first, then the host modules by name.
+/// The commands, by name after `:`.
+const COMMANDS: [&str; 9] =
+    ["ast", "r", "t", "ir", "mir", "load", "checks", "host", "q"];
 const HOST: [&str; 6] = ["commands", "fs", "sys", "cli", "text", "config"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +78,8 @@ pub enum Out {
 
 pub struct Repl {
     session: Session,
+    /// The session's declarations, for completion.
+    declarations: Declarations,
     strict: bool,
     /// The host's compile budget, kept across a host reload.
     compile_budget: u64,
@@ -159,6 +166,7 @@ impl Repl {
     pub fn new() -> Self {
         Self {
             session: Session::new(Declarations::new()),
+            declarations: Declarations::new(),
             strict: false,
             compile_budget: COMPILE_BUDGET,
             input: Vec::new(),
@@ -886,6 +894,7 @@ impl Repl {
             self.session.lines().map(String::from).collect();
         self.host_texts = texts.to_vec();
         self.host_dir = String::from(dir);
+        self.declarations = declarations.clone();
         self.session = Session::new(declarations);
         self.session.strict(self.strict);
         self.session.compile_budget(self.compile_budget);

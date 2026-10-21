@@ -6,8 +6,14 @@
 //! with its LF, to the [`Repl`](crate::Repl). One physical line is
 //! edited at a time; the REPL's own continuation decides whether the
 //! next line continues the entry, and its prompt says so.
+//!
+//! Tab yields [`Event::Complete`] with the text before the cursor; the
+//! driver asks [`Repl::complete`](crate::Repl::complete) and passes the
+//! answer to [`Editor::complete`].
 
+use crate::highlight::{classes, Class};
 use alloc::{string::String, vec::Vec};
+use core::ops::Range;
 
 /// One key press, decoded from terminal input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +34,7 @@ pub enum Key {
     KillWord,
     Up,
     Down,
+    Tab,
     /// Ctrl-C.
     Interrupt,
     /// Ctrl-D.
@@ -45,17 +52,46 @@ pub enum Event {
     Interrupt,
     /// Ctrl-D on an empty line: input ends.
     End,
+    /// Tab: complete the word that ends this text, the line before the
+    /// cursor.
+    Complete(String),
+    /// A second Tab with several candidates: list them under the line,
+    /// then redraw it.
+    List(Vec<String>),
     /// Nothing changed.
     None,
 }
 
-/// What to draw: the prompt, the line, and the cursor's column counted
-/// from the prompt's start.
+/// What to draw: the prompt, the line, the cursor's column counted
+/// from the prompt's start, and the line's token classes as char ranges
+/// of `text`, in order and apart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct View<'a> {
     pub prompt: &'a str,
     pub text: String,
     pub cursor: usize,
+    pub classes: Vec<(Range<usize>, Class)>,
+}
+
+impl<'a> View<'a> {
+    #[must_use]
+    pub fn new(prompt: &'a str, text: String, cursor: usize) -> Self {
+        let classes = classes(&text);
+        Self {
+            prompt,
+            text,
+            cursor,
+            classes,
+        }
+    }
+}
+
+/// What Tab offers: the text before the cursor that each candidate
+/// replaces, and the candidates in order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Completion {
+    pub partial: String,
+    pub candidates: Vec<String>,
 }
 
 /// A line with a cursor, and the lines entered before it.
@@ -68,6 +104,8 @@ pub struct Editor {
     history: Vec<String>,
     /// The history entry shown, and the line being typed before Up.
     recall: Option<(usize, Vec<char>)>,
+    /// The last key was a Tab that left several candidates.
+    tabbed: bool,
 }
 
 impl Editor {
@@ -85,14 +123,55 @@ impl Editor {
     pub fn view(&self) -> View<'_> {
         // ponytail: one column per char; wide and combining chars
         // misplace the cursor until a width table is wanted.
-        View {
-            prompt: self.prompt,
-            text: self.line.iter().collect(),
-            cursor: self.prompt.chars().count() + self.cursor,
+        View::new(
+            self.prompt,
+            self.line.iter().collect(),
+            self.prompt.chars().count() + self.cursor,
+        )
+    }
+
+    /// Apply Tab's completion: one candidate replaces the partial word;
+    /// several insert their common prefix, and a second Tab in a row
+    /// lists them.
+    pub fn complete(&mut self, completion: Completion) -> Event {
+        let Completion {
+            partial,
+            candidates,
+        } = completion;
+        let Some(first) = candidates.first() else {
+            return Event::None;
+        };
+        if candidates.len() > 1 {
+            if self.tabbed {
+                return Event::List(candidates);
+            }
+            self.tabbed = true;
         }
+        let common = candidates[1..]
+            .iter()
+            .fold(first.as_str(), |common, next| shared(common, next));
+        let length = partial.chars().count();
+        let Some(start) = self.cursor.checked_sub(length) else {
+            return Event::None;
+        };
+        if common == partial
+            || !common.starts_with(partial.as_str())
+            || !self.line[start..self.cursor]
+                .iter()
+                .copied()
+                .eq(partial.chars())
+        {
+            return Event::None;
+        }
+        self.line.splice(start..self.cursor, common.chars());
+        self.cursor = start + common.chars().count();
+        Event::Draw
     }
 
     pub fn key(&mut self, key: Key) -> Event {
+        if key != Key::Tab {
+            self.tabbed = false;
+        }
         let before = (self.line.len(), self.cursor);
         match key {
             Key::Char(c) => {
@@ -126,6 +205,10 @@ impl Editor {
                 }
                 self.line.drain(start..self.cursor);
                 self.cursor = start;
+            }
+            Key::Tab => {
+                let before = self.line[..self.cursor].iter().collect();
+                return Event::Complete(before);
             }
             Key::Up => return self.up(),
             Key::Down => return self.down(),
@@ -198,6 +281,17 @@ impl Editor {
     }
 }
 
+/// The longest common prefix of `a` and `b`, at a char boundary.
+fn shared<'a>(a: &'a str, b: &str) -> &'a str {
+    let length = a
+        .char_indices()
+        .zip(b.chars())
+        .take_while(|((_, x), y)| x == y)
+        .last()
+        .map_or(0, |((at, x), _)| at + x.len_utf8());
+    &a[..length]
+}
+
 /// Terminal input bytes to keys: UTF-8 text, control bytes and the
 /// escape sequences of arrows, Home, End and Delete. A partial sequence
 /// or char waits for the next bytes; unknown sequences are dropped.
@@ -234,6 +328,7 @@ fn decode(bytes: &[u8]) -> Option<(Option<Key>, usize)> {
     let key = match bytes[0] {
         0x1b => return escape(bytes),
         b'\r' | b'\n' => Key::Enter,
+        b'\t' => Key::Tab,
         0x7f | 0x08 => Key::Backspace,
         0x01 => Key::Home,
         0x02 => Key::Left,

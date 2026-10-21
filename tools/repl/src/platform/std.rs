@@ -30,6 +30,11 @@ pub fn args() -> Vec<String> {
         .collect()
 }
 
+/// Whether `NO_COLOR` is set to a non-empty value.
+pub fn no_color() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
+}
+
 /// Whether the working directory is now `path`.
 pub fn chdir(path: &str) -> bool {
     std::env::set_current_dir(path).is_ok()
