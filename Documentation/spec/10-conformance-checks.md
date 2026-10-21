@@ -101,7 +101,7 @@ opening says how a row is read and what a mark means.
 | `x / 0` / `x / y`, `y` known `0..5` | refuted / tested at run |
 | `Range { lo: 2, hi: 1 }` / `Range 1 2` | refuted: braces test the limit / proved |
 | `a + b` with `a: U8`, `b: U16` / `w: U16 = a` / `n: U8 = b` | `Integer`, known 1200 / proved / refuted |
-| `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open *narrowing* |
+| `y = if c { 2 } else { 200 }` / `a: U8 = y` / `b: I8 = y` | `Integer`, known 2..200 / proved / open |
 | `f: F64 = 2` | `2.0` by the literal member |
 | `k: I64 = round 2.5` | numeric cast recorded, then open `I64` entry; evaluates to `2` |
 | `type Port … config.max_port` / `port: Port = cli.port` / `q: Seed = cli.seed` / `primes = Compile (sieve 1000)` | a host constant in a limit / tested at init / check error / compile demand met, prepared and exact for later lines |

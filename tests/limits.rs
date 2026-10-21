@@ -1,5 +1,8 @@
 use fipe::token::Magnitude;
 
+#[path = "limits/narrowing.rs"]
+mod narrowing;
+
 #[test]
 fn exact_magnitude_arithmetic_crosses_limb_boundaries() {
     let max = Magnitude::from(u64::MAX);
@@ -255,7 +258,7 @@ fn strict_checks_include_imported_modules_and_file_facts_keep_identity() {
 }
 
 #[test]
-fn text_length_counts_utf8_bytes_and_branch_narrowing_stays_open() {
+fn text_length_counts_utf8_bytes_and_branches_join() {
     let mut session =
         fipe::session::Session::new(fipe::decl::Declarations::new());
     assert_eq!(
@@ -266,11 +269,7 @@ fn text_length_counts_utf8_bytes_and_branch_narrowing_stays_open() {
     assert_eq!(line(&mut session, "flag = True").diagnostics, []);
     let report = line(&mut session, "n: U8 = if flag { 2 } else { 200 }");
     assert_eq!(report.diagnostics, []);
-    assert_ne!(report.checks, []);
-    assert!(report
-        .checks
-        .iter()
-        .all(|c| c.reason == fipe::typed::CheckReason::Narrowing));
+    assert_eq!(report.checks, []);
 }
 
 #[test]

@@ -34,6 +34,37 @@ use known::{End, Integer, Known, Range};
 
 type Site = (usize, usize);
 
+/// Where a condition, guard or `&&` left side narrows: the bodies after
+/// it, or by its negation the else branch and later arms (07-checks
+/// §What is known 4).
+#[derive(Clone, Debug)]
+enum Narrows {
+    Body {
+        span: Span,
+        holds: bool,
+    },
+    /// The later arms of an arm list, by a guard's negation at the same
+    /// parameter position.
+    Later {
+        arms: ExprId,
+        index: usize,
+    },
+    /// The arms a bare name is piped into, by their literal patterns.
+    Piped {
+        arms: ExprId,
+    },
+}
+
+/// A narrowing of a local, or of its `len` when `len` holds, by a range,
+/// for the reads inside `span`.
+#[derive(Clone, Debug)]
+struct Narrowed {
+    span: Span,
+    site: Site,
+    len: bool,
+    range: Range,
+}
+
 /// What every static pass reads: the unit, its names, the declarations
 /// and files it may reach, and the session frame.
 pub(crate) struct Inputs<'a> {
@@ -112,6 +143,7 @@ pub(crate) fn check(
     let mut pass = Pass::new(inputs, typed, Place::Result);
     pass.instance = instance;
     pass.typed.known = vec![Known::default(); module.expressions.len()];
+    let conditions = conditions(module);
     pass.seed_places();
     pass.check_purity();
     let mut entry_types = vec![None; module.expressions.len()];
@@ -130,6 +162,9 @@ pub(crate) fn check(
         pass.expression_holding(id, entry_types[index]);
         pass.typed.known[index] = known.clone();
         pass.binding_facts(id);
+        for narrows in conditions.get(&id.0).into_iter().flatten() {
+            pass.narrow(id, narrows);
+        }
     }
     pass.timing_places();
     pass.holdings();
@@ -331,6 +366,8 @@ struct Pass<'a> {
     /// The one declared expression this pass types for a use site, a
     /// default for a call or construction or a limited type's test.
     instance: Option<ExprId>,
+    /// The narrowings recorded so far, met by each read they hold.
+    narrowings: Vec<Narrowed>,
 }
 impl<'a> Pass<'a> {
     fn new(
@@ -359,6 +396,7 @@ impl<'a> Pass<'a> {
             contexts: contexts(inputs.module),
             checks_seen: BTreeSet::new(),
             instance: None,
+            narrowings: Vec::new(),
         }
     }
 }
@@ -1162,7 +1200,9 @@ impl Pass<'_> {
         let get = |id: ExprId| self.typed.known[id.0].clone();
         match &expression.kind {
             ExprKind::Literal(_) => self.literal_value(id),
-            ExprKind::Name(_) => self.target(self.resolved.expr(id)),
+            ExprKind::Name(_) => {
+                self.target(self.resolved.expr(id), Some(expression.span))
+            }
             ExprKind::Field { value, field } => get(*value)
                 .part(field.segments.last().map_or("", String::as_str)),
             ExprKind::Group(lines) | ExprKind::Block(lines) => {
@@ -1226,10 +1266,32 @@ impl Pass<'_> {
             | ExprKind::Pipe {
                 op: PipeOp::Plain, ..
             } => self.call_value(id),
-            ExprKind::If { .. } | ExprKind::Pipe { .. } => Known {
-                narrowing: true,
-                ..Known::default()
-            },
+            ExprKind::If {
+                then_body,
+                else_body,
+                ..
+            } => else_body.map_or_else(Known::default, |else_body| {
+                get(*then_body).join(&get(else_body))
+            }),
+            // A marked pipe is its left value or the stage's result
+            // (07-checks §What is known 7); a call's result waits on
+            // rule 5.
+            ExprKind::Pipe { left, right, .. } => {
+                let stage = get(*right);
+                let stage = if !stage.is_dead()
+                    && matches!(
+                        self.typed.expr(*right),
+                        Some(Type::Function { .. })
+                    ) {
+                    Known {
+                        narrowing: true,
+                        ..Known::default()
+                    }
+                } else {
+                    stage
+                };
+                get(*left).join(&stage)
+            }
             _ => Known::default(),
         }
     }
@@ -1263,6 +1325,15 @@ impl Pass<'_> {
                 self.construct_value(id)
             }
             Some(Target::Type { .. }) => self.gate_value(id),
+            // `fault` never returns: its branch is empty.
+            Some(Target::Value {
+                origin: Origin::Prelude,
+                name,
+            }) if name == "fault" => Known {
+                narrowing: true,
+                failure: Some(known::Failure::Never),
+                ..Known::default()
+            },
             _ => Known {
                 narrowing: true,
                 ..Known::default()
@@ -1611,17 +1682,37 @@ impl Pass<'_> {
             })
             .unwrap_or_default()
     }
-    fn target(&self, target: Option<&Target>) -> Known {
+    /// A local read at `read` meets each narrowing whose span holds it.
+    fn local(&self, site: Span, read: Option<Span>) -> Known {
+        let site = (site.start, site.end);
+        let mut known = self
+            .locals
+            .get(&site)
+            .or_else(|| self.frame.and_then(|f| f.facts.get(&site)))
+            .cloned()
+            .unwrap_or_default();
+        // ponytail: linear scan; index by site if a long file slows.
+        for narrowed in read.iter().flat_map(|read| {
+            self.narrowings.iter().filter(move |n| {
+                n.site == site
+                    && n.span.start <= read.start
+                    && read.end <= n.span.end
+            })
+        }) {
+            let path = if narrowed.len {
+                vec![String::from("len")]
+            } else {
+                Vec::new()
+            };
+            meet_path(&mut known, path, &narrowed.range);
+        }
+        known
+    }
+    /// What is known of a target, read at `read`: a local meets each
+    /// narrowing whose span holds the read.
+    fn target(&self, target: Option<&Target>, read: Option<Span>) -> Known {
         match target {
-            Some(Target::Local { site }) => self
-                .locals
-                .get(&(site.start, site.end))
-                .or_else(|| {
-                    self.frame
-                        .and_then(|f| f.facts.get(&(site.start, site.end)))
-                })
-                .cloned()
-                .unwrap_or_default(),
+            Some(Target::Local { site }) => self.local(*site, read),
             Some(Target::Value { origin, name })
                 if matches!(origin, Origin::Host(_) | Origin::Commands) =>
             {
@@ -1684,7 +1775,7 @@ impl Pass<'_> {
                 fact
             }
             Some(Target::Members { head, members }) => {
-                let mut fact = self.target(Some(head));
+                let mut fact = self.target(Some(head), read);
                 for member in members {
                     fact = fact.part(member);
                 }
@@ -2138,6 +2229,308 @@ impl Pass<'_> {
     }
 }
 
+/// Each condition, guard, `&&` left side and piped name, with where it
+/// narrows. Ids are post-order, so each precedes what it narrows.
+fn conditions(module: &Module) -> BTreeMap<usize, Vec<Narrows>> {
+    let mut conditions: BTreeMap<usize, Vec<Narrows>> = BTreeMap::new();
+    let span = |id: ExprId| module.expressions[id.0].span;
+    for (index, expression) in module.expressions.iter().enumerate() {
+        let mut add = |id: ExprId, narrows| {
+            conditions.entry(id.0).or_default().push(narrows);
+        };
+        match &expression.kind {
+            ExprKind::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                add(
+                    *condition,
+                    Narrows::Body {
+                        span: span(*then_body),
+                        holds: true,
+                    },
+                );
+                if let Some(else_body) = else_body {
+                    add(
+                        *condition,
+                        Narrows::Body {
+                            span: span(*else_body),
+                            holds: false,
+                        },
+                    );
+                }
+            }
+            ExprKind::Pipe {
+                op: PipeOp::And,
+                left,
+                right,
+                ..
+            } => add(
+                *left,
+                Narrows::Body {
+                    span: span(*right),
+                    holds: true,
+                },
+            ),
+            ExprKind::Pipe {
+                op: PipeOp::Plain,
+                left,
+                right,
+                ..
+            } if matches!(
+                module.expressions[right.0].kind,
+                ExprKind::Arms(_)
+            ) =>
+            {
+                add(*left, Narrows::Piped { arms: *right });
+            }
+            ExprKind::Arms(arms) => {
+                for (i, arm) in arms.iter().enumerate() {
+                    let Some(guard) = arm.guard else { continue };
+                    add(
+                        guard,
+                        Narrows::Body {
+                            span: span(arm.body),
+                            holds: true,
+                        },
+                    );
+                    add(
+                        guard,
+                        Narrows::Later {
+                            arms: ExprId(index),
+                            index: i,
+                        },
+                    );
+                }
+            }
+            _ => (),
+        }
+    }
+    conditions
+}
+
+impl Pass<'_> {
+    /// Record what `id`, read as a condition, narrows (07-checks §What
+    /// is known 4).
+    fn narrow(&mut self, id: ExprId, narrows: &Narrows) {
+        let arms_of = |arms: ExprId| match &self.module.expressions[arms.0].kind
+        {
+            ExprKind::Arms(arms) => arms.as_slice(),
+            _ => &[],
+        };
+        match narrows {
+            Narrows::Body { span, holds } => {
+                for (site, len, range) in self.condition(id, *holds) {
+                    self.narrowings.push(Narrowed {
+                        span: *span,
+                        site,
+                        len,
+                        range,
+                    });
+                }
+            }
+            Narrows::Later { arms, index } => {
+                self.later_arms(id, arms_of(*arms), *index);
+            }
+            Narrows::Piped { arms } => self.piped_arms(id, arms_of(*arms)),
+        }
+    }
+
+    /// A guard's negation narrows the later arms at the same parameter
+    /// position. A later arm is reached past the guard's failure only
+    /// when the guarded arm's patterns cannot fail.
+    fn later_arms(
+        &mut self,
+        guard: ExprId,
+        arms: &[crate::ast::Arm],
+        index: usize,
+    ) {
+        let module = self.module;
+        let name = |pattern: &crate::ast::PatternId| match &module.patterns
+            [pattern.0]
+            .kind
+        {
+            PatternKind::Name(name) => Some((name.span.start, name.span.end)),
+            _ => None,
+        };
+        let arm = &arms[index];
+        if !arm.patterns.iter().all(|p| {
+            matches!(
+                module.patterns[p.0].kind,
+                PatternKind::Name(_) | PatternKind::Wildcard
+            )
+        }) {
+            return;
+        }
+        for (site, len, range) in self.condition(guard, false) {
+            let Some(position) =
+                arm.patterns.iter().position(|p| name(p) == Some(site))
+            else {
+                continue;
+            };
+            for later in &arms[index + 1..] {
+                if let Some(site) = later.patterns.get(position).and_then(name)
+                {
+                    self.narrowings.push(Narrowed {
+                        span: later.span,
+                        site,
+                        len,
+                        range: range.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// A literal pattern narrows the piped bare name to itself in its
+    /// arm, and by `!=` the later arms past an unguarded one.
+    fn piped_arms(&mut self, piped: ExprId, arms: &[crate::ast::Arm]) {
+        let Some((site, false)) = self.narrowable(piped) else {
+            return;
+        };
+        let read = self.typed.known[piped.0]
+            .range
+            .clone()
+            .unwrap_or_else(Range::unknown);
+        let mut own = read.clone();
+        for arm in arms {
+            let mut push = |range: Range| {
+                self.narrowings.push(Narrowed {
+                    span: arm.span,
+                    site,
+                    len: false,
+                    range,
+                });
+            };
+            if own != read {
+                push(own.clone());
+            }
+            let [pattern] = arm.patterns[..] else {
+                continue;
+            };
+            let PatternKind::Literal(literal @ Literal::Int { .. }) =
+                &self.module.patterns[pattern.0].kind
+            else {
+                continue;
+            };
+            let Some(value) = literal_fact(literal).range else {
+                continue;
+            };
+            push(value.clone());
+            if arm.guard.is_none() {
+                if let Some(range) =
+                    Range::narrowed(BinaryOp::NotEqual, &value, Some(&own))
+                {
+                    own.intersect(&range);
+                }
+            }
+        }
+    }
+
+    /// What holds of each narrowable name when `id` evaluates to
+    /// `holds`: one range per local, or per local's `len`.
+    fn condition(&self, id: ExprId, holds: bool) -> Vec<(Site, bool, Range)> {
+        match &self.module.expressions[id.0].kind {
+            ExprKind::Group(lines) => lines
+                .last()
+                .map_or_else(Vec::new, |id| self.condition(*id, holds)),
+            ExprKind::Not { value, .. } => self.condition(*value, !holds),
+            ExprKind::Pipe {
+                op: PipeOp::And,
+                left,
+                right,
+                ..
+            } if holds => {
+                let mut both = self.condition(*left, true);
+                both.extend(self.condition(*right, true));
+                both
+            }
+            ExprKind::Pipe {
+                op: PipeOp::Or,
+                left,
+                right,
+                ..
+            } if !holds => {
+                let mut both = self.condition(*left, false);
+                both.extend(self.condition(*right, false));
+                both
+            }
+            ExprKind::Binary {
+                op, left, right, ..
+            } => {
+                use BinaryOp as B;
+                let op = if holds {
+                    *op
+                } else {
+                    match op {
+                        B::Less => B::GreaterEqual,
+                        B::LessEqual => B::Greater,
+                        B::Greater => B::LessEqual,
+                        B::GreaterEqual => B::Less,
+                        B::Equal => B::NotEqual,
+                        B::NotEqual => B::Equal,
+                        _ => return Vec::new(),
+                    }
+                };
+                let flipped = match op {
+                    B::Less => B::Greater,
+                    B::LessEqual => B::GreaterEqual,
+                    B::Greater => B::Less,
+                    B::GreaterEqual => B::LessEqual,
+                    other => other,
+                };
+                [(*left, *right, op), (*right, *left, flipped)]
+                    .into_iter()
+                    .filter_map(|(x, e, op)| {
+                        let (site, len) = self.narrowable(x)?;
+                        let range = Range::narrowed(
+                            op,
+                            self.typed.known[e.0].range.as_ref()?,
+                            self.typed.known[x.0].range.as_ref(),
+                        )?;
+                        Some((site, len, range))
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The local an `Integer` read names, by itself or by its `len`.
+    fn narrowable(&self, id: ExprId) -> Option<(Site, bool)> {
+        if !integer_type(self.typed.expr(id)) {
+            return None;
+        }
+        let local = |id: ExprId| match self.resolved.expr(id) {
+            Some(Target::Local { site }) => Some((site.start, site.end)),
+            _ => None,
+        };
+        let len = |field: &crate::ast::Name| {
+            field.segments.last().is_some_and(|n| n == "len")
+        };
+        match (&self.module.expressions[id.0].kind, self.resolved.expr(id)) {
+            (ExprKind::Name(_), Some(Target::Local { site })) => {
+                Some(((site.start, site.end), false))
+            }
+            (ExprKind::Name(_), Some(Target::Members { head, members }))
+                if members.len() == 1 && members[0] == "len" =>
+            {
+                match &**head {
+                    Target::Local { site } => {
+                        Some(((site.start, site.end), true))
+                    }
+                    _ => None,
+                }
+            }
+            (ExprKind::Field { value, field }, _) if len(field) => {
+                Some((local(*value)?, true))
+            }
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn has_limits(ty: &Type) -> bool {
     match ty {
         Type::Limited { .. } => true,
@@ -2258,6 +2651,29 @@ pub(crate) fn modifier(ty: &Type) -> bool {
 }
 
 fn narrow_path(known: &mut Known, path: Vec<String>, range: &Range) {
+    let part = path_part(known, path);
+    if part
+        .meaning
+        .as_ref()
+        .is_some_and(|n| n.origin == Origin::Prelude && n.name == "Integer")
+        || part.range.is_some()
+    {
+        part.range
+            .get_or_insert_with(Range::unknown)
+            .intersect(range);
+    }
+}
+
+/// Meet the part of `known` at `path` with `range`.
+fn meet_path(known: &mut Known, path: Vec<String>, range: &Range) {
+    path_part(known, path)
+        .range
+        .get_or_insert_with(Range::unknown)
+        .intersect(range);
+}
+
+/// The part of `known` at `path`, made when it is missing.
+fn path_part(known: &mut Known, path: Vec<String>) -> &mut Known {
     let mut part = known;
     for name in path {
         let index = part
@@ -2270,17 +2686,7 @@ fn narrow_path(known: &mut Known, path: Vec<String>, range: &Range) {
             });
         part = &mut part.parts[index].1;
     }
-    if !part
-        .meaning
-        .as_ref()
-        .is_some_and(|n| n.origin == Origin::Prelude && n.name == "Integer")
-        && part.range.is_none()
-    {
-        return;
-    }
-    part.range
-        .get_or_insert_with(Range::unknown)
-        .intersect(range);
+    part
 }
 
 impl Pass<'_> {

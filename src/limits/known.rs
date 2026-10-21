@@ -277,10 +277,68 @@ impl Range {
     }
 }
 
+impl Range {
+    /// The one range of `x` where `x op rhs` holds, given what is
+    /// known of `x` (07-checks §What is known 4): `!=` narrows only at
+    /// an end of `own`, by an exact `rhs`.
+    pub(crate) fn narrowed(
+        op: BinaryOp,
+        rhs: &Self,
+        own: Option<&Self>,
+    ) -> Option<Self> {
+        let one = End::Finite(1.into());
+        Some(match op {
+            B::Less => Self {
+                lo: End::Negative,
+                hi: rhs.hi.add(&one.negated()),
+            },
+            B::LessEqual => Self {
+                lo: End::Negative,
+                hi: rhs.hi.clone(),
+            },
+            B::Greater => Self {
+                lo: rhs.lo.add(&one),
+                hi: End::Positive,
+            },
+            B::GreaterEqual => Self {
+                lo: rhs.lo.clone(),
+                hi: End::Positive,
+            },
+            B::Equal => rhs.clone(),
+            B::NotEqual => {
+                let own = own?;
+                let n = &rhs.hi;
+                if !matches!(n, End::Finite(_))
+                    || rhs.lo != *n
+                    || (own.lo != *n && own.hi != *n)
+                {
+                    return None;
+                }
+                Self {
+                    lo: if own.lo == *n {
+                        n.add(&one)
+                    } else {
+                        End::Negative
+                    },
+                    hi: if own.hi == *n {
+                        n.add(&one.negated())
+                    } else {
+                        End::Positive
+                    },
+                }
+            }
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Failure {
     Fault,
     Dependency,
+    /// The value never arrives, as a `fault` call's: a join skips it
+    /// (07-checks §What is known 4).
+    Never,
 }
 
 /// Facts held of a value, independent of its type.
@@ -364,6 +422,53 @@ impl fmt::Display for Known {
 }
 
 impl Known {
+    /// What is known after two branches meet (07-checks §What is known
+    /// 4): the smallest range that holds both and the names both have.
+    /// Nothing else leaves a branch; a dead branch is skipped.
+    #[must_use]
+    pub(crate) fn join(&self, other: &Self) -> Self {
+        if self.is_dead() {
+            return other.branch();
+        }
+        if other.is_dead() {
+            return self.branch();
+        }
+        Self {
+            failure: [self.failure, other.failure]
+                .into_iter()
+                .flatten()
+                .find(|f| *f == Failure::Dependency),
+            range: match (&self.range, &other.range) {
+                (Some(a), Some(b)) => Some(Range {
+                    lo: a.lo.clone().min(b.lo.clone()),
+                    hi: a.hi.clone().max(b.hi.clone()),
+                }),
+                _ => None,
+            },
+            names: self
+                .names
+                .iter()
+                .filter(|name| other.names.contains(name))
+                .cloned()
+                .collect(),
+            narrowing: self.narrowing || other.narrowing,
+            ..Self::default()
+        }
+    }
+    /// What of one branch may leave it: its range and names.
+    fn branch(&self) -> Self {
+        Self {
+            failure: self.failure.filter(|f| *f != Failure::Fault),
+            range: self.range.clone(),
+            names: self.names.clone(),
+            narrowing: self.narrowing,
+            ..Self::default()
+        }
+    }
+    pub(crate) fn is_dead(&self) -> bool {
+        self.failure == Some(Failure::Never)
+            || self.range.as_ref().is_some_and(|r| r.lo > r.hi)
+    }
     pub(crate) fn part(&self, name: &str) -> Self {
         if self.failure.is_some() {
             return self.clone();

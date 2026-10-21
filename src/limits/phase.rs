@@ -123,7 +123,7 @@ impl Pass<'_> {
                     origin: Origin::File(_),
                     ..
                 },
-            ) => self.target(target).phase,
+            ) => self.target(target, None).phase,
             Some(Target::Value { origin, name })
                 if matches!(origin, Origin::Host(_) | Origin::Commands) =>
             {
@@ -1020,7 +1020,7 @@ impl Pass<'_> {
             ExprKind::Name(n)
                 if n.segments.first().is_none_or(|n| n != "self") =>
             {
-                self.target(self.target_in(module, origin, id).as_ref())
+                self.target(self.target_in(module, origin, id).as_ref(), None)
             }
             ExprKind::Binary {
                 op, left, right, ..
