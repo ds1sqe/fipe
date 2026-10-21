@@ -63,7 +63,7 @@ impl Machine {
                 self.native(program, *op, args, Some(result), back, node)
             }
             Callee::Host(declaration) => {
-                Ok(self.host(*declaration, args, back, node))
+                Ok(self.host(*declaration, args, result, back, node))
             }
             Callee::Derived { kind, ty } => {
                 let ty = {
@@ -137,7 +137,8 @@ impl Machine {
         let natives = self.natives();
         // A declared row of a host's namespace is a host call.
         let Some(native) = natives.get(op) else {
-            return Ok(self.host(op, args, back, node));
+            let ty = result.expect("a host call has a result type");
+            return Ok(self.host(op, args, ty, back, node));
         };
         let units = super::budget::size(native, &args);
         self.pay(units)

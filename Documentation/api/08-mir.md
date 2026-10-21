@@ -211,35 +211,35 @@ its `program` joins every run's, so a stored function value keeps its body.
 the heap, never on the Rust stack. A `Host` callee, or a dispatch row naming a
 host's declaration, is the one place a run returns `Request::Call` with the
 arguments in spot order and the `with` environment open at the call; `reply`
-with the same program continues it, a value going where the call wanted it and
-a failure Faulting `Host` at the call. A Fault ends the run where it happens,
-its span in its `namespace`'s source; the host's prior effects stand.
-`withdraw` forgets a withdrawn line's globals and module inits
-([embedding](09-embed.md) §Session): given again, it reruns them, effects
-included.
+with the same program continues it, a value going where the call wanted it and a
+failure Faulting `Host` at the call. A value without the shape of the call's
+result type (a primitive's kind, a tuple's or array's length, a record's
+meaning, constructor and fields, in every part; limits and opaque types are the
+host's) Faults `Host` "the reply is not a T" there. A Fault ends the run where
+it happens, its span in its `namespace`'s source; the host's prior effects
+stand. `withdraw` forgets a withdrawn line's globals and module inits
+([embedding](09-embed.md) §Session): given again, they rerun.
 
-The budget is per run, `None` for an unbounded one; `charged` reports
-the units of the run in progress or of the last one, bounded or not. A
-block pays its `Charge` nodes when it opens: with `r` units left and
-more nodes, the run Faults `Budget` at the span of node `r` before any
-statement of the block runs. A call's node is paid in the block whose
-terminator makes it, so a host call that cannot be paid is never
-requested. A native pays its size term before it acts: an `Integer`
-`add`, `sub`, `eq` or `cmp` one per 64-bit limb of the larger operand,
-`mul`, `div` and `rem` the product of the limb counts; a container
-operation one per element of its input, `take` and `head` only those
-they reach; a structural `eq`, `cmp`, `show` or `default` one per value
-below the receiver. A test costs the nodes of its limit's body, the
-division test one unit; a proved entry has no `Enter` and costs nothing.
-A host call's bytes are not charged.
+The budget is per run, `None` for an unbounded one; `charged` reports the units
+of the run in progress or of the last one, bounded or not. A block pays its
+`Charge` nodes when it opens: with `r` units left and more nodes, the run Faults
+`Budget` at the span of node `r` before any statement of the block runs. A
+call's node is paid in the block whose terminator makes it, so a host call that
+cannot be paid is never requested. A native pays its size term before it acts:
+an `Integer` `add`, `sub`, `eq` or `cmp` one per 64-bit limb of the larger
+operand, `mul`, `div` and `rem` the product of the limb counts; a container
+operation one per element of its input, `take` and `head` only those they reach;
+a structural `eq`, `cmp`, `show` or `default` one per value below the receiver.
+A test costs the nodes of its limit's body, the division test one unit; a proved
+entry has no `Enter` and costs nothing. A host call's bytes are not charged.
 
-An `Enter` tests every component its entry's path reaches from the
-value, in order; the first failure is `Reason::Failed { entry, value }`,
-which `Reason::describe(tables)` words with the entry's limit. `Observation` is what every
-backend must reproduce from the same unit and replies on a run no budget
-stops; where a budget stops a run, and the units charged, are the VM's
-and not part of it. A driver assembles it from its trace and the bytes
-its sink policy wrote ([embedding](09-embed.md) §Requests and replies).
+An `Enter` tests every component its entry's path reaches from the value, in
+order; the first failure is `Reason::Failed { entry, value }`, which
+`Reason::describe(tables)` words with the entry's limit. `Observation` is what
+every backend must reproduce from the same unit and replies on a run no budget
+stops; where a budget stops a run, and the units charged, are the VM's and not
+part of it. A driver assembles it from its trace and the bytes its sink policy
+wrote ([embedding](09-embed.md) §Requests and replies).
 
 ## What follows
 

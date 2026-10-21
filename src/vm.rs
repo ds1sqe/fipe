@@ -17,6 +17,7 @@ mod defaults;
 mod dispatch;
 mod drive;
 mod entries;
+mod fits;
 mod frames;
 mod globals;
 mod immediate;
@@ -112,8 +113,8 @@ pub struct Machine {
     prelude: Option<(usize, Rc<Prelude>)>,
     /// The body of the run in progress; `None` between runs.
     stage: Option<Stage>,
-    /// Where an owed host reply goes, and the call's node.
-    waiting: Option<(Return, usize)>,
+    /// The host call an owed reply answers.
+    waiting: Option<Owed>,
     /// The `with` keys and values open, outermost first.
     environment: Vec<(usize, Value)>,
     /// Every program run so far, joined: the bodies frames and function
@@ -149,6 +150,15 @@ pub(crate) enum Return {
     Store(usize),
     /// The run's result.
     Finish,
+}
+
+/// A host call waiting on its reply: where the value goes, the call's
+/// node, and the type its declaration gives the value at this call.
+#[derive(Debug)]
+pub(crate) struct Owed {
+    back: Return,
+    node: usize,
+    ty: ir::Type,
 }
 
 /// What a step decided.
@@ -292,7 +302,8 @@ impl Machine {
 
     /// Answer the owed host request and continue the run, with the
     /// program `run` was given: the value goes where the call wanted
-    /// it; a failure Faults `Host` at the call.
+    /// it; a failure, or a value that does not have the shape of the
+    /// type the call declared, Faults `Host` at the call.
     ///
     /// # Panics
     /// When no host request is owed, or on a reply of another kind.
@@ -301,19 +312,44 @@ impl Machine {
         program: &mir::Program,
         reply: Reply,
     ) -> Outcome<Result<Value, Fault>> {
-        let (back, node) = self.waiting.take().expect("a host request is owed");
         let joined = self.joined();
         debug_assert!(Rc::ptr_eq(&joined.tables, &program.tables));
         let program = &*joined;
-        let flow = match reply {
-            Reply::Value(Ok(value)) => self.deliver(program, value, back),
+        let flow = self.replied(program, reply);
+        self.settle(program, flow)
+            .unwrap_or_else(|| self.advance(program))
+    }
+
+    /// The owed call's reply delivered, or the Fault it makes.
+    fn replied(
+        &mut self,
+        program: &mir::Program,
+        reply: Reply,
+    ) -> Result<Flow, Fault> {
+        let Owed { back, node, ty } =
+            self.waiting.take().expect("a host request is owed");
+        match reply {
+            Reply::Value(Ok(value)) => {
+                let misfit = {
+                    let tables = program.tables.borrow();
+                    (!fits::fits(&value, &ty, &tables, &self.prelude()))
+                        .then(|| fits::named(&ty, &tables))
+                };
+                if let Some(named) = misfit {
+                    let message = alloc::format!("the reply is not {named}");
+                    return Err(Self::fault(
+                        program,
+                        node,
+                        Reason::Host(message),
+                    ));
+                }
+                self.deliver(program, value, back)
+            }
             Reply::Value(Err(message)) => {
                 Err(Self::fault(program, node, Reason::Host(message)))
             }
             Reply::File(_) => panic!("a host call takes a value reply"),
-        };
-        self.settle(program, flow)
-            .unwrap_or_else(|| self.advance(program))
+        }
     }
 
     /// Step the run until it ends or asks the host; each body of the
@@ -384,15 +420,17 @@ impl Machine {
         self.stage = None;
     }
 
-    /// Hand a host call to the driver; the run waits for `reply`.
+    /// Hand a host call to the driver; the run waits for `reply`, whose
+    /// value must have the shape of `ty`, the call's result type.
     pub(crate) fn host(
         &mut self,
         declaration: usize,
         arguments: Vec<Value>,
+        ty: ir::Type,
         back: Return,
         node: usize,
     ) -> Flow {
-        self.waiting = Some((back, node));
+        self.waiting = Some(Owed { back, node, ty });
         Flow::Request(Request::Call {
             declaration,
             arguments,

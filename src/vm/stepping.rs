@@ -5,7 +5,7 @@ use crate::{
     embed::{Outcome, Reply},
     mir,
     mir::Statement,
-    value::{Reason, Value},
+    value::Value,
 };
 
 impl Machine {
@@ -55,20 +55,14 @@ impl Machine {
 
     /// Answer the host request a stepped run stopped on; the next
     /// [`Machine::next_stop`] continues from it. A value goes where the
-    /// call wanted it; a failure Faults `Host` at the call.
+    /// call wanted it; a failure, or a value that does not have the
+    /// shape of the type the call declared, Faults `Host` at the call.
     ///
     /// # Panics
     /// When no host request is owed, or on a reply of another kind.
     pub fn answer(&mut self, reply: Reply) {
-        let (back, node) = self.waiting.take().expect("a host request is owed");
         let program = self.joined();
-        let flow = match reply {
-            Reply::Value(Ok(value)) => self.deliver(&program, value, back),
-            Reply::Value(Err(message)) => {
-                Err(Self::fault(&program, node, Reason::Host(message)))
-            }
-            Reply::File(_) => panic!("a host call takes a value reply"),
-        };
+        let flow = self.replied(&program, reply);
         let settled = self.settle(&program, flow);
         self.queue(settled);
     }

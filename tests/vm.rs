@@ -50,6 +50,8 @@ mod main_lines;
 mod natives;
 #[path = "vm/outcomes.rs"]
 mod outcomes;
+#[path = "vm/replies.rs"]
+mod replies;
 #[path = "vm/suspend.rs"]
 mod suspend;
 #[path = "vm/text.rs"]
