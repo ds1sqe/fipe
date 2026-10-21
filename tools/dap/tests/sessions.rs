@@ -351,9 +351,9 @@ fn continuing_after_a_fault_ends_the_run() {
     let mut requests = vec![
         json!({ "seq": 1, "type": "request", "command": "initialize" }),
         json!({ "seq": 2, "type": "request", "command": "launch", "arguments": {
-            "program": root.join("Documentation/examples/03-types.fipe"),
+            "program": root.join("tools/dap/tests/fixtures/fault.fipe"),
             "host": root.join("tests/fixtures/host"),
-            "trace": root.join("tests/fixtures/traces/03-types.txt"),
+            "trace": root.join("tools/dap/tests/fixtures/fault.txt"),
         }}),
         json!({ "seq": 3, "type": "request", "command": "configurationDone" }),
     ];

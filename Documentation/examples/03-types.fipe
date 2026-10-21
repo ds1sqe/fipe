@@ -9,7 +9,7 @@ pub type Point: Eq & Ord & Show & Read & TryFrom<Polar, RangeError> {
     pub x: I64,
     ## The vertical coordinate.
     pub y: I64 = 0,
-    len: U64 = (hypot x y),
+    len: U64 = (round (hypot x y)),
 }
 
 # A sum. Uppercase members are constructors, each with named fields.
@@ -22,7 +22,7 @@ type Width { w: U64 = 80 }
 # Code lives in the impl. Bare arms are the written constructor; `Self { }`
 # is the raw construction, legal here because the fields are visible.
 impl Point {
-    x (y = 0) => Self { x, y, len: hypot x y },
+    x (y = 0) => Self { x, y, len: round (hypot x y) },
     ## The point at the origin.
     pub origin = Self 0 0,
     ## A point with equal coordinates.

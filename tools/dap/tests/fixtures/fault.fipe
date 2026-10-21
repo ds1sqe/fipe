@@ -1,0 +1,2 @@
+# A run that Faults: division leaves no finite value.
+x = 1.0 / 0.0

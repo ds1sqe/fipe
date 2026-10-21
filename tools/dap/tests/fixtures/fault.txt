@@ -1,0 +1,3 @@
+fault in main at 2:5: the result is not finite
+success ""
+error "fault in main at 2:5: the result is not finite\n"

@@ -80,9 +80,9 @@ operation, test values and ordered effects together:
 returns 4; `Just 3 || 4` returns 3, not `Just 3`.
 - `1.0 / 0.0`, `0.0 / 0.0`, `1e308 * 10.0` and `sqrt -1.0` Fault; no
 infinity or NaN is a value (E2). `-0.0 == 0.0` is `True` and `show -0.0` is
-`-0.0`; `show 0.1` is `0.1`, `show 1.0` is `1.0`; `round 2.5` is `2`.
+`-0.0`; `show 0.1` is `0.1`, `show 1.0` is `1.0`; `round 2.5` is `2.0`.
 `x: F64 = 0.1` is the nearest binary64; `big = _ => 9007199254740993` then
-`x: F64 = big ()` Faults at run time.
+`x: F64 = big ()` is the check error that the value is not exact.
 - `x = []` runs and shows `[]`; `x | show` after it is the check error
 naming the unfixed element meaning; `x: Vec<Integer> = []` never asks.
 - With a budget a run Faults `Budget` with the location of the action it

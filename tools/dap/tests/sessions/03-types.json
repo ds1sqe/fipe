@@ -36,6 +36,6 @@
       "command": "disconnect"
     }
   ],
-  "ends": "exception",
+  "ends": "terminated",
   "outputs": "the call lines of the example's trace fixture; its first line as the value, or as the Fault's description"
 }

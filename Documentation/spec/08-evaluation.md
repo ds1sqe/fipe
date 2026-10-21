@@ -14,6 +14,8 @@ left to right; tests where [checks](07-checks.md) §Order and charges places
 them. A block evaluates its lines in order and is its last line, or `()`.
 An `if` evaluates only its selected arm. Arms test patterns in source
 order, a guard only after its pattern matches, and only the chosen body.
+A call in tail position replaces its caller's frame: recursion as
+iteration runs in constant memory.
 
 ## Parameter binding
 

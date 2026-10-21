@@ -38,6 +38,7 @@ each once a defect: a row stays so the defect cannot return.
 | REPL `type Shape` LF `where self.area: F64` | one member-limit declaration |
 | supplied `Show.show: (self: Self) -> Integer` | rejected while loading declarations |
 | 3 000 prefix `!` operators | syntax nesting-limit error, no stack overflow |
+| a chain of 300 `+` operators | syntax error at the operator past depth 256, no stack overflow |
 | repeated literal lines at `F64`, including known places | member limits are not repeatedly expanded as numeric limits |
 | long sums, invalid calls and concatenations | linear processing of settled obligations and literal groups |
 | conversion with known unmatched source / unknown target | names the unsupported source / asks for the target meaning |

@@ -55,10 +55,16 @@ fn list_and_tuple_patterns_run() {
 }
 
 #[test]
-fn the_types_example_runs_until_its_inexact_length() {
-    // `len: U64 = (hypot x y)` is exact for `Point 3 4` but not for
-    // `Point -y 1 -x 2`: the number row is exact or Faults (E2).
+fn the_types_example_runs_to_its_last_line() {
     let source = include_str!("../../Documentation/examples/03-types.fipe");
+    assert_eq!(shown(source), "Width 80");
+}
+
+#[test]
+fn an_inexact_length_faults_at_its_default() {
+    // `hypot 2 1` is not an exact `U64`: the number row is exact or
+    // Faults (E2).
+    let source = "type P { x: I64, len: U64 = (hypot x 1) }\nP 2";
     let fault = super::run::run(source).expect_err("an inexact length");
     assert!(
         matches!(
@@ -69,5 +75,5 @@ fn the_types_example_runs_until_its_inexact_length() {
         fault.reason
     );
     let at = &source[fault.span.start..fault.span.end];
-    assert!(at.contains("hypot x y"), "{at}");
+    assert!(at.contains("hypot x 1"), "{at}");
 }
