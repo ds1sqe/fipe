@@ -59,7 +59,7 @@ def session(binary, args=(), color=False):
 
 def editing(binary):
     until, send, end = session(binary)
-    until(b"fipe> ")
+    assert b":help lists the commands" in until(b"fipe> ")
     # "12 * 3", four Lefts to after "12", Backspace and "4": "14 * 3".
     send(b"12 * 3", *[LEFT] * 4, b"\x7f", b"4", b"\r")
     assert b"fipe> 14 * 3\x1b[K" in until(b"....> ")

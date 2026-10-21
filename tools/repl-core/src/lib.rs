@@ -22,8 +22,9 @@
 //!
 //! `:ast` prints the last line that parsed, accepted or not: a tree
 //! never depends on checking. Commands: `:ast`, `:r [line]`, `:t [line]`,
-//! `:ir [line]`, `:load <stem or path>`, `:checks [name]`, `:host [dir]`,
-//! `:q`; any other line goes to the session.
+//! `:ir [line]`, `:mir [line]`, `:load <stem or path>`, `:checks [name]`,
+//! `:host [dir]`, `:help [name]`, `:q`; any other line goes to the
+//! session. `:help` lists them, one line each.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -63,9 +64,37 @@ pub const BUDGET: u64 = 1 << 20;
 const MORE: &str = "....> ";
 const HOST_DIR: &str = "tests/fixtures/host";
 /// The command namespace first, then the host modules by name.
-/// The commands, by name after `:`.
-const COMMANDS: [&str; 9] =
-    ["ast", "r", "t", "ir", "mir", "load", "checks", "host", "q"];
+/// The commands: how each is written, and what it does.
+const COMMANDS: [(&str, &str); 10] = [
+    (":ast", "the syntax tree of the last line that parsed"),
+    (
+        ":r [line]",
+        "what each name of the line, or the last one, refers to",
+    ),
+    (
+        ":t [line]",
+        "the types of the line, or of the last accepted one",
+    ),
+    (
+        ":ir [line]",
+        "the checked unit of the line, or of the last one",
+    ),
+    (
+        ":mir [line]",
+        "the machine program of the line, or of the last one",
+    ),
+    (":load <stem or path>", "use the module of a file"),
+    (
+        ":checks [name]",
+        "the session's checks, or those of a binding",
+    ),
+    (
+        ":host [dir]",
+        "load host declarations, tests/fixtures/host if none",
+    ),
+    (":help [name]", "this list, or a name's doc and type"),
+    (":q", "quit"),
+];
 const HOST: [&str; 6] = ["commands", "fs", "sys", "cli", "text", "config"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,6 +165,8 @@ enum Mode {
     Load,
     Resolve,
     Types,
+    /// `:help name`: as `:t`, but an unknown name is one line.
+    Help,
     Ir,
     Mir,
 }
@@ -424,7 +455,37 @@ impl Repl {
             ("load", "") => out.write(b"usage: :load <stem or path>\n"),
             ("load", arg) => self.load(arg, out),
             ("host", dir) => self.request_host(dir, out),
+            ("help", arg) => self.help(arg, out),
             _ => out.write(format!("unknown command :{name}\n").as_bytes()),
+        }
+    }
+
+    /// `:help`: the commands, one line each; `:help :cmd` that command's
+    /// line; `:help name` the name's doc and type.
+    fn help(&mut self, arg: &str, out: &mut Outs) {
+        let width = COMMANDS.iter().map(|(usage, _)| usage.len()).max();
+        let line = |(usage, what): &(&str, &str)| {
+            let padding = " ".repeat(width.unwrap_or_default() - usage.len());
+            format!("{usage}{padding}  {what}\n")
+        };
+        if arg.is_empty() {
+            for command in &COMMANDS {
+                out.write(line(command).as_bytes());
+            }
+        } else if let Some(name) = arg.strip_prefix(':') {
+            let found = COMMANDS
+                .iter()
+                .find(|(usage, _)| usage[1..].split(' ').next() == Some(name));
+            match found {
+                Some(command) => out.write(line(command).as_bytes()),
+                None => {
+                    out.write(format!("unknown command :{name}\n").as_bytes());
+                }
+            }
+        } else if is_name(arg) {
+            self.start(arg, Mode::Help, out);
+        } else {
+            out.write(b"usage: :help [name or :command]\n");
         }
     }
 
@@ -574,7 +635,7 @@ impl Repl {
         }
         let outcome = match mode {
             Mode::Accept | Mode::Load => self.session.line(text),
-            Mode::Resolve | Mode::Types | Mode::Ir | Mode::Mir => {
+            Mode::Resolve | Mode::Types | Mode::Help | Mode::Ir | Mode::Mir => {
                 self.session.query(text)
             }
         };
@@ -607,6 +668,11 @@ impl Repl {
         mode: Mode,
         out: &mut Outs,
     ) {
+        if matches!(mode, Mode::Help) && report.diagnostics.iter().any(unknown)
+        {
+            let text = format!("no name `{text}` in scope\n");
+            return out.write(text.as_bytes());
+        }
         for warning in &report.warnings {
             let reading = match warning.style {
                 fipe::ast::CallStyle::Space => "one tuple argument",
@@ -629,7 +695,9 @@ impl Repl {
                 }
             }
             Mode::Resolve => names(&self.session, &report, &text, out),
-            Mode::Types => types(&self.session, &report, &text, out),
+            Mode::Types | Mode::Help => {
+                types(&self.session, &report, &text, out);
+            }
             Mode::Ir => ir::render(report.unit.as_ref(), out),
             Mode::Mir => mir::render(report.unit.as_ref(), out),
         }
@@ -1103,6 +1171,28 @@ const fn from_file(diagnostic: &Diagnostic) -> bool {
         | Diagnostic::Type(_)
         | Diagnostic::Compile { .. } => false,
     }
+}
+
+/// An unknown name or type, which `:help` says in one line.
+const fn unknown(diagnostic: &Diagnostic) -> bool {
+    matches!(
+        diagnostic,
+        Diagnostic::Resolve(fipe::resolve::Error {
+            reason: fipe::resolve::Reason::UnknownName
+                | fipe::resolve::Reason::UnknownType,
+            ..
+        })
+    )
+}
+
+/// A qualified name: Name segments joined by dots.
+fn is_name(text: &str) -> bool {
+    text.split('.').all(|segment| {
+        segment.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && segment
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 /// A comment-only line, which is blank to the grammar.

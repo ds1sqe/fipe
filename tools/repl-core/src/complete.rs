@@ -10,7 +10,6 @@
 use crate::{edit::Completion, Repl, COMMANDS, HOST};
 use alloc::{
     collections::BTreeSet,
-    format,
     string::{String, ToString},
     vec::Vec,
 };
@@ -40,7 +39,9 @@ impl Repl {
         let (partial, candidates) = if in_text(before) {
             (word, Vec::new())
         } else if before[..start].trim_start() == ":" {
-            let commands = COMMANDS.iter().map(|name| format!(":{name}"));
+            let commands = COMMANDS.iter().filter_map(|(usage, _)| {
+                usage.split(' ').next().map(String::from)
+            });
             (before.trim_start(), commands.collect())
         } else if let Some(dot) = word.rfind('.') {
             (&word[dot + 1..], self.members(&word[..dot]))

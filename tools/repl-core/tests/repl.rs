@@ -42,6 +42,39 @@ fn written(outs: Vec<Out>) -> String {
 }
 
 #[test]
+fn help_lists_every_command_on_one_line() {
+    let text = written(Repl::new().feed(b":help\n"));
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 11, "{text}");
+    for command in [":ast", ":r", ":t", ":ir", ":mir", ":load", ":checks"] {
+        assert!(lines.iter().any(|line| line.starts_with(command)), "{text}");
+    }
+    assert!(lines[8].starts_with(":help [name]"), "{text}");
+    assert!(lines[9].starts_with(":q "), "{text}");
+    let text = written(Repl::new().feed(b":help :t\n:help :zz\n"));
+    assert!(text.starts_with(":t [line]"), "{text}");
+    assert_eq!(text.lines().count(), 3, "{text}");
+    assert!(text.contains("unknown command :zz\n"), "{text}");
+}
+
+#[test]
+fn help_on_a_name_prints_its_doc_and_type_as_t_does() {
+    let mut repl = Repl::new();
+    let help = written(repl.feed(b":help len\n"));
+    let types = written(repl.feed(b":t len\n"));
+    assert_eq!(help, types);
+    assert!(help.contains("len: "), "{help}");
+    let text = written(repl.feed(b"## The answer.\nx = 42\n\n:help x\n"));
+    assert!(text.contains("The answer.\nx: Integer\n"), "{text}");
+    let text = written(repl.feed(b":help nosuch\n:help 1 + 2\n"));
+    assert_eq!(
+        text,
+        "no name `nosuch` in scope\n\
+         usage: :help [name or :command]\nfipe> "
+    );
+}
+
+#[test]
 fn the_first_feed_prompts() {
     assert_eq!(Repl::new().feed(&[]), [Out::Write(b"fipe> ".to_vec())]);
 }
@@ -1684,7 +1717,8 @@ mod line_editor {
             candidates(&repl, " :ho"),
             (":ho".into(), names(&[":host"]))
         );
-        assert_eq!(candidates(&repl, ":").1.len(), 9);
+        assert_eq!(candidates(&repl, ":").1.len(), 10);
+        assert_eq!(candidates(&repl, ":he").1, names(&[":help"]));
     }
 
     #[test]

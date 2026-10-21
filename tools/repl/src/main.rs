@@ -77,6 +77,8 @@ fn run() {
         None => repl.feed(&[]),
     });
     if platform::terminal() && platform::raw() {
+        // Only at a terminal, so piped transcripts keep their bytes.
+        platform::write(b"Fipe REPL: :help lists the commands, :q quits.\n");
         edited(&mut repl, outs);
         platform::cooked();
     } else {
