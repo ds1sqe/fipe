@@ -34,6 +34,11 @@ impl Pass<'_> {
         place: Span,
         frequency: Frequency,
     ) {
+        // A value that never arrives, as a `fault` call's, is dead code
+        // and proves anything (07-checks §What is known 3, 4).
+        if known.failure == Some(super::known::Failure::Never) {
+            return;
+        }
         let start = self.typed.checks.len();
         match ty {
             Type::Limited { name, .. } => {

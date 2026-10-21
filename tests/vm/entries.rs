@@ -72,8 +72,9 @@ fn an_init_entry_is_refuted_when_the_module_runs() {
 
 #[test]
 fn an_element_entry_tests_each_element_and_names_the_first_failure() {
-    let source =
-        "f: () -> Vec<Integer> = _ => [1, 300, 400]\nx: Vec<U8> = f ()\nx";
+    // The body is read at `n: Integer`, so the elements are open.
+    let source = "f: Integer -> Vec<Integer> = n => [1, n, n + 100]\n\
+                  x: Vec<U8> = f 300\nx";
     let fault = budgeted(&program(source), 1 << 20).0.unwrap_err();
     assert!(
         matches!(&fault.reason, Reason::Failed { value, .. } if value == "300"),

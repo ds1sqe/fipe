@@ -360,7 +360,31 @@ pub struct Known {
     /// known one by one: the bytes of a text or a bytes literal are `U8`.
     pub element: Option<alloc::boxed::Box<Self>>,
     pub constructor: Option<String>,
+    /// What is known of a function value (07-checks §What is known 5).
+    pub(crate) function: Option<alloc::boxed::Box<Function>>,
     pub narrowing: bool,
+}
+
+/// What is known of a function: its parameters' and its result's facts,
+/// and, when its result is a type variable, where that variable is fed
+/// (07-checks §What is known 5, 6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Function {
+    pub(crate) parameters: Vec<Known>,
+    pub(crate) result: Known,
+    /// `None` when the result is no variable of the function's scheme or
+    /// something may produce it unseen.
+    pub(crate) feeds: Option<Vec<Feed>>,
+}
+
+/// A parameter where the result's type variable goes in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Feed {
+    /// The argument at this position is of the variable's type.
+    Value(usize),
+    /// The argument at this position is a function of this many
+    /// parameters returning it.
+    Returns(usize, usize),
 }
 
 impl fmt::Display for Known {
@@ -455,8 +479,43 @@ impl Known {
             ..Self::default()
         }
     }
+    /// What is known of both a value's sources: the range both hold and
+    /// the names of either. A dead side stays dead.
+    #[must_use]
+    pub(crate) fn meet(mut self, other: &Self) -> Self {
+        if self.is_dead() {
+            return self;
+        }
+        if other.is_dead() {
+            return other.clone();
+        }
+        match (&mut self.range, &other.range) {
+            (Some(range), Some(other)) => range.intersect(other),
+            (range @ None, Some(other)) => *range = Some(other.clone()),
+            _ => (),
+        }
+        for name in &other.names {
+            if !self.names.contains(name) {
+                self.names.push(name.clone());
+            }
+        }
+        self
+    }
+    /// What a function's result carries to its calls: the value's own
+    /// facts, not where or when its body runs.
+    #[must_use]
+    pub(crate) fn result(&self) -> Self {
+        Self {
+            failure: self.failure.filter(|f| *f != Failure::Fault),
+            phase: super::Phase::default(),
+            pure: false,
+            demanded: false,
+            holding: None,
+            ..self.clone()
+        }
+    }
     /// What of one branch may leave it: its range and names.
-    fn branch(&self) -> Self {
+    pub(crate) fn branch(&self) -> Self {
         Self {
             failure: self.failure.filter(|f| *f != Failure::Fault),
             range: self.range.clone(),
@@ -502,6 +561,12 @@ impl Known {
         }
         for (_, part) in &mut self.parts {
             part.rehome(origin);
+        }
+        if let Some(function) = &mut self.function {
+            for parameter in &mut function.parameters {
+                parameter.rehome(origin);
+            }
+            function.result.rehome(origin);
         }
     }
 }

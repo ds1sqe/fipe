@@ -95,7 +95,7 @@ opening says how a row is read and what a mark means.
 | `p: Prime = 7` / `Seed` with `Compile (is_prime self)` | named test settled at compile time |
 | `kind` over `Prime` and `NonPrime` / `classify` with `_` | covered by a gate and its `!` / gates tried in order |
 | `c: U8 = (a + b) / 2` / `d: U8 = a + b` with `a: U8 = 200`, `b: U8 = 100` | proved: 150 / refuted: 300 |
-| `h: U8 = half 200` / `clamp` / `m: U8 = max a b` / `next` over `Odd` | proved: by the body / by branches / at one variable / by the declared result *narrowing* |
+| `h: U8 = half 200` / `clamp` / `m: U8 = max a b` / `next` over `Odd` | proved: by the body / by branches / at one variable / by the declared result |
 | `sum2: U8 -> U8 -> U8 = x y => x + y` / `:checks sum2` | open, tested per call / one plan entry |
 | an open entry in a strict session / a gate in one | check error / allowed |
 | `x / 0` / `x / y`, `y` known `0..5` | refuted / tested at run |

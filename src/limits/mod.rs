@@ -831,10 +831,50 @@ impl Pass<'_> {
             self.place_facts(&local.scheme.ty, &mut known);
             self.locals.insert(*site, known);
         }
-        // Parameters are places: seed their written limits before reading bodies.
+        // Parameters are places: seed their written limits before reading
+        // bodies, for every bound arm list, nested ones included, and
+        // each `impl` member with a signature.
+        for index in 0..self.module.expressions.len() {
+            self.seed(ExprId(index));
+        }
         for entry in &self.module.entries {
-            if let Entry::Line(id) = entry {
-                self.seed(*id);
+            let Entry::Item(item) = entry else { continue };
+            let ItemKind::Impl { members, .. } = &item.kind else {
+                continue;
+            };
+            for member in members {
+                if let crate::ast::ImplMember::Named {
+                    annotation: Some(_),
+                    value: Some(value),
+                    ..
+                } = member
+                {
+                    self.seed_member(*value);
+                }
+            }
+        }
+    }
+
+    /// An `impl` member's parameters, by the types its signature gives
+    /// their patterns.
+    fn seed_member(&mut self, value: ExprId) {
+        let ExprKind::Arms(arms) = &self.module.expressions[value.0].kind
+        else {
+            return;
+        };
+        for arm in arms {
+            for pattern in &arm.patterns {
+                if let (PatternKind::Name(name), Some(ty)) = (
+                    &self.module.patterns[pattern.0].kind,
+                    self.typed.pattern(*pattern),
+                ) {
+                    let mut known = Known {
+                        pure: true,
+                        ..Known::default()
+                    };
+                    self.place_facts(ty, &mut known);
+                    self.locals.insert((name.span.start, name.span.end), known);
+                }
             }
         }
     }
@@ -866,6 +906,16 @@ impl Pass<'_> {
                     self.place_facts(&scheme.ty, &mut fact);
                     fact.holding = self.holding(&scheme.ty, &mut Vec::new());
                     self.typed.known[value.0].holding.clone_from(&fact.holding);
+                }
+            }
+            if matches!(
+                self.module.expressions[value.0].kind,
+                ExprKind::Arms(_)
+            ) {
+                if let (Some(function), Some(scheme)) =
+                    (fact.function.as_deref_mut(), self.typed.binding(id))
+                {
+                    function.feeds = feeds(scheme, function.parameters.len());
                 }
             }
             self.pattern_facts(pattern, &fact);
@@ -1274,24 +1324,25 @@ impl Pass<'_> {
                 get(*then_body).join(&get(else_body))
             }),
             // A marked pipe is its left value or the stage's result
-            // (07-checks §What is known 7); a call's result waits on
-            // rule 5.
+            // (07-checks §What is known 7). A function stage's result is
+            // rebuilt into the left's type, whose join keeps nothing but
+            // its being dead.
             ExprKind::Pipe { left, right, .. } => {
                 let stage = get(*right);
-                let stage = if !stage.is_dead()
-                    && matches!(
+                let stage = match &stage.function {
+                    Some(f) if f.result.is_dead() => f.result.clone(),
+                    _ if matches!(
                         self.typed.expr(*right),
                         Some(Type::Function { .. })
-                    ) {
-                    Known {
-                        narrowing: true,
-                        ..Known::default()
+                    ) =>
+                    {
+                        Known::default()
                     }
-                } else {
-                    stage
+                    _ => stage,
                 };
                 get(*left).join(&stage)
             }
+            ExprKind::Arms(arms) => self.arms_value(id, arms),
             _ => Known::default(),
         }
     }
@@ -1330,15 +1381,175 @@ impl Pass<'_> {
                 origin: Origin::Prelude,
                 name,
             }) if name == "fault" => Known {
-                narrowing: true,
                 failure: Some(known::Failure::Never),
                 ..Known::default()
             },
-            _ => Known {
-                narrowing: true,
-                ..Known::default()
-            },
+            _ => self.applied(id),
         }
+    }
+    /// What an arm list is known as (07-checks §What is known 5): its
+    /// declared parameters' facts, and its result: the join of its
+    /// bodies, read once at those parameters, met with the declared
+    /// result.
+    fn arms_value(&self, id: ExprId, arms: &[crate::ast::Arm]) -> Known {
+        let Some(mut ty) = self.typed.expr(id) else {
+            return Known::default();
+        };
+        let mut parameters = Vec::new();
+        for _ in arms.first().map_or(&[][..], |arm| &arm.patterns) {
+            let Type::Function { parameter, result } = ty else {
+                return Known::default();
+            };
+            let mut known = Known::default();
+            self.place_facts(parameter, &mut known);
+            parameters.push(known);
+            ty = result;
+        }
+        let mut declared = Known::default();
+        self.place_facts(ty, &mut declared);
+        let result = arms
+            .iter()
+            .map(|arm| self.typed.known[arm.body.0].clone())
+            .reduce(|a, b| a.join(&b))
+            .unwrap_or_default()
+            .result()
+            .meet(&declared);
+        Known {
+            function: Some(alloc::boxed::Box::new(known::Function {
+                parameters,
+                result,
+                feeds: None,
+            })),
+            ..Known::default()
+        }
+    }
+    /// What the declared type of a call's value says of it.
+    fn declared(&self, id: ExprId) -> Known {
+        let mut known = Known::default();
+        if let Some(ty) = self.typed.expr(id) {
+            self.place_facts(ty, &mut known);
+        }
+        known
+    }
+    /// A call of a function value (07-checks §What is known 5, 6): its
+    /// declared result, met with what the callee is known to give. A
+    /// callee not yet read, in a cycle or past the checked unit, is
+    /// known by the declared result alone; a partial call is a function
+    /// of the remaining parameters.
+    fn applied(&self, id: ExprId) -> Known {
+        let declared = self.declared(id);
+        let Some(callee) = call_head(self.module, id) else {
+            return declared;
+        };
+        let head = &self.typed.known[callee.0];
+        if head.failure == Some(known::Failure::Dependency) {
+            return Known {
+                failure: head.failure,
+                narrowing: head.narrowing,
+                ..Known::default()
+            };
+        }
+        let Some(function) = head.function.as_deref() else {
+            return declared;
+        };
+        let Some(bound) = self
+            .binding_stage(id)
+            .and_then(|s| self.typed.bound.get(&(s.start, s.end)))
+        else {
+            // A bare function stage, as an arm list piped into, takes
+            // the piped value as its one argument.
+            let bare = matches!(
+                self.module.expressions[id.0].kind,
+                ExprKind::Pipe { op: PipeOp::Plain, right, .. } if right == callee
+            );
+            return if bare && function.parameters.len() == 1 {
+                function.result.clone().meet(&declared)
+            } else {
+                declared
+            };
+        };
+        if !bound.open.is_empty() {
+            if !bound.applied.is_empty() {
+                return declared;
+            }
+            return Known {
+                function: Some(alloc::boxed::Box::new(known::Function {
+                    parameters: bound
+                        .open
+                        .iter()
+                        .filter_map(|i| function.parameters.get(*i).cloned())
+                        .collect(),
+                    result: function.result.clone(),
+                    feeds: None,
+                })),
+                ..Known::default()
+            };
+        }
+        let mut result = function.result.clone();
+        if bound.applied.is_empty() {
+            if let Some(feeds) = &function.feeds {
+                result = result.meet(&self.fed(id, bound, feeds));
+            }
+        }
+        for _ in &bound.applied {
+            result = match result.function.as_deref() {
+                Some(f) if f.parameters.len() == 1 => f.result.clone(),
+                _ => Known::default(),
+            };
+        }
+        result.meet(&declared)
+    }
+    /// What comes out at a callee's result variable (07-checks §What is
+    /// known 6): the join of each argument of its type and each declared
+    /// result of a function argument returning it. With nothing going in,
+    /// or an argument not known one by one, it is unknown.
+    fn fed(
+        &self,
+        id: ExprId,
+        bound: &crate::typed::Bound,
+        feeds: &[known::Feed],
+    ) -> Known {
+        let argument = |spot: usize| -> Option<ExprId> {
+            let span = match bound.supplies.iter().find(|(i, _)| *i == spot)? {
+                (_, crate::typed::Supply::Expression(id)) => return Some(*id),
+                (
+                    _,
+                    crate::typed::Supply::Pipe(span)
+                    | crate::typed::Supply::Head(span),
+                ) => *span,
+                _ => return None,
+            };
+            first_input(self.module, id)
+                .filter(|input| self.module.expressions[input.0].span == span)
+        };
+        let mut joined: Option<Known> = None;
+        for feed in feeds {
+            let known = match *feed {
+                known::Feed::Value(spot) => {
+                    argument(spot).map(|a| self.typed.known[a.0].branch())
+                }
+                known::Feed::Returns(spot, arity) => argument(spot)
+                    .and_then(|a| self.typed.expr(a))
+                    .and_then(|ty| {
+                        let ty = peel(ty, arity)?;
+                        // A function argument with no declared limit
+                        // may return anything.
+                        has_limits(ty).then(|| {
+                            let mut known = Known::default();
+                            self.place_facts(ty, &mut known);
+                            known
+                        })
+                    }),
+            };
+            let Some(known) = known else {
+                return Known::default();
+            };
+            joined = Some(match joined {
+                Some(joined) => joined.join(&known),
+                None => known,
+            });
+        }
+        joined.unwrap_or_default()
     }
     /// What a byte is known to be: a `U8`, with its chain of limits.
     fn byte_facts(&self) -> Known {
@@ -1597,13 +1808,12 @@ impl Pass<'_> {
             .chain(self.frame.into_iter().flat_map(|f| f.lines.iter().enumerate().map(|(i,l)| (&l.module, Origin::Line(i)))))
             .chain(self.files.iter().map(|(n,m)| (m, Origin::File(n.clone()))))
             .any(|(m, o)| m.entries.iter().any(|entry| matches!(entry, Entry::Item(item) if matches!(&item.kind, ItemKind::Impl { target, members, .. } if self.type_name(m, &o, *target).as_ref() == Some(&TypeName { origin: origin.clone(), name: ty.clone() }) && members.iter().any(|member| matches!(member, crate::ast::ImplMember::Constructor { .. }))))));
+        // A written constructor is a call, known by its declared result
+        // (07-checks §What is known 5).
         if written
             && !matches!(self.resolved.expr(callee), Some(Target::SelfType))
         {
-            return Known {
-                narrowing: true,
-                ..Known::default()
-            };
+            return self.declared(id);
         }
         let fields = construction_fields(module, ty, name);
         let stage = match expression.kind {
@@ -2527,6 +2737,105 @@ impl Pass<'_> {
                 Some((local(*value)?, true))
             }
             _ => None,
+        }
+    }
+}
+
+/// A function type's result past `arity` parameters.
+fn peel(mut ty: &Type, arity: usize) -> Option<&Type> {
+    for _ in 0..arity {
+        let Type::Function { result, .. } = ty else {
+            return None;
+        };
+        ty = result;
+    }
+    Some(ty)
+}
+
+/// Where the result variable of a scheme over `arity` parameters goes in
+/// (07-checks §What is known 6): `None` when the result is no variable
+/// of the scheme, or something may produce it unseen: a literal of its
+/// type, a limit whose member may return it, a function argument
+/// returning it inside another type, or an argument holding it in a
+/// part, whose facts are not read one by one.
+fn feeds(
+    scheme: &crate::types::Scheme,
+    arity: usize,
+) -> Option<Vec<known::Feed>> {
+    let mut ty = &scheme.ty;
+    let mut parameters = Vec::new();
+    for _ in 0..arity {
+        let Type::Function { parameter, result } = ty else {
+            return None;
+        };
+        parameters.push(&**parameter);
+        ty = result;
+    }
+    let Type::Var(var) = ty else {
+        return None;
+    };
+    let var = *var;
+    let own = Type::Var(var);
+    if !scheme.variables.contains(&var)
+        || scheme.literals.iter().any(|(ty, ..)| ty.contains(var))
+        || scheme.obligations.iter().any(|o| produces(o, var))
+    {
+        return None;
+    }
+    let mut feeds = Vec::new();
+    for (spot, parameter) in parameters.into_iter().enumerate() {
+        if *parameter == own {
+            feeds.push(known::Feed::Value(spot));
+            continue;
+        }
+        if !parameter.contains(var) {
+            continue;
+        }
+        // A function argument: the variable only as one of its
+        // parameters, which it takes, or as its result, which it gives.
+        let mut arity = 0;
+        let mut result = parameter;
+        while let Type::Function {
+            parameter,
+            result: rest,
+        } = result
+        {
+            if parameter.contains(var) && **parameter != own {
+                return None;
+            }
+            arity += 1;
+            result = rest;
+        }
+        if arity == 0 || (result.contains(var) && *result != own) {
+            return None;
+        }
+        if *result == own {
+            feeds.push(known::Feed::Returns(spot, arity));
+        }
+    }
+    Some(feeds)
+}
+
+/// Whether a limit of a scheme may produce a value of `var`'s type: a
+/// member whose result holds it, or a claim other than one whose
+/// members return a fixed type.
+fn produces(
+    obligation: &crate::types::Obligation,
+    var: crate::types::Var,
+) -> bool {
+    match obligation {
+        crate::types::Obligation::Member { ty, .. } => {
+            let mut ty = ty;
+            while let Type::Function { result, .. } = ty {
+                ty = result;
+            }
+            ty.contains(var)
+        }
+        crate::types::Obligation::Claim { head, class, .. } => {
+            (head.contains(var) || class.contains(var))
+                && !matches!(class, Type::Named { name, .. }
+                    if name.origin == Origin::Prelude
+                        && matches!(name.name.as_str(), "Eq" | "Ord" | "Show" | "Len"))
         }
     }
 }

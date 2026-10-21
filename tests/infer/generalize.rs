@@ -119,12 +119,8 @@ fn bodies_records_and_literal_ranges() {
     assert_eq!(kinds("x: U8 = 300"), [("Limit", "U8")]);
     assert_eq!(kinds("x: I8 = 128"), [("Limit", "I8")]);
     assert_eq!(ty("x: I8 = -128"), "I8");
-    let (_, typed) = run("f = x => x\ny: U8 = f 256");
-    assert!(typed
-        .unwrap()
-        .checks
-        .iter()
-        .all(|c| c.reason == fipe::typed::CheckReason::Narrowing));
+    // What goes in at `a` comes out: 256 is refuted against U8.
+    assert_eq!(kinds("f = x => x\ny: U8 = f 256"), [("Limit", "U8")]);
 }
 
 #[test]

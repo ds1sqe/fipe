@@ -1176,12 +1176,14 @@ fn written_constructors_do_not_keep_argument_parts() {
     ] {
         assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
     }
+    // Known by its declared result alone: no part of `5` is kept.
     let report = line(&mut session, "k: U8 = (C 5).n");
+    assert_eq!(report.diagnostics, []);
     assert!(
-        report
-            .checks
-            .iter()
-            .any(|check| check.reason == fipe::typed::CheckReason::Narrowing),
+        !report.checks.is_empty()
+            && report.checks.iter().all(|check| {
+                check.reason == fipe::typed::CheckReason::UnknownInput
+            }),
         "{report:?}"
     );
 }
