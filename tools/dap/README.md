@@ -92,9 +92,10 @@ fixture (`tests/stepping.rs`).
 - Writes to a sink (`put`, `append`) are replayed as host calls, not
   applied: the success output holds the lines' values only, which is
   what the examples' fixtures hold.
-- No editor client has been run against it here (Neovim has no
-  built-in DAP client and nvim-dap is not installed); the recorded
-  session below is the binary over its real stdio.
+- The one editor client run against it is nvim-dap, through the
+  module `tools/editor/nvim` (its smoke stops at a breakpoint and runs
+  to `terminated`); the recorded session below is the binary over its
+  real stdio.
 
 ## Checks
 

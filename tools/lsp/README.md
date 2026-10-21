@@ -38,10 +38,10 @@ changed on disk.
 
 ## Clients
 
-- Neovim, built-in client: `editor/init.lua` (`nvim -u
-  tools/lsp/editor/init.lua`, or copy its body into your config with
-  your paths; `FIPE_LSP` and `FIPE_HOST` override the server and host
-  paths).
+- Neovim: the module `tools/editor/nvim` (its README) for your own
+  config. `editor/init.lua` is a config of that module alone, without
+  the debug adapter (`nvim -u tools/lsp/editor/init.lua`; `FIPE_LSP`
+  and `FIPE_HOST` override the server and host paths).
 - Helix: `editor/languages.toml`, to merge into your
   `languages.toml` with your paths. Not tested here: Helix was not
   installed when the package was written.

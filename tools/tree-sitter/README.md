@@ -25,6 +25,11 @@ only in its Rust tests, by path.
 
 ## Neovim
 
+The module `tools/editor/nvim` builds the parser from `src/` and
+reads `queries/` in place, with or without nvim-treesitter; its
+README is the way in. The rest of this section installs the parser
+from the repository's URL instead.
+
 With nvim-treesitter, copy `editors/nvim/fipe.lua` into your config,
 set `revision` to a commit of this repository, and run `:TSInstall
 fipe`. It registers the `fipe` filetype and the parser for both the

@@ -23,10 +23,10 @@ local buf = vim.api.nvim_get_current_buf()
 check(vim.bo[buf].filetype == "fipe", "05-modules.fipe opens as fipe")
 
 local attached = vim.wait(timeout, function()
-  return #vim.lsp.get_clients({ bufnr = buf, name = "fipe-lsp" }) > 0
+  return #vim.lsp.get_clients({ bufnr = buf, name = "fipe" }) > 0
     and vim.lsp.get_clients({ bufnr = buf })[1].initialized
 end, 50)
-check(attached, "fipe-lsp attaches to the buffer")
+check(attached, "the fipe server attaches to the buffer")
 
 local function errors()
   return vim.diagnostic.get(buf, { severity = vim.diagnostic.severity.ERROR })
@@ -62,7 +62,7 @@ end
 check(row ~= nil, "a use of Point is found")
 local col = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]:find("Point", 1, true) - 1
 vim.api.nvim_win_set_cursor(0, { row, col })
-local client = vim.lsp.get_clients({ bufnr = buf, name = "fipe-lsp" })[1]
+local client = vim.lsp.get_clients({ bufnr = buf, name = "fipe" })[1]
 local params = vim.lsp.util.make_position_params(0, client.offset_encoding)
 local answers = vim.lsp.buf_request_sync(buf, "textDocument/definition", params, timeout)
 local location
