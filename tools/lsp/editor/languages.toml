@@ -1,6 +1,7 @@
 # Helix: add to ~/.config/helix/languages.toml, with your paths. The
 # server needs a host directory; this one is the repository's
-# conformance host. Highlighting comes from tools/tree-sitter.
+# conformance host. Highlighting comes from tools/tree-sitter;
+# tools/editor/helix/README.md joins the two.
 
 [[language]]
 name = "fipe"

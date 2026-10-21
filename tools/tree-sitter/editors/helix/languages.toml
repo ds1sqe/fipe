@@ -1,7 +1,9 @@
 # Fipe in Helix: add to ~/.config/helix/languages.toml, set `rev` to a
 # commit of the language repository, run `hx --grammar fetch` and
 # `hx --grammar build`, and copy queries/fipe/ from this directory to
-# ~/.config/helix/runtime/queries/fipe/.
+# ~/.config/helix/runtime/queries/fipe/. From a checkout, with no
+# fetch: source = { path = "/path/to/fipe/tools/tree-sitter" }
+# (tools/editor/helix/README.md).
 
 [[language]]
 name = "fipe"

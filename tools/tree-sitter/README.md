@@ -55,9 +55,12 @@ Add the stanza in `editors/helix/languages.toml` to
 `~/.config/helix/languages.toml`, set `rev` to a commit of this
 repository, run `hx --grammar fetch` and `hx --grammar build`, and copy
 `editors/helix/queries/fipe/` to `~/.config/helix/runtime/queries/fipe/`.
-Helix gives an earlier highlight pattern priority where Neovim gives a
-later one, so its copy lists the same patterns in reverse order; edit
-`queries/` and run `python3 scripts/queries.py`, never the copy.
+To build from a checkout instead, `tools/editor/helix` (its README)
+gives the stanza with a path source, joins the language server, and
+has the smoke. The copy is the same patterns in the same order: Helix
+from 25.07, like Neovim, gives a later highlight pattern priority (an
+earlier Helix gave the earlier one). Edit `queries/` and run
+`python3 scripts/queries.py`, never the copy.
 
 ## Checks
 

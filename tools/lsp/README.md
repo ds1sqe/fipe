@@ -43,8 +43,9 @@ changed on disk.
   the debug adapter (`nvim -u tools/lsp/editor/init.lua`; `FIPE_LSP`
   and `FIPE_HOST` override the server and host paths).
 - Helix: `editor/languages.toml`, to merge into your
-  `languages.toml` with your paths. Not tested here: Helix was not
-  installed when the package was written.
+  `languages.toml` with your paths; `tools/editor/helix` (its README)
+  joins it with the grammar and has the smoke (hover, definition and
+  a diagnostic, in Helix 25.07).
 
 ## Actions
 
