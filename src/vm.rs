@@ -88,6 +88,56 @@ pub enum Stop {
     Done(Result<Value, Fault>),
 }
 
+/// Why a run cannot take host input: its last top-level line is not a
+/// function of one open spot. `spots` is how many open spots the line
+/// has: `0` for a value that is not a function, a binding, or no line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputError {
+    pub spots: usize,
+}
+
+/// The type of the spot host input enters: the program's last
+/// top-level line must be a function of one open spot
+/// (`09-host.md` §Input, output and observation).
+///
+/// # Errors
+/// [`InputError`] with the line's open spots when it has another
+/// number of them.
+pub fn input_spot(program: &mir::Program) -> Result<ir::Type, InputError> {
+    let tables = program.tables.borrow();
+    let mut ty = &program.bodies[program.main].locals[0].ty;
+    let mut spots = 0;
+    let mut spot = None;
+    loop {
+        match ty {
+            ir::Type::Session(index) => {
+                match tables.session_meanings.get(*index) {
+                    Some(Some(fixed)) => ty = fixed,
+                    _ => break,
+                }
+            }
+            ir::Type::Function { parameter, result } => {
+                spots += 1;
+                spot.get_or_insert(parameter);
+                ty = result;
+            }
+            _ => break,
+        }
+    }
+    match spot {
+        Some(spot) if spots == 1 => Ok((**spot).clone()),
+        _ => Err(InputError { spots }),
+    }
+}
+
+/// Host input over the run in progress: owed to the function the last
+/// line of node `line` makes, or applied to it.
+#[derive(Debug)]
+enum Input {
+    Owed { value: Value, line: usize },
+    Applied { line: usize },
+}
+
 /// Which body of a run is in progress: a module's init, by its
 /// position in `Program.inits`, or the main.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +177,8 @@ pub struct Machine {
     /// Each main expression line's value in the run in progress or the
     /// last one, with the line's IR node.
     lines: Vec<(usize, Value)>,
+    /// The host input of the run in progress, if it takes one.
+    input: Option<Input>,
 }
 
 /// What a frame's caller does with the returned value.
@@ -192,6 +244,7 @@ impl Machine {
             stepping: false,
             stops: VecDeque::new(),
             lines: Vec::new(),
+            input: None,
         }
     }
 
@@ -265,6 +318,41 @@ impl Machine {
         self.advance(&program)
     }
 
+    /// Run a program as [`Machine::run`] does, then apply the function
+    /// its last line makes to host input: the run's value, and that
+    /// line's in `lines`, is the function's result. Input without the
+    /// shape of the spot's type ([`input_spot`]) Faults `Host` "the
+    /// input is not a T" at that line before the run starts.
+    ///
+    /// # Errors
+    /// [`InputError`], before any effect, when the last line is not a
+    /// function of one open spot.
+    ///
+    /// # Panics
+    /// As [`Machine::run`].
+    pub fn run_with_input(
+        &mut self,
+        program: &mir::Program,
+        input: Value,
+    ) -> Result<Outcome<Result<Value, Fault>>, InputError> {
+        let spot = input_spot(program)?;
+        let line = program.bodies[program.main].node;
+        let program = self.open(program);
+        let misfit = {
+            let tables = program.tables.borrow();
+            (!fits::fits(&input, &spot, &tables, &self.prelude()))
+                .then(|| fits::named(&spot, &tables))
+        };
+        if let Some(named) = misfit {
+            self.end();
+            let reason =
+                Reason::Host(alloc::format!("the input is not {named}"));
+            return Ok(Outcome::Done(Err(Self::fault(&program, line, reason))));
+        }
+        self.input = Some(Input::Owed { value: input, line });
+        Ok(self.advance(&program))
+    }
+
     /// Join a run's program, size the machine to it and reset the run.
     fn open(&mut self, program: &mir::Program) -> Rc<mir::Program> {
         merge::merge(&mut self.program, program);
@@ -278,6 +366,7 @@ impl Machine {
         self.stepping = false;
         self.stops.clear();
         self.lines.clear();
+        self.input = None;
         program
     }
 
@@ -403,6 +492,15 @@ impl Machine {
                     self.stage = Some(Stage::Init(position + 1));
                     return None;
                 }
+                match self.input.take() {
+                    Some(Input::Owed { value: input, line }) => {
+                        return self.apply_input(program, &value, input, line);
+                    }
+                    Some(Input::Applied { line }) => {
+                        self.lines.push((line, value.clone()));
+                    }
+                    None => {}
+                }
                 self.end();
                 Some(Outcome::Done(Ok(value)))
             }
@@ -418,6 +516,30 @@ impl Machine {
         self.environment.clear();
         self.waiting = None;
         self.stage = None;
+        self.input = None;
+    }
+
+    /// Call the main's function value with the host input; its result
+    /// takes the place of the function as the last line's value.
+    fn apply_input(
+        &mut self,
+        program: &mir::Program,
+        function: &Value,
+        input: Value,
+        line: usize,
+    ) -> Option<Outcome<Result<Value, Fault>>> {
+        if self.lines.last().is_some_and(|(node, _)| *node == line) {
+            self.lines.pop();
+        }
+        self.input = Some(Input::Applied { line });
+        let flow = self.call_value(
+            program,
+            function,
+            alloc::vec![input],
+            Return::Finish,
+            line,
+        );
+        self.settle(program, flow)
     }
 
     /// Hand a host call to the driver; the run waits for `reply`, whose

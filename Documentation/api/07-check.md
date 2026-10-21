@@ -20,6 +20,13 @@ says what is duplicated; where the first stands is the renderer's, from
 its span. `Evaluated::describe(reason)` words a compile-time refutation
 or Fault: "refuted entry against Even: 3".
 
+Supplied claim member types are validated when declarations load. Inference
+reports private fields with `PrivateField { field }`; a `Conversion` reason
+keeps `source: Option<Type>` beside its target and candidates, distinguishing
+an unknown source or target from a known source with no matching candidate.
+`TypeDepth` reports an inferred type deeper than `parse::MAX_NESTING`;
+substitution unification exposes this as `types::Mismatch::DepthLimit`.
+
 The inputs are parsed modules and loaded declarations, as for resolution
 and inference. The file-loading request loop belongs to `Session`.
 Resolution, inference, limits and coverage precede lowering. An error

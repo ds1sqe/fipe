@@ -38,6 +38,8 @@ mod faults;
 mod globals;
 #[path = "vm/host.rs"]
 mod host;
+#[path = "vm/input.rs"]
+mod input;
 #[path = "vm/laws.rs"]
 mod laws;
 #[path = "vm/lifts.rs"]

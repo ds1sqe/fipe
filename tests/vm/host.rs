@@ -1,12 +1,12 @@
 //! The recording host: it answers each host call from a script keyed
 //! by the declaration's `namespace.label`, in order per key, records
 //! every request with its reply, and assembles the observation.
-use super::{check, lex, parse, Declarations, Machine, Outcome, Value};
+use super::{check, lex, parse, Declarations, Fault, Machine, Outcome, Value};
 use fipe::{
     compile,
     embed::{Reply, Request},
     mir::Program,
-    vm::Observation,
+    vm::{InputError, Observation},
 };
 
 /// The conformance host's declarations.
@@ -82,11 +82,34 @@ pub fn observe(
 pub fn observe_charged(
     program: &Program,
     budget: Option<u64>,
-    mut script: Script,
+    script: Script,
 ) -> (Observation, u64) {
     let mut machine = Machine::new(budget);
+    let outcome = machine.run(program);
+    let observation = finish(&mut machine, program, outcome, script);
+    (observation, machine.charged())
+}
+
+/// [`observe`] with host input to the last line's function, or the
+/// refusal that leaves the run unstarted.
+pub fn observe_input(
+    program: &Program,
+    script: Script,
+    input: Value,
+) -> Result<Observation, InputError> {
+    let mut machine = Machine::new(Some(super::run::BUDGET));
+    let outcome = machine.run_with_input(program, input)?;
+    Ok(finish(&mut machine, program, outcome, script))
+}
+
+/// Answer every request of a started run from the script.
+fn finish(
+    machine: &mut Machine,
+    program: &Program,
+    mut outcome: Outcome<Result<Value, Fault>>,
+    mut script: Script,
+) -> Observation {
     let mut trace = Vec::new();
-    let mut outcome = machine.run(program);
     let result = loop {
         match outcome {
             Outcome::Done(result) => break result,
@@ -98,11 +121,10 @@ pub fn observe_charged(
             }
         }
     };
-    let observation = Observation {
+    Observation {
         result,
         trace,
         success: Vec::new(),
         error: Vec::new(),
-    };
-    (observation, machine.charged())
+    }
 }

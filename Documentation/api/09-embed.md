@@ -26,6 +26,19 @@ Sink policy is the host's: it reads each main expression line's value from
 `vm::Machine::lines` as lines end, at a request or the run's end; the
 conformance host's policy heads `tests/fixtures/host/commands.fipe`.
 
+~~~text
+vm::input_spot(program) -> Result<ir::Type, InputError { spots: usize }>
+Machine::run_with_input(&mut self, program, input: Value) -> Result<Outcome<
+    Result<Value, Fault>>, InputError>
+~~~
+
+Host input ([host](../spec/09-host.md) §Input, output and observation) enters
+the one open spot of the function the last top-level line makes, of the type
+`input_spot` gives; `run_with_input` runs as `run`, then applies it, its result
+the run's value and the line's in `lines`. Another open arity is `InputError`,
+before any effect; input without the spot's shape Faults `Host` "the input is
+not a T" at the line before the run starts, and its limits are the host's.
+
 ## Stepping
 
 ~~~text
@@ -67,46 +80,44 @@ lines(&self) -> impl Iterator<Item = &str>
 ~~~
 
 A session holds the prelude and the host's declaration files, given at
-construction, the accepted lines and the file modules loaded so far.
-A session is a sequence of lines, each checked against the definitions
-accepted before it, so a later definition of a name shadows for the lines
-after it and never changes an accepted line. Within one line the rules
-are a file's; an accepted line's declarations are the
-session's own, so a later line may write an impl of its type or read its
-private fields. `line` accepts a line when it has no diagnostic of its
-own; `query` checks without accepting, and generalizes an expression line
-where `line` defaults it, so its scheme is the line's `typed.binding`.
-A host that edits an accepted line starts a new session over the lines
-before it, from `lines`. The one line taken back is one whose run
-Faults ([host](../spec/09-host.md) §Compilation units): the host passes
-its `Report::accepted` to `withdraw`, which leaves the session as if the
-line had not been given, files it loaded and absent answers included,
-and gives the `Withdrawn` that `vm::Machine::withdraw` takes. `withdraw`
-returns `None`, changing nothing, unless the line is the last accepted
-one and not already withdrawn; a refused line or a query in between
-leaves it the last. `withdrawn` says whether a withdrawn line bound a name,
-so a host can word a later "unknown name" for it; nothing else of the
-session remembers the line. A line awaiting a reply is abandoned. `strict(true)` makes each open implicit entry a check error in
-the line and its file modules; explicit gates remain allowed. It defaults
-to false. `compile_budget(units)` sets the checker's steps each compile-time
+construction, the accepted lines and the file modules loaded so far. A session
+is a sequence of lines, each checked against the definitions accepted before it,
+so a later definition of a name shadows for the lines after it and never changes
+an accepted line. Within one line the rules are a file's; an accepted line's
+declarations are the session's own, so a later line may write an impl of its
+type or read its private fields. `line` accepts a line when it has no diagnostic
+of its own; `query` checks without accepting, and generalizes an expression line
+where `line` defaults it, so its scheme is the line's `typed.binding`. A host
+that edits an accepted line starts a new session over the lines before it, from
+`lines`. The one line taken back is one whose run Faults
+([host](../spec/09-host.md) §Compilation units): the host passes its
+`Report::accepted` to `withdraw`, which leaves the session as if the line had
+not been given, files it loaded and absent answers included, and gives the
+`Withdrawn` that `vm::Machine::withdraw` takes. `withdraw` returns `None`,
+changing nothing, unless the line is the last accepted one and not already
+withdrawn; a refused line or a query in between leaves it the last. `withdrawn`
+says whether a withdrawn line bound a name, so a host can word a later "unknown
+name" for it; nothing else of the session remembers the line. A line awaiting a
+reply is abandoned. `strict(true)` makes each open implicit entry a check error
+in the line and its file modules; explicit gates remain allowed. It defaults to
+false. `compile_budget(units)` sets the checker's steps each compile-time
 evaluation of later lines may spend ([checking](07-check.md) §The compile
-phase); it defaults to `check::COMPILE_BUDGET`. A line the compile phase
-refutes is refused like any line with a diagnostic: the session is as
-before it. `settled` lists the entries the phase proved, as `checks`
-lists the open ones.
-The source is the accepted lines, each followed by a blank
-line; spans are in the source followed by the line being checked.
-`lines` yields the accepted units in order, keeping embedded blank lines.
+phase); it defaults to `check::COMPILE_BUDGET`. A line the compile phase refutes
+is refused like any line with a diagnostic: the session is as before it.
+`settled` lists the entries the phase proved, as `checks` lists the open ones.
+The source is the accepted lines, each followed by a blank line; spans are in
+the source followed by the line being checked. `lines` yields the accepted units
+in order, keeping embedded blank lines.
 
-A `use` of a module that is neither a host module nor loaded, in the line
-or a loaded file, yields `Request::File`. A replied text is parsed and kept
-for the session, and its resolve and type errors are reported once, with
-the line that loaded it; `None` or text that does not parse leaves the
-`use` as `UnknownModule` for that line. An absent or unparsable reply is
-remembered for the session. A later line retries that stem only when it
-writes a `use` of it or of a module whose imports reach it; other lines
-reuse the remembered answer and report nothing new. `line` or `query` while a reply is owed abandons the owed line;
-`reply` with none owed panics. Each file module is resolved and typed once
+A `use` of a module that is neither a host module nor loaded, in the line or a
+loaded file, yields `Request::File`. A replied text is parsed and kept for the
+session, and its resolve and type errors are reported once, with the line that
+loaded it; `None` or text that does not parse leaves the `use` as
+`UnknownModule` for that line. An absent or unparsable reply is remembered for
+the session. A later line retries that stem only when it writes a `use` of it or
+of a module whose imports reach it; other lines reuse the remembered answer and
+report nothing new. `line` or `query` while a reply is owed abandons the owed
+line; `reply` with none owed panics. Each file module is resolved and typed once
 per checked unit; every use in that unit shares the result.
 
 ## Report
@@ -135,10 +146,9 @@ of the replied file; a reason's span stays in the text it was found in.
 Resolve and type diagnostics within a file follow source order.
 
 `unit` is present only when all checking stages succeed without any diagnostic.
-`accepted` is present when `line` accepted the line, its token for
-`withdraw`.
-It holds this line and indexes the tables retained by the session; values
-belong to evaluation. [Checking](07-check.md) defines the intermediate form.
+`accepted` is present when `line` accepted the line, its token for `withdraw`.
+It holds this line and indexes the tables retained by the session; values belong
+to evaluation. [Checking](07-check.md) defines the intermediate form.
 
 `warnings` never reject a line. `Warning { span, style: ast::CallStyle }`
 marks a call whose argument-list and tuple readings both bind its spots;
@@ -150,13 +160,6 @@ reading whose alternative binds adds `Reason::CallReading { style }`.
 boxed number types: `Number`, variables and canonical `Sum` nodes.
 `Subst::settle_lengths` retries delayed sums; an unresolved equation is an
 ambiguous length at generalization. A tuple part is `Place::Part(index)`.
-
-Supplied claim member types are validated when declarations load. Inference
-reports private fields with `PrivateField { field }`; a `Conversion` reason
-keeps `source: Option<Type>` beside its target and candidates, distinguishing
-an unknown source or target from a known source with no matching candidate.
-`TypeDepth` reports an inferred type deeper than `parse::MAX_NESTING`;
-substitution unification exposes this as `types::Mismatch::DepthLimit`.
 
 `Session::documentation(&Report, ExprId)` returns the doc of a binding or
 resolved declaration from the report, accepted lines, prelude, host or
@@ -176,15 +179,14 @@ typed::Place = Binding(String) | Parameter(Option<String>) | Result
 ~~~
 
 The phase is compile, init or eval. `test_count` counts the owning type's
-written tests, excluding its bases; when it exceeds one, `:checks` appends
-the written test from `limit` to the type name. Reasons distinguish
-an unknown input, no rule, compile-time evaluation and narrowing. Frequency
-is once, per call or per element. The place kind names a binding, parameter,
-result, field, element or payload. Spans identify the place itself where
-written and belong to the source containing
-the place or limit; imported declarations retain their source identity.
-An entry refuted by the known facts is an error in every session.
-`when_integer` marks a generic divisor check that runs only when its
+written tests, excluding its bases; when it exceeds one, `:checks` appends the
+written test from `limit` to the type name. Reasons distinguish an unknown
+input, no rule, compile-time evaluation and narrowing. Frequency is once, per
+call or per element. The place kind names a binding, parameter, result, field,
+element or payload. Spans identify the place itself where written and belong to
+the source containing the place or limit; imported declarations retain their
+source identity. An entry refuted by the known facts is an error in every
+session. `when_integer` marks a generic divisor check that runs only when its
 instance meaning is `Integer`; it is listed once in the function, per call.
 `owner` names the binding containing an entry, when one exists.
 
@@ -209,16 +211,15 @@ the session's compile budget, and survives `:host` too.
 
 `Typed::bound` maps a call or stage's `(span.start, span.end)` to `Bound`.
 `Bound::supplies` lists `(spot_index, Supply)` in source order; indices are
-zero-based declaration positions. `Expression(ExprId)` is a written
-argument, `Flag(Span)` a bare Bool flag, `Pipe(Span)` the input and
-`Head(Span)` the dot receiver. Each `Element(ExprId)` appends one collected
-operand; interleaved named arguments retain their source order.
-`Bound::defaults` lists `(spot_index, DefaultValue)` in declaration order:
-`Declared { origin, value }` identifies the expression in its declaring
-module, and `Type(Type)` selects the table default. `Bound::open` lists
-unfilled positions in declaration order. A function value keeps its types
-but no declaration's spot names or defaults. Evaluation consumes this
-record; it does not bind again.
+zero-based declaration positions. `Expression(ExprId)` is a written argument,
+`Flag(Span)` a bare Bool flag, `Pipe(Span)` the input and `Head(Span)` the dot
+receiver. Each `Element(ExprId)` appends one collected operand; interleaved
+named arguments retain their source order. `Bound::defaults` lists `(spot_index,
+DefaultValue)` in declaration order: `Declared { origin, value }` identifies the
+expression in its declaring module, and `Type(Type)` selects the table default.
+`Bound::open` lists unfilled positions in declaration order. A function value
+keeps its types but no declaration's spot names or defaults. Evaluation consumes
+this record; it does not bind again.
 
 `decl::SpotProblem` distinguishes duplicate names, ambiguous Bool initials
 and a supplied member's non-final `self`; declaration and inference reasons
@@ -234,13 +235,12 @@ origin and declaration span identify its binding. A default that needs the
 failed value reports `Default { name }` for its own spot.
 
 `Typed.casts` indexes expressions with optional `Cast { row, from, to }`.
-`CastRow` is `Number`, `Read`, `Show`, `Codec`, `Bytes` or `Pack`;
-`can_fail()` identifies number, read and codec casts for evaluation.
-Expression types retain the source meaning; the cast gives the receiving
-place's type, whose limits are checked after conversion. A fallible cast
-is not an open limit entry and does not itself fail strict mode.
-`NothingPayload` and `OutcomeText { family }` distinguish the outcome
-errors; the latter recommends `||` or `|:`.
+`CastRow` is `Number`, `Read`, `Show`, `Codec`, `Bytes` or `Pack`; `can_fail()`
+identifies number, read and codec casts for evaluation. Expression types retain
+the source meaning; the cast gives the receiving place's type, whose limits are
+checked after conversion. A fallible cast is not an open limit entry and does
+not itself fail strict mode. `NothingPayload` and `OutcomeText { family }`
+distinguish the outcome errors; the latter recommends `||` or `|:`.
 
 ## REPL driver
 

@@ -5,7 +5,7 @@
 
 use crate::{
     check::Evaluated, decl, infer, ir, parse::Expected, resolve, types::Type,
-    value,
+    value, vm,
 };
 use alloc::{
     format,
@@ -346,6 +346,19 @@ impl fmt::Display for infer::Reason {
                 "no constructor outside the module: private field \
                  `{field}` has no default"
             ),
+        }
+    }
+}
+
+impl fmt::Display for vm::InputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "host input enters a last line that is a function of one open \
+             spot; ",
+        )?;
+        match self.spots {
+            0 => f.write_str("this one is not a function"),
+            spots => write!(f, "this one has {spots}"),
         }
     }
 }
