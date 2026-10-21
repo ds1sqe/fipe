@@ -116,8 +116,8 @@ stages stay in order. No coloring: a host call is the host's to perform,
 as a syscall is the kernel's. Open: whether the run blocks in the host or
 suspends until its reply (the VM suspends today,
 [embedding](../api/09-embed.md)); a run left waiting on a reply that never
-comes; asynchronous hosts and threads, and with them `Task<T>`. `Stream`,
-`Task` and `Cell` are declared by the host (09).
+comes, and cancelling it; asynchronous hosts and threads, and with them
+`Task<T>`. `Stream`, `Task` and `Cell` are declared by the host (09).
 
 ## H1 — Host and backend observables
 
@@ -127,11 +127,12 @@ check error, and the compile budget and the strict session are host inputs
 optional, its unit is the backend's, and where it stops a run is not an
 observation ([host](09-host.md) §Budget); the compile budget defaults to
 2^20 steps. Open: a unit common to every
-backend; limits on memory or time. **Proposed:** identify modules by
-host-provided stable identity. Ruled 2026-09-30: the lexer has no bound on a
-number ([lexical](01-lexical.md) §Numbers). Specify closure environment
-capture, cancellation, cleanup failure, external byte charging, declaration
-validation and codec/formatter failure in the embedding contract. Every
+backend; limits on memory or time; host nondeterminism (a reply that
+differs between runs). Ruled 2026-09-30: the lexer has no
+bound on a number ([lexical](01-lexical.md) §Numbers). Ruled 2026-10-21:
+module identity, closure capture of the environment, cleanup failure,
+reply validation and codec failure ([host](09-host.md)); cancellation is
+E3. Every
 host-declared type admits the codec cast (ruled 2026-09-30). No Reovim
 paths, wire hashes or placeholder budget numbers become language constants.
 Tests replay one host response/effect trace on each backend.

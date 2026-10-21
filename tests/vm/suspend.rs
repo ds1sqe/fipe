@@ -167,6 +167,20 @@ fn a_host_failure_faults_at_the_call() {
 }
 
 #[test]
+fn a_sink_that_cannot_write_faults_at_the_write() {
+    let source = "\"abc\" | put ./out\n\"def\" | put ./out";
+    let program = program(source);
+    let script = read(&program, Script::default(), "./out")
+        .reply("commands.put", Err("disk full".into()));
+    let observation = observe(&program, Some(1 << 20), script);
+    let fault = observation.result.unwrap_err();
+    assert_eq!(fault.reason, Reason::Host("disk full".into()));
+    assert_eq!(&source[fault.span.start..fault.span.end], "put ./out");
+    let keys = keys(&program, &observation.trace);
+    assert_eq!(keys.iter().filter(|k| *k == "commands.put").count(), 1);
+}
+
+#[test]
 fn replaying_one_script_twice_gives_equal_observations() {
     let source = "find ./x |: cat || \"none\"";
     let program = program(source);

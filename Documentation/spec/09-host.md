@@ -8,8 +8,9 @@ budget and input/output. No editor, OS or transport is prescribed. H1 in
 
 A compilation unit is one complete line, or a module file with its resolved
 imports. A file is a module named by its stem, and a nested namespace is
-another file; the host resolves the tree,
-supplies module identity for caching, and loads sources before evaluation.
+another file; the host resolves the tree and loads sources before
+evaluation. It supplies each module's identity, its stem in this draft:
+one identity is one module within a run and a session.
 Items are collected before the executable top-level lines, the implicit
 main. The whole unit checks before any effect; a source, API or version
 that fails to resolve is a check error. A Rust driver supplies lines and
@@ -29,7 +30,7 @@ no main", and a `use` that reaches its own module is the check
 error "import cycle" at that `use`. What `pub` exports is
 [syntax](02-syntax.md)'s §Definitions; a module exports its final bindings, a
 name when its final binding is `pub`, and an exported host-callable
-signature is monomorphic. This draft has no `mod`. H1 defines import identity.
+signature is monomorphic. This draft has no `mod`.
 
 A host declares in Fipe, with the declaration forms of
 [syntax](02-syntax.md): one file per host module, named by the module, and
@@ -90,20 +91,30 @@ A host with resources declares an opaque nominal type and the functions
 that make one from a number or word or refine it to an API, as the
 conformance host's `Rd` and `Rd<fs>`; the language names none. A resource
 value carries identity, not a handle. The host opens, caches and closes
-capabilities, validates replies against their declared types, and cleans
-up on success and Fault. Cleanup failures and capture by escaping closures
-are H1.
+capabilities; the backend validates replies against their declared types,
+and a reply that does not fit Faults `Host` "the reply is not a T" at the
+call. It
+cleans up on success and Fault; a failed cleanup is written to the error
+output and changes neither the value nor the Fault. A closure captures
+values, not the environment: called after its `with` ended, it sees the
+environment open at the call.
 
 ## Input, output and observation
 
-A host provides optional byte input and success and error output. An open
-one-argument top-level function may take host input, which enters its
-spot ([checks](07-checks.md)); a different open arity is an admission error.
+A host provides optional byte input and success and error output. Host
+input enters the one open spot of the function the unit's last top-level
+line makes ([checks](07-checks.md)), decoded by the host to the spot's
+type and checked against it as a reply is: a misfit Faults `Host` "the
+input is not a T" at that line before the run starts. A last line of
+another open arity, or one that is not such a function, is refused before
+any effect.
 A host may reject implicit top-level output, as a callback-only module
 does.
 
 Writing is a declared host command with a value-last spot, never an
-operator; values stay typed data until the host's sink policy applies.
+operator; values stay typed data until the host's sink policy applies; a
+sink that cannot format or write a value fails that command, which Faults
+`Host` at the write.
 Output formatting, outcome unwrapping, exit codes, streaming and
 diagnostic presentation are the host's documented contract, so backends
 are compared under one host contract.
@@ -143,4 +154,4 @@ Addresses, allocation and instruction layout are not observations; a
 backend may optimize only while preserving the observation. The checker
 emits one typed intermediate form. The VM is the first backend and the
 oracle for a later native one; an LLVM backend would be a separate crate.
-Host nondeterminism awaits H1.
+Host nondeterminism is open in H1.

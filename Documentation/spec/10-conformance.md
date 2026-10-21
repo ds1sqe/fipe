@@ -89,6 +89,11 @@ naming the unfixed element meaning; `x: Vec<Integer> = []` never asks.
 cannot pay, and prior effects stand; with none it runs to its end.
 - Fault ends execution; prior effects remain; execution capabilities close.
 A unit with any check error performs zero program effects.
+- A reply or host input that does not fit its declared type Faults `Host`
+"the reply is not a T" or "the input is not a T", the input before the run
+starts; a last line of another open arity is refused before any effect. A
+`put` whose write fails Faults `Host` at it. A closure made in a
+`with` and called outside it sees the environment open at its call.
 - VM and native backends produce identical observations from the same
 typed unit and replayed host responses for a run no budget stops (H1).
 
