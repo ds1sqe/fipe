@@ -63,7 +63,6 @@ const PROMPT: &str = "fipe> ";
 pub const BUDGET: u64 = 1 << 20;
 const MORE: &str = "....> ";
 const HOST_DIR: &str = "tests/fixtures/host";
-/// The command namespace first, then the host modules by name.
 /// The commands: how each is written, and what it does.
 const COMMANDS: [(&str, &str); 10] = [
     (":ast", "the syntax tree of the last line that parsed"),
@@ -95,6 +94,7 @@ const COMMANDS: [(&str, &str); 10] = [
     (":help [name]", "this list, or a name's doc and type"),
     (":q", "quit"),
 ];
+/// The command namespace first, then the host modules by name.
 const HOST: [&str; 6] = ["commands", "fs", "sys", "cli", "text", "config"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

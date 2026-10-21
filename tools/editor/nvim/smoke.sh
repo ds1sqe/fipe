@@ -34,6 +34,7 @@ for mode in $modes; do
   x=$scratch/$mode
   rm -rf "$x"
   mkdir -p "$x/config" "$x/data/nvim" "$x/state" "$x/cache" "$x/work"
+  # The positional parameters carry the -u argument, quoted.
   case $mode in
     user)
       cp -a "$config" "$x/config/nvim"
@@ -43,21 +44,20 @@ return {
 }
 EOF
       ln -s "$data/lazy" "$data/site" "$x/data/nvim/"
-      init="-u $x/config/nvim/init.lua"
+      set -- -u "$x/config/nvim/init.lua"
       ;;
     minimal)
-      init="-u $here/minimal.lua"
+      set -- -u "$here/minimal.lua"
       ;;
     *)
       echo "unknown mode $mode" >&2
       exit 2
       ;;
   esac
-  # shellcheck disable=SC2086
   if ! (cd "$root" && XDG_CONFIG_HOME="$x/config" XDG_DATA_HOME="$x/data" \
     XDG_STATE_HOME="$x/state" XDG_CACHE_HOME="$x/cache" \
     FIPE_PLUGINS="$data/lazy" \
-    nvim --headless $init -l "$here/smoke.lua" "$root" "$x/work"); then
+    nvim --headless "$@" -l "$here/smoke.lua" "$root" "$x/work"); then
     status=1
   fi
 done

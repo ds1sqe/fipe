@@ -293,11 +293,16 @@ fn shared<'a>(a: &'a str, b: &str) -> &'a str {
 }
 
 /// Terminal input bytes to keys: UTF-8 text, control bytes and the
-/// escape sequences of arrows, Home, End and Delete. A partial sequence
-/// or char waits for the next bytes; unknown sequences are dropped.
+/// escape sequences of arrows, Home, End and Delete.
+///
+/// A partial sequence or char waits for the next bytes; unknown
+/// sequences and invalid UTF-8 bytes are dropped. CR LF, as a paste may
+/// carry, is one Enter.
 #[derive(Default)]
 pub struct Keys {
     pending: Vec<u8>,
+    /// The last byte decoded was a CR, perhaps in an earlier read.
+    cr: bool,
 }
 
 impl Keys {
@@ -311,10 +316,17 @@ impl Keys {
         let mut keys = Vec::new();
         let mut at = 0;
         while at < self.pending.len() {
+            let byte = self.pending[at];
+            if self.cr && byte == b'\n' {
+                self.cr = false;
+                at += 1;
+                continue;
+            }
             let Some((key, length)) = decode(&self.pending[at..]) else {
                 break;
             };
             keys.extend(key);
+            self.cr = byte == b'\r';
             at += length;
         }
         self.pending.drain(..at);
@@ -349,14 +361,18 @@ fn decode(bytes: &[u8]) -> Option<(Option<Key>, usize)> {
                 0xf0..=0xf7 => 4,
                 _ => 1,
             };
+            // A byte that cannot continue the char ends it at once, so
+            // a bad lead byte drops only itself.
+            let have = bytes.len().min(length);
+            if bytes[1..have].iter().any(|b| b & 0xc0 != 0x80) {
+                return Some((None, 1));
+            }
             let text = bytes.get(..length)?;
-            return Some((
-                core::str::from_utf8(text)
-                    .ok()
-                    .and_then(|text| text.chars().next())
-                    .map(Key::Char),
-                length,
-            ));
+            return Some(
+                core::str::from_utf8(text).map_or((None, 1), |text| {
+                    (text.chars().next().map(Key::Char), length)
+                }),
+            );
         }
     };
     Some((Some(key), 1))

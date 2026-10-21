@@ -86,17 +86,30 @@ fn run() {
     }
 }
 
-/// Act on every output in order; false at `Out::Exit`.
-fn act(repl: &mut Repl, outs: &mut VecDeque<Out>) -> bool {
+/// Act on every output in order; false at `Out::Exit`. With `last`,
+/// the last byte written before a prompt, a prompt starts its own line,
+/// since the editor's redraw returns to the line's start.
+fn act(
+    repl: &mut Repl,
+    outs: &mut VecDeque<Out>,
+    mut last: Option<&mut u8>,
+) -> bool {
     while let Some(out) = outs.pop_front() {
         match out {
-            Out::Write(bytes) => platform::write(&bytes),
+            Out::Write(bytes) => match last.as_deref_mut() {
+                Some(last) => write_edited(&bytes, repl.prompt(), last),
+                None => platform::write(&bytes),
+            },
             Out::File(path) => {
                 let text = platform::read_file(&path);
                 if text.is_none() {
-                    platform::write(
-                        format!("{path}: cannot read file\n").as_bytes(),
-                    );
+                    let message = format!("{path}: cannot read file\n");
+                    match last.as_deref_mut() {
+                        Some(last) => {
+                            write_edited(message.as_bytes(), "", last);
+                        }
+                        None => platform::write(message.as_bytes()),
+                    }
                 }
                 outs.extend(repl.file(&path, text.as_deref()));
             }
@@ -104,6 +117,25 @@ fn act(repl: &mut Repl, outs: &mut VecDeque<Out>) -> bool {
         }
     }
     true
+}
+
+/// Write `bytes`, with an LF before a trailing `prompt` when the output
+/// before it, in these bytes or earlier, does not end one.
+fn write_edited(bytes: &[u8], prompt: &str, last: &mut u8) {
+    let prompt = prompt.as_bytes();
+    let Some(body) = bytes.strip_suffix(prompt).filter(|_| !prompt.is_empty())
+    else {
+        platform::write(bytes);
+        *last = bytes.last().copied().unwrap_or(*last);
+        return;
+    };
+    platform::write(body);
+    if body.last().copied().unwrap_or(*last) != b'\n' {
+        platform::write(b"\n");
+    }
+    platform::write(prompt);
+    // The line typed after the prompt ends with the LF Enter writes.
+    *last = b'\n';
 }
 
 /// Input as it comes, from a pipe, a file or a terminal left cooked.
@@ -114,7 +146,7 @@ fn piped(repl: &mut Repl, mut outs: VecDeque<Out>) {
     let mut unfed: Vec<u8> = Vec::new();
     let mut end = false;
     loop {
-        if !act(repl, &mut outs) {
+        if !act(repl, &mut outs, None) {
             return;
         }
         if !unfed.is_empty() {
@@ -148,15 +180,17 @@ fn edited(repl: &mut Repl, mut outs: VecDeque<Out>) {
     let mut editor = Editor::new();
     let mut keys = Keys::new();
     let mut buffer = [0; 256];
+    // The banner ends its line.
+    let mut ended = b'\n';
     loop {
-        if !act(repl, &mut outs) {
+        if !act(repl, &mut outs, Some(&mut ended)) {
             return;
         }
         editor.prompt(repl.prompt());
         let read = read(&mut buffer);
         if read == 0 {
             outs.extend(repl.flush());
-            act(repl, &mut outs);
+            act(repl, &mut outs, Some(&mut ended));
             return;
         }
         for key in keys.push(&buffer[..read]) {
@@ -190,11 +224,11 @@ fn edited(repl: &mut Repl, mut outs: VecDeque<Out>) {
                 }
                 Event::End => {
                     outs.extend(repl.flush());
-                    act(repl, &mut outs);
+                    act(repl, &mut outs, Some(&mut ended));
                     return;
                 }
             }
-            if !act(repl, &mut outs) {
+            if !act(repl, &mut outs, Some(&mut ended)) {
                 return;
             }
             editor.prompt(repl.prompt());

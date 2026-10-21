@@ -22,5 +22,8 @@ The line is coloured by token class unless `NO_COLOR` is set. Ctrl-C
 drops the entry; Ctrl-D on an empty line ends input. Piped input is read
 as it comes, with no editing, colour or banner.
 
+A lone Esc typed just before `O` or `[` takes the next key with it as an
+escape sequence: the editor reads with no timeout.
+
 `python3 tools/repl/tests/pty.py BIN...`, from the repository root,
 drives a binary through a terminal.

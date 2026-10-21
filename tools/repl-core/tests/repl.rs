@@ -1665,10 +1665,37 @@ mod line_editor {
                 Key::Eof,
                 Key::Backspace,
                 Key::Enter,
-                Key::Enter,
                 Key::Tab,
             ]
         );
+    }
+
+    #[test]
+    fn cr_lf_is_one_enter_even_across_reads() {
+        let mut keys = Keys::new();
+        assert_eq!(
+            keys.push(b"a\r\nb\n\n"),
+            [
+                Key::Char('a'),
+                Key::Enter,
+                Key::Char('b'),
+                Key::Enter,
+                Key::Enter,
+            ]
+        );
+        assert_eq!(keys.push(b"\r"), [Key::Enter]);
+        assert_eq!(
+            keys.push(b"\nc\r\r"),
+            [Key::Char('c'), Key::Enter, Key::Enter,]
+        );
+    }
+
+    #[test]
+    fn an_invalid_utf8_byte_drops_only_itself() {
+        let mut keys = Keys::new();
+        assert_eq!(keys.push(b"\xc3A"), [Key::Char('A')]);
+        assert_eq!(keys.push(b"\xe2B\xffC"), [Key::Char('B'), Key::Char('C')]);
+        assert_eq!(keys.push(b"\xc0\x80D"), [Key::Char('D')]);
     }
 
     #[test]
@@ -1719,6 +1746,15 @@ mod line_editor {
         );
         assert_eq!(candidates(&repl, ":").1.len(), 10);
         assert_eq!(candidates(&repl, ":he").1, names(&[":help"]));
+    }
+
+    #[test]
+    fn a_dot_after_nothing_or_a_dot_offers_no_member() {
+        let mut repl = Repl::new();
+        repl.feed(b"x = \"a\"\n\n");
+        assert_eq!(candidates(&repl, "..").1, names(&[]));
+        assert_eq!(candidates(&repl, "x..").1, names(&[]));
+        assert_eq!(candidates(&repl, "1 + .").1, names(&[]));
     }
 
     #[test]

@@ -44,7 +44,14 @@ impl Repl {
             });
             (before.trim_start(), commands.collect())
         } else if let Some(dot) = word.rfind('.') {
-            (&word[dot + 1..], self.members(&word[..dot]))
+            let head = &word[..dot];
+            // `..` or `x..` has no head to take members of.
+            let members = if head.is_empty() || head.ends_with('.') {
+                Vec::new()
+            } else {
+                self.members(head)
+            };
+            (&word[dot + 1..], members)
         } else if word.is_empty() {
             (word, Vec::new())
         } else {

@@ -44,9 +44,16 @@ local function build_parser()
     return out
   end
   vim.fn.mkdir(vim.fn.fnamemodify(out, ':h'), 'p')
-  local cc = vim.env.CC or 'cc'
-  local cmd = { cc, '-shared', '-fPIC', '-O2', '-I', src, sources[1], sources[2], '-o', out }
-  local result = vim.system(cmd, { text = true }):wait()
+  -- $CC may carry flags, as in CC="gcc -m64".
+  local cmd = vim.split(vim.env.CC or 'cc', '%s+', { trimempty = true })
+  vim.list_extend(cmd, { '-shared', '-fPIC', '-O2', '-I', src, sources[1], sources[2], '-o', out })
+  -- vim.system throws when the compiler is not on PATH.
+  local ok, result = pcall(function()
+    return vim.system(cmd, { text = true }):wait()
+  end)
+  if not ok then
+    return nil, 'fipe: building the parser failed: ' .. tostring(result)
+  end
   if result.code ~= 0 then
     return nil, 'fipe: building the parser failed: ' .. result.stderr
   end
@@ -81,7 +88,9 @@ local function setup_treesitter(parser)
       end
       -- Neovim has no tree-sitter indentexpr of its own; nvim-treesitter's
       -- reads the indents query.
-      if pcall(require, 'nvim-treesitter') then
+      -- Its master branch has none.
+      local ok, nts = pcall(require, 'nvim-treesitter')
+      if ok and type(nts.indentexpr) == 'function' then
         vim.bo[event.buf].indentexpr = "v:lua.require'nvim-treesitter'.indentexpr()"
       end
     end,
@@ -143,9 +152,9 @@ local function setup_dap(opts)
   vim.api.nvim_create_autocmd('FileType', {
     group = vim.api.nvim_create_augroup('fipe_dap', { clear = true }),
     pattern = 'fipe',
-    once = true,
+    -- Returning true deletes the autocmd: retry until nvim-dap loads.
     callback = function()
-      register_dap(opts)
+      return register_dap(opts)
     end,
   })
 end
