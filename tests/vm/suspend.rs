@@ -216,17 +216,12 @@ fn a_host_call_the_budget_cannot_pay_makes_no_request() {
     assert_eq!(before, 1, "the read stands once its call is paid");
 }
 
-#[test]
-fn with_puts_its_key_in_the_environment_of_a_host_call() {
-    let source = "with lang \"C\" { find ./x }\nfind ./y";
-    let program = program(source);
-    let script = read(&program, Script::default(), "./x")
-        .reply("commands.find", Ok(prelude(&program).nothing()));
-    let script = read(&program, script, "./y")
-        .reply("commands.find", Ok(prelude(&program).nothing()));
-    let observation = observe(&program, Some(1 << 20), script);
-    let environments: Vec<_> = observation
-        .trace
+/// The `with` keys and values open at each host call of a trace.
+fn environments(
+    program: &Program,
+    trace: &[(Request, Reply)],
+) -> Vec<Vec<(String, Value)>> {
+    trace
         .iter()
         .map(|(request, _)| {
             let Request::Call { environment, .. } = request else {
@@ -236,11 +231,58 @@ fn with_puts_its_key_in_the_environment_of_a_host_call() {
             environment
                 .iter()
                 .map(|(key, value)| (tables.keys[*key].clone(), value.clone()))
-                .collect::<Vec<_>>()
+                .collect()
         })
-        .collect();
+        .collect()
+}
+
+/// A script answering `find` at each path with `Nothing`.
+fn finds(program: &Program, paths: &[&str]) -> Script {
+    paths.iter().fold(Script::default(), |script, path| {
+        read(program, script, path)
+            .reply("commands.find", Ok(prelude(program).nothing()))
+    })
+}
+
+#[test]
+fn with_puts_its_key_in_the_environment_of_a_host_call() {
+    let source = "with lang \"C\" { find ./x }\nfind ./y";
+    let program = program(source);
+    let script = finds(&program, &["./x", "./y"]);
+    let observation = observe(&program, Some(1 << 20), script);
     let c = vec![(String::from("lang"), Value::text("C"))];
-    assert_eq!(environments, [c.clone(), c, vec![], vec![]]);
+    assert_eq!(
+        environments(&program, &observation.trace),
+        [c.clone(), c, vec![], vec![]]
+    );
+}
+
+#[test]
+fn a_binding_named_like_a_key_leaves_the_environment_unchanged() {
+    let source = "cwd = \"/b\"\nfind ./x\nwith cwd \"/a\" {\n\
+                  cwd = \"/c\"\nfind ./y\n}";
+    let program = program(source);
+    let script = finds(&program, &["./x", "./y"]);
+    let observation = observe(&program, Some(1 << 20), script);
+    let a = vec![(String::from("cwd"), Value::text("/a"))];
+    assert_eq!(
+        environments(&program, &observation.trace),
+        [vec![], vec![], a.clone(), a]
+    );
+}
+
+#[test]
+fn a_closure_made_in_a_with_sees_the_environment_open_at_its_call() {
+    let source = "f = with lang \"C\" { (p => find p) }\nf ./x\n\
+                  with lang \"D\" { f ./y }";
+    let program = program(source);
+    let script = finds(&program, &["./x", "./y"]);
+    let observation = observe(&program, Some(1 << 20), script);
+    let d = vec![(String::from("lang"), Value::text("D"))];
+    assert_eq!(
+        environments(&program, &observation.trace),
+        [vec![], vec![], d.clone(), d]
+    );
 }
 
 #[test]

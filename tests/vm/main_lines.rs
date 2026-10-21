@@ -81,3 +81,44 @@ fn a_stepped_run_keeps_the_same_lines_and_charges() {
     assert_eq!(plain.charged(), stepped.charged());
     assert_eq!(plain.lines().len(), 2);
 }
+
+#[test]
+fn the_lines_a_main_lift_holds_are_kept_when_they_run() {
+    let source = "1 + 1\nm = Just 5\n[:e] = m\ne + 1\ne + 2";
+    let (program, source) = compiled(source);
+    let mut machine = Machine::new(Some(BUDGET));
+    let Outcome::Done(Ok(value)) = machine.run(&program) else {
+        panic!("the run ends with a value")
+    };
+    let shown = |value: &Value| {
+        fipe::value::structural::show(value, &program.tables.borrow())
+    };
+    assert_eq!(shown(&value), "Just 7", "the lift rebuilds the last value");
+    let kept: Vec<(String, String)> = kept(&machine, &program, &source)
+        .iter()
+        .map(|(text, value)| (text.clone(), shown(value)))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            (String::from("1 + 1"), String::from("2")),
+            (String::from("e + 1"), String::from("6")),
+            (String::from("e + 2"), String::from("7")),
+        ],
+        "the lift is a binding line and gives no value"
+    );
+}
+
+#[test]
+fn a_main_lift_that_misses_keeps_none_of_its_lines() {
+    let (program, source) =
+        compiled("1 + 1\nm: Maybe<Integer> = Nothing\n[:e] = m\ne + 1");
+    let mut machine = Machine::new(Some(BUDGET));
+    let Outcome::Done(Ok(_)) = machine.run(&program) else {
+        panic!("the run ends with a value")
+    };
+    assert_eq!(
+        kept(&machine, &program, &source),
+        [(String::from("1 + 1"), Value::Int(2))]
+    );
+}

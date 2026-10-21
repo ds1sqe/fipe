@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     ir,
-    mir::{Callee, Operand, Rvalue, Terminator},
+    mir::{Callee, Operand, Rvalue, Statement, Terminator},
 };
 use alloc::{vec, vec::Vec};
 
@@ -26,12 +26,7 @@ impl<'a> Builder<'_, 'a> {
                 stage,
                 rebuild,
             } => self.marked(node, *good, *left, *stage, *rebuild, dest),
-            ir::Kind::Lift {
-                pattern,
-                value,
-                body,
-                rebuild,
-            } => self.lift(node, pattern, *value, *body, *rebuild, dest),
+            ir::Kind::Lift { .. } => self.lift(node, dest, false),
             ir::Kind::Or { mode, left, right } => {
                 self.fallback(node, *mode, *left, *right, dest)
             }
@@ -179,17 +174,59 @@ impl<'a> Builder<'_, 'a> {
         self.assign(dest, rvalue, node);
     }
 
+    /// The main's lines in order into `dest`, each expression line's
+    /// value kept by a `Line` statement; a lift's lines are main lines
+    /// too, kept when the hit runs them.
+    pub(super) fn main_lines(
+        &mut self,
+        node: usize,
+        lines: &[usize],
+        dest: Option<usize>,
+    ) -> Operand {
+        let Some(last) = lines.last() else {
+            return self.sequence(node, lines, dest);
+        };
+        let mut result = None;
+        for line in lines {
+            let dest = (line == last).then_some(dest).flatten();
+            let tables = self.tables();
+            let substituted = self.substituted.contains_key(line)
+                || tables.prepared.contains_key(line);
+            let value = match &tables.nodes[*line].kind {
+                ir::Kind::Lift { .. } if !substituted => {
+                    self.lift(*line, dest, true)
+                }
+                ir::Kind::Bind { .. } => self.lower_to(*line, dest),
+                _ => {
+                    let value = self.lower_to(*line, dest);
+                    self.emit(Statement::Line(value), *line);
+                    value
+                }
+            };
+            result = Some(value);
+        }
+        result.expect("a line")
+    }
+
     /// A pattern binding on an outcome: the hit binds the payload and
     /// runs the rest of the body; a miss ends the body with the value.
+    /// In the main, the rest of the body is main lines.
     fn lift(
         &mut self,
         node: usize,
-        pattern: &'a ir::Pattern,
-        value: usize,
-        body: usize,
-        rebuild: ir::Rebuild,
         dest: Option<usize>,
+        main: bool,
     ) -> Operand {
+        let ir::Kind::Lift {
+            pattern,
+            value,
+            body,
+            rebuild,
+        } = &self.tables().nodes[node].kind
+        else {
+            unreachable!("a lift node")
+        };
+        let (value, body, rebuild) = (*value, *body, *rebuild);
         let ty = &self.tables().nodes[node].ty;
         let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
         let outcome = self.lower(value);
@@ -249,7 +286,13 @@ impl<'a> Builder<'_, 'a> {
                 self.bind_pattern(payload, Operand::Local(local), node);
             }
         }
-        let result = self.lower(body);
+        let result = match &self.tables().nodes[body].kind {
+            ir::Kind::Block(lines) if main => {
+                self.count(body);
+                self.main_lines(body, lines, None)
+            }
+            _ => self.lower(body),
+        };
         self.count(node);
         self.rebuild(rebuild, constructor, ty, result, dest, node);
         self.terminate(Terminator::Goto(join), node);

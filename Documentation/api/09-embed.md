@@ -22,9 +22,9 @@ a returned `Request`; the driver performs it and passes the answer to
 | `File { stem }`: the source of file module `stem`; the driver maps the stem to a path | the text, or `None` when absent |
 | `Call { declaration, arguments, environment }`: a run calls the host declaration `tables.declarations[declaration]` with its arguments in spot order, under the `with` keys (`tables.keys`) and values open, outermost first | `Value(Ok(value))`, a value of the declared result's shape ([MIR](08-mir.md) §Running), or `Value(Err(message))`, which Faults the run with `Host` at the call |
 
-Sink policy is the host's: it reads each main expression line's value from
-`vm::Machine::lines` as lines end, at a request or the run's end; the
-conformance host's policy heads `tests/fixtures/host/commands.fipe`.
+Sink policy is the host's: it reads each main expression line's value (a lift's
+lines too) from `vm::Machine::lines` as lines end, at a request or the run's
+end; the conformance host's policy heads `tests/fixtures/host/commands.fipe`.
 
 ~~~text
 vm::input_spot(program) -> Result<ir::Type, InputError { spots: usize }>

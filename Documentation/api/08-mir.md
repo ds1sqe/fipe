@@ -40,12 +40,12 @@ Each local keeps its type and the IR slot it holds, `None` for a temporary.
 
 ## Blocks, statements and terminators
 
-A block is statements and one terminator, with the node of each: a Fault has
-its span and a debugger steps by node or by block without a second table.
-Statements assign an rvalue to a local, store a value definition's global,
-enter an `Eval` or `Init` entry with the value it checks, push a `with` key and
-value onto the environment a host call receives, pop it, or keep a main
-expression line's value (`Line`). A block whose lowering charged anything opens
+A block is statements and one terminator, with the node of each: a Fault has its
+span and a debugger steps by node or by block without a second table. Statements
+assign an rvalue to a local, store a value definition's global, enter an `Eval`
+or `Init` entry with the value it checks, push a `with` key and value onto the
+environment a host call receives, pop it, or keep a main expression line's value
+(`Line`, a main lift's lines too). A block whose lowering charged anything opens
 with `Charge`, the nodes it pays in the order their lowering completed.
 
 The charges are the VM's metering, which [the host

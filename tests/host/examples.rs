@@ -83,6 +83,6 @@ fn a_smaller_budget_cuts_the_trace_at_the_unpaid_action() {
     // run stops before its end.
     let (short, _) = observe(&program, Some(charged - 1), source);
     assert_eq!(short.result.as_ref().unwrap_err().reason, Reason::Budget);
-    assert!(short.trace.iter().zip(&full.trace).all(|(a, b)| a == b));
+    assert_eq!(short.trace, full.trace);
     assert!(matches!(full.trace[0].0, Request::Call { .. }));
 }
