@@ -36,6 +36,10 @@ const OPEN: usize = 2;
 const CLOSE: usize = 3;
 const EXIT: usize = 60;
 const CHDIR: usize = 80;
+const IOCTL: usize = 16;
+const TCGETS: usize = 0x5401;
+/// Set after the output written so far is sent.
+const TCSETSW: usize = 0x5403;
 
 /// A chunk of the heap; a request larger than this maps its own.
 const CHUNK: usize = 64 << 20;
@@ -144,6 +148,7 @@ pub fn read_file(path: &str) -> Option<String> {
 }
 
 pub fn exit(code: usize) -> ! {
+    cooked();
     // SAFETY: `exit` takes no pointer and does not return.
     unsafe { syscall(EXIT, code, 0, 0) };
     unreachable!()
@@ -159,6 +164,87 @@ pub fn chdir(path: &str) -> bool {
     name.push(0);
     // SAFETY: `name` is NUL-terminated.
     unsafe { syscall(CHDIR, name.as_ptr() as usize, 0, 0) == 0 }
+}
+
+/// The kernel's `struct termios`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Termios {
+    iflag: u32,
+    oflag: u32,
+    cflag: u32,
+    lflag: u32,
+    line: u8,
+    cc: [u8; 19],
+}
+
+const ICRNL: u32 = 0o400;
+const IXON: u32 = 0o2000;
+const ISIG: u32 = 0o1;
+const ICANON: u32 = 0o2;
+const ECHO: u32 = 0o10;
+const IEXTEN: u32 = 0o100_000;
+const VTIME: usize = 5;
+const VMIN: usize = 6;
+
+/// The settings of the terminal on `fd`, when it is one.
+fn termios(fd: usize) -> Option<Termios> {
+    let mut termios = Termios {
+        iflag: 0,
+        oflag: 0,
+        cflag: 0,
+        lflag: 0,
+        line: 0,
+        cc: [0; 19],
+    };
+    let at = ptr::from_mut(&mut termios) as usize;
+    // SAFETY: `TCGETS` writes one `struct termios` at `at`.
+    let result = unsafe { syscall(IOCTL, fd, TCGETS, at) };
+    (result == 0).then_some(termios)
+}
+
+fn set_termios(termios: &Termios) {
+    let at = ptr::from_ref(termios) as usize;
+    // SAFETY: `TCSETSW` reads one `struct termios` at `at`.
+    unsafe { syscall(IOCTL, 0, TCSETSW, at) };
+}
+
+/// The terminal settings before [`raw`], restored by [`cooked`].
+struct Saved(UnsafeCell<Option<Termios>>);
+
+// SAFETY: the program is single-threaded.
+unsafe impl Sync for Saved {}
+
+static SAVED: Saved = Saved(UnsafeCell::new(None));
+
+/// Whether stdin and stdout are both a terminal.
+pub fn terminal() -> bool {
+    termios(0).is_some() && termios(1).is_some()
+}
+
+/// Whether stdin is now in raw mode: no echo, no line buffering, Ctrl-C
+/// as a byte; output still maps LF to CR LF.
+pub fn raw() -> bool {
+    let Some(saved) = termios(0) else {
+        return false;
+    };
+    let mut raw = saved;
+    raw.iflag &= !(ICRNL | IXON);
+    raw.lflag &= !(ICANON | ECHO | ISIG | IEXTEN);
+    raw.cc[VMIN] = 1;
+    raw.cc[VTIME] = 0;
+    // SAFETY: single-threaded; no other reference to `SAVED` is live.
+    unsafe { *SAVED.0.get() = Some(saved) };
+    set_termios(&raw);
+    true
+}
+
+/// The terminal as [`raw`] found it; nothing when it was not switched.
+pub fn cooked() {
+    // SAFETY: single-threaded; no other reference to `SAVED` is live.
+    if let Some(saved) = unsafe { (*SAVED.0.get()).take() } {
+        set_termios(&saved);
+    }
 }
 
 /// Where `_start` found the initial stack: `argc`, then `argv`.
@@ -211,6 +297,7 @@ fn panic(info: &PanicInfo) -> ! {
             Ok(())
         }
     }
+    cooked();
     let _ = writeln!(Stderr, "fipe-repl: {info}");
     exit(101)
 }

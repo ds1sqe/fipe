@@ -6,7 +6,9 @@
 //! input the driver calls [`Repl::flush`] so a last line without LF runs.
 //! The prompt comes out whenever the input holds no partial line and
 //! nothing is awaited, so `feed(&[])` yields the first one; none comes
-//! after `flush`.
+//! after `flush`. At a terminal a driver edits each line with
+//! [`edit`] before feeding it, and [`Repl::prompt`] names the prompt
+//! the line is drawn after.
 //!
 //! An entry is the input up to a blank line: the lines before it are
 //! one compilation unit, checked and accepted once, as a file's lines
@@ -28,6 +30,7 @@
 
 extern crate alloc;
 
+pub mod edit;
 mod ir;
 mod mir;
 mod render;
@@ -51,11 +54,11 @@ use fipe::{
 };
 use render::Context;
 
-const PROMPT: &[u8] = b"fipe> ";
+const PROMPT: &str = "fipe> ";
 /// The REPL's own budget per line when the driver names none: a surface
 /// constant, not the language's.
 pub const BUDGET: u64 = 1 << 20;
-const MORE: &[u8] = b"....> ";
+const MORE: &str = "....> ";
 const HOST_DIR: &str = "tests/fixtures/host";
 /// The command namespace first, then the host modules by name.
 const HOST: [&str; 6] = ["commands", "fs", "sys", "cli", "text", "config"];
@@ -218,9 +221,31 @@ impl Repl {
         self.finish(out)
     }
 
+    /// The prompt for the next line: `....> ` while an entry is held.
+    #[must_use]
+    pub fn prompt(&self) -> &'static str {
+        if self.entry.is_empty() {
+            PROMPT
+        } else {
+            MORE
+        }
+    }
+
+    /// Ctrl-C at a terminal: drop the entry held and any partial line,
+    /// then prompt afresh.
+    pub fn interrupt(&mut self) -> Vec<Out> {
+        self.input.clear();
+        self.entry.clear();
+        self.continuation = Continuation::default();
+        let mut out = Outs::default();
+        self.run(&mut out);
+        self.finish(out)
+    }
+
     fn finish(&mut self, out: Outs) -> Vec<Out> {
         if let Some(Out::Write(bytes)) = out.0.last() {
-            self.prompted = bytes.ends_with(PROMPT) || bytes.ends_with(MORE);
+            self.prompted = bytes.ends_with(PROMPT.as_bytes())
+                || bytes.ends_with(MORE.as_bytes());
         }
         out.0
     }
@@ -316,7 +341,7 @@ impl Repl {
             && self.wait.is_none()
             && self.input.is_empty()
         {
-            out.write(if self.entry.is_empty() { PROMPT } else { MORE });
+            out.write(self.prompt().as_bytes());
         }
     }
 

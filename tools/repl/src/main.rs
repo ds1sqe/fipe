@@ -29,7 +29,11 @@ mod platform;
 mod platform;
 
 use alloc::{collections::VecDeque, format, string::String, vec::Vec};
-use fipe_repl_core::{Out, Repl, BUDGET, COMPILE_BUDGET};
+use core::fmt::Write as _;
+use fipe_repl_core::{
+    edit::{Editor, Event, Keys, View},
+    Out, Repl, BUDGET, COMPILE_BUDGET,
+};
 
 const USAGE: &str = "usage: fipe-repl [--cwd <dir>] [--host <dir>] \
     [--strict] [--budget <n>] [--compile-budget <n>]\n";
@@ -48,6 +52,7 @@ fn main() {
 }
 
 /// Read, feed, act on every output; stop at `Out::Exit` or end of input.
+/// At a terminal, input goes through the line editor in raw mode.
 /// File paths are relative to the working directory.
 fn run() {
     let Options {
@@ -66,30 +71,48 @@ fn run() {
     repl.strict(strict);
     repl.budget(budget);
     repl.compile_budget(compile_budget);
-    let mut outs = VecDeque::from(match host {
+    let outs = VecDeque::from(match host {
         Some(dir) => repl.host_directory(&dir),
         None => repl.feed(&[]),
     });
+    if platform::terminal() && platform::raw() {
+        edited(&mut repl, outs);
+        platform::cooked();
+    } else {
+        piped(&mut repl, outs);
+    }
+}
+
+/// Act on every output in order; false at `Out::Exit`.
+fn act(repl: &mut Repl, outs: &mut VecDeque<Out>) -> bool {
+    while let Some(out) = outs.pop_front() {
+        match out {
+            Out::Write(bytes) => platform::write(&bytes),
+            Out::File(path) => {
+                let text = platform::read_file(&path);
+                if text.is_none() {
+                    platform::write(
+                        format!("{path}: cannot read file\n").as_bytes(),
+                    );
+                }
+                outs.extend(repl.file(&path, text.as_deref()));
+            }
+            Out::Exit => return false,
+        }
+    }
+    true
+}
+
+/// Input as it comes, from a pipe, a file or a terminal left cooked.
+fn piped(repl: &mut Repl, mut outs: VecDeque<Out>) {
     let mut buffer = [0; 4096];
     // Input read but not yet fed: fed one line at a time, so each line's
     // output is written before the next line runs.
     let mut unfed: Vec<u8> = Vec::new();
     let mut end = false;
     loop {
-        while let Some(out) = outs.pop_front() {
-            match out {
-                Out::Write(bytes) => platform::write(&bytes),
-                Out::File(path) => {
-                    let text = platform::read_file(&path);
-                    if text.is_none() {
-                        platform::write(
-                            format!("{path}: cannot read file\n").as_bytes(),
-                        );
-                    }
-                    outs.extend(repl.file(&path, text.as_deref()));
-                }
-                Out::Exit => return,
-            }
+        if !act(repl, &mut outs) {
+            return;
         }
         if !unfed.is_empty() {
             let line = unfed
@@ -103,13 +126,7 @@ fn run() {
         if end {
             return;
         }
-        let read = match platform::read(&mut buffer) {
-            Ok(read) => read,
-            Err(()) => {
-                platform::write(b"cannot read standard input\n");
-                platform::exit(2);
-            }
-        };
+        let read = read(&mut buffer);
         end = read == 0;
         if end {
             outs.extend(repl.flush());
@@ -117,6 +134,80 @@ fn run() {
             unfed.extend_from_slice(&buffer[..read]);
         }
     }
+}
+
+/// Keys from a terminal in raw mode, through the line editor; each
+/// line entered is fed with its LF.
+fn edited(repl: &mut Repl, mut outs: VecDeque<Out>) {
+    let mut editor = Editor::new();
+    let mut keys = Keys::new();
+    let mut buffer = [0; 256];
+    loop {
+        if !act(repl, &mut outs) {
+            return;
+        }
+        editor.prompt(repl.prompt());
+        let read = read(&mut buffer);
+        if read == 0 {
+            outs.extend(repl.flush());
+            act(repl, &mut outs);
+            return;
+        }
+        for key in keys.push(&buffer[..read]) {
+            match editor.key(key) {
+                Event::None => continue,
+                Event::Draw => {
+                    draw(&editor.view());
+                    continue;
+                }
+                Event::Line(mut line) => {
+                    let prompt = repl.prompt();
+                    let cursor = prompt.len() + line.chars().count();
+                    draw(&View {
+                        prompt,
+                        text: line.clone(),
+                        cursor,
+                    });
+                    platform::write(b"\n");
+                    line.push('\n');
+                    outs.extend(repl.feed(line.as_bytes()));
+                }
+                Event::Interrupt => {
+                    platform::write(b"^C\n");
+                    outs.extend(repl.interrupt());
+                }
+                Event::End => {
+                    outs.extend(repl.flush());
+                    act(repl, &mut outs);
+                    return;
+                }
+            }
+            if !act(repl, &mut outs) {
+                return;
+            }
+            editor.prompt(repl.prompt());
+        }
+    }
+}
+
+/// Redraw the line in place: to its start, the prompt and text, clear
+/// the rest, then the cursor to its column.
+fn draw(view: &View) {
+    // ponytail: a line wider than the terminal wraps and the redraw
+    // misses the rows above; track rows when long lines matter.
+    let mut bytes = format!("\r{}{}\x1b[K\r", view.prompt, view.text);
+    if view.cursor > 0 {
+        let _ = write!(bytes, "\x1b[{}C", view.cursor);
+    }
+    platform::write(bytes.as_bytes());
+}
+
+/// Bytes from stdin; 0 at end of input. A read error ends the REPL.
+fn read(buffer: &mut [u8]) -> usize {
+    platform::read(buffer).unwrap_or_else(|()| {
+        platform::write(b"cannot read standard input\n");
+        platform::exit(2);
+    })
 }
 
 /// The options, after acting on `--cwd`.

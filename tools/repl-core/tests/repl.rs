@@ -1469,3 +1469,190 @@ fn conversion_candidates_name_the_line_of_a_shadowed_type() {
         "{text}"
     );
 }
+
+mod line_editor {
+    use fipe_repl_core::edit::{Editor, Event, Key, Keys};
+    use fipe_repl_core::Repl;
+
+    /// An editor after typing `text`.
+    fn typed(text: &str) -> Editor {
+        let mut editor = Editor::new();
+        editor.prompt("fipe> ");
+        for c in text.chars() {
+            assert_eq!(editor.key(Key::Char(c)), Event::Draw);
+        }
+        editor
+    }
+
+    /// The line and the cursor's column after the prompt.
+    fn state(editor: &Editor) -> (String, usize) {
+        let view = editor.view();
+        (view.text, view.cursor - view.prompt.len())
+    }
+
+    #[test]
+    fn typing_inserts_at_the_cursor() {
+        let mut editor = typed("ac");
+        editor.key(Key::Left);
+        editor.key(Key::Char('b'));
+        assert_eq!(state(&editor), ("abc".into(), 2));
+        assert_eq!(editor.view().cursor, 8);
+    }
+
+    #[test]
+    fn enter_submits_and_empties_the_line() {
+        let mut editor = typed("1 + 1");
+        editor.key(Key::Home);
+        assert_eq!(editor.key(Key::Enter), Event::Line("1 + 1".into()));
+        assert_eq!(state(&editor), (String::new(), 0));
+        assert_eq!(Editor::new().key(Key::Enter), Event::Line(String::new()));
+    }
+
+    #[test]
+    fn backspace_and_delete_remove_around_the_cursor() {
+        let mut editor = typed("abcd");
+        editor.key(Key::Left);
+        assert_eq!(editor.key(Key::Backspace), Event::Draw);
+        assert_eq!(state(&editor), ("abd".into(), 2));
+        assert_eq!(editor.key(Key::Delete), Event::Draw);
+        assert_eq!(state(&editor), ("ab".into(), 2));
+        assert_eq!(editor.key(Key::Delete), Event::None);
+        editor.key(Key::Home);
+        assert_eq!(editor.key(Key::Backspace), Event::None);
+    }
+
+    #[test]
+    fn movement_stays_within_the_line() {
+        let mut editor = typed("ab");
+        assert_eq!(editor.key(Key::Right), Event::None);
+        editor.key(Key::Home);
+        assert_eq!(state(&editor), ("ab".into(), 0));
+        assert_eq!(editor.key(Key::Left), Event::None);
+        editor.key(Key::Right);
+        assert_eq!(state(&editor), ("ab".into(), 1));
+        editor.key(Key::End);
+        assert_eq!(state(&editor), ("ab".into(), 2));
+    }
+
+    #[test]
+    fn kills_delete_to_either_end_or_a_word() {
+        let mut editor = typed("one two  three");
+        editor.key(Key::KillWord);
+        assert_eq!(state(&editor), ("one two  ".into(), 9));
+        editor.key(Key::KillWord);
+        assert_eq!(state(&editor), ("one ".into(), 4));
+        editor.key(Key::Left);
+        editor.key(Key::Left);
+        editor.key(Key::KillEnd);
+        assert_eq!(state(&editor), ("on".into(), 2));
+        editor.key(Key::Left);
+        editor.key(Key::KillStart);
+        assert_eq!(state(&editor), ("n".into(), 0));
+    }
+
+    #[test]
+    fn multibyte_text_edits_by_char() {
+        let mut editor = typed("é→x");
+        editor.key(Key::Left);
+        editor.key(Key::Backspace);
+        assert_eq!(state(&editor), ("éx".into(), 1));
+    }
+
+    #[test]
+    fn up_and_down_walk_the_history_and_keep_the_draft() {
+        let mut editor = typed("first");
+        editor.key(Key::Enter);
+        for c in "second".chars() {
+            editor.key(Key::Char(c));
+        }
+        editor.key(Key::Enter);
+        editor.key(Key::Enter);
+        editor.key(Key::Char('d'));
+        editor.key(Key::Up);
+        assert_eq!(state(&editor), ("second".into(), 6));
+        editor.key(Key::Up);
+        assert_eq!(state(&editor).0, "first");
+        assert_eq!(editor.key(Key::Up), Event::None);
+        editor.key(Key::Down);
+        assert_eq!(state(&editor).0, "second");
+        editor.key(Key::Down);
+        assert_eq!(state(&editor), ("d".into(), 1));
+        assert_eq!(editor.key(Key::Down), Event::None);
+    }
+
+    #[test]
+    fn a_repeated_line_is_kept_once() {
+        let mut editor = typed("x");
+        editor.key(Key::Enter);
+        editor.key(Key::Char('x'));
+        editor.key(Key::Enter);
+        editor.key(Key::Up);
+        editor.key(Key::Up);
+        assert_eq!(state(&editor).0, "x");
+        assert_eq!(editor.key(Key::Up), Event::None);
+    }
+
+    #[test]
+    fn ctrl_c_clears_and_ctrl_d_ends_only_an_empty_line() {
+        let mut editor = typed("ab");
+        editor.key(Key::Home);
+        assert_eq!(editor.key(Key::Eof), Event::Draw);
+        assert_eq!(state(&editor), ("b".into(), 0));
+        assert_eq!(editor.key(Key::Interrupt), Event::Interrupt);
+        assert_eq!(state(&editor), (String::new(), 0));
+        assert_eq!(editor.key(Key::Eof), Event::End);
+    }
+
+    #[test]
+    fn bytes_decode_to_keys() {
+        let mut keys = Keys::new();
+        assert_eq!(
+            keys.push(b"a\x1b[A\x1b[B\x1b[C\x1b[D\x1b[H\x1b[F\x1bOH\x1b[3~"),
+            [
+                Key::Char('a'),
+                Key::Up,
+                Key::Down,
+                Key::Right,
+                Key::Left,
+                Key::Home,
+                Key::End,
+                Key::Home,
+                Key::Delete,
+            ]
+        );
+        assert_eq!(
+            keys.push(b"\x01\x05\x0b\x15\x17\x03\x04\x7f\r\n\x09\x1b[1;5C"),
+            [
+                Key::Home,
+                Key::End,
+                Key::KillEnd,
+                Key::KillStart,
+                Key::KillWord,
+                Key::Interrupt,
+                Key::Eof,
+                Key::Backspace,
+                Key::Enter,
+                Key::Enter,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_split_sequence_or_char_waits_for_its_rest() {
+        let mut keys = Keys::new();
+        assert_eq!(keys.push(b"\x1b["), []);
+        assert_eq!(keys.push(b"D\xc3"), [Key::Left]);
+        assert_eq!(keys.push(b"\xa9"), [Key::Char('é')]);
+    }
+
+    #[test]
+    fn the_prompt_follows_the_entry_and_interrupt_drops_it() {
+        let mut repl = Repl::new();
+        repl.feed(&[]);
+        assert_eq!(repl.prompt(), "fipe> ");
+        assert_eq!(super::written(repl.feed(b"(1 +\n")), "....> ");
+        assert_eq!(repl.prompt(), "....> ");
+        assert_eq!(super::written(repl.interrupt()), "fipe> ");
+        assert_eq!(super::written(repl.feed(b"2\n\n")), "2\nfipe> ");
+    }
+}
