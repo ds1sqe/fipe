@@ -76,11 +76,18 @@ impl Analysis {
             typed,
             diagnostics: Vec::new(),
         };
-        analysis.diagnostics = analysis.check(host);
+        let stem = path
+            .and_then(Path::file_stem)
+            .and_then(|stem| stem.to_str());
+        analysis.diagnostics = analysis.check(host, stem);
         analysis
     }
 
-    fn check(&self, host: &Host) -> Vec<((usize, usize), String)> {
+    fn check(
+        &self,
+        host: &Host,
+        stem: Option<&str>,
+    ) -> Vec<((usize, usize), String)> {
         let mut diagnostics: Vec<_> = host
             .errors
             .iter()
@@ -94,31 +101,63 @@ impl Analysis {
         ) else {
             return diagnostics;
         };
+        let mut here = Vec::new();
+        // Each used file's diagnostics: the first one's words, and how
+        // many more, shown once at the file's `use`.
+        let mut files: Vec<(String, (usize, usize), String, usize)> =
+            Vec::new();
         for error in &errors {
             match words::check(error) {
-                Placed::Here(span, message) => {
-                    diagnostics.push((span, message));
+                Placed::Here(span, message) => here.push((span, message)),
+                // A file module that is the document itself, reached
+                // through a cycle: its words belong here.
+                Placed::File(file, span, message)
+                    if Some(file.as_str()) == stem =>
+                {
+                    here.push((span, message));
                 }
-                Placed::File(stem, (start, _), message) => {
+                Placed::File(file, (start, _), message) => {
+                    if let Some(entry) =
+                        files.iter_mut().find(|entry| entry.0 == file)
+                    {
+                        entry.3 += 1;
+                        continue;
+                    }
                     let at = loader::uses(&self.module)
-                        .find(|(used, _)| *used == stem)
+                        .find(|(used, _)| *used == file)
                         .map_or((0, 0), |(_, span)| span);
                     let line = self
                         .files
                         .iter()
-                        .find(|file| file.stem == stem)
-                        .map_or(0, |file| {
-                            file.text[..start.min(file.text.len())]
+                        .find(|known| known.stem == file)
+                        .map_or(0, |known| {
+                            known.text[..start.min(known.text.len())]
                                 .matches('\n')
                                 .count()
                                 + 1
                         });
-                    diagnostics.push((
-                        at,
-                        format!("in {stem}.fipe, line {line}: {message}"),
-                    ));
+                    let text =
+                        format!("in {file}.fipe, line {line}: {message}");
+                    files.push((file, at, text, 0));
                 }
             }
+        }
+        // What the document says of a broken file's names follows from
+        // the file's own errors.
+        here.retain(|((start, end), _)| {
+            let said = self.text.get(*start..*end).unwrap_or_default();
+            !files.iter().any(|(file, ..)| {
+                said == file || said.starts_with(&format!("{file}."))
+            })
+        });
+        diagnostics.extend(here);
+        for (_, at, text, more) in files {
+            let text = match more {
+                0 => text,
+                1 => format!("{text} (and 1 more)"),
+                n => format!("{text} (and {n} more)"),
+            };
+            diagnostics.push((at, text));
         }
         diagnostics
     }
@@ -132,6 +171,23 @@ impl Analysis {
             Node::Type(id) => module.ty(id)?.span,
         };
         Some((span.start, span.end))
+    }
+
+    /// The start of the name segment at `offset`, or `offset` when no
+    /// name is there: a cursor just after a name is on the name.
+    #[must_use]
+    pub fn on_name(&self, offset: usize) -> usize {
+        name_at(&self.text, offset).map_or(offset, |(start, _)| start)
+    }
+
+    /// Whether `name` is written in the document as a name or the
+    /// first segment of one.
+    #[must_use]
+    pub fn mentions(&self, name: &str) -> bool {
+        lex(&self.text).tokens.iter().any(|token| {
+            matches!(&token.kind, fipe::token::Kind::Name(segments)
+                if segments.first().is_some_and(|first| first == name))
+        })
     }
 
     /// The node under byte `offset` and what it names.
@@ -180,13 +236,7 @@ impl Analysis {
     /// value, type or constructor of the document, or a local's binder.
     #[must_use]
     pub fn declaration_at(&self, offset: usize) -> Option<Target> {
-        let part = |c: char| c.is_alphanumeric() || c == '_';
-        let start = self.text[..offset.min(self.text.len())]
-            .rfind(|c: char| !part(c))
-            .map_or(0, |at| at + 1);
-        let end = self.text[start..]
-            .find(|c: char| !part(c))
-            .map_or(self.text.len(), |at| start + at);
+        let (start, end) = name_at(&self.text, offset)?;
         let word = self.text.get(start..end)?;
         let mut candidates = vec![
             Target::Value {
@@ -269,6 +319,26 @@ impl Analysis {
     pub fn definition(&self, host: &Host, target: &Target) -> Vec<Located> {
         if let Target::Local { site } = target {
             return vec![(Source::This, (site.start, site.end))];
+        }
+        match target {
+            Target::TypeMember { ty, member } => {
+                return match ty.as_ref() {
+                    Target::Type { name, .. } => {
+                        self.member_sites(host, name, member)
+                    }
+                    _ => Vec::new(),
+                };
+            }
+            Target::Members { head, members } => {
+                let [member] = members.as_slice() else {
+                    return Vec::new();
+                };
+                return self
+                    .head_type(head)
+                    .map(|name| self.member_sites(host, &name, member))
+                    .unwrap_or_default();
+            }
+            _ => {}
         }
         match target {
             Target::Module(Origin::File(stem)) => {
@@ -396,6 +466,9 @@ impl Analysis {
     /// expression's inferred type, or a host or prelude declaration.
     #[must_use]
     pub fn hover(&self, host: &Host, offset: usize) -> Option<String> {
+        if let Some(start) = self.item_name_at(offset) {
+            return Some(doc_and_lines(&self.text, start));
+        }
         if self.module.at(offset).is_none() {
             return self.import_hover(host, offset);
         }
@@ -429,10 +502,13 @@ impl Analysis {
             }
         }
         match node {
-            Node::Pattern(_) => {
+            Node::Pattern(id) => {
                 let span = Self::span(&self.module, node)?;
-                let scheme = self.scheme_at(span)?;
-                Some(format!("{word}: {scheme}"))
+                if let Some(scheme) = self.scheme_at(span) {
+                    return Some(format!("{word}: {scheme}"));
+                }
+                let ty = self.typed.pattern(id)?;
+                Some(format!("{word}: {ty}"))
             }
             Node::Expr(id) => {
                 let ty = self.typed.expr(id)?;
@@ -444,6 +520,124 @@ impl Analysis {
 }
 
 impl Analysis {
+    /// The start of the declared name under byte `offset` in one of the
+    /// document's items: a type, a constructor, a field, an impl member
+    /// or a declaration, which are names, not nodes.
+    #[must_use]
+    pub fn item_name_at(&self, offset: usize) -> Option<usize> {
+        let on = |name: &fipe::ast::Name| {
+            name.span.start <= offset && offset <= name.span.end
+        };
+        for entry in &self.module.entries {
+            let fipe::ast::Entry::Item(item) = entry else {
+                continue;
+            };
+            let mut names: Vec<&fipe::ast::Name> = Vec::new();
+            match &item.kind {
+                fipe::ast::ItemKind::Type { name, members, .. } => {
+                    names.push(name);
+                    for member in members.iter().flatten() {
+                        match member {
+                            fipe::ast::Member::Field(field) => {
+                                names.push(&field.name);
+                            }
+                            fipe::ast::Member::Constructor {
+                                name,
+                                fields,
+                                ..
+                            } => {
+                                names.push(name);
+                                names.extend(fields.iter().map(|f| &f.name));
+                            }
+                        }
+                    }
+                }
+                fipe::ast::ItemKind::Impl { members, .. } => {
+                    for member in members {
+                        if let fipe::ast::ImplMember::Named { name, .. } =
+                            member
+                        {
+                            names.push(name);
+                        }
+                    }
+                }
+                fipe::ast::ItemKind::Declare { name, .. } => names.push(name),
+                fipe::ast::ItemKind::Use { .. } => {}
+            }
+            if let Some(name) = names.into_iter().find(|name| on(name)) {
+                return Some(name.span.start);
+            }
+        }
+        None
+    }
+
+    /// The name of the type of a member chain's head, from its typing.
+    fn head_type(&self, head: &Target) -> Option<String> {
+        let shown = match head {
+            // A top-level binding is a local of its own module, typed by
+            // its scheme; a lexical one by its pattern.
+            Target::Local { site } => {
+                match self.scheme_at((site.start, site.end)) {
+                    Some(scheme) => scheme.to_string(),
+                    None => match self.module.at(site.start)? {
+                        Node::Pattern(id) => {
+                            self.typed.pattern(id)?.to_string()
+                        }
+                        _ => return None,
+                    },
+                }
+            }
+            Target::Value {
+                origin: Origin::This,
+                ..
+            } => {
+                let site = self.resolved.site(head)?;
+                self.scheme_at((site.start, site.end))?.to_string()
+            }
+            _ => return None,
+        };
+        let name = type_head(&shown);
+        (!name.is_empty()).then_some(name)
+    }
+
+    /// Where the type named `ty` declares `member`, as a field, a
+    /// constructor or an impl member, in the document, its file
+    /// modules, the host's declaration files and the prelude.
+    #[must_use]
+    pub fn member_sites(
+        &self,
+        host: &Host,
+        ty: &str,
+        member: &str,
+    ) -> Vec<Located> {
+        let mut found = Vec::new();
+        let mut search = |module: &Module, text: &str, source: Source| {
+            for span in member_spans(module, text, ty, member) {
+                found.push((source.clone(), span));
+            }
+        };
+        search(&self.module, &self.text, Source::This);
+        for (index, file) in self.files.iter().enumerate() {
+            search(&file.module, &file.text, Source::File(index));
+        }
+        for (namespace, _, text) in &host.sources {
+            let declared = if namespace == "commands" {
+                host.declarations.commands.as_ref()
+            } else {
+                host.declarations.get_module(namespace)
+            };
+            if let Some(declared) = declared {
+                search(&declared.module, text, Source::Host(namespace.clone()));
+            }
+        }
+        search(
+            &host.declarations.prelude.module,
+            fipe::decl::prelude_source(),
+            Source::Prelude,
+        );
+        found
+    }
+
     /// What hovering a `use` segment shows: the module it names, or the
     /// declaration of the name it imports.
     fn import_hover(&self, host: &Host, offset: usize) -> Option<String> {
@@ -613,4 +807,120 @@ fn doc_and_lines(text: &str, start: usize) -> String {
         last += 1;
     }
     lines[first..=last.min(lines.len().saturating_sub(1))].join("\n")
+}
+
+/// The span of the name segment of `text` under byte `offset`, by the
+/// crate's tokens: a dotted name's segment, or the whole name. A
+/// position at a name's end is on it.
+#[must_use]
+pub fn name_at(text: &str, offset: usize) -> Option<(usize, usize)> {
+    let lexed = lex(text);
+    let token = lexed.tokens.iter().find(|token| {
+        matches!(token.kind, fipe::token::Kind::Name(_))
+            && token.span.start <= offset
+            && offset <= token.span.end
+    })?;
+    let (start, end) = (token.span.start, token.span.end);
+    let mut at = start;
+    for segment in text.get(start..end)?.split('.') {
+        let segment_end = at + segment.len();
+        if at <= offset && offset <= segment_end {
+            return Some((at, segment_end));
+        }
+        at = segment_end + 1;
+    }
+    Some((start, end))
+}
+
+/// The spans of the names of `member` that the type named `ty` declares
+/// in `module`, whose text is `text`.
+fn member_spans(
+    module: &Module,
+    text: &str,
+    ty: &str,
+    member: &str,
+) -> Vec<(usize, usize)> {
+    use fipe::ast::{Entry, ImplMember, ItemKind, Member};
+    let named = |name: &fipe::ast::Name| name.segments == [member];
+    let mut spans = Vec::new();
+    for entry in &module.entries {
+        let Entry::Item(item) = entry else { continue };
+        match &item.kind {
+            ItemKind::Type {
+                name,
+                members: Some(members),
+                ..
+            } if name.segments.last().is_some_and(|last| last == ty) => {
+                for declared in members {
+                    let name = match declared {
+                        Member::Field(field) => &field.name,
+                        Member::Constructor { name, .. } => name,
+                    };
+                    if named(name) {
+                        spans.push((name.span.start, name.span.end));
+                    }
+                }
+            }
+            ItemKind::Impl {
+                target, members, ..
+            } => {
+                let written = module
+                    .ty(*target)
+                    .and_then(|t| text.get(t.span.start..t.span.end))
+                    .unwrap_or_default();
+                if target_head(written) != ty {
+                    continue;
+                }
+                for declared in members {
+                    if let ImplMember::Named { name, .. } = declared {
+                        if named(name) {
+                            spans.push((name.span.start, name.span.end));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
+/// The name heading a printed type, past its limits (`Literal a =>
+/// Vec<a>` is `Vec`); `[]` for an array, whose impls are written on
+/// `[T; n]`; empty for a tuple (`a * b`), a function or a variable's
+/// punctuation.
+#[must_use]
+pub fn type_head(shown: &str) -> String {
+    let shown = shown.rsplit("=>").next().unwrap_or_default().trim();
+    let mut depth = 0usize;
+    for (at, c) in shown.char_indices() {
+        match c {
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0
+                && (shown[at..].starts_with(" * ")
+                    || shown[at..].starts_with(" -> ")) =>
+            {
+                return String::new();
+            }
+            _ => {}
+        }
+    }
+    if shown.starts_with('[') {
+        return String::from("[]");
+    }
+    shown
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+        .collect()
+}
+
+/// The head of an impl's written target, as [`type_head`] names it.
+#[must_use]
+pub fn target_head(written: &str) -> &str {
+    if written.trim_start().starts_with('[') {
+        "[]"
+    } else {
+        written.split(['<', ' ']).next().unwrap_or_default().trim()
+    }
 }

@@ -16,9 +16,11 @@ pub mod transport;
 pub mod uri;
 pub mod words;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use lsp_types::{
     CompletionParams, Diagnostic, DiagnosticSeverity, DocumentFormattingParams,
@@ -33,6 +35,7 @@ use analysis::{Analysis, Located, Source};
 use fipe::resolve::{Origin, Target};
 use loader::Host;
 use position::Encoding;
+use transport::Frame;
 
 /// What the server starts with; the client's `initializationOptions`
 /// may name another host directory (`{"host": "<dir>"}`).
@@ -42,59 +45,105 @@ pub struct Options {
     pub host: Option<PathBuf>,
 }
 
+/// Where the server is in the protocol's lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Before `initialize`: every request but it is refused.
+    Waiting,
+    Running,
+    /// After `shutdown`: every request is refused; `exit` ends cleanly.
+    ShutDown,
+}
+
 /// The server's state between messages.
 struct Server {
     host: Host,
     host_dir: Option<PathBuf>,
     encoding: Encoding,
+    phase: Phase,
     /// Open documents' texts, by URI.
     documents: BTreeMap<String, String>,
+    /// Each open document's analysis, kept until a document or a file
+    /// on disk changes: requests between changes share it.
+    analyses: RefCell<BTreeMap<String, Rc<Analysis>>>,
 }
 
 /// Serve the protocol over `input` and `output` until `exit` or the end
-/// of the input.
+/// of the input; whether the client shut the server down first.
 ///
 /// # Errors
-/// A transport failure.
+/// A transport failure, or a header without a length: the framing is
+/// lost.
 pub fn serve(
     input: &mut impl BufRead,
     output: &mut impl Write,
     options: &Options,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let mut server = Server {
         host: loader::host(options.host.as_deref()),
         host_dir: options.host.clone(),
         encoding: Encoding::Utf16,
+        phase: Phase::Waiting,
         documents: BTreeMap::new(),
+        analyses: RefCell::new(BTreeMap::new()),
     };
-    while let Some(message) = transport::read(input)? {
-        let method = message["method"].as_str().unwrap_or_default();
+    while let Some(frame) = transport::frame(input)? {
+        let message = match frame {
+            Frame::Message(message) => message,
+            Frame::TooLong(length) => {
+                let text = format!("a message of {length} bytes is too long");
+                transport::write(output, &error(&Value::Null, -32700, &text))?;
+                continue;
+            }
+            Frame::Unparsable(reason) => {
+                let text = format!("parse error: {reason}");
+                transport::write(output, &error(&Value::Null, -32700, &text))?;
+                continue;
+            }
+        };
+        let id = message.get("id").cloned();
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            // A response from the client, or no message at all.
+            if message.get("result").is_none() && message.get("error").is_none()
+            {
+                let id = id.unwrap_or(Value::Null);
+                let text = "invalid request: no method";
+                transport::write(output, &error(&id, -32600, text))?;
+            }
+            continue;
+        };
         if method == "exit" {
-            break;
+            return Ok(server.phase == Phase::ShutDown);
         }
         let params = message.get("params").cloned().unwrap_or(Value::Null);
-        match message.get("id").cloned() {
+        match id {
             Some(id) => {
                 let reply = match server.request(method, params) {
                     Ok(result) => {
                         json!({"jsonrpc": "2.0", "id": id, "result": result})
                     }
-                    Err((code, text)) => json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": {"code": code, "message": text},
-                    }),
+                    Err((code, text)) => error(&id, code, &text),
                 };
                 transport::write(output, &reply)?;
             }
-            None => {
+            None if server.phase == Phase::Running => {
                 for published in server.notification(method, &params) {
                     transport::write(output, &published)?;
                 }
             }
+            None => {}
         }
     }
-    Ok(())
+    Ok(server.phase == Phase::ShutDown)
+}
+
+/// An error response.
+fn error(id: &Value, code: i64, text: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {"code": code, "message": text},
+    })
 }
 
 type Answer = Result<Value, (i64, String)>;
@@ -105,9 +154,33 @@ fn invalid(error: &serde_json::Error) -> (i64, String) {
 
 impl Server {
     fn request(&mut self, method: &str, params: Value) -> Answer {
+        match (self.phase, method) {
+            (Phase::Waiting, "initialize") => {
+                self.phase = Phase::Running;
+                return Ok(self.initialize(&params));
+            }
+            (Phase::Waiting, _) => {
+                return Err((
+                    -32002,
+                    String::from("the server is not initialized"),
+                ));
+            }
+            (Phase::ShutDown, _) => {
+                return Err((-32600, String::from("the server is shut down")));
+            }
+            (Phase::Running, "initialize") => {
+                return Err((
+                    -32600,
+                    String::from("the server is already initialized"),
+                ));
+            }
+            (Phase::Running, "shutdown") => {
+                self.phase = Phase::ShutDown;
+                return Ok(Value::Null);
+            }
+            (Phase::Running, _) => {}
+        }
         match method {
-            "initialize" => Ok(self.initialize(&params)),
-            "shutdown" => Ok(Value::Null),
             "textDocument/definition" => {
                 let params: GotoDefinitionParams =
                     serde_json::from_value(params).map_err(|e| invalid(&e))?;
@@ -162,7 +235,7 @@ impl Server {
         json!({
             "capabilities": {
                 "positionEncoding": if utf8 { "utf-8" } else { "utf-16" },
-                "textDocumentSync": 1,
+                "textDocumentSync": 2,
                 "definitionProvider": true,
                 "referencesProvider": true,
                 "hoverProvider": true,
@@ -179,6 +252,12 @@ impl Server {
 
     /// Handle a notification; the messages it publishes.
     fn notification(&mut self, method: &str, params: &Value) -> Vec<Value> {
+        if method == "workspace/didChangeWatchedFiles" {
+            // A file changed on disk: every analysis may read it.
+            self.analyses.borrow_mut().clear();
+            let open: Vec<String> = self.documents.keys().cloned().collect();
+            return open.iter().filter_map(|uri| self.diagnose(uri)).collect();
+        }
         let uri = params["textDocument"]["uri"].as_str().map(String::from);
         let Some(uri) = uri else { return Vec::new() };
         match method {
@@ -188,24 +267,74 @@ impl Server {
                     .insert(uri.clone(), String::from(text.unwrap_or("")));
             }
             "textDocument/didChange" => {
-                // Full synchronization: the last change is the text.
-                let changes = params["contentChanges"].as_array();
-                let text = changes
-                    .and_then(|changes| changes.last())
-                    .and_then(|change| change["text"].as_str());
-                if let Some(text) = text {
-                    self.documents.insert(uri.clone(), String::from(text));
+                let Some(text) = self.documents.get(&uri) else {
+                    return Vec::new();
+                };
+                let mut text = text.clone();
+                for change in
+                    params["contentChanges"].as_array().into_iter().flatten()
+                {
+                    self.apply(&mut text, change);
                 }
+                self.documents.insert(uri.clone(), text);
             }
             "textDocument/didClose" => {
                 self.documents.remove(&uri);
-                return vec![publish(&uri, Vec::new())];
             }
             _ => return Vec::new(),
         }
-        let Some(analysis) = self.analyse(&uri) else {
-            return Vec::new();
+        // Any analysis may read the changed document as a file module.
+        self.analyses.borrow_mut().clear();
+        let mut published = Vec::new();
+        if method == "textDocument/didClose" {
+            published.extend(publish(&uri, Vec::new()));
+        } else {
+            published.extend(self.diagnose(&uri));
+        }
+        // The other open documents that use the changed one.
+        let changed = uri.parse::<Uri>().ok().and_then(|uri| uri::path(&uri));
+        if let Some(changed) = changed {
+            let others: Vec<String> = self
+                .documents
+                .keys()
+                .filter(|other| **other != uri)
+                .cloned()
+                .collect();
+            for other in others {
+                let uses = self.analyse(&other).is_some_and(|analysis| {
+                    analysis.files.iter().any(|file| file.path == changed)
+                });
+                if uses {
+                    published.extend(self.diagnose(&other));
+                }
+            }
+        }
+        published
+    }
+
+    /// Apply one content change to `text`: a range replaced, or the
+    /// whole text when the change has no range.
+    fn apply(&self, text: &mut String, change: &Value) {
+        let Some(new) = change["text"].as_str() else {
+            return;
         };
+        let range =
+            serde_json::from_value::<lsp_types::Range>(change["range"].clone());
+        match range {
+            Ok(range) => {
+                let start = position::offset(text, range.start, self.encoding);
+                let end = position::offset(text, range.end, self.encoding);
+                if start <= end {
+                    text.replace_range(start..end, new);
+                }
+            }
+            Err(_) => *text = String::from(new),
+        }
+    }
+
+    /// The diagnostics of open document `uri`, as a notification.
+    fn diagnose(&self, uri: &str) -> Option<Value> {
+        let analysis = self.analyse(uri)?;
         let diagnostics = analysis
             .diagnostics
             .iter()
@@ -217,23 +346,45 @@ impl Server {
                 ..Diagnostic::default()
             })
             .collect();
-        vec![publish(&uri, diagnostics)]
+        publish(uri, diagnostics)
     }
 
-    /// The analysis of an open document.
-    fn analyse(&self, uri: &str) -> Option<Analysis> {
+    /// The analysis of an open document, made once per change.
+    fn analyse(&self, uri: &str) -> Option<Rc<Analysis>> {
+        if let Some(kept) = self.analyses.borrow().get(uri) {
+            return Some(Rc::clone(kept));
+        }
         let text = self.documents.get(uri)?;
         let path = uri.parse::<Uri>().ok().and_then(|uri| uri::path(&uri));
         let open =
             |path: &Path| self.documents.get(uri::of(path).as_str()).cloned();
-        Some(Analysis::new(text, path.as_deref(), &self.host, &open))
+        let analysis =
+            Rc::new(Analysis::new(text, path.as_deref(), &self.host, &open));
+        self.analyses
+            .borrow_mut()
+            .insert(String::from(uri), Rc::clone(&analysis));
+        Some(analysis)
     }
 
-    /// The analysis and byte offset of a position.
+    /// The analysis and byte offset of a position, for a request about
+    /// the name there: a position just after a name is on it, as an
+    /// editor's cursor at a word's end is.
     fn at(
         &self,
         position: &TextDocumentPositionParams,
-    ) -> Option<(Analysis, usize)> {
+    ) -> Option<(Rc<Analysis>, usize)> {
+        let analysis = self.analyse(position.text_document.uri.as_str())?;
+        let offset =
+            position::offset(&analysis.text, position.position, self.encoding);
+        let offset = analysis.on_name(offset);
+        Some((analysis, offset))
+    }
+
+    /// The analysis and byte offset of a position, unadjusted.
+    fn at_exactly(
+        &self,
+        position: &TextDocumentPositionParams,
+    ) -> Option<(Rc<Analysis>, usize)> {
         let analysis = self.analyse(position.text_document.uri.as_str())?;
         let offset =
             position::offset(&analysis.text, position.position, self.encoding);
@@ -258,7 +409,10 @@ impl Server {
                 let path = std::fs::canonicalize(path).ok()?;
                 Some((uri::of(&path), text))
             }
-            Source::Prelude => None,
+            Source::Prelude => {
+                let path = prelude_file()?;
+                Some((uri::of(&path), fipe::decl::prelude_source()))
+            }
         }
     }
 
@@ -347,7 +501,9 @@ impl Server {
         let Some((analysis, offset)) = self.at(position) else {
             return Value::Null;
         };
-        let Some(text) = analysis.hover(&self.host, offset) else {
+        let text = actions::complete::spot_hover(&analysis, &self.host, offset)
+            .or_else(|| analysis.hover(&self.host, offset));
+        let Some(text) = text else {
             return Value::Null;
         };
         let hover = Hover {
@@ -371,7 +527,7 @@ impl Server {
     }
 
     fn completion(&self, position: &TextDocumentPositionParams) -> Value {
-        let Some((analysis, offset)) = self.at(position) else {
+        let Some((analysis, offset)) = self.at_exactly(position) else {
             return Value::Null;
         };
         let path = uri::path(&position.text_document.uri);
@@ -402,7 +558,12 @@ impl Server {
             .or_else(|| analysis.targets_at(offset).into_iter().next())
             .or(declared)
             .ok_or_else(|| failed("nothing here can be renamed"))?;
-        let target = rename::renamed(&target).map_err(failed)?;
+        // At a member chain, only its head's segment renames its head.
+        let on_head = analysis.target_at(offset).is_none_or(|(node, _)| {
+            let start = Analysis::span(&analysis.module, node).map(|s| s.0);
+            analysis::name_at(&analysis.text, offset).map(|s| s.0) == start
+        });
+        let target = rename::renamed(&target, on_head).map_err(failed)?;
         let old = rename::old_name(&analysis.text, &target)
             .ok_or_else(|| failed("nothing here can be renamed"))?;
         let new = params.new_name.as_str();
@@ -410,6 +571,14 @@ impl Server {
             return Err((
                 -32602,
                 format!("`{new}` is not a name of the same case as `{old}`"),
+            ));
+        }
+        // A name already written in the file might be captured or
+        // shadow what the renamed name meant.
+        if new != old && analysis.mentions(new) {
+            return Err((
+                -32602,
+                format!("`{new}` is already used in this file"),
             ));
         }
         let document = &position.text_document.uri;
@@ -533,6 +702,21 @@ impl Server {
     }
 }
 
+/// A file holding the prelude's source, which has none of its own on
+/// disk, so a client can open a prelude declaration: written once per
+/// server version under the system's temporary directory.
+fn prelude_file() -> Option<PathBuf> {
+    let dir = std::env::temp_dir()
+        .join(format!("fipe-lsp-{}", env!("CARGO_PKG_VERSION")));
+    let path = dir.join("prelude.fipe");
+    let source = fipe::decl::prelude_source();
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(source) {
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(&path, source).ok()?;
+    }
+    std::fs::canonicalize(path).ok()
+}
+
 /// What other files know `target` as: a top-level binding is a local
 /// of the document, and the value its export names for the files that
 /// import it.
@@ -558,19 +742,18 @@ const fn origin(target: &Target) -> Option<&Origin> {
     }
 }
 
-/// A `textDocument/publishDiagnostics` notification.
-fn publish(uri: &str, diagnostics: Vec<Diagnostic>) -> Value {
-    let Ok(uri) = uri.parse::<Uri>() else {
-        return Value::Null;
-    };
+/// A `textDocument/publishDiagnostics` notification; none for a URI
+/// that does not parse.
+fn publish(uri: &str, diagnostics: Vec<Diagnostic>) -> Option<Value> {
+    let uri = uri.parse::<Uri>().ok()?;
     let params = PublishDiagnosticsParams {
         uri,
         diagnostics,
         version: None,
     };
-    json!({
+    Some(json!({
         "jsonrpc": "2.0",
         "method": "textDocument/publishDiagnostics",
         "params": params,
-    })
+    }))
 }

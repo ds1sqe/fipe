@@ -19,7 +19,9 @@ fn main() -> ExitCode {
     let mut input = stdin.lock();
     let mut output = io::stdout().lock();
     match fipe_lsp::serve(&mut input, &mut output, &options) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(true) => ExitCode::SUCCESS,
+        // `exit`, or the end of the input, without `shutdown` first.
+        Ok(false) => ExitCode::FAILURE,
         Err(error) => {
             eprintln!("fipe-lsp: {error}");
             ExitCode::FAILURE

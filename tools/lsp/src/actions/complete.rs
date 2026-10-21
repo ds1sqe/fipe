@@ -49,16 +49,28 @@ pub fn complete(
     reanalyse: &dyn Fn(&str) -> Analysis,
 ) -> Vec<CompletionItem> {
     let text = analysis.text.as_str();
-    let offset = offset.min(text.len());
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    if in_text(text, offset) {
+        return Vec::new();
+    }
     let line_start = text[..offset].rfind('\n').map_or(0, |at| at + 1);
     let prefix = &text[line_start..offset];
     let word_start = prefix
-        .rfind(|c: char| c.is_whitespace() || "([{,|".contains(c))
-        .map_or(0, |at| at + 1);
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace() || "([{,|".contains(*c))
+        .map_or(0, |(at, c)| at + c.len_utf8());
     let word = &prefix[word_start..];
     let mut offers = Vec::new();
     let partial;
-    if let Some(dot) = word.rfind('.') {
+    if word.starts_with('-') && word.contains('=') {
+        // A flag's value: any name that may stand there.
+        partial = &word[word.find('=').map_or(word.len(), |at| at + 1)..];
+        offers = in_scope(analysis, host, offset);
+    } else if let Some(dot) = word.rfind('.') {
         partial = &word[dot + 1..];
         let head = &word[..dot];
         let head_end = line_start + word_start + dot;
@@ -87,6 +99,190 @@ pub fn complete(
             ..CompletionItem::default()
         })
         .collect()
+}
+
+/// What hovering a flag at `offset` shows: the spot it names, or for a
+/// chained flag the Bool spots its letters expand to (`-lr`), each with
+/// its type and its doc line when the declaration has one.
+#[must_use]
+pub fn spot_hover(
+    analysis: &Analysis,
+    host: &Host,
+    offset: usize,
+) -> Option<String> {
+    let text = analysis.text.as_str();
+    let lexed = lex(text);
+    let token = lexed.tokens.iter().find(|token| {
+        token.span.start <= offset
+            && offset <= token.span.end
+            && matches!(token.kind, Token::Flag(_))
+    })?;
+    let Token::Flag(written) = &token.kind else {
+        return None;
+    };
+    let label = written.trim_start_matches('-').split('=').next()?;
+    let line_start =
+        text[..token.span.start].rfind('\n').map_or(0, |at| at + 1);
+    let command = command(&text[line_start..token.span.start])?;
+    let spots = spot_details(analysis, host, &command);
+    let named: Vec<&Spot> = match spots.iter().find(|spot| spot.label == label)
+    {
+        Some(spot) => vec![spot],
+        // A chained flag: each letter the one Bool spot it starts.
+        None => label
+            .chars()
+            .map(|letter| {
+                let mut bools = spots.iter().filter(|spot| {
+                    spot.ty == "Bool" && spot.label.starts_with(letter)
+                });
+                match (bools.next(), bools.next()) {
+                    (Some(spot), None) => Some(spot),
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<_>>>()?,
+    };
+    let shown: Vec<String> = named
+        .iter()
+        .map(|spot| {
+            let head = format!("{}: {}", spot.label, spot.ty);
+            spot.doc
+                .as_ref()
+                .map_or_else(|| head.clone(), |doc| format!("{head}\n{doc}"))
+        })
+        .collect();
+    (!shown.is_empty()).then(|| shown.join("\n"))
+}
+
+/// A labeled spot: its label, its type as written and its doc line.
+struct Spot {
+    label: String,
+    ty: String,
+    doc: Option<String>,
+}
+
+/// The labeled spots of `command`, with their types and doc lines.
+fn spot_details(
+    analysis: &Analysis,
+    host: &Host,
+    command: &[String],
+) -> Vec<Spot> {
+    let declared = |namespace: &Namespace, text: &str, name: &str| {
+        let value = namespace.value(name)?;
+        let Declared::Function { spots, .. } = &value.kind else {
+            return None;
+        };
+        let start = value.span.start.min(text.len());
+        let above = &text[..text[..start].rfind('\n').unwrap_or(0)];
+        let docs: Vec<&str> = above
+            .lines()
+            .rev()
+            .take_while(|line| line.trim_start().starts_with("##"))
+            .collect();
+        let doc_of = |label: &str| {
+            docs.iter()
+                .map(|line| line.trim_start().trim_start_matches('#').trim())
+                .find(|line| line.starts_with(&format!("- {label}:")))
+                .map(String::from)
+        };
+        Some(
+            spots
+                .iter()
+                .filter_map(|spot| {
+                    let label = spot.name.clone()?;
+                    let span = namespace.module.ty(spot.ty)?.span;
+                    let ty = text.get(span.start..span.end)?.trim().to_string();
+                    let doc = doc_of(&label);
+                    Some(Spot { label, ty, doc })
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    let found = match command {
+        [name] => host
+            .declarations
+            .commands
+            .as_ref()
+            .and_then(|commands| {
+                declared(commands, host.source("commands")?.1, name)
+            })
+            .or_else(|| {
+                declared(
+                    &host.declarations.prelude,
+                    fipe::decl::prelude_source(),
+                    name,
+                )
+            })
+            .or_else(|| document_spots_typed(analysis, name)),
+        [module, name] => {
+            host.declarations.get_module(module).and_then(|namespace| {
+                declared(namespace, host.source(module)?.1, name)
+            })
+        }
+        _ => None,
+    };
+    found.unwrap_or_default()
+}
+
+/// The spots of a function the document binds, typed as its inference
+/// gives them.
+fn document_spots_typed(analysis: &Analysis, name: &str) -> Option<Vec<Spot>> {
+    let module = &analysis.module;
+    for entry in &module.entries {
+        let Entry::Line(id) = entry else { continue };
+        let Some(ExprKind::Bind { pattern, value, .. }) =
+            module.expr(*id).map(|expr| &expr.kind)
+        else {
+            continue;
+        };
+        let Some(PatternKind::Name(bound)) =
+            module.pattern(*pattern).map(|pattern| &pattern.kind)
+        else {
+            continue;
+        };
+        if bound.segments != [name] {
+            continue;
+        }
+        let ExprKind::Arms(arms) = &module.expr(*value)?.kind else {
+            return None;
+        };
+        let spots = arms
+            .first()?
+            .patterns
+            .iter()
+            .filter_map(|id| match &module.pattern(*id)?.kind {
+                PatternKind::Name(spot)
+                | PatternKind::Default { name: spot, .. } => Some(Spot {
+                    label: spot.segments.join("."),
+                    ty: analysis.typed.pattern(*id)?.to_string(),
+                    doc: None,
+                }),
+                _ => None,
+            })
+            .collect();
+        return Some(spots);
+    }
+    None
+}
+
+/// Whether byte `offset` lies inside a quote, a comment or a doc,
+/// where no name is written; an unclosed quote runs to the line's end.
+fn in_text(text: &str, offset: usize) -> bool {
+    let lexed = lex(text);
+    let closed =
+        |span: fipe::token::Span| span.start < offset && offset < span.end;
+    let open =
+        |span: fipe::token::Span| span.start < offset && offset <= span.end;
+    lexed.comments.iter().any(|span| open(*span))
+        || lexed.tokens.iter().any(|token| match token.kind {
+            Token::Str { .. } | Token::Affixed(_) => closed(token.span),
+            Token::Doc(_) | Token::InnerDoc(_) => open(token.span),
+            _ => false,
+        })
+        || lexed.errors.iter().any(|error| {
+            open(error.span)
+                && text[error.span.start..].starts_with(['"', '\''])
+        })
 }
 
 /// Whether the line so far is a `use` waiting for a module name.
@@ -321,11 +517,11 @@ fn members(
     let Some(ty) = again.typed.expr(id) else {
         return Vec::new();
     };
-    let shown = ty.to_string();
-    let name = shown
-        .split(|c: char| c == '<' || c.is_whitespace())
-        .next()
-        .unwrap_or_default();
+    let name = crate::analysis::type_head(&ty.to_string());
+    let name = name.as_str();
+    if name.is_empty() {
+        return Vec::new();
+    }
     let mut offers = type_members(&again.module, &again.text, name);
     for file in &again.files {
         offers.extend(type_members(&file.module, &file.text, name));
@@ -392,8 +588,7 @@ fn type_members(module: &Module, text: &str, name: &str) -> Vec<Offer> {
                     .ty(*target)
                     .and_then(|ty| text.get(ty.span.start..ty.span.end))
                     .unwrap_or_default();
-                let target = target.split('<').next().unwrap_or_default();
-                if target.trim() != name {
+                if crate::analysis::target_head(target) != name {
                     continue;
                 }
                 for member in members {

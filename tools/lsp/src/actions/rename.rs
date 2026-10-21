@@ -5,16 +5,22 @@ use fipe::lex::lex;
 use fipe::resolve::{Origin, Target};
 use fipe::token::Kind;
 
-/// The target a rename at a node acts on: the head of a member chain,
-/// the type of a type member; a host, prelude or module name is
-/// refused.
+/// The target a rename at a node acts on.
+///
+/// The head of a member chain, or the type of a type member, when the
+/// rename is at that head (`on_head`); a field or member itself, a
+/// host, prelude or module name is refused.
 ///
 /// # Errors
 /// The target is not the document's or its files' to rename.
-pub fn renamed(target: &Target) -> Result<Target, &'static str> {
+pub fn renamed(target: &Target, on_head: bool) -> Result<Target, &'static str> {
     let target = match target {
-        Target::Members { head, .. } => head.as_ref(),
-        Target::TypeMember { ty, .. } => ty.as_ref(),
+        Target::Members { head, .. } if on_head => head.as_ref(),
+        Target::TypeMember { ty, .. } if on_head => ty.as_ref(),
+        Target::Members { .. } | Target::TypeMember { .. } => {
+            return Err("a field or member is not renamed: rename it where \
+                        it is declared, and its uses by hand");
+        }
         other => other,
     };
     match target {

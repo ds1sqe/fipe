@@ -11,6 +11,8 @@
 //! such as a quote across lines, or after a line join, is kept as
 //! written. Trailing spaces go, and the file ends with one newline.
 //!
+//! A file whose lines end in CRLF keeps CRLF.
+//!
 //! A file with a lexical or syntax error is refused, and so is any
 //! result whose tokens or touching differ from the input's.
 
@@ -43,6 +45,17 @@ struct Item {
 /// The text has a lexical or syntax error, or formatting would change
 /// what it reads as.
 pub fn format(text: &str) -> Result<String, &'static str> {
+    // The file's line ending is the one its first line uses.
+    let crlf = text.find('\n').is_some_and(|at| text[..at].ends_with('\r'));
+    if crlf {
+        let formatted = format_lf(&text.replace("\r\n", "\n"))?;
+        return Ok(formatted.replace('\n', "\r\n"));
+    }
+    format_lf(text)
+}
+
+/// The formatted text of `text`, whose lines end in LF.
+fn format_lf(text: &str) -> Result<String, &'static str> {
     let lexed = lex(text);
     if !lexed.errors.is_empty() || parse(lex(text)).is_err() {
         return Err("the file has syntax errors");
