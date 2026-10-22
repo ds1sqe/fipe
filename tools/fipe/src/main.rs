@@ -9,6 +9,7 @@
 //!   when one does not, 2 when one cannot be read.
 //! - `fipe repl [--strict] [--budget N] [--compile-budget N]
 //!   [--allow-write DIR]...` is the REPL over the std host.
+//! - `fipe help` (`--help`, `-h`) prints this usage.
 //! - `fipe build FILE -o EXE [--runtime LIB]` builds a native
 //!   executable that answers through the std host; the runtime archive
 //!   is `--runtime` or `FIPE_NATIVE_RT`; exit 1 when it cannot be
@@ -29,6 +30,7 @@ usage: fipe run FILE [--budget N] [--allow-write DIR]... [-- ARG...]
        fipe repl [--strict] [--budget N] [--compile-budget N] \
 [--allow-write DIR]...
        fipe build FILE -o EXE [--runtime LIB]
+       fipe help
 ";
 
 /// The options a command line carries.
@@ -95,6 +97,10 @@ fn main() -> ExitCode {
         Some("check") => check(&args[1..]),
         Some("repl") => repl(&args[1..]),
         Some("build") => build(&args[1..]),
+        Some("help" | "--help" | "-h") => {
+            print!("{USAGE}");
+            Ok(0)
+        }
         _ => Err((2, String::from(USAGE))),
     };
     match ran {
@@ -132,6 +138,12 @@ fn policy(allow: &[PathBuf]) -> Result<Policy, (u8, String)> {
 fn run(args: &[String]) -> Ran {
     let options =
         parse(args, &["--budget", "--allow-write", "--"]).map_err(usage)?;
+    if let [_, extra, ..] = options.files.as_slice() {
+        return Err(usage(format!(
+            "fipe: unexpected operand {extra}; the script's arguments \
+             follow --\n"
+        )));
+    }
     let file = one_file(&options)?;
     let script =
         load(Path::new(file)).map_err(|error| (2, error.to_string()))?;

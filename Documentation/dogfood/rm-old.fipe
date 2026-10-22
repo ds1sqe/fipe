@@ -1,0 +1,9 @@
+# Dry run: list the files under a directory older than N seconds, each with
+# the `rm` that would remove it. Nothing is removed.
+# Run: fipe run rm-old.fipe -- input/stale 315360000
+# (the golden relies on mtimes set with `touch -d`; git does not keep them)
+use cli
+dir = first cli.args || "."
+last = fold "" (_ x => x)
+plan = n => ls -r -depth 9 dir | filter (e => e.age > n) | map (e => join " " ["rm", e.path]) | join "\n"
+cli.args | last | read<U64> |: plan

@@ -1,0 +1,10 @@
+3.0
+2.5
+42.0
+2.5
+error: division by zero
+error: unknown operator ^
+error: not a number: foo
+error: expected a op b
+error: expected a op b
+8.0

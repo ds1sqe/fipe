@@ -1,0 +1,5 @@
+5: not key = value: debug
+7: duplicate key: port
+8: not key = value: = nokey
+9: not key = value: name =
+10: not key = value: log level = info

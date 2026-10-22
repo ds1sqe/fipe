@@ -1,0 +1,15 @@
+# List TODO and FIXME comments in the .fipe files under a directory.
+# Run: fipe run todos.fipe -- input/src
+use cli
+use text
+dir = first cli.args || "."
+marked = l => (len (split "TODO" l)) > 1 || (len (split "FIXME" l)) > 1
+# Fold step: number each line of a file and keep the marked ones.
+scan = path (n, acc) l => (n + 1, if marked l {
+    acc | concat (join "" [path, ":", show n, ": ", text.trim l]) | concat "\n"
+} else { acc })
+in_file = f => {
+    (_, found) = f | cat | lines | fold (1, "") (scan f.path)
+    found
+}
+ls -r -depth 9 dir -name "*.fipe" | sort -by .path | map in_file | join "" | bytes | put out

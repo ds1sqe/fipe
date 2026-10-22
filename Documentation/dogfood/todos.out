@@ -1,0 +1,3 @@
+input/src/lib/util.fipe:3: # TODO tidy this
+input/src/main.fipe:3: # TODO: read the config
+input/src/main.fipe:4: run = args => util.go args  # FIXME handle empty args

@@ -40,6 +40,15 @@ is E2/H1's.
 typed in this draft; a host call is typed by its declared signature.
 Purity for the compile phase is [checks](07-checks.md) §Phases.
 
+Open, from the dogfood scripts: a binding inside an arm body
+(`f = s => { body = n x => n + 1 … }`) generalizes over `Literal a`,
+and its closure carries the witnesses of its creation, so `1` has none
+at the call and the run Faults where the check passed. **Proposed, not
+ruled:** a local binding fixes each variable carrying a member limit
+at the binding, defaulting `Literal` there, as a binding whose value
+is not a function does; or the check refuses a local binding whose
+scheme keeps a member limit.
+
 ## T3 — Declarations
 
 A trait is a type (ruled 2026-09-29), and every operation lives in a
@@ -120,6 +129,18 @@ host's reply); a run left waiting on a reply that never
 comes, and cancelling it; asynchronous hosts and threads, and with them
 `Task<T>`. `Stream`, `Task` and `Cell` are declared by the host (09).
 
+## P1 — Prelude breadth (from the dogfood scripts)
+
+Ten everyday scripts (`Documentation/dogfood/`) wrote a `(n, acc)`
+`fold` wherever a line or cell is numbered, and tested a substring with
+`len (split pat l) > 1`. **Proposed, not ruled:** `enumerate` (a
+`Vec<a>` to `Vec<Integer * a>`), `contains`, `starts_with`,
+`ends_with`, `replace`, `zip`, `drop`, `last`, `nth`, `reverse`, `min`,
+`max`, `any`, `all`, each a prelude declaration with its doc line, no
+new syntax; and a `:prelude` listing in the REPL. A tuple part is read
+by a pattern only; **proposed:** no projection syntax, the pattern form
+stated in [types](03-types.md) §Tuples with an example.
+
 ## H1 — Host and backend observables
 
 Ruled 2026-09-29: `use` runs a module once where it stands and a cycle is a
@@ -136,4 +157,10 @@ reply validation and codec failure ([host](09-host.md)); cancellation is
 E3. Every
 host-declared type admits the codec cast (ruled 2026-09-30). No Reovim
 paths, wire hashes or placeholder budget numbers become language constants.
-Tests replay one host response/effect trace on each backend.
+Tests replay one host response/effect trace on each backend. From the
+dogfood scripts, open for the std host's contract
+(`tools/host/README.md`): an `Entry` field telling a directory from a
+file, a directory's size as its contents', and a modification time or
+a pinned clock so an `age` test can be golden; a `String` reads as a
+`Sink` by its path, so a shadowed `out` writes a file named by the
+data, which the contract states and the tour warns about.

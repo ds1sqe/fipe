@@ -9,6 +9,7 @@ fipe run FILE [--budget N] [--allow-write DIR]... [-- ARG...]
 fipe check FILE...
 fipe repl [--strict] [--budget N] [--compile-budget N] [--allow-write DIR]...
 fipe build FILE -o EXE [--runtime LIB]
+fipe help
 ```
 
 `run` loads the script and the file modules it `use`s beside it, checks

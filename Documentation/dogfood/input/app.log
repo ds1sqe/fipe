@@ -1,0 +1,7 @@
+2026-10-01 10:00:01 INFO  server started on port 8080
+2026-10-01 10:00:07 WARN  slow request /api/items (1200 ms)
+2026-10-01 10:01:13 ERROR database connection lost
+2026-10-01 10:01:14 INFO  retrying in 5 s
+2026-10-01 10:01:19 ERROR database connection lost
+2026-10-01 10:01:24 INFO  database connection restored
+2026-10-01 10:02:00 WARN  disk usage at 91%

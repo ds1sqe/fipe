@@ -289,9 +289,14 @@ impl Debuggee {
                 Stop::Done(Ok(value)) => {
                     let tables = self.program.tables.borrow();
                     let line = format!("value {}\n", show(&value, &tables));
-                    let code = match &self.host {
+                    let code = match &mut self.host {
                         Host::Replay(_) => 0,
-                        Host::Live(_) => {
+                        Host::Live(host) => {
+                            host.sink.ending(
+                                &value,
+                                self.machine.lines(),
+                                &tables,
+                            );
                             fipe_host::exit_code(&Ok(value), &tables)
                         }
                     };

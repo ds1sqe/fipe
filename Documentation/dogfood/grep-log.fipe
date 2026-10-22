@@ -1,0 +1,12 @@
+# Print the lines of a log that contain a pattern, with line numbers.
+# Run: fipe run grep-log.fipe -- PATTERN < input/app.log
+use cli
+pat = first cli.args || ""
+hit = l => (len (split pat l)) > 1
+numbered = (n, acc) l => (n + 1, if hit l {
+    acc | concat (join ": " [show n, l]) | concat "\n"
+} else { acc })
+log => {
+    (_, found) = log | lines | fold (1, "") numbered
+    found | bytes | put out
+}

@@ -157,8 +157,9 @@ impl Host {
         };
         let (result, trace) = self.drive(&mut machine, program, outcome);
         let tables = program.tables.borrow();
-        if let Err(fault) = &result {
-            self.sink.fault(fault, &tables, &script.sources);
+        match &result {
+            Err(fault) => self.sink.fault(fault, &tables, &script.sources),
+            Ok(value) => self.sink.ending(value, machine.lines(), &tables),
         }
         let exit = exit_code(&result, &tables);
         drop(tables);

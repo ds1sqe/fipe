@@ -1,0 +1,6 @@
+# Print the lines of stdin without repeats, keeping first-seen order.
+# Run: fipe run dedupe.fipe < input/fruit.txt
+keep = seen l => if (seen | filter (s => s == l) | len) > 0 { seen } else {
+    seen | concat (to<Vec<String>> [l])
+}
+text => text | lines | fold (to<Vec<String>> []) keep | join "\n"

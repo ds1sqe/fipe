@@ -21,7 +21,7 @@ call (`D` itself resolved against the working directory).
 
 | Name | Shape | Answer |
 | --- | --- | --- |
-| `ls` | `(path: Src = ./) -> (long: Bool = False) -> (recursive: Bool = False) -> (depth: U64 = 1) -> (name: String = "*") -> Vec<Entry>` | the entries of directory `path` (a file lists itself), by path; `-r` descends `depth` levels; `name` is a pattern of `*` and `?` on the entry name |
+| `ls` | `(path: Src = ./) -> (long: Bool = False) -> (recursive: Bool = False) -> (depth: U64 = 1) -> (name: String = "*") -> Vec<Entry>` | the entries of directory `path` (a file lists itself), by path; `-r` descends `depth` levels; `name` is a pattern of `*` and `?` on the entry name, matching case and a leading dot as written |
 | `cat` | `Entry -> String` | the file's text; not UTF-8 or unreadable Faults |
 | `find` | `Src -> Maybe<Entry>` | `Just` the entry when the path exists, else `Nothing` |
 | `grep` | `(pattern: String) -> String -> String` | the lines holding `pattern`, each with its line feed |
@@ -95,7 +95,10 @@ of one open spot of type `String` (the input as UTF-8 text) or
 `U8`'s limit is an entry, not a type). A last line that is not a function takes no
 input. Any other open spot, or several, is refused before any effect,
 as is input that is not UTF-8 for a `String` spot; the refusal is
-written as a `Host` Fault at the last line.
+written as a `Host` Fault at the last line. A lambda's parameter has
+no annotation of its own: when the input's use leaves its type open,
+annotate a binding and make it the last line, as `count: String ->
+Natural = text => text | lines | len` then `count`.
 
 ## Exit codes
 

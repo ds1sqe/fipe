@@ -349,6 +349,19 @@ fn a_script_that_does_not_check_is_located() {
     ));
 }
 
+#[test]
+fn a_failed_pattern_binding_writes_its_err_and_exits_1() {
+    let temp = Temp::new();
+    let ran = run(&temp.0, "[:n] = \"x\" | read<U64>\nn\n");
+    assert_eq!(ran.exit, 1);
+    assert_eq!(ran.success, "");
+    assert_eq!(ran.error, "ParseError \"not an integer: \\\"x\\\"\"\n");
+    // The same `Err` as the last line's value is written once.
+    let ran = run(&temp.0, "\"x\" | read<U64>\n");
+    assert_eq!(ran.exit, 1);
+    assert_eq!(ran.error.matches("ParseError").count(), 1);
+}
+
 /// A writer every clone shares, to read back what a stream received.
 #[derive(Clone, Default)]
 struct Shared(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);

@@ -197,7 +197,7 @@ impl Result {
 }
 ## Render a value as text.
 pub show: Show a => a -> String
-## Return the number of elements.
+## Return the number of elements; a String's characters.
 pub len: Len a => a -> Natural
 ## Read text as the requested meaning.
 pub read: Read a => String -> Result<a, ParseError>
@@ -207,7 +207,7 @@ pub to: a -> b
 pub try: a -> Result<b, e>
 ## Apply a function to each element.
 pub map: c.map: (a -> b) -> d => (a -> b) -> c -> d
-## Concatenate two values.
+## Concatenate two values: the second, then the first, so `xs | concat ys` is `xs` then `ys`.
 pub concat: a.concat: b -> c => b -> a -> c
 
 # Text and bytes; the value comes last, so the pipe fills it.

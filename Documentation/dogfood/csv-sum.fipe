@@ -1,0 +1,20 @@
+# Sum one named column of a CSV (header row first) read from stdin.
+# Run: fipe run csv-sum.fipe -- units < input/sales.csv
+use cli
+col = first cli.args || ""
+# Position of the wanted cell in a row; `want n c` says whether it is the one.
+cell = want row => row | fold (0, "") ((n, got) c => (n + 1, if want n c { c } else { got }))
+empty = to<Vec<String>> []
+# Add the cell at position `at` of a data row to the list; skip the header.
+step = at (k, acc) row => (k + 1, if k == 0 { acc } else {
+    (_, c) = row | cell (n _ => n == at)
+    acc | concat (to<Vec<String>> [c])
+})
+text => {
+    rows = text | lines | map (split ",")
+    (_, at) = rows | head | fold (0, -1) ((n, at) c => (n + 1, if c == col { n } else { at }))
+    (_, cells) = rows | fold (0, empty) (step at)
+    if at < 0 { Err (ParseError (join " " ["no column", col])) } else {
+        cells | map read<I64> | collect |: sum
+    }
+}

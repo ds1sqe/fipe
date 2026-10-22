@@ -33,14 +33,40 @@ impl Sink {
     /// `Just v` write `v`, `()` and `Nothing` nothing, `Err e` writes
     /// `e` to the error output, a host module's `Error` as its message.
     pub fn lines(&mut self, kept: &[(usize, Value)], tables: &Tables) {
-        let prelude = Prelude::new(tables);
         for (_, value) in kept.get(self.lines..).unwrap_or_default() {
+            self.value(value, tables);
+        }
+        self.lines = kept.len();
+    }
+
+    /// Write the run's final value when it is an `Err` no main line
+    /// holds: a pattern binding that failed ends the main body with
+    /// its failure, which exit 1 alone would leave unsaid.
+    pub fn ending(
+        &mut self,
+        value: &Value,
+        kept: &[(usize, Value)],
+        tables: &Tables,
+    ) {
+        let prelude = Prelude::new(tables);
+        let failed = matches!(value, Value::Record(record)
+            if Some(record.meaning) == prelude.result
+                && record.constructor != 0);
+        if failed && kept.last().is_none_or(|(_, last)| last != value) {
+            self.value(value, tables);
+        }
+    }
+
+    /// Write one value by the sink policy.
+    fn value(&mut self, value: &Value, tables: &Tables) {
+        let prelude = Prelude::new(tables);
+        {
             let (error, value) = match value {
                 Value::Record(record)
                     if Some(record.meaning) == prelude.maybe =>
                 {
                     let Some(value) = record.fields.first() else {
-                        continue;
+                        return;
                     };
                     (false, value)
                 }
@@ -57,7 +83,7 @@ impl Sink {
                 &mut self.success
             };
             match value {
-                Value::Unit => continue,
+                Value::Unit => return,
                 Value::Text(text) => out.extend(text.as_bytes()),
                 Value::Record(record) => {
                     let shown = host_error(record, tables).map_or_else(
@@ -72,7 +98,6 @@ impl Sink {
             }
             out.push(b'\n');
         }
-        self.lines = kept.len();
     }
 
     /// Write a Fault to the error output, located in the source its

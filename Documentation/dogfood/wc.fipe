@@ -1,0 +1,7 @@
+# Count lines, words and characters of stdin.
+# Run: fipe run wc.fipe < input/poem.txt
+text => join " " [
+    show (len (lines text)),
+    show (len (words text)),
+    show (len text),
+]

@@ -1,0 +1,8 @@
+# Size report of a directory (flat), largest first, then the total.
+# Run: fipe run du.fipe -- input/tree
+use cli
+dir = first cli.args || "."
+entries = ls -l dir | sort -by .size -desc
+row = e => join "\t" [show e.size, e.name]
+total = join "\t" [show (entries | map .size | sum), "total"]
+join "\n" [entries | map row | join "\n", total]

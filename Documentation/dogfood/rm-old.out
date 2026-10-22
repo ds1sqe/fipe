@@ -1,0 +1,2 @@
+rm input/stale/cache/older.tmp
+rm input/stale/old.log

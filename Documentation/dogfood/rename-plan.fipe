@@ -1,0 +1,9 @@
+# Plan renaming the *.txt files of a directory to lower case, spaces as `-`.
+# Prints `old -> new`; nothing is renamed. Unchanged names are left out.
+# Run: fipe run rename-plan.fipe -- input/names
+use cli
+dir = first cli.args || "."
+slug = name => name | lower | split " " | join "-"
+changed = e => (slug e.name) != e.name
+line = e => join " -> " [e.name, slug e.name]
+ls dir -name "*.txt" | sort -by .name | filter changed | map line | join "\n"

@@ -1,0 +1,34 @@
+# Lint a `key = value` config: duplicate keys and malformed lines. Blank and
+# `#` lines are ignored. Problems go to stdout; the exit code is 1 if any.
+# Run: fipe run config-lint.fipe < input/app.conf
+use text.trim
+last = fold "" (_ x => x)
+skipped = line => line == "" || (line | split "#" | head) == ""
+# A line is well formed with one `=`, a one-word key and a non-empty value.
+shaped = parts => (len parts) == 2 && (head parts | trim | split " " | len) == 1
+    && (head parts | trim) != "" && (last parts | trim) != ""
+note = n why line report => report | concat (join ": " [show n, why, line]) | concat "\n"
+# The state is (line number, keys seen, report so far).
+lint = (n, seen, report) text => {
+    line = trim text
+    parts = split "=" line
+    key = head parts | trim
+    if skipped line {
+        (n + 1, seen, report)
+    } else if shaped parts {
+        if (seen | filter (k => k == key) | len) > 0 {
+            (n + 1, seen, report | note n "duplicate key" key)
+        } else {
+            (n + 1, seen | concat (to<Vec<String>> [key]), report)
+        }
+    } else {
+        (n + 1, seen, report | note n "not key = value" line)
+    }
+}
+conf => {
+    (_, _, report) = conf | lines | fold (1, to<Vec<String>> [], "") lint
+    if report == "" { Ok "config ok" } else {
+        report | bytes | put out
+        Err (join " " [show (len (lines report)), "problems"])
+    }
+}

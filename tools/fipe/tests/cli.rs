@@ -216,6 +216,16 @@ fn check_exits_by_the_worst_file() {
     let (_, stderr, code) = shown(&fipe(&dir, &["check"], b""));
     assert_eq!(code, 2);
     assert!(stderr.starts_with("usage: fipe run FILE"), "{stderr}");
+    let (stdout, _, code) = shown(&fipe(&dir, &["help"], b""));
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("usage: fipe run FILE"), "{stdout}");
+    let stray = fipe(&dir, &["run", "ok.fipe", "ERROR"], b"");
+    let (_, stderr, code) = shown(&stray);
+    assert_eq!(code, 2);
+    assert_eq!(
+        stderr,
+        "fipe: unexpected operand ERROR; the script's arguments follow --\n"
+    );
     let wrong = fipe(&dir, &["run", "ok.fipe", "--budget", "x"], b"");
     let (_, stderr, code) = shown(&wrong);
     assert_eq!(code, 2);

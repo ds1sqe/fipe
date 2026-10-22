@@ -122,8 +122,9 @@ fn started(unit: &[u8], run: fn(&mut Value) -> u32) -> i32 {
         Host::Std(host) => {
             let tables = state.program.tables.borrow();
             host.sink.lines(&state.lines, &tables);
-            if let Err(fault) = &result {
-                host.sink.fault(fault, &tables, &sources);
+            match &result {
+                Err(fault) => host.sink.fault(fault, &tables, &sources),
+                Ok(value) => host.sink.ending(value, &state.lines, &tables),
             }
             // A closed stream leaves nothing to report to.
             let _ = host.flush();

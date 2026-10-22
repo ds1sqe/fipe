@@ -1,0 +1,16 @@
+# Calculate each line `a op b` (op is + - * /); one result or `error: ...` per line.
+# Run: fipe run calc.fipe < input/sums.txt
+apply = op a b => if op == "+" { Ok (a + b) } else if op == "-" { Ok (a - b) }
+    else if op == "*" { Ok (a * b) }
+    else if op == "/" { if b == 0.0 { Err "division by zero" } else { Ok (a / b) } }
+    else { Err (join " " ["unknown operator", op]) }
+number = s => s | read<F64> |! (_ => Err (join " " ["not a number:", s]))
+calc = line => line | words | {
+    [a, op, b] => number a |: (x => number b |: (y => apply op x y)),
+    _ => Err "expected a op b",
+}
+show_line = line => calc line | {
+    [:v] => show v,
+    [!e] => join " " ["error:", e],
+}
+text => text | lines | map show_line | join "\n"
