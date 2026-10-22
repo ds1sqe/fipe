@@ -33,8 +33,9 @@ pub(super) fn argument_spot(
 }
 
 impl Builder<'_, '_> {
-    /// A declaration or constructor of no spots is its value: the
-    /// native's result or the record, never a thunk.
+    /// A declaration, derived `default` or constructor of no spots is
+    /// its value: the native's result, the default or the record,
+    /// never a thunk.
     pub(super) fn nullary(
         &mut self,
         node: usize,
@@ -47,6 +48,13 @@ impl Builder<'_, '_> {
                 super::Lowering::arity(ty),
                 Target::Static(self.declared(*index), Vec::new()),
             ),
+            ir::Kind::Derived { kind, ty: on } => {
+                let on = self.lowering.fixed(on);
+                (
+                    super::Lowering::arity(ty),
+                    Target::Static(self.derived(*kind, on), Vec::new()),
+                )
+            }
             ir::Kind::Constructor {
                 meaning,
                 constructor,

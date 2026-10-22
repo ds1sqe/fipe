@@ -77,3 +77,23 @@ fn an_inexact_length_faults_at_its_default() {
     let at = &source[fault.span.start..fault.span.end];
     assert!(at.contains("hypot x 1"), "{at}");
 }
+
+#[test]
+fn a_type_default_is_a_value_not_a_function() {
+    assert_eq!(shown("type R { flags: Bool }\nR"), "R False");
+    assert_eq!(shown("type T { m: Maybe<Integer> }\nT"), "T Nothing");
+    assert_eq!(
+        shown("type S { p: [Maybe<Integer>; 2] }\nS"),
+        "S [Nothing, Nothing]"
+    );
+    assert_eq!(
+        shown("type P { x: Integer, b: Bool, y: Integer = 2 }\nP 1"),
+        "P 1 False 2"
+    );
+    assert_eq!(
+        shown("type R { flags: Bool }\ntype Q { r: R, n: Integer = 3 }\nQ"),
+        "Q (R False) 3"
+    );
+    assert_eq!(shown("Bool.default"), "False");
+    assert_eq!(shown("x: Maybe<Integer> = Maybe.default\nx"), "Nothing");
+}
