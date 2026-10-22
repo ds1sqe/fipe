@@ -1,0 +1,5 @@
+# The std host's `sys` module: resource lookup by path.
+## Look up a resource path.
+## - from: the resource
+## - path: the relative path
+pub lookup: (from: Rd<sys>) -> (path: Src) -> U64

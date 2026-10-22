@@ -1,0 +1,13 @@
+[package]
+name = "fipe-host"
+version = "0.1.0"
+edition = "2021"
+description = "The std host: Fipe scripts against the real machine"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+fipe = { path = "../.." }
+
+[lints.rust]
+unsafe_code = "forbid"

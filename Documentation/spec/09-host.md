@@ -118,6 +118,9 @@ sink that cannot format or write a value fails that command, which Faults
 Output formatting, outcome unwrapping, exit codes, streaming and
 diagnostic presentation are the host's documented contract, so backends
 are compared under one host contract.
+The std host is a tool, not part of this specification: `tools/host`
+declares its own modules and documents its contract in its
+[README](../../tools/host/README.md).
 
 ## Budget
 

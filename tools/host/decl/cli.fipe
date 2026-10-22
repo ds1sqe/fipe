@@ -1,0 +1,13 @@
+# The std host's `cli` module, API version 2: the script's arguments
+# and the process environment.
+## A host operation error.
+pub type Error: Show {
+    ## The error message.
+    pub message: String,
+}
+impl Error: Show { show = self => self.message }
+
+## The arguments given to the script, in order.
+pub args: Vec<String>
+## An environment variable's value, if it is set.
+pub env: String -> Maybe<String>

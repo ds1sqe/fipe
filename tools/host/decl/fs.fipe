@@ -1,0 +1,19 @@
+# The std host's `fs` module.
+## A host operation error.
+pub type Error: Show {
+    ## The error message.
+    pub message: String,
+}
+impl Error: Show { show = self => self.message }
+
+## List entries under a filesystem resource.
+## - dir: the resource
+## - path: the relative path
+## - long: include detailed entries
+pub list: (dir: Rd<fs>) -> (path: Src) -> (long: Bool = False) -> Vec<Entry>
+## Remove a filesystem entry.
+## - dir: the resource
+## - path: the relative path
+pub remove: (dir: Rd<fs>) -> (path: Src) -> Result<(), Error>
+## The size in bytes.
+pub size: Entry -> U64
