@@ -1,0 +1,13 @@
+# Packed values: a value under its tag's meaning, a member by the tag,
+# a union's arm by the tag.
+type Shape where self.area: F64
+type C: Shape { r: F64 }
+impl C: Shape { area = self => self.r * 2.0 }
+type Sq: Shape { s: F64 }
+impl Sq: Shape { area = self => self.s * self.s }
+x: Shape = C 2.0
+g: Shape -> F64 = s => s.area
+(x.area, g (C 1.5), g (Sq 3.0))
+q: Integer | String -> Integer = { Integer n => n, String _ => 0 }
+p: Integer | String = 7
+q p

@@ -1,0 +1,6 @@
+# Sequences: a length a pattern reads, an array its default repeats.
+w: Vec<Integer> -> Integer = { [x, y] => x + y, [] => 0, _ => 1 }
+(w [1, 2], w [], w [1, 2, 3])
+type R { p: [Maybe<Integer>; 2] }
+r = R
+len r.p

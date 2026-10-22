@@ -48,17 +48,21 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// The sources an executable carries and the fingerprint of the
-/// program they compile to: `main` first, then the host's
-/// declarations, `commands` before its modules.
+/// program they compile to.
+///
+/// `sources` are `main` first, then the host's declarations,
+/// `commands` before its modules; `files` the file modules `main` may
+/// `use`, each by its stem.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unit {
     pub sources: Vec<(String, String)>,
+    pub files: Vec<(String, String)>,
     pub fingerprint: u64,
 }
 
 impl Unit {
     /// The unit of a main source under a host's declaration files,
-    /// with its program.
+    /// with the file modules it may `use`, and its program.
     ///
     /// # Errors
     ///
@@ -66,11 +70,13 @@ impl Unit {
     pub fn new(
         main: &str,
         host: Vec<(String, String)>,
+        files: Vec<(String, String)>,
     ) -> Result<(Self, Program), String> {
         let mut sources = vec![(String::from("main"), String::from(main))];
         sources.extend(host);
         let mut unit = Self {
             sources,
+            files,
             fingerprint: 0,
         };
         let program = unit.compile()?;
@@ -78,10 +84,12 @@ impl Unit {
         Ok((unit, program))
     }
 
-    /// The source of a namespace.
+    /// The source of a namespace: a host's, a file module's or the
+    /// main's.
     #[must_use]
     pub fn source(&self, namespace: &str) -> Option<&str> {
-        let found = self.sources.iter().find(|(name, _)| name == namespace);
+        let mut all = self.sources.iter().chain(&self.files);
+        let found = all.find(|(name, _)| name == namespace);
         found.map(|(_, text)| text.as_str())
     }
 
@@ -106,10 +114,19 @@ impl Unit {
         }
         let module =
             parse(lex(main)).map_err(|errors| format!("main: {errors:?}"))?;
+        let files = self
+            .files
+            .iter()
+            .map(|(stem, text)| {
+                let file = parse(lex(text))
+                    .map_err(|errors| format!("{stem}: {errors:?}"))?;
+                Ok((stem.clone(), file))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let unit = check::check(
             &module,
             &declarations,
-            &[],
+            &files,
             check::Options::default(),
         )
         .map_err(|errors| format!("main: {errors:?}"))?;
@@ -120,10 +137,12 @@ impl Unit {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         number(&mut out, self.fingerprint);
-        number(&mut out, self.sources.len() as u64);
-        for (name, text) in &self.sources {
-            bytes(&mut out, name.as_bytes());
-            bytes(&mut out, text.as_bytes());
+        for list in [&self.sources, &self.files] {
+            number(&mut out, list.len() as u64);
+            for (name, text) in list {
+                bytes(&mut out, name.as_bytes());
+                bytes(&mut out, text.as_bytes());
+            }
         }
         out
     }
@@ -134,11 +153,16 @@ impl Unit {
     pub fn decode(input: &[u8]) -> Result<Self, Error> {
         let mut input = Reader(input);
         let fingerprint = input.number()?;
-        let sources = (0..input.number()?)
-            .map(|_| Ok((input.text()?, input.text()?)))
-            .collect::<Result<_, Error>>()?;
+        let mut list = || {
+            (0..input.number()?)
+                .map(|_| Ok((input.text()?, input.text()?)))
+                .collect::<Result<_, Error>>()
+        };
+        let sources = list()?;
+        let files = list()?;
         Ok(Self {
             sources,
+            files,
             fingerprint,
         })
     }

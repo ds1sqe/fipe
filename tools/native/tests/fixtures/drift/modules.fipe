@@ -1,0 +1,6 @@
+# A file module: its init runs before the main, its types and members
+# are used by name.
+use geometry.Point geometry.Polar
+p: Point = read "3,4" || Point 0 0
+(p, p | Polar.from)
+Point 1 | show

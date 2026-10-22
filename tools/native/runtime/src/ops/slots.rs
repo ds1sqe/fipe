@@ -2,11 +2,12 @@
 //! from `src/vm/assign.rs` (an rvalue into a local) and `src/vm/step.rs`
 //! (a field read, a switch's key, a global read before the step that
 //! reads it).
-use super::{calls, casts, fail, Ctx, Faulted, Frame, Site};
+use super::{calls, casts, fail, predicates, Ctx, Faulted, Frame, Site};
 use crate::start;
 use fipe::{
-    mir::{Rvalue, Statement},
-    value::{Closure, Record, Value},
+    ir,
+    mir::{self, Rvalue, Statement},
+    value::{Closure, Packed, Reason, Record, Value},
 };
 use std::rc::Rc;
 
@@ -34,7 +35,13 @@ pub fn assign(
         unreachable!("an assign site")
     };
     Ok(match rvalue {
+        // A rebuild is a record of its one value.
         Rvalue::Construct {
+            meaning,
+            constructor,
+            ..
+        }
+        | Rvalue::Wrap {
             meaning,
             constructor,
             ..
@@ -70,7 +77,86 @@ pub fn assign(
             let result = frame.local_type(&ctx, *dest);
             calls::native(&ctx, *op, args, Some(result), node)?
         }
-        other => unreachable!("the generated code assigns {other:?}"),
+        Rvalue::Repeat { length, .. } => {
+            let value = args.pop().expect("the repeated value");
+            repeat(&frame, value, *length)
+        }
+        Rvalue::Length(_) => match args.pop() {
+            Some(Value::Seq(parts)) => {
+                Value::Int(i64::try_from(parts.len()).expect("a length fits"))
+            }
+            other => unreachable!("a sequence, not {other:?}"),
+        },
+        Rvalue::Pack { tag, .. } => {
+            let ir::Type::Meaning { index, .. } = frame.substitute(&ctx, tag)
+            else {
+                unreachable!("a tag is a meaning")
+            };
+            Value::Packed(Rc::new(Packed {
+                meaning: index,
+                value: args.pop().expect("the packed value"),
+            }))
+        }
+        Rvalue::Convert {
+            mode, predicate, ..
+        } => {
+            let value = args.pop().expect("the converted value");
+            convert(&ctx, &frame, *dest, *mode, predicate, value, node)?
+        }
+        Rvalue::Use(_) | Rvalue::Field(..) => {
+            unreachable!("the generated code assigns {rvalue:?}")
+        }
+    })
+}
+
+/// A repeated element, its length written or read from a witness.
+fn repeat(frame: &Frame, value: Value, length: mir::Length) -> Value {
+    let length = match length {
+        mir::Length::Fixed(length) => length,
+        mir::Length::Hidden(index) => match &frame.meanings[index] {
+            ir::Type::Number(number) => number.to_u64().expect("a length fits"),
+            other => unreachable!("a length, not {other:?}"),
+        },
+    };
+    let length = usize::try_from(length).expect("a length fits");
+    Value::seq(vec![value; length])
+}
+
+/// A conversion: direct, wrapped, unwrapped, or checked against its
+/// predicate by the predicate's tests.
+fn convert(
+    ctx: &Ctx,
+    frame: &Frame,
+    dest: usize,
+    mode: ir::ConversionMode,
+    predicate: &ir::Predicate,
+    value: Value,
+    node: usize,
+) -> Result<Value, Faulted> {
+    let prelude = &ctx.prelude;
+    Ok(match mode {
+        ir::ConversionMode::Direct => value,
+        ir::ConversionMode::Wrap => match frame.local_type(ctx, dest) {
+            ir::Type::Meaning { index, .. } if Some(index) == prelude.maybe => {
+                prelude.just(value)
+            }
+            _ => prelude.ok(value),
+        },
+        ir::ConversionMode::Unwrap => match &value {
+            Value::Record(record) if record.constructor == 0 => {
+                record.fields[0].clone()
+            }
+            _ => return Err(fail(node, Reason::Cast)),
+        },
+        ir::ConversionMode::Check | ir::ConversionMode::TryCheck => {
+            let passed = predicates::holds(ctx, predicate, &value, node)?;
+            match (mode, passed) {
+                (ir::ConversionMode::TryCheck, true) => prelude.ok(value),
+                (ir::ConversionMode::TryCheck, false) => prelude.limit_error(),
+                (_, true) => value,
+                (_, false) => return Err(fail(node, Reason::Cast)),
+            }
+        }
     })
 }
 

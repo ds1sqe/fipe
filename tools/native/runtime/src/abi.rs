@@ -501,3 +501,49 @@ extern "C" fn rt_unreachable(body: u64, block: u64) -> u32 {
     });
     FAULT
 }
+
+/// The site's `Push` of the value of `from`.
+///
+/// # Safety
+///
+/// `from` points to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_push(
+    from: *const Value,
+    body: u64,
+    block: u64,
+    index: u64,
+) {
+    // SAFETY: `from` holds a value.
+    let value = unsafe { (*checked_const(from)).clone() };
+    start::with(|state| state.push(site(body, block, index), value));
+}
+
+/// A `Pop`: the innermost environment closes.
+#[no_mangle]
+extern "C" fn rt_pop() {
+    start::with(ops::State::pop);
+}
+
+/// The `Test` terminating the block, over the value of `from`: 1 when
+/// it passes, 0 when it fails, 2 for a Fault.
+///
+/// # Safety
+///
+/// `from` points to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_test(from: *const Value, body: u64, block: u64) -> u64 {
+    // SAFETY: `from` holds a value.
+    let value = unsafe { (*checked_const(from)).clone() };
+    let site = start::with(|state| state.terminator(site(body, block, 0)));
+    match ops::branch(site, &value) {
+        Ok(passed) => u64::from(passed),
+        Err(Faulted) => 2,
+    }
+}
+
+/// Run the init body `body` of a module, before the main.
+#[no_mangle]
+extern "C" fn rt_init(body: u64) -> u32 {
+    status(ops::init(size(body)))
+}

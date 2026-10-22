@@ -69,6 +69,15 @@ pub fn enter(
     crate::abi::invoke(body, args, captures, &hidden)
 }
 
+/// A module's init body, run before the main; its value is dropped.
+///
+/// # Errors
+///
+/// When the body Faults; the Fault is kept.
+pub fn init(body: usize) -> Result<(), Faulted> {
+    enter(body, &[], &[], &[]).map(drop)
+}
+
 /// The result of the site's `Call`, performed by the runtime: its
 /// arguments, then its callee's operand, read by the generated code;
 /// `hidden` the calling frame's witnesses.

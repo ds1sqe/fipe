@@ -37,6 +37,35 @@ const FIRST: &str = include_str!("fixtures/first.fipe");
 const FILES: &str =
     include_str!("../../../Documentation/examples/01-files.fipe");
 
+/// The other examples, each with its trace fixture.
+const EXAMPLES: &[(&str, &str, &str)] = &[
+    (
+        "02-outcomes",
+        include_str!("../../../Documentation/examples/02-outcomes.fipe"),
+        include_str!("../../../tests/fixtures/traces/02-outcomes.txt"),
+    ),
+    (
+        "03-types",
+        include_str!("../../../Documentation/examples/03-types.fipe"),
+        include_str!("../../../tests/fixtures/traces/03-types.txt"),
+    ),
+    (
+        "04-text",
+        include_str!("../../../Documentation/examples/04-text.fipe"),
+        include_str!("../../../tests/fixtures/traces/04-text.txt"),
+    ),
+    (
+        "05-modules",
+        include_str!("../../../Documentation/examples/05-modules.fipe"),
+        include_str!("../../../tests/fixtures/traces/05-modules.txt"),
+    ),
+    (
+        "geometry",
+        examples::GEOMETRY,
+        include_str!("../../../tests/fixtures/traces/geometry.txt"),
+    ),
+];
+
 /// One program per copied family, each run on the VM and natively.
 const DRIFT: &[(&str, &str)] = &[
     ("closures", include_str!("fixtures/drift/closures.fipe")),
@@ -51,19 +80,33 @@ const DRIFT: &[(&str, &str)] = &[
     ),
     ("dispatch", include_str!("fixtures/drift/dispatch.fipe")),
     ("witnesses", include_str!("fixtures/drift/witnesses.fipe")),
+    (
+        "conversions",
+        include_str!("fixtures/drift/conversions.fipe"),
+    ),
+    ("gates", include_str!("fixtures/drift/gates.fipe")),
+    ("sequences", include_str!("fixtures/drift/sequences.fipe")),
+    ("packs", include_str!("fixtures/drift/packs.fipe")),
+    (
+        "environment",
+        include_str!("fixtures/drift/environment.fipe"),
+    ),
+    ("modules", include_str!("fixtures/drift/modules.fipe")),
 ];
 
-/// A fixture's unit under the conformance host, and its program.
+/// A fixture's unit under the conformance host, with the file module
+/// `geometry` it may `use` (`tests/host.rs`), and its program.
 fn unit(source: &str) -> (Unit, Program) {
     let host =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/host");
-    Unit::new(source, host_declarations(&host).unwrap()).unwrap()
+    let files = vec![("geometry".into(), examples::GEOMETRY.into())];
+    Unit::new(source, host_declarations(&host).unwrap(), files).unwrap()
 }
 
 /// The executable of a unit, linked against the runtime.
 fn executable(name: &str, unit: &Unit, program: &Program) -> PathBuf {
     let dir = common::scratch(name);
-    let object = lower::object(program, &unit.encode()).unwrap();
+    let object = lower::object(program, &unit.encode());
     let path = dir.join(format!("{name}.o"));
     std::fs::write(&path, elf::write(&object).unwrap()).unwrap();
     let executable = dir.join(name);
@@ -251,7 +294,7 @@ fn equal(name: &str, source: &str) -> (Observation, u64, i32) {
     );
     assert_eq!(observed, vm, "{name}");
     assert_eq!(units, whole, "{name}");
-    for budget in [whole / 3, whole / 2, whole - 1] {
+    for budget in [whole / 3, whole / 2, whole.saturating_sub(1)] {
         let (vm, vm_units) = on_vm(&program, Some(budget), source);
         let (cut, units, _) =
             native(&executable, &program, Some(budget), source);
@@ -275,17 +318,19 @@ fn files_observes_as_on_the_vm_and_replays_its_trace() {
 fn each_drift_fixture_observes_as_on_the_vm() {
     for (name, source) in DRIFT {
         let (observed, _, code) = equal(name, source);
-        // The guards' fixtures end on the argument a guard refutes.
-        let refuted = name.ends_with("guards");
-        assert_eq!(observed.result.is_err(), refuted, "{name}");
-        assert_eq!(code, i32::from(refuted), "{name}");
-        if refuted {
-            let fault = observed.result.unwrap_err();
-            assert!(
+        assert_eq!(code, i32::from(observed.result.is_err()), "{name}");
+        // The guards' fixtures end on the argument a guard refutes, the
+        // conversions' on a checked conversion that fails.
+        match (*name, observed.result) {
+            ("guards" | "returned-guards", Err(fault)) => assert!(
                 matches!(&fault.reason, Reason::Failed { value, .. }
                     if value == "300"),
                 "{name}: {fault:?}"
-            );
+            ),
+            ("conversions", Err(fault)) => {
+                assert_eq!(fault.reason, Reason::Cast);
+            }
+            (_, result) => assert!(result.is_ok(), "{name}: {result:?}"),
         }
     }
 }
@@ -293,28 +338,54 @@ fn each_drift_fixture_observes_as_on_the_vm() {
 #[test]
 fn the_listing_of_first_is_stable() {
     let (_, program) = unit(FIRST);
-    common::golden("first", &lower::listing(&program).unwrap());
+    common::golden("first", &lower::listing(&program));
 }
 
 #[test]
-fn the_lowering_names_a_form_it_does_not_lower_yet() {
-    let (_, program) = unit("[1, 2, 3] | map (n => n + 1)");
-    assert!(lower::lower(&program).is_ok());
+fn each_example_observes_as_on_the_vm_and_replays_its_trace() {
+    for (name, source, fixture) in EXAMPLES {
+        let (observed, units, code) = equal(name, source);
+        let (_, program) = unit(source);
+        assert_eq!(traced(&program, &observed, source), *fixture, "{name}");
+        // `geometry` alone declares; it charges nothing.
+        assert_eq!(units == 0, *name == "geometry", "{name}");
+        assert_eq!(code, i32::from(observed.result.is_err()), "{name}");
+    }
+}
+
+#[test]
+fn a_recursion_without_end_faults_budget_at_the_vm_s_span() {
+    let source = "r = n => r (n + 1)\nr 0";
+    let (unit, program) = unit(source);
+    let executable = executable("recursion", &unit, &program);
+    for budget in [1000, 100_000] {
+        let (vm, vm_units) = on_vm(&program, Some(budget), source);
+        let (native, units, code) =
+            native(&executable, &program, Some(budget), source);
+        assert_eq!(native, vm, "budget {budget}");
+        assert_eq!(units, budget);
+        assert_eq!(vm_units, budget);
+        let fault = native.result.as_ref().unwrap_err();
+        assert_eq!(fault.reason, Reason::Budget);
+        assert_eq!(code, 1);
+    }
+}
+
+#[test]
+fn a_gate_lowers_and_branches_as_on_the_vm() {
+    // Once a typed error, a `Test` terminator now lowers: every form of
+    // the MIR does.
     let gate = "type Even: Integer where self % 2 == 0\n\
-                m: Integer -> Integer = { Even n => n, _ => 0 }\nm 4";
+                m: Integer -> Integer = { Even n => n, _ => 0 }\n\
+                (m 4, m 3)";
+    let (observed, _, code) = equal("gate", gate);
+    assert_eq!(code, 0);
     let (_, program) = unit(gate);
-    let error = lower::lower(&program).unwrap_err();
-    assert_eq!(
-        error,
-        lower::Error::Unsupported {
-            body: 0,
-            form: "a Test"
-        }
+    let shown = fipe::value::structural::show(
+        observed.result.as_ref().unwrap(),
+        &program.tables.borrow(),
     );
-    assert_eq!(
-        error.to_string(),
-        "body 0: the native backend cannot lower a Test yet"
-    );
+    assert_eq!(shown, "(4, 0)");
 }
 
 #[test]

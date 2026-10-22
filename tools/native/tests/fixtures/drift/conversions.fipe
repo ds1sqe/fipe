@@ -1,0 +1,10 @@
+# Conversions: direct, checked and tried limits, a written From and a
+# written TryFrom, then a checked conversion that fails.
+type Box: From<Integer> { value: Integer }
+impl Box: From<Integer> { from = n => Self n }
+type Crate: TryFrom<Integer, String> { value: Integer }
+impl Crate: TryFrom<Integer, String> { try_from = n => Ok (Self n) }
+(1 | to<U8>, 3 | try<U8>, 300 | try<U8>)
+(1 | to<Box>, 1 | try<Box>, 2 | to<Crate>)
+f: Integer -> U8 = n => n | to<U8>
+f 300

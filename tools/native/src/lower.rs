@@ -1,6 +1,8 @@
-//! A MIR program lowered to x86-64: one function per body, `fipe_main`
-//! entering the main body, and the object holding them with the unit
-//! the runtime compiles again at startup.
+//! A MIR program lowered to x86-64, every form of it.
+//!
+//! One function per body, `fipe_main` running each module's init body,
+//! then the main, and the object holding them with the unit the runtime
+//! compiles again at startup. The match over each form has no fallback.
 //!
 //! A body is `u32 body_N(const Value* args, const Value* caps, const
 //! Value* hidden, Value* out)`. Its frame keeps the four arguments,
@@ -16,80 +18,79 @@ use fipe::{
     ir,
     mir::{self, Callee, Operand, Program, Rvalue, Statement, Terminator},
 };
-use std::fmt::{self, Write};
+use std::fmt::Write;
 
 // Which operands the runtime reads for a site it performs.
 #[path = "../runtime/src/ops/operands.rs"]
 mod operands;
-
-/// Why a program does not lower.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// A form the backend does not lower yet, in a body.
-    Unsupported { body: usize, form: &'static str },
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unsupported { body, form } => {
-                write!(
-                    f,
-                    "body {body}: the native backend cannot lower {form} yet"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// The bytes of the frame before the slots: the four arguments.
 const HEADER: i32 = 32;
 const SLOT: i32 = 16;
 
 /// The functions of a program: each body, then `fipe_main`.
-///
-/// # Errors
-///
-/// [`Error::Unsupported`] for the first form not lowered yet.
-pub fn lower(program: &Program) -> Result<Vec<Function>, Error> {
-    let mut functions = Vec::with_capacity(program.bodies.len() + 1);
-    for index in 0..program.bodies.len() {
-        functions.push(Lowering::new(program, index).body()?);
+#[must_use]
+pub fn lower(program: &Program) -> Vec<Function> {
+    let mut functions: Vec<_> = (0..program.bodies.len())
+        .map(|index| Lowering::new(program, index).body())
+        .collect();
+    functions.push(main(program));
+    functions
+}
+
+/// `u32 fipe_main(Value* out)`: each module's init body in file order,
+/// a module once, as the VM runs those not yet initialized; a Fault
+/// returns 1. Then the main body, its result into `out`.
+fn main(program: &Program) -> Function {
+    let fault = Label(0);
+    let mut body = vec![
+        Inst::Push(Reg::Rbp),
+        Inst::Mov(Reg::Rbp, Reg::Rsp),
+        Inst::SubRsp(16),
+        Inst::Store(-8, Reg::Rdi),
+    ];
+    let mut initialized = Vec::new();
+    for (module, init) in &program.inits {
+        if initialized.contains(module) {
+            continue;
+        }
+        initialized.push(*module);
+        body.extend([
+            Inst::MovImm(Reg::Rdi, imm(*init)),
+            Inst::Call("rt_init".into()),
+            Inst::TestEax,
+            Inst::Jcc(Cond::Ne, fault),
+        ]);
     }
-    functions.push(Function {
+    body.extend([
+        Inst::MovImm(Reg::Rdi, 0),
+        Inst::MovImm(Reg::Rsi, 0),
+        Inst::MovImm(Reg::Rdx, 0),
+        Inst::Load(Reg::Rcx, -8),
+        Inst::Call(symbol(program.main)),
+        Inst::Bind(fault),
+        Inst::Mov(Reg::Rsp, Reg::Rbp),
+        Inst::Pop(Reg::Rbp),
+        Inst::Ret,
+    ]);
+    Function {
         name: "fipe_main".into(),
         global: true,
-        body: vec![
-            Inst::Push(Reg::Rbp),
-            Inst::Mov(Reg::Rbp, Reg::Rsp),
-            Inst::Mov(Reg::Rcx, Reg::Rdi),
-            Inst::MovImm(Reg::Rdi, 0),
-            Inst::MovImm(Reg::Rsi, 0),
-            Inst::MovImm(Reg::Rdx, 0),
-            Inst::Call(symbol(program.main)),
-            Inst::Pop(Reg::Rbp),
-            Inst::Ret,
-        ],
-    });
-    Ok(functions)
+        body,
+    }
 }
 
 /// The object of a program: its functions, `fipe_bodies` (each body's
 /// address, by index) and `fipe_unit` (the unit's length, then its
 /// bytes).
 ///
-/// # Errors
-///
-/// As [`lower`].
-///
 /// # Panics
 ///
 /// When a generated function does not assemble, a defect of the
 /// lowering.
-pub fn object(program: &Program, unit: &[u8]) -> Result<Object, Error> {
-    let text = x64::assemble(&lower(program)?).expect("labels bound once");
+#[must_use]
+pub fn object(program: &Program, unit: &[u8]) -> Object {
+    let text = x64::assemble(&lower(program)).expect("labels bound once");
     let mut symbols = text.symbols;
     let mut rodata = (unit.len() as u64).to_le_bytes().to_vec();
     rodata.extend(unit);
@@ -108,7 +109,7 @@ pub fn object(program: &Program, unit: &[u8]) -> Result<Object, Error> {
         size: 8 * bodies as u64,
         global: true,
     });
-    Ok(Object {
+    Object {
         text: text.bytes,
         text_relocations: text.relocations,
         rodata,
@@ -122,16 +123,13 @@ pub fn object(program: &Program, unit: &[u8]) -> Result<Object, Error> {
             })
             .collect(),
         symbols,
-    })
+    }
 }
 
 /// The listing of a program's object: its functions, then its data.
-///
-/// # Errors
-///
-/// As [`lower`].
-pub fn listing(program: &Program) -> Result<String, Error> {
-    let mut out = x64::listing(&lower(program)?);
+#[must_use]
+pub fn listing(program: &Program) -> String {
+    let mut out = x64::listing(&lower(program));
     out.push_str("fipe_bodies:  ; global, .data.rel.ro\n");
     for index in 0..program.bodies.len() {
         let name = symbol(index);
@@ -140,7 +138,7 @@ pub fn listing(program: &Program) -> Result<String, Error> {
     out.push_str(
         "fipe_unit:  ; global, .rodata: the unit's length and bytes\n",
     );
-    Ok(out)
+    out
 }
 
 fn symbol(body: usize) -> String {
@@ -187,13 +185,6 @@ impl<'a> Lowering<'a> {
             code: Vec::new(),
             slots: body.locals.len() + scratch,
         }
-    }
-
-    const fn unsupported<T>(&self, form: &'static str) -> Result<T, Error> {
-        Err(Error::Unsupported {
-            body: self.index,
-            form,
-        })
     }
 
     /// The frame offset of slot `slot`.
@@ -312,12 +303,7 @@ impl<'a> Lowering<'a> {
         self.scratch(0)
     }
 
-    fn statement(
-        &mut self,
-        block: usize,
-        at: usize,
-        statement: &Statement,
-    ) -> Result<(), Error> {
+    fn statement(&mut self, block: usize, at: usize, statement: &Statement) {
         let site = [Reg::Rdi, Reg::Rsi, Reg::Rdx];
         match statement {
             Statement::Charge(_) => {
@@ -325,7 +311,7 @@ impl<'a> Lowering<'a> {
                 self.checked("rt_charge");
             }
             Statement::Assign(dest, rvalue) => {
-                self.assign(block, at, *dest, rvalue)?;
+                self.assign(block, at, *dest, rvalue);
             }
             Statement::Line(operand) => {
                 let from = self.pointer(*operand);
@@ -346,10 +332,14 @@ impl<'a> Lowering<'a> {
                 self.site(&[Reg::Rsi, Reg::Rdx, Reg::Rcx], block, Some(at));
                 self.checked("rt_enter");
             }
-            Statement::Push { .. } => return self.unsupported("a Push"),
-            Statement::Pop => return self.unsupported("a Pop"),
+            Statement::Push { value, .. } => {
+                let from = self.pointer(*value);
+                self.code.push(Inst::Lea(Reg::Rdi, from));
+                self.site(&[Reg::Rsi, Reg::Rdx, Reg::Rcx], block, Some(at));
+                self.call("rt_push");
+            }
+            Statement::Pop => self.call("rt_pop"),
         }
-        Ok(())
     }
 
     fn assign(
@@ -358,12 +348,12 @@ impl<'a> Lowering<'a> {
         at: usize,
         dest: usize,
         rvalue: &Rvalue,
-    ) -> Result<(), Error> {
+    ) {
         let out = self.slot(dest);
         match rvalue {
             Rvalue::Use(operand) => {
                 self.operand(*operand, dest);
-                return Ok(());
+                return;
             }
             Rvalue::Field(operand, index) => {
                 let from = self.pointer(*operand);
@@ -373,22 +363,23 @@ impl<'a> Lowering<'a> {
                     Inst::MovImm(Reg::Rdx, imm(*index)),
                 ]);
                 self.call("rt_field");
-                return Ok(());
+                return;
             }
+            // The runtime computes every other rvalue from its operands.
             Rvalue::Construct { .. }
             | Rvalue::Native { .. }
             | Rvalue::Closure { .. }
             | Rvalue::Tuple(_)
             | Rvalue::Array(_)
-            | Rvalue::Cast { .. } => {
+            | Rvalue::Cast { .. }
+            | Rvalue::Repeat { .. }
+            | Rvalue::Length(_)
+            | Rvalue::Wrap { .. }
+            | Rvalue::Convert { .. }
+            | Rvalue::Pack { .. } => {
                 let read = operands::rvalue(rvalue).expect("read operands");
                 self.operands(read);
             }
-            Rvalue::Repeat { .. } => return self.unsupported("a Repeat"),
-            Rvalue::Length(_) => return self.unsupported("a Length"),
-            Rvalue::Wrap { .. } => return self.unsupported("a Wrap"),
-            Rvalue::Convert { .. } => return self.unsupported("a Convert"),
-            Rvalue::Pack { .. } => return self.unsupported("a Pack"),
         }
         let scratch = self.scratch(0);
         self.emit([
@@ -398,14 +389,17 @@ impl<'a> Lowering<'a> {
         ]);
         self.site(&[Reg::Rcx, Reg::R8, Reg::R9], block, Some(at));
         self.checked("rt_assign");
-        Ok(())
     }
 
-    fn terminator(
-        &mut self,
-        block: usize,
-        terminator: &Terminator,
-    ) -> Result<(), Error> {
+    /// Fault `Unreachable` at the block's terminator.
+    fn unreachable(&mut self, block: usize) {
+        self.site(&[Reg::Rdi, Reg::Rsi], block, None);
+        self.call("rt_unreachable");
+        let fault = self.fault();
+        self.code.push(Inst::Jmp(fault));
+    }
+
+    fn terminator(&mut self, block: usize, terminator: &Terminator) {
         match terminator {
             Terminator::Goto(target) => {
                 self.code.push(Inst::Jmp(Self::block_label(*target)));
@@ -432,10 +426,7 @@ impl<'a> Lowering<'a> {
                 if let Some(otherwise) = otherwise {
                     self.code.push(Inst::Jmp(Self::block_label(*otherwise)));
                 } else {
-                    self.site(&[Reg::Rdi, Reg::Rsi], block, None);
-                    self.call("rt_unreachable");
-                    let fault = self.fault();
-                    self.code.push(Inst::Jmp(fault));
+                    self.unreachable(block);
                 }
             }
             Terminator::Call {
@@ -448,12 +439,26 @@ impl<'a> Lowering<'a> {
                 self.called(block, callee, args, meanings, *dest);
                 self.code.push(Inst::Jmp(Self::block_label(*target)));
             }
-            Terminator::Test { .. } => return self.unsupported("a Test"),
-            Terminator::Unreachable => {
-                return self.unsupported("an Unreachable");
+            Terminator::Test {
+                value, pass, fail, ..
+            } => {
+                // 1 passes, 0 fails, 2 is a Fault.
+                let from = self.pointer(*value);
+                self.code.push(Inst::Lea(Reg::Rdi, from));
+                self.site(&[Reg::Rsi, Reg::Rdx], block, None);
+                self.call("rt_test");
+                let fault = self.fault();
+                self.emit([
+                    Inst::MovImm(Reg::Rcx, 1),
+                    Inst::Cmp(Reg::Rax, Reg::Rcx),
+                    Inst::Jcc(Cond::E, Self::block_label(*pass)),
+                    Inst::TestEax,
+                    Inst::Jcc(Cond::E, Self::block_label(*fail)),
+                    Inst::Jmp(fault),
+                ]);
             }
+            Terminator::Unreachable => self.unreachable(block),
         }
-        Ok(())
     }
 
     /// A call's callee with its arguments, the result into `dest`: a
@@ -499,7 +504,7 @@ impl<'a> Lowering<'a> {
         self.checked("rt_call");
     }
 
-    fn body(mut self) -> Result<Function, Error> {
+    fn body(mut self) -> Function {
         let (slots, base) = (imm(self.slots), self.base());
         self.emit([
             Inst::Push(Reg::Rbp),
@@ -527,9 +532,9 @@ impl<'a> Lowering<'a> {
         for (index, block) in self.body.blocks.iter().enumerate() {
             self.code.push(Inst::Bind(Self::block_label(index)));
             for (at, statement) in block.statements.iter().enumerate() {
-                self.statement(index, at, statement)?;
+                self.statement(index, at, statement);
             }
-            self.terminator(index, &block.terminator)?;
+            self.terminator(index, &block.terminator);
         }
         let (ret, fault, done) = (self.ret(), self.fault(), self.done());
         let result = self.slot(0);
@@ -556,10 +561,10 @@ impl<'a> Lowering<'a> {
             Inst::Pop(Reg::Rbp),
             Inst::Ret,
         ]);
-        Ok(Function {
+        Function {
             name: symbol(self.index),
             global: false,
             body: self.code,
-        })
+        }
     }
 }

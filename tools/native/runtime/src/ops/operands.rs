@@ -4,7 +4,7 @@
 use fipe::mir::{Callee, Operand, Rvalue, Witness};
 
 /// The operands of an assignment the runtime computes, in order; `None`
-/// for one the generated code performs itself or does not lower.
+/// for a use or a field read, which the generated code performs itself.
 #[must_use]
 pub fn rvalue(rvalue: &Rvalue) -> Option<&[Operand]> {
     match rvalue {
@@ -15,8 +15,13 @@ pub fn rvalue(rvalue: &Rvalue) -> Option<&[Operand]> {
         }
         | Rvalue::Tuple(parts)
         | Rvalue::Array(parts) => Some(parts),
-        Rvalue::Cast { value, .. } => Some(std::slice::from_ref(value)),
-        _ => None,
+        Rvalue::Cast { value, .. }
+        | Rvalue::Repeat { value, .. }
+        | Rvalue::Length(value)
+        | Rvalue::Wrap { value, .. }
+        | Rvalue::Convert { value, .. }
+        | Rvalue::Pack { value, .. } => Some(std::slice::from_ref(value)),
+        Rvalue::Use(_) | Rvalue::Field(..) => None,
     }
 }
 

@@ -177,10 +177,38 @@ fn the_cli_builds_an_object_and_an_executable_of_a_file() {
     assert!(cli(&object, &["--object"]).status.success());
     let main = std::fs::read_to_string(&source).unwrap();
     let declarations = fipe_native::host_declarations(&host).unwrap();
-    let (unit, program) = Unit::new(&main, declarations).unwrap();
-    let expected = lower::object(&program, &unit.encode()).unwrap();
+    let (unit, program) = Unit::new(&main, declarations, vec![]).unwrap();
+    let expected = lower::object(&program, &unit.encode());
     assert_eq!(
         std::fs::read(&object).unwrap(),
+        elf::write(&expected).unwrap()
+    );
+    // `--module` carries a file module the source may `use`.
+    let examples = fixtures.join("../../../Documentation/examples");
+    let geometry = examples.join("geometry.fipe");
+    let modules = dir.join("modules.o");
+    let built = Command::new(env!("CARGO_BIN_EXE_fipe-native"))
+        .arg("build")
+        .arg(examples.join("05-modules.fipe"))
+        .args(["-o", modules.to_str().unwrap(), "--object", "--host"])
+        .arg(&host)
+        .arg("--module")
+        .arg(&geometry)
+        .output()
+        .unwrap();
+    assert!(built.status.success(), "{built:?}");
+    let (unit, program) = Unit::new(
+        &std::fs::read_to_string(examples.join("05-modules.fipe")).unwrap(),
+        fipe_native::host_declarations(&host).unwrap(),
+        vec![(
+            "geometry".into(),
+            std::fs::read_to_string(&geometry).unwrap(),
+        )],
+    )
+    .unwrap();
+    let expected = lower::object(&program, &unit.encode());
+    assert_eq!(
+        std::fs::read(&modules).unwrap(),
         elf::write(&expected).unwrap()
     );
     // Linked and run with no host connected, its host call Faults.

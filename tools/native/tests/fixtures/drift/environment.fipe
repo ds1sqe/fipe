@@ -1,0 +1,7 @@
+# The `with` environment: each host call carries the keys open, the
+# innermost last; a block's end closes its key.
+with cwd /tmp {
+    names = with lang "C" { cat ./names | lines }
+    (names, ls | map .name)
+}
+ls | map .name

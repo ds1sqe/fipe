@@ -2,7 +2,8 @@
 //! an x86-64 Linux executable.
 //!
 //! `--host DIR` checks it against the host declarations in `DIR`;
-//! `--object` stops at the ELF object; otherwise the object is linked
+//! each `--module FILE` is a file module it may `use`, named by the
+//! file's stem; `--object` stops at the ELF object; otherwise the object is linked
 //! with `cc` against the runtime archive `--runtime LIB`, or the one
 //! `FIPE_NATIVE_RT` names.
 
@@ -13,13 +14,14 @@ use std::{
 };
 
 const USAGE: &str = "usage: fipe-native build <file.fipe> -o <output> \
-                     [--host DIR] [--runtime LIB] [--object]";
+                     [--host DIR] [--module FILE]... [--runtime LIB] [--object]";
 
 /// What `build` was asked.
 struct Build {
     source: PathBuf,
     output: PathBuf,
     host: Option<PathBuf>,
+    modules: Vec<PathBuf>,
     runtime: Option<PathBuf>,
     object: bool,
 }
@@ -31,11 +33,13 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Build, String> {
     let (mut source, mut output, mut host, mut runtime) =
         (None, None, None, None);
     let mut object = false;
+    let mut modules = Vec::new();
     while let Some(arg) = args.next() {
         let mut value = || args.next().map(PathBuf::from).ok_or(USAGE);
         match arg.as_str() {
             "-o" => output = Some(value()?),
             "--host" => host = Some(value()?),
+            "--module" => modules.push(value()?),
             "--runtime" => runtime = Some(value()?),
             "--object" => object = true,
             _ if source.is_none() && !arg.starts_with('-') => {
@@ -51,6 +55,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Build, String> {
             source,
             output,
             host,
+            modules,
             runtime,
             object,
         }),
@@ -69,9 +74,16 @@ fn build(build: &Build) -> Result<(), String> {
             .map_err(|error| format!("{}: {error}", dir.display()))?,
         None => Vec::new(),
     };
-    let (unit, program) = Unit::new(&main, host)?;
-    let object =
-        lower::object(&program, &unit.encode()).map_err(|e| e.to_string())?;
+    let files = build
+        .modules
+        .iter()
+        .map(|path| {
+            let stem = path.file_stem().unwrap_or_default();
+            Ok((stem.to_string_lossy().into_owned(), read(path)?))
+        })
+        .collect::<Result<_, String>>()?;
+    let (unit, program) = Unit::new(&main, host, files)?;
+    let object = lower::object(&program, &unit.encode());
     let bytes = elf::write(&object).map_err(|error| error.to_string())?;
     let write = |path: &Path| {
         std::fs::write(path, &bytes)

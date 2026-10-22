@@ -1,0 +1,11 @@
+# Gates: a pattern's limit test picks the arm, alone, nested, in turn.
+type Even: Integer where self % 2 == 0
+type Small: Integer where self < 10
+m: Integer -> Integer = { Even n => n, _ => 0 }
+n: Maybe<Integer> -> Integer = { Just (Even v) => v, _ => 1 }
+(m 4, m 3, n (Just 6), n (Just 5), n Nothing)
+s: Integer -> String = { Small _ => "small", Even _ => "even", _ => "big" }
+[3, 12, 13] | map s
+# A block coverage proves no run reaches lowers all the same.
+u: () -> Integer = { () => 1 }
+u ()

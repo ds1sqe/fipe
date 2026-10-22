@@ -3,14 +3,16 @@
 //! limit test is its body, called with the value; the division test
 //! costs one unit, paid where the VM's run owes it, before the call or
 //! the verdict that follows.
-use super::{calls, fail, pay, Ctx, Faulted};
+use super::{calls, fail, pay, Ctx, Faulted, Site};
 use fipe::{
     ir::Predicate,
+    mir::Terminator,
     value::{structural, Reason, Value},
 };
 
-/// Whether `value` passes `predicate`, at `node`.
-fn holds(
+/// Whether `value` passes `predicate`, at `node`: a `Test`
+/// terminator's branch, a checked conversion, an entry's component.
+pub fn holds(
     ctx: &Ctx,
     predicate: &Predicate,
     value: &Value,
@@ -57,6 +59,26 @@ fn holds(
             Ok(ctx.prelude.is_true(&passed))
         }
     }
+}
+
+/// The site's `Test` terminator over `value`: whether it passes, which
+/// picks the branch.
+///
+/// # Errors
+///
+/// When a limit test Faults or the budget cannot pay.
+///
+/// # Panics
+///
+/// At another terminator, a defect of the lowering.
+pub fn branch(site: Site, value: &Value) -> Result<bool, Faulted> {
+    let ctx = Ctx::get();
+    let node = ctx.node(site);
+    let block = &ctx.program.bodies[site.body].blocks[site.block];
+    let Terminator::Test { predicate, .. } = &block.terminator else {
+        unreachable!("a test site")
+    };
+    holds(&ctx, predicate, value, node)
 }
 
 /// Test each value in order by an entry's predicate, stopping at the

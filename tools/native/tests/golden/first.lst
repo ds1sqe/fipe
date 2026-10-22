@@ -599,11 +599,15 @@ body_3:  ; local
 fipe_main:  ; global
     push rbp
     mov rbp, rsp
-    mov rcx, rdi
+    sub rsp, 16
+    mov [rbp-8], rdi
     mov rdi, 0
     mov rsi, 0
     mov rdx, 0
+    mov rcx, [rbp-8]
     call body_3  ; R_X86_64_PLT32 body_3-4
+.L0:
+    mov rsp, rbp
     pop rbp
     ret
 fipe_bodies:  ; global, .data.rel.ro

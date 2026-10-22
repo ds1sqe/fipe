@@ -22,8 +22,9 @@ mod predicates;
 mod slots;
 mod walk;
 
-pub use calls::call;
+pub use calls::{call, init};
 pub use entries::enter;
+pub use predicates::branch;
 pub use slots::{assign, field, global, switch_key};
 
 use crate::{host::Host, start};
@@ -170,7 +171,21 @@ impl State {
         self.globals[definition] = Some(value);
     }
 
-    /// A block coverage excluded was reached: a switch without the case.
+    /// `Push`: open the child environment of a `with`.
+    pub fn push(&mut self, site: Site, value: Value) {
+        let Statement::Push { key, .. } = *self.statement(site) else {
+            unreachable!("a push site")
+        };
+        self.environment.push((key, value));
+    }
+
+    /// `Pop`: close the environment the matching `Push` opened.
+    pub fn pop(&mut self) {
+        self.environment.pop();
+    }
+
+    /// A block coverage excluded was reached: a switch without the
+    /// case, or an `Unreachable` terminator.
     pub fn unreachable(&mut self, site: Site) -> Faulted {
         let node = self.node(site);
         self.fault = Some(fault(&self.program, node, Reason::Unreachable));
