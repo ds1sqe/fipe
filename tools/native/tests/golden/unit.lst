@@ -1,0 +1,16 @@
+fipe_main:  ; global
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16
+    lea rdi, [rbp-16]
+    call rt_unit  ; R_X86_64_PLT32 rt_unit-4
+    test eax, eax
+    jne .L0
+    mov rax, 0
+    jmp .L1
+.L0:
+    mov rax, 1
+.L1:
+    mov rsp, rbp
+    pop rbp
+    ret
