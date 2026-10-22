@@ -17,7 +17,11 @@ use fipe::{
     vm::{Fault, Frame, Machine, Stop},
 };
 use serde_json::{json, Value as Json};
-use std::{collections::BTreeMap, fmt::Write as _, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+    path::Path,
+};
 
 /// The one thread a run has.
 pub const THREAD: u64 = 1;
@@ -78,6 +82,36 @@ struct PipeState {
     done: bool,
 }
 
+/// What the adapter follows of one body frame: which frame it is, the
+/// line and pipe it is at, and where it has stopped.
+///
+/// A line is arrived at once per frame each time the frame moves onto
+/// it: a node announced again (a compound node at its join, after its
+/// body ran) is not an arrival.
+#[derive(Debug)]
+struct Track {
+    body: usize,
+    /// The positions it stopped before. Control in a body only goes
+    /// forward, so a position seen again is a new frame of that body.
+    positions: BTreeSet<(usize, usize)>,
+    /// The nodes it stopped at.
+    nodes: BTreeSet<usize>,
+    line: Option<(usize, usize)>,
+    pipe: Option<usize>,
+}
+
+impl Track {
+    const fn new(body: usize, line: Option<(usize, usize)>) -> Self {
+        Self {
+            body,
+            positions: BTreeSet::new(),
+            nodes: BTreeSet::new(),
+            line,
+            pipe: None,
+        }
+    }
+}
+
 /// A checked program and its run.
 #[derive(Debug)]
 pub struct Debuggee {
@@ -96,9 +130,8 @@ pub struct Debuggee {
     /// The last value written under each node.
     seen: BTreeMap<usize, Value>,
     states: BTreeMap<usize, PipeState>,
-    /// The line and pipe each body frame depth is at, outermost first.
-    lines: Vec<Option<(usize, usize)>>,
-    at_pipes: Vec<Option<usize>>,
+    /// Each body frame's line and pipe, outermost first.
+    tracks: Vec<Track>,
     /// The node of the stop the client sees.
     current: Option<usize>,
     /// How many of the machine's main-line values were sent.
@@ -130,8 +163,7 @@ impl Debuggee {
             effects: Vec::new(),
             seen: BTreeMap::new(),
             states: BTreeMap::new(),
-            lines: Vec::new(),
-            at_pipes: Vec::new(),
+            tracks: Vec::new(),
             current: None,
             sent_lines: 0,
             references: References::default(),
@@ -181,14 +213,11 @@ impl Debuggee {
     /// Where the client sees the run: its depth, line and pipe.
     fn place(&self) -> Place {
         let depth = self.depth();
+        let track = depth.checked_sub(1).and_then(|at| self.tracks.get(at));
         Place {
             depth,
-            line: depth
-                .checked_sub(1)
-                .and_then(|at| self.lines.get(at).copied().flatten()),
-            pipe: depth
-                .checked_sub(1)
-                .and_then(|at| self.at_pipes.get(at).copied().flatten()),
+            line: track.and_then(|track| track.line),
+            pipe: track.and_then(|track| track.pipe),
         }
     }
 
@@ -338,8 +367,7 @@ impl Debuggee {
     /// breakpoint or the step asks to.
     fn at(&mut self, node: usize, value: Option<Value>, out: &mut Outgoing) {
         let depth = self.depth();
-        self.lines.resize(depth, None);
-        self.at_pipes.resize(depth, None);
+        self.tracks.truncate(depth);
         let before = value.is_none();
         if let Some(value) = value {
             self.wrote(node, value);
@@ -364,25 +392,8 @@ impl Debuggee {
         let pipe =
             lines::pipe_of(node, &tables, &self.pipes).map(|pipe| pipe.node);
         drop(tables);
-        let index = depth.saturating_sub(1);
-        let (line_entered, pipe_entered) = if depth == 0 {
-            (false, false)
-        } else {
-            (
-                before && self.lines[index] != line,
-                pipe.is_some() && self.at_pipes[index] != pipe,
-            )
-        };
-        if depth > 0 {
-            // A node outside every pipe (a stage's piped value, say)
-            // leaves the frame at its pipe; a new line leaves it.
-            if line_entered {
-                self.lines[index] = line;
-                self.at_pipes[index] = pipe;
-            } else if pipe.is_some() {
-                self.at_pipes[index] = pipe;
-            }
-        }
+        let (line_entered, pipe_entered) =
+            self.arrive(node, before, line, pipe);
         let hits: Vec<u64> = self
             .breakpoints
             .iter()
@@ -435,6 +446,62 @@ impl Debuggee {
             self.current = Some(node);
             self.stopped(reason, &hits, out);
         }
+    }
+
+    /// Follow the top body frame to a stop at `node` on `line` and
+    /// `pipe`; whether the stop arrives at the line and at the pipe.
+    fn arrive(
+        &mut self,
+        node: usize,
+        before: bool,
+        line: Option<(usize, usize)>,
+        pipe: Option<usize>,
+    ) -> (bool, bool) {
+        let Some(&&fipe::vm::BodyFrame {
+            body,
+            block,
+            statement,
+            ..
+        }) = self.body_frames().last()
+        else {
+            return (false, false);
+        };
+        let index = self.depth() - 1;
+        let position = (block, statement);
+        let new = self.tracks.get(index).is_none_or(|track| {
+            track.body != body
+                || (before && track.positions.contains(&position))
+        });
+        if new {
+            // A function called from a line it is written on (a stage's
+            // closure) runs as part of that line; a recursive call
+            // arrives anew.
+            let caller =
+                index.checked_sub(1).and_then(|at| self.tracks.get(at));
+            let inherited = caller
+                .filter(|caller| caller.body != body)
+                .and_then(|caller| caller.line);
+            // A caller that never stopped here gets a track of no body.
+            self.tracks
+                .resize_with(index, || Track::new(usize::MAX, None));
+            self.tracks.push(Track::new(body, inherited));
+        }
+        let track = &mut self.tracks[index];
+        if before {
+            track.positions.insert(position);
+        }
+        let fresh = track.nodes.insert(node);
+        let line_entered = before && fresh && track.line != line;
+        let pipe_entered = fresh && pipe.is_some() && track.pipe != pipe;
+        // A node outside every pipe (a stage's piped value, say) leaves
+        // the frame at its pipe; a new line leaves it.
+        if line_entered {
+            track.line = line;
+            track.pipe = pipe;
+        } else if pipe.is_some() {
+            track.pipe = pipe;
+        }
+        (line_entered, pipe_entered)
     }
 
     /// A value written under `node`: the latest value there, a pipe's

@@ -608,3 +608,103 @@ fn a_session_stepped_line_by_line_observes_what_a_run_does() {
         }
     }
 }
+
+/// The `(line, column)` of each stop until the run ends, resuming each
+/// by `command`.
+fn stops(client: &mut Client, command: &str) -> Vec<(u64, u64)> {
+    let mut stops = Vec::new();
+    while client.sent.last().unwrap()["event"] != "terminated" {
+        assert_ne!(client.last("stopped")["reason"], "exception");
+        let top = client.top();
+        stops.push((
+            top["line"].as_u64().unwrap(),
+            top["column"].as_u64().unwrap(),
+        ));
+        assert!(stops.len() < 1000, "no end: {stops:?}");
+        client.request(command, json!({ "threadId": 1 }));
+    }
+    stops
+}
+
+fn modules(lines: &[u64]) -> Client {
+    let mut client = Client::new();
+    client.launch(json!({
+        "program": example("05-modules"),
+        "host": root().join("tests/fixtures/host"),
+        "trace": root().join("tests/fixtures/traces/05-modules.txt"),
+    }));
+    let breakpoints: Vec<Value> =
+        lines.iter().map(|line| json!({ "line": line })).collect();
+    client.request(
+        "setBreakpoints",
+        json!({
+            "source": { "path": example("05-modules") },
+            "breakpoints": breakpoints,
+        }),
+    );
+    client.request("configurationDone", json!({}));
+    client
+}
+
+#[test]
+fn a_line_breakpoint_stops_once_each_time_the_run_arrives_at_its_line() {
+    // Line 24's pattern and line 29's `with` are announced again after
+    // the code they scope; line 30 calls a closure written on it.
+    let mut client = modules(&[24, 29, 30]);
+    let lines: Vec<u64> = stops(&mut client, "continue")
+        .iter()
+        .map(|stop| stop.0)
+        .collect();
+    assert_eq!(lines, [24, 29, 30]);
+}
+
+#[test]
+fn next_never_comes_back_to_a_line_it_left() {
+    let mut client = modules(&[29]);
+    let stops = stops(&mut client, "next");
+    assert_eq!(stops.first(), Some(&(29, 1)));
+    assert!(stops.windows(2).all(|pair| pair[0] < pair[1]), "{stops:?}");
+    let lines: Vec<u64> = stops.iter().map(|stop| stop.0).collect();
+    assert!(lines.contains(&30) && lines.contains(&32), "{stops:?}");
+}
+
+#[test]
+fn a_recursive_call_arrives_at_its_line_again_in_each_frame() {
+    let program = "down = n => if n == 0 { 0 } else { 1 + (down (n - 1)) }\n\
+                   spin = n => if n == 0 { 0 } else { spin (n - 1) }\n\
+                   count = {\n    0 => 0,\n    n => count (n - 1),\n}\n\
+                   down 2\nspin 2\ncount 2\n";
+    let (mut client, path) = scratch("recursion-lines", program, "value ()\n");
+    client.request(
+        "setBreakpoints",
+        json!({
+            "source": { "path": path },
+            "breakpoints": [{ "line": 1 }, { "line": 2 }, { "line": 5 }],
+        }),
+    );
+    client.request("configurationDone", json!({}));
+    let mut seen = Vec::new();
+    while client.sent.last().unwrap()["event"] != "terminated" {
+        let frames = client.request("stackTrace", json!({ "threadId": 1 }));
+        let frames = frames["body"]["stackFrames"].as_array().unwrap().clone();
+        seen.push((frames[0]["line"].as_u64().unwrap(), frames.len()));
+        assert!(seen.len() < 100, "{seen:?}");
+        client.request("continue", json!({ "threadId": 1 }));
+    }
+    // `down` 2, 1 and 0 each run line 1, each in a frame of its own;
+    // `spin` and `count` tail-call, a new frame in the place of the one
+    // that calls: `spin` runs line 2 three times, `count` line 5 twice.
+    assert_eq!(
+        seen,
+        [
+            (1, 2),
+            (1, 3),
+            (1, 4),
+            (2, 2),
+            (2, 2),
+            (2, 2),
+            (5, 2),
+            (5, 2)
+        ]
+    );
+}

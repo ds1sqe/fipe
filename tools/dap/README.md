@@ -38,7 +38,7 @@ adapter shows is the VM's and every stop is one the VM took
 | --- | --- |
 | `initialize` | answers `supportsConfigurationDoneRequest`, `supportsBreakpointLocationsRequest` and `supportsExceptionInfoRequest`; `linesStartAt1` and `columnsStartAt1` set how every line and column is counted both ways (from one by default) |
 | `launch` | checks and lowers the program, then sends `initialized`; a program that does not check fails the request, naming its first diagnostic in words; `stopOnEntry` stops before the first node |
-| `setBreakpoints` | a line, or a line and the column of a pipe mark (`\|`, `\|:`, `\|!`, `\|\|`, `&&`) for a stage; a column with no mark, or a line nothing runs on, is not verified |
+| `setBreakpoints` | a line, or a line and the column of a pipe mark (`\|`, `\|:`, `\|!`, `\|\|`, `&&`) for a stage; a column with no mark, or a line nothing runs on, is not verified; a line breakpoint stops each time a frame arrives at its line, not again while the line runs a closure written on it or when the run comes back to a `with` or pattern on it after their code; every call arrives anew, a recursive one included |
 | `breakpointLocations` | the pipe marks of the lines asked for: the stage columns |
 | `configurationDone` | runs the program to a breakpoint, its end or its Fault |
 | `continue` | runs to the next breakpoint, the end or a Fault; after a Fault the run cannot go on, so `continue`, `next`, `stepIn` and `stepOut` end it (`exited` with code 1, `terminated`) |
