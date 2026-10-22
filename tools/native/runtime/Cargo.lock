@@ -7,8 +7,16 @@ name = "fipe"
 version = "0.2.0-dev.1"
 
 [[package]]
+name = "fipe-host"
+version = "0.1.0"
+dependencies = [
+ "fipe",
+]
+
+[[package]]
 name = "fipe-native-rt"
 version = "0.1.0"
 dependencies = [
  "fipe",
+ "fipe-host",
 ]

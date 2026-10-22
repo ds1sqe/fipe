@@ -254,6 +254,25 @@ impl Frame {
     }
 }
 
+/// Apply the run's value, the function its last line made, to the
+/// host input, at that line: the result; a Fault is kept, as for
+/// status 1.
+pub fn apply(
+    function: &Value,
+    input: Value,
+    line: usize,
+) -> Result<Value, Faulted> {
+    calls::call_value(&Ctx::get(), function, vec![input], line)
+}
+
+/// The name of `ty` when `value` has not its shape.
+pub fn misfit(value: &Value, ty: &ir::Type) -> Option<String> {
+    let ctx = Ctx::get();
+    let tables = ctx.tables();
+    (!fits::fits(value, ty, &tables, &ctx.prelude))
+        .then(|| fits::named(ty, &tables))
+}
+
 /// Keep the Fault of `reason` at `node`; the status 1 the generated
 /// code returns stands for it.
 fn fail(node: usize, reason: Reason) -> Faulted {

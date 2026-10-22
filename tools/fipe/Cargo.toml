@@ -1,0 +1,20 @@
+[package]
+name = "fipe-cli"
+version = "0.1.0"
+edition = "2021"
+description = "The fipe command: run, check, build and talk to Fipe scripts"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "fipe"
+path = "src/main.rs"
+
+[dependencies]
+fipe = { path = "../.." }
+fipe-host = { path = "../host" }
+fipe-native = { path = "../native" }
+fipe-repl = { path = "../repl" }
+
+[lints.rust]
+unsafe_code = "forbid"

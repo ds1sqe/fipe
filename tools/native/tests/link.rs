@@ -211,7 +211,9 @@ fn the_cli_builds_an_object_and_an_executable_of_a_file() {
         std::fs::read(&modules).unwrap(),
         elf::write(&expected).unwrap()
     );
-    // Linked and run with no host connected, its host call Faults.
+    // Linked and run with no host pipe, the std host answers in the
+    // process: the main lines go to stdout under its sink policy, and
+    // the conformance host's constant has no answer.
     let executable = dir.join("first");
     let runtime = common::runtime().to_str().unwrap();
     let built = cli(&executable, &["--runtime", runtime]);
@@ -219,8 +221,12 @@ fn the_cli_builds_an_object_and_an_executable_of_a_file() {
     let run = Command::new(&executable).output().unwrap();
     assert_eq!(run.status.code(), Some(1));
     assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "15511210043330985984000000\n33\n"
+    );
+    assert_eq!(
         String::from_utf8_lossy(&run.stderr),
-        "fault in main at 20:5: host: no host is connected\n"
+        "fault in main at 20:5: host: the std host has no cli.port\n"
     );
     // A request it cannot read is refused with the usage.
     let refused = Command::new(env!("CARGO_BIN_EXE_fipe-native"))

@@ -2,7 +2,10 @@
 
 The Fipe REPL: one pump over `fipe-repl-core`, built for any OS `std`
 supports (default) or for x86_64 Linux with no `std`
-(`--no-default-features --features linux`).
+(`--no-default-features --features linux`). The package is a library,
+`fipe_repl::run` with its `Options` and an optional `Host` answering
+the session's calls, and the `fipe-repl` binary over it; `fipe repl`
+([`tools/fipe`](../fipe/README.md)) is the same pump over the std host.
 
 ```sh
 fipe-repl [--cwd <dir>] [--host <dir>] [--strict] [--budget <n>] \

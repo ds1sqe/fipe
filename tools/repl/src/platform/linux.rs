@@ -310,7 +310,7 @@ extern "C" fn _start() -> ! {
 
 extern "C" fn start(stack: *const usize) -> ! {
     STACK.store(stack as usize, Ordering::Relaxed);
-    crate::run();
+    crate::program();
     exit(0)
 }
 

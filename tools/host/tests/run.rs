@@ -348,3 +348,37 @@ fn a_script_that_does_not_check_is_located() {
         Err(LoadError::Read { .. })
     ));
 }
+
+/// A writer every clone shares, to read back what a stream received.
+#[derive(Clone, Default)]
+struct Shared(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+impl std::io::Write for Shared {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_streaming_host_writes_as_the_run_goes_and_keeps_nothing() {
+    let temp = Temp::new();
+    let path = temp.file(
+        "script.fipe",
+        "\"first\"\nput out \"second\\n\"\nErr \"third\"\n",
+    );
+    let script = load(&path).unwrap();
+    let (out, err) = (Shared::default(), Shared::default());
+    let mut host = Host::new(Policy::new(&temp.0, &[]).unwrap())
+        .streaming(out.clone(), err.clone());
+    let (observation, exit) = host.run(&script, &mut &b""[..], None);
+    assert_eq!(exit, 1);
+    assert_eq!(observation.success, b"");
+    assert_eq!(observation.error, b"");
+    assert_eq!(out.0.borrow().as_slice(), b"first\nsecond\n");
+    assert_eq!(err.0.borrow().as_slice(), b"third\n");
+}

@@ -2,17 +2,16 @@
 //! `fipe`, its fingerprint compared with the one the backend recorded,
 //! and the program runs on a thread of its own, whose stack
 //! (`FIPE_STACK` bytes, 256 MiB by default) holds its recursion. The
-//! budget is `FIPE_BUDGET` units, unbounded when unset.
+//! budget is `FIPE_BUDGET` units, unbounded when unset. Without a host
+//! pipe the std host answers in the process (`host`): the standard
+//! input is host input when the last line takes it, and the output
+//! follows the std host's sink policy and exit codes.
 use crate::{
     codec::{self, Frame, Unit},
     host::Host,
-    ops::State,
+    ops::{self, State},
 };
-use fipe::{
-    token::Source,
-    value::{structural, Value},
-    vm::Fault,
-};
+use fipe::value::Value;
 use std::{cell::RefCell, thread};
 
 const STACK: usize = 256 << 20;
@@ -75,47 +74,121 @@ fn started(unit: &[u8], run: fn(&mut Value) -> u32) -> i32 {
     let budget = std::env::var("FIPE_BUDGET")
         .ok()
         .and_then(|units| units.parse().ok());
-    let state = State::new(program, budget, Host::open());
-    STATE.set(Some(state));
-    let mut out = Value::Unit;
-    let status = run(&mut out);
-    let mut state = STATE.take().expect("the run's state");
-    let result = if status == 0 {
-        Ok(out)
-    } else {
-        Err(state.fault.take().expect("a Fault for status 1"))
-    };
-    let code = i32::from(result.is_err());
-    if state.host.connected() {
-        let done = Frame::Done {
-            result,
-            lines: std::mem::take(&mut state.lines),
-            charged: state.charged,
-        };
-        if let Err(error) = state.host.send(&done) {
+    let host = match Host::open() {
+        Ok(host) => host,
+        Err(error) => {
             eprintln!("fipe: {error}");
             return 2;
         }
-        return code;
+    };
+    let sources: Vec<(String, String)> =
+        unit.sources.iter().chain(&unit.files).cloned().collect();
+    // Under the std host the input is read before the run, so a refusal
+    // leaves no effect.
+    let input = if host.connected() {
+        None
+    } else {
+        let read = fipe_host::input(&program, &mut std::io::stdin().lock());
+        match read {
+            Ok(input) => input,
+            Err(reason) => {
+                let fault = fipe_host::refusal(&program, &reason);
+                let tables = program.tables.borrow();
+                eprintln!("{}", fipe_host::located(&fault, &tables, &sources));
+                return 2;
+            }
+        }
+    };
+    let line = program.bodies[program.main].node;
+    let spot = fipe::vm::input_spot(&program).ok();
+    let state = State::new(program, budget, host);
+    STATE.set(Some(state));
+    let result = ran(run, input, spot.as_ref(), line);
+    let mut state = STATE.take().expect("the run's state");
+    match &mut state.host {
+        Host::Pipe { .. } => {
+            let code = i32::from(result.is_err());
+            let done = Frame::Done {
+                result,
+                lines: std::mem::take(&mut state.lines),
+                charged: state.charged,
+            };
+            if let Err(error) = state.host.send(&done) {
+                eprintln!("fipe: {error}");
+                return 2;
+            }
+            code
+        }
+        Host::Std(host) => {
+            let tables = state.program.tables.borrow();
+            host.sink.lines(&state.lines, &tables);
+            if let Err(fault) = &result {
+                host.sink.fault(fault, &tables, &sources);
+            }
+            // A closed stream leaves nothing to report to.
+            let _ = host.flush();
+            i32::from(fipe_host::exit_code(&result, &tables))
+        }
     }
-    let tables = state.program.tables.borrow();
-    match result {
-        Ok(value) => println!("{}", structural::show(&value, &tables)),
-        Err(fault) => eprintln!("{}", located(&fault, &unit, &tables)),
-    }
-    code
 }
 
-/// A Fault located in its source, as the conformance host words it:
-/// `fault in <namespace> at <line>:<column>: <reason>`.
-fn located(fault: &Fault, unit: &Unit, tables: &fipe::ir::Tables) -> String {
-    let namespace = &tables.namespaces[fault.namespace];
-    let text = if namespace == "prelude" {
-        Some(fipe::decl::prelude_source())
-    } else {
-        unit.source(namespace)
-    };
-    let (line, column) =
-        Source::new(text.unwrap_or_default()).line_col(fault.span.start);
-    format!("fault in {namespace} at {line}:{column}: {}", fault.reason)
+/// The run on this thread's state: the generated main, then its value
+/// applied to the host input when there is one. Input without the
+/// shape of its spot Faults `Host` at the last line before the run,
+/// as on the VM.
+fn ran(
+    run: fn(&mut Value) -> u32,
+    input: Option<Value>,
+    spot: Option<&fipe::ir::Type>,
+    line: usize,
+) -> Result<Value, fipe::vm::Fault> {
+    let misfit = input
+        .as_ref()
+        .zip(spot)
+        .and_then(|(value, spot)| ops::misfit(value, spot));
+    if let Some(named) = misfit {
+        return Err(STATE.with_borrow(|state| {
+            let program = &state.as_ref().expect("the run's state").program;
+            fipe_host::refusal(program, &format!("the input is not {named}"))
+        }));
+    }
+    let mut out = Value::Unit;
+    if run(&mut out) != 0 {
+        return Err(STATE.with_borrow_mut(|state| {
+            let state = state.as_mut().expect("the run's state");
+            state.fault.take().expect("a Fault for status 1")
+        }));
+    }
+    match input {
+        Some(input) => applied(&out, input, line),
+        None => Ok(out),
+    }
+}
+
+/// The main's function value applied to the host input: its result
+/// takes the function's place as the last line's value, as on the VM.
+fn applied(
+    function: &Value,
+    input: Value,
+    line: usize,
+) -> Result<Value, fipe::vm::Fault> {
+    STATE.with_borrow_mut(|state| {
+        let state = state.as_mut().expect("the run's state");
+        if state.lines.last().is_some_and(|(node, _)| *node == line) {
+            state.lines.pop();
+        }
+    });
+    let result = ops::apply(function, input, line);
+    STATE.with_borrow_mut(|state| {
+        let state = state.as_mut().expect("the run's state");
+        match result {
+            Ok(value) => {
+                state.lines.push((line, value.clone()));
+                Ok(value)
+            }
+            Err(ops::Faulted) => {
+                Err(state.fault.take().expect("a Fault for status 1"))
+            }
+        }
+    })
 }

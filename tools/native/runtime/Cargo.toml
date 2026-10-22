@@ -11,6 +11,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 fipe = { path = "../../.." }
+fipe-host = { path = "../../host" }
 
 # Nothing unwinds across machine code.
 [profile.dev]

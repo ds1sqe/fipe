@@ -5,8 +5,9 @@
 //! each host call with a real effect under the [`Policy`]'s write
 //! roots, and gives the observation and the exit code. A driver that
 //! runs the machine itself (a REPL, a debugger, a native runtime) calls
-//! [`Host::answer`] for each request and writes main lines through
-//! [`Sink`].
+//! [`Host::answer`] for each request, writes main lines through
+//! [`Sink`], takes its [`input`] and ends with [`exit_code`]; with
+//! [`Host::streaming`] the output reaches its writers as it is made.
 #![forbid(unsafe_code)]
 
 mod answer;
@@ -26,7 +27,10 @@ use fipe::{
     value::{Prelude, Reason, Value},
     vm::{self, Fault, Machine, Observation},
 };
-use std::{io::Read, path::PathBuf};
+use std::{
+    io::{self, Read, Write},
+    path::PathBuf,
+};
 
 const SOURCES: &[(&str, &str)] = &[
     ("commands", include_str!("../decl/commands.fipe")),
@@ -64,13 +68,15 @@ pub fn declarations() -> Declarations {
 
 /// The std host over runs: its policy, the script's arguments, the
 /// resources `sys.lookup` numbered and the current run's output.
-#[derive(Debug)]
 pub struct Host {
     policy: Policy,
     args: Vec<String>,
     resources: Vec<PathBuf>,
-    /// The output of the run in progress, or the last one.
+    /// The output of the run in progress, or the last one; empty so
+    /// far as [`Host::flush`] has moved it to the streams.
     pub sink: Sink,
+    /// Where [`Host::flush`] writes the success and error output.
+    streams: Option<(Box<dyn Write>, Box<dyn Write>)>,
 }
 
 impl Host {
@@ -82,7 +88,42 @@ impl Host {
             args: Vec::new(),
             resources: Vec::new(),
             sink: Sink::new(),
+            streams: None,
         }
+    }
+
+    /// The same host writing its output to `out` and `err` as a run
+    /// makes it: after each host call and at the run's end. The
+    /// observation's output is then empty.
+    #[must_use]
+    pub fn streaming(
+        mut self,
+        out: impl Write + 'static,
+        err: impl Write + 'static,
+    ) -> Self {
+        self.streams = Some((Box::new(out), Box::new(err)));
+        self
+    }
+
+    /// Move the sink's output to the streams, when there are any.
+    ///
+    /// # Errors
+    /// The writers' errors.
+    pub fn flush(&mut self) -> io::Result<()> {
+        let Some((out, err)) = &mut self.streams else {
+            return Ok(());
+        };
+        if !self.sink.success.is_empty() {
+            out.write_all(&self.sink.success)?;
+            self.sink.success.clear();
+            out.flush()?;
+        }
+        if !self.sink.error.is_empty() {
+            err.write_all(&self.sink.error)?;
+            self.sink.error.clear();
+            err.flush()?;
+        }
+        Ok(())
     }
 
     /// The same host, `cli.args` answering these arguments.
@@ -106,7 +147,7 @@ impl Host {
         let program = &script.program;
         self.sink = Sink::new();
         let mut machine = Machine::new(budget);
-        let outcome = match Self::input(program, input) {
+        let outcome = match self::input(program, input) {
             Ok(None) => machine.run(program),
             Ok(Some(value)) => match machine.run_with_input(program, value) {
                 Ok(outcome) => outcome,
@@ -116,20 +157,13 @@ impl Host {
         };
         let (result, trace) = self.drive(&mut machine, program, outcome);
         let tables = program.tables.borrow();
-        let exit = match &result {
-            Err(fault) => {
-                self.sink.fault(fault, &tables, &script.sources);
-                1
-            }
-            Ok(Value::Record(record))
-                if Some(record.meaning) == Prelude::new(&tables).result
-                    && record.constructor == 1 =>
-            {
-                1
-            }
-            Ok(_) => 0,
-        };
+        if let Err(fault) = &result {
+            self.sink.fault(fault, &tables, &script.sources);
+        }
+        let exit = exit_code(&result, &tables);
         drop(tables);
+        // A closed stream leaves nothing to report to.
+        let _ = self.flush();
         let observation = Observation {
             result,
             trace,
@@ -163,53 +197,10 @@ impl Host {
                         self.answer(&request, &tables)
                     };
                     trace.push((request, reply.clone()));
+                    let _ = self.flush();
                     outcome = machine.reply(program, reply);
                 }
             }
-        }
-    }
-
-    /// The host input the program's last line takes: none when it is
-    /// not a function, the input read as text or bytes for a `String`
-    /// or `Vec<U8>` spot; any other spot is refused.
-    fn input(
-        program: &Program,
-        input: &mut dyn Read,
-    ) -> Result<Option<Value>, String> {
-        let spot = match vm::input_spot(program) {
-            Ok(spot) => spot,
-            Err(error) if error.spots == 0 => return Ok(None),
-            Err(error) => return Err(error.to_string()),
-        };
-        let tables = program.tables.borrow();
-        let text = match prelude_label(&tables, &spot) {
-            Some("String") => true,
-            // `U8` lowers to `Integer` with its limit as an entry, so a
-            // `Vec<U8>` spot is a vector of integers here.
-            Some("Vec")
-                if matches!(&spot, ir::Type::Meaning { arguments, .. }
-                    if arguments.first().and_then(|element| {
-                        prelude_label(&tables, element)
-                    }) == Some("Integer")) =>
-            {
-                false
-            }
-            _ => {
-                return Err(String::from(
-                    "host input enters only a String or Vec<U8> spot",
-                ))
-            }
-        };
-        let mut bytes = Vec::new();
-        input
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("cannot read the input: {error}"))?;
-        if text {
-            String::from_utf8(bytes)
-                .map(|text| Some(Value::text(&text)))
-                .map_err(|_| String::from("the input is not UTF-8 text"))
-        } else {
-            Ok(Some(Value::bytes(&bytes)))
         }
     }
 
@@ -217,14 +208,10 @@ impl Host {
     /// written to the error output, and exit 2.
     fn refuse(&mut self, script: &Script, reason: &str) -> (Observation, u8) {
         let program = &script.program;
-        let tables = program.tables.borrow();
-        let node = &tables.nodes[program.bodies[program.main].node];
-        let fault = Fault {
-            span: node.span,
-            namespace: node.namespace,
-            reason: Reason::Host(String::from(reason)),
-        };
-        self.sink.fault(&fault, &tables, &script.sources);
+        let fault = refusal(program, reason);
+        self.sink
+            .fault(&fault, &program.tables.borrow(), &script.sources);
+        let _ = self.flush();
         let observation = Observation {
             result: Err(fault),
             trace: Vec::new(),
@@ -232,6 +219,83 @@ impl Host {
             error: std::mem::take(&mut self.sink.error),
         };
         (observation, 2)
+    }
+}
+
+/// The host input the program's last line takes: none when it is not
+/// a function, the input read as text or bytes for a `String` or
+/// `Vec<U8>` spot.
+///
+/// # Errors
+/// The refusal's reason: any other open spot, several, input that
+/// cannot be read, or input that is not UTF-8 for a `String` spot.
+pub fn input(
+    program: &Program,
+    input: &mut dyn Read,
+) -> Result<Option<Value>, String> {
+    let spot = match vm::input_spot(program) {
+        Ok(spot) => spot,
+        Err(error) if error.spots == 0 => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let tables = program.tables.borrow();
+    let text = match prelude_label(&tables, &spot) {
+        Some("String") => true,
+        // `U8` lowers to `Integer` with its limit as an entry, so a
+        // `Vec<U8>` spot is a vector of integers here.
+        Some("Vec")
+            if matches!(&spot, ir::Type::Meaning { arguments, .. }
+                if arguments.first().and_then(|element| {
+                    prelude_label(&tables, element)
+                }) == Some("Integer")) =>
+        {
+            false
+        }
+        _ => {
+            return Err(String::from(
+                "host input enters only a String or Vec<U8> spot",
+            ))
+        }
+    };
+    let mut bytes = Vec::new();
+    input
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read the input: {error}"))?;
+    if text {
+        String::from_utf8(bytes)
+            .map(|text| Some(Value::text(&text)))
+            .map_err(|_| String::from("the input is not UTF-8 text"))
+    } else {
+        Ok(Some(Value::bytes(&bytes)))
+    }
+}
+
+/// The `Host` Fault of a run refused before any effect, at the
+/// program's last line.
+#[must_use]
+pub fn refusal(program: &Program, reason: &str) -> Fault {
+    let tables = program.tables.borrow();
+    let node = &tables.nodes[program.bodies[program.main].node];
+    Fault {
+        span: node.span,
+        namespace: node.namespace,
+        reason: Reason::Host(String::from(reason)),
+    }
+}
+
+/// The exit code of a run that ended: 0 a value, 1 an `Err` value or
+/// a Fault.
+#[must_use]
+pub fn exit_code(result: &Result<Value, Fault>, tables: &ir::Tables) -> u8 {
+    match result {
+        Err(_) => 1,
+        Ok(Value::Record(record))
+            if Some(record.meaning) == Prelude::new(tables).result
+                && record.constructor == 1 =>
+        {
+            1
+        }
+        Ok(_) => 0,
     }
 }
 

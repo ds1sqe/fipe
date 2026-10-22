@@ -52,10 +52,16 @@ recompiles them with `fipe` at startup (about 16 ms); it refuses to run
 Exit code: 0 when the run ends with a value, 1 when it Faults, 2 when
 it cannot start or its host pipe fails.
 
-Without a host (fd 3 not open) the result goes to the standard streams:
-the value as the language spells it on stdout, or the Fault as
-`fault in <namespace> at <line>:<column>: <reason>` on stderr. A host
-call then Faults with `no host is connected`.
+Without a host pipe (fd 3 not open) the std host (`fipe-host`,
+[`tools/host/README.md`](../host/README.md)) answers in the process
+under its contract: the working directory and the directories of
+`FIPE_ALLOW_WRITE` (separated by `:`) are the write roots, the
+arguments after the program's name are `cli.args`, stdin is host input
+when the last line takes it, each main line goes to stdout or stderr by
+the sink policy as the run goes, a Fault to stderr as `fault in
+<namespace> at <line>:<column>: <reason>`, and the exit code is the
+host's: 0 a value, 1 an `Err` value or a Fault, 2 a refused input. A
+declaration the std host does not know Faults the call.
 
 Stack: the program runs on a thread of its own, and native recursion
 uses that machine stack, not the budget's frames. A recursion deeper

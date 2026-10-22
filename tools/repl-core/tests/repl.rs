@@ -1857,3 +1857,67 @@ mod line_editor {
         assert_eq!(last, Some((4..8, Class::String)));
     }
 }
+
+#[test]
+fn a_hosted_session_hands_each_call_to_the_driver_and_goes_on() {
+    use fipe::{
+        embed::{Reply, Request},
+        value::Value,
+    };
+    let mut repl = Repl::new();
+    repl.hosted(true);
+    let outs = repl.feed(b":host\n");
+    host(&mut repl, outs);
+    assert_eq!(written(repl.feed(b"use text\n\n")), "fipe> ");
+    let outs = repl.feed(b"x = text.trim \"  a  \"\n\n");
+    assert_eq!(outs, [Out::Call]);
+    let outs = repl.answer(|request, tables| {
+        let Request::Call {
+            declaration,
+            arguments,
+            ..
+        } = request
+        else {
+            panic!("a run asks only for host calls")
+        };
+        assert_eq!(tables.declarations[*declaration].label, "trim");
+        assert_eq!(arguments, &[Value::text("  a  ")]);
+        Reply::Value(Ok(Value::text("a")))
+    });
+    assert_eq!(written(outs), "fipe> ");
+    assert_eq!(written(repl.feed(b"x\n\n")), "\"a\"\nfipe> ");
+    // A failed answer Faults the line, which is withdrawn.
+    let outs = repl.feed(b"y = text.trim \"b\"\n\n");
+    assert_eq!(outs, [Out::Call]);
+    let text =
+        written(repl.answer(|_, _| Reply::Value(Err(String::from("refused")))));
+    assert!(text.contains("host: refused"), "{text}");
+    assert!(written(repl.feed(b"y\n\n")).contains("unknown name"));
+    // Nothing waits otherwise, and a file answer is not a call's.
+    let text = written(repl.answer(|_, _| Reply::File(None)));
+    assert_eq!(text, "no host call is waiting\nfipe> ");
+    let outs = repl.feed(b"text.trim \"c\"\n\n");
+    assert_eq!(outs, [Out::Call]);
+    let text = written(repl.file("x.fipe", None));
+    assert_eq!(text, "x.fipe: not requested\n");
+    let outs = repl.answer(|_, _| Reply::Value(Ok(Value::text("c"))));
+    assert_eq!(written(outs), "\"c\"\nfipe> ");
+}
+
+#[test]
+fn host_sources_load_declarations_without_file_requests() {
+    let mut repl = Repl::new();
+    let sources: Vec<(&str, &str)> = HOST
+        .iter()
+        .map(|(path, text)| {
+            (
+                path.rsplit('/').next().unwrap().trim_end_matches(".fipe"),
+                *text,
+            )
+        })
+        .collect();
+    let text = written(repl.host_sources("tests/fixtures/host", &sources));
+    assert_eq!(text, "host: tests/fixtures/host\nfipe> ");
+    let text = written(repl.feed(b":r ls\n"));
+    assert!(text.contains("ls: value commands.ls"), "{text}");
+}

@@ -50,6 +50,16 @@ result cannot carry, such as an unreadable directory, Faults `Host` at
 the call with its reason. Nothing else is declared until a script needs
 it.
 
+## Runners
+
+`fipe run`, `fipe repl` and `fipe build` ([`tools/fipe`](../fipe/README.md))
+run through `Host::run`, `Host::answer` and a built executable's
+in-process host ([`tools/native`](../native/README.md) §Running); a
+runner streams the output as the run makes it (`Host::streaming`),
+after each host call and at the end. `fipe repl` shows each line's value
+as the REPL does and performs its calls here; the sink policy below is
+`run`'s and an executable's.
+
 ## Write roots
 
 Reads go anywhere the process may read. Writes, appends and removals

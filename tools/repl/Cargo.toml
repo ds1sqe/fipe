@@ -6,10 +6,17 @@ description = "The Fipe REPL program"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lib]
+name = "fipe_repl"
+path = "src/lib.rs"
+# A test harness links std, which the `linux` platform must not.
+test = false
+doctest = false
+bench = false
+
 [[bin]]
 name = "fipe-repl"
 path = "src/main.rs"
-# A test harness links std, which the `linux` platform must not.
 test = false
 bench = false
 
@@ -19,6 +26,7 @@ std = []
 linux = []
 
 [dependencies]
+fipe = { path = "../.." }
 fipe-repl-core = { path = "../repl-core" }
 
 [profile.dev]

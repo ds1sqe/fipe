@@ -353,7 +353,9 @@ fn host(
             arguments,
             environment: state.environment.clone(),
         };
-        state.host.call(&request, &state.lines)
+        let program = Rc::clone(&state.program);
+        let tables = program.tables.borrow();
+        state.host.call(&request, &state.lines, &tables)
     });
     match reply {
         Ok(Ok(value)) => {

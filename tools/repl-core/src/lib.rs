@@ -2,7 +2,9 @@
 //!
 //! A driver passes input to [`Repl::feed`] and acts on each [`Out`] in
 //! order: it writes [`Out::Write`], answers [`Out::File`] with
-//! [`Repl::file`] and stops at [`Out::Exit`]. Lines end at LF; at end of
+//! [`Repl::file`], a host call ([`Out::Call`], when it hosts the
+//! session) with [`Repl::answer`], and stops at [`Out::Exit`]. Lines
+//! end at LF; at end of
 //! input the driver calls [`Repl::flush`] so a last line without LF runs.
 //! The prompt comes out whenever the input holds no partial line and
 //! nothing is awaited, so `feed(&[])` yields the first one; none comes
@@ -40,6 +42,7 @@ mod render;
 mod tree;
 
 use alloc::{
+    boxed::Box,
     format,
     string::{String, ToString},
     vec::Vec,
@@ -50,7 +53,9 @@ use fipe::{
     ast::{Entry, ExprKind},
     decl::{self, Declarations},
     embed::{Outcome, Reply, Request},
+    ir::Tables,
     lex::{lex, Lexed},
+    mir::Program,
     session::{Diagnostic, Report, Session},
     token::{Kind, Source, Span, Symbol, Token},
     value::Value,
@@ -103,6 +108,10 @@ pub enum Out {
     Write(Vec<u8>),
     /// The driver reads this path and answers with [`Repl::file`].
     File(String),
+    /// A host call of the line's run, which the driver answers with
+    /// [`Repl::answer`]; only when it hosts the session
+    /// ([`Repl::hosted`]).
+    Call,
     Exit,
 }
 
@@ -120,6 +129,8 @@ pub struct Repl {
     entry: String,
     continuation: Continuation,
     wait: Option<Wait>,
+    /// Whether the driver answers host calls; otherwise each Faults.
+    hosted: bool,
     /// Replied file texts by stem, for replays and file diagnostics.
     files: Vec<(String, String)>,
     /// Declaration sources in HOST order, for written-test descriptions.
@@ -159,6 +170,16 @@ enum Wait {
         dir: String,
         texts: Vec<String>,
     },
+    /// A line's run waiting on the driver's answer to a host call.
+    Call(Box<Pending>),
+}
+
+/// A line's run stopped at a host call.
+struct Pending {
+    program: Program,
+    request: Request,
+    report: Report,
+    text: String,
 }
 
 #[derive(Clone, Copy)]
@@ -207,6 +228,7 @@ impl Repl {
             entry: String::new(),
             continuation: Continuation::default(),
             wait: None,
+            hosted: false,
             files: Vec::new(),
             host_texts: Vec::new(),
             host_dir: String::new(),
@@ -226,6 +248,14 @@ impl Repl {
     /// The charge budget each accepted line runs under.
     pub const fn budget(&mut self, budget: u64) {
         self.machine.set_budget(Some(budget));
+    }
+
+    /// Whether the driver answers host calls: each comes out as
+    /// [`Out::Call`] and waits for [`Repl::answer`]. Otherwise, and
+    /// while accepted lines replay after a host reload, a call Faults
+    /// `no host for <namespace>.<name>`.
+    pub const fn hosted(&mut self, hosted: bool) {
+        self.hosted = hosted;
     }
 
     /// Reject open implicit checks, including after a host reload.
@@ -331,7 +361,39 @@ impl Repl {
                     }
                 }
             },
-            None => out.write(format!("{path}: not requested\n").as_bytes()),
+            waiting => {
+                self.wait = waiting;
+                out.write(format!("{path}: not requested\n").as_bytes());
+            }
+        }
+        self.run(&mut out);
+        self.finish(out)
+    }
+
+    /// The answer to the last [`Out::Call`]: `answer` gets the request
+    /// and the run's tables and gives the reply, after which the run
+    /// goes on.
+    pub fn answer(
+        &mut self,
+        answer: impl FnOnce(&Request, &Tables) -> Reply,
+    ) -> Vec<Out> {
+        let mut out = Outs::default();
+        match self.wait.take() {
+            Some(Wait::Call(pending)) => {
+                let Pending {
+                    program,
+                    request,
+                    report,
+                    text,
+                } = *pending;
+                let reply = answer(&request, &program.tables.borrow());
+                let outcome = self.machine.reply(&program, reply);
+                self.settle(program, report, text, outcome, &mut out);
+            }
+            waiting => {
+                self.wait = waiting;
+                out.write(b"no host call is waiting\n");
+            }
         }
         self.run(&mut out);
         self.finish(out)
@@ -490,6 +552,27 @@ impl Repl {
         } else {
             out.write(b"usage: :help [name or :command]\n");
         }
+    }
+
+    /// Load host declarations given as texts by namespace, in the order
+    /// `:host` reads them from a directory (`commands` first); `dir`
+    /// names where they come from, as a Fault in one is located.
+    pub fn host_sources(
+        &mut self,
+        dir: &str,
+        sources: &[(&str, &str)],
+    ) -> Vec<Out> {
+        let texts: Vec<String> = HOST
+            .iter()
+            .map_while(|name| {
+                let (_, text) = sources.iter().find(|(n, _)| n == name)?;
+                Some(String::from(*text))
+            })
+            .collect();
+        let mut out = Outs::default();
+        self.host(dir, &texts, &mut out);
+        self.run(&mut out);
+        self.finish(out)
     }
 
     /// Load host declarations from a directory without interpreting it as input.
@@ -692,10 +775,8 @@ impl Repl {
         }
         match mode {
             Mode::Accept | Mode::Load => {
-                if report.diagnostics.iter().all(from_file)
-                    && self.execute(&report, &text, out)
-                {
-                    self.last = Some((report, text));
+                if report.diagnostics.iter().all(from_file) {
+                    self.execute(report, text, out);
                 }
             }
             Mode::Resolve => names(&self.session, &report, &text, out),
@@ -709,22 +790,55 @@ impl Repl {
 
     /// Run an accepted line on the machine: its value in the language's
     /// spelling, nothing for `()`, or the Fault where it happened, after
-    /// which the line is withdrawn. Whether the line stands.
-    fn execute(&mut self, report: &Report, text: &str, out: &mut Outs) -> bool {
+    /// which the line is withdrawn. A line that stands is the last.
+    fn execute(&mut self, report: Report, text: String, out: &mut Outs) {
         let Some(unit) = &report.unit else {
-            return true;
+            self.last = Some((report, text));
+            return;
         };
         let program = fipe::compile::compile(unit);
-        let mut outcome = self.machine.run(&program);
-        // No host is wired yet: each host call fails, naming its
-        // declaration, and the run Faults there.
-        while let Outcome::Request(request) = outcome {
-            let Request::Call { declaration, .. } = request else {
+        let outcome = self.machine.run(&program);
+        self.settle(program, report, text, outcome, out);
+    }
+
+    /// Carry a line's run to its end: each host call goes to the driver
+    /// when it hosts the session, the run then waiting on its answer;
+    /// otherwise the call fails, naming its declaration, and the run
+    /// Faults there.
+    fn settle(
+        &mut self,
+        program: Program,
+        report: Report,
+        text: String,
+        mut outcome: Outcome<Result<Value, Fault>>,
+        out: &mut Outs,
+    ) {
+        loop {
+            let request = match outcome {
+                Outcome::Request(request) => request,
+                Outcome::Done(result) => {
+                    if self.ended(&program, &report, &text, result, out) {
+                        self.last = Some((report, text));
+                    }
+                    return;
+                }
+            };
+            let Request::Call { declaration, .. } = &request else {
                 unreachable!("a run asks only for host calls")
             };
+            if self.hosted && !self.replaying {
+                out.0.push(Out::Call);
+                self.wait = Some(Wait::Call(Box::new(Pending {
+                    program,
+                    request,
+                    report,
+                    text,
+                })));
+                return;
+            }
             let message = {
                 let tables = program.tables.borrow();
-                let declaration = &tables.declarations[declaration];
+                let declaration = &tables.declarations[*declaration];
                 format!(
                     "no host for {}.{}",
                     tables.namespaces[declaration.namespace], declaration.label
@@ -732,15 +846,27 @@ impl Repl {
             };
             outcome = self.machine.reply(&program, Reply::Value(Err(message)));
         }
-        match outcome {
-            Outcome::Done(Ok(value)) => {
+    }
+
+    /// A run's end: the value written, or the Fault and the line
+    /// withdrawn. Whether the line stands.
+    fn ended(
+        &mut self,
+        program: &Program,
+        report: &Report,
+        text: &str,
+        result: Result<Value, Fault>,
+        out: &mut Outs,
+    ) -> bool {
+        match result {
+            Ok(value) => {
                 if !self.replaying && !matches!(value, Value::Unit) {
                     let shown = render::value(&value, &program.tables.borrow());
                     out.write(format!("{}\n", visible(&shown)).as_bytes());
                 }
                 true
             }
-            Outcome::Done(Err(fault)) => {
+            Err(fault) => {
                 if !self.replaying {
                     let tables = program.tables.borrow();
                     let reason = render::fault(&fault.reason, &tables);
@@ -769,7 +895,6 @@ impl Repl {
                 }
                 false
             }
-            Outcome::Request(_) => unreachable!("every request was answered"),
         }
     }
 
