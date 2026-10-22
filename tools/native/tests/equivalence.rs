@@ -34,6 +34,24 @@ mod examples {
 }
 
 const FIRST: &str = include_str!("fixtures/first.fipe");
+const FILES: &str =
+    include_str!("../../../Documentation/examples/01-files.fipe");
+
+/// One program per copied family, each run on the VM and natively.
+const DRIFT: &[(&str, &str)] = &[
+    ("closures", include_str!("fixtures/drift/closures.fipe")),
+    ("guards", include_str!("fixtures/drift/guards.fipe")),
+    (
+        "returned-guards",
+        include_str!("fixtures/drift/returned-guards.fipe"),
+    ),
+    (
+        "higher-order",
+        include_str!("fixtures/drift/higher-order.fipe"),
+    ),
+    ("dispatch", include_str!("fixtures/drift/dispatch.fipe")),
+    ("witnesses", include_str!("fixtures/drift/witnesses.fipe")),
+];
 
 /// A fixture's unit under the conformance host, and its program.
 fn unit(source: &str) -> (Unit, Program) {
@@ -217,6 +235,61 @@ fn under_a_budget_both_fault_at_one_span_with_equal_units() {
     }
 }
 
+/// A program run on the VM and natively, unbounded and under budgets
+/// that stop it partway: equal observations (their traces too) and
+/// units each time. The native observation of the unbounded run, its
+/// units and its exit code.
+fn equal(name: &str, source: &str) -> (Observation, u64, i32) {
+    let (unit, program) = unit(source);
+    let executable = executable(name, &unit, &program);
+    let (vm, whole) = on_vm(&program, None, source);
+    let (observed, units, code) = native(&executable, &program, None, source);
+    assert_eq!(
+        traced(&program, &observed, source),
+        traced(&program, &vm, source),
+        "{name}"
+    );
+    assert_eq!(observed, vm, "{name}");
+    assert_eq!(units, whole, "{name}");
+    for budget in [whole / 3, whole / 2, whole - 1] {
+        let (vm, vm_units) = on_vm(&program, Some(budget), source);
+        let (cut, units, _) =
+            native(&executable, &program, Some(budget), source);
+        assert_eq!(cut, vm, "{name} under budget {budget}");
+        assert_eq!(units, vm_units, "{name} under budget {budget}");
+    }
+    (observed, units, code)
+}
+
+#[test]
+fn files_observes_as_on_the_vm_and_replays_its_trace() {
+    let (observed, units, code) = equal("files", FILES);
+    let (_, program) = unit(FILES);
+    let fixture = include_str!("../../../tests/fixtures/traces/01-files.txt");
+    assert_eq!(traced(&program, &observed, FILES), fixture);
+    assert!(units > 0);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn each_drift_fixture_observes_as_on_the_vm() {
+    for (name, source) in DRIFT {
+        let (observed, _, code) = equal(name, source);
+        // The guards' fixtures end on the argument a guard refutes.
+        let refuted = name.ends_with("guards");
+        assert_eq!(observed.result.is_err(), refuted, "{name}");
+        assert_eq!(code, i32::from(refuted), "{name}");
+        if refuted {
+            let fault = observed.result.unwrap_err();
+            assert!(
+                matches!(&fault.reason, Reason::Failed { value, .. }
+                    if value == "300"),
+                "{name}: {fault:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_listing_of_first_is_stable() {
     let (_, program) = unit(FIRST);
@@ -226,17 +299,21 @@ fn the_listing_of_first_is_stable() {
 #[test]
 fn the_lowering_names_a_form_it_does_not_lower_yet() {
     let (_, program) = unit("[1, 2, 3] | map (n => n + 1)");
+    assert!(lower::lower(&program).is_ok());
+    let gate = "type Even: Integer where self % 2 == 0\n\
+                m: Integer -> Integer = { Even n => n, _ => 0 }\nm 4";
+    let (_, program) = unit(gate);
     let error = lower::lower(&program).unwrap_err();
     assert_eq!(
         error,
         lower::Error::Unsupported {
-            body: 1,
-            form: "an Array"
+            body: 0,
+            form: "a Test"
         }
     );
     assert_eq!(
         error.to_string(),
-        "body 1: the native backend cannot lower an Array yet"
+        "body 0: the native backend cannot lower a Test yet"
     );
 }
 

@@ -16,6 +16,10 @@ fn fnv(bytes: &[u8]) -> u64 {
 const SOURCES: &[(&str, &str)] = &[
     ("src/vm.rs", include_str!("../../../../src/vm.rs")),
     (
+        "src/compile/dispatch.rs",
+        include_str!("../../../../src/compile/dispatch.rs"),
+    ),
+    (
         "src/vm/assign.rs",
         include_str!("../../../../src/vm/assign.rs"),
     ),
@@ -27,10 +31,34 @@ const SOURCES: &[(&str, &str)] = &[
         "src/vm/calls.rs",
         include_str!("../../../../src/vm/calls.rs"),
     ),
+    (
+        "src/vm/casts.rs",
+        include_str!("../../../../src/vm/casts.rs"),
+    ),
+    (
+        "src/vm/defaults.rs",
+        include_str!("../../../../src/vm/defaults.rs"),
+    ),
+    (
+        "src/vm/dispatch.rs",
+        include_str!("../../../../src/vm/dispatch.rs"),
+    ),
+    (
+        "src/vm/drive.rs",
+        include_str!("../../../../src/vm/drive.rs"),
+    ),
+    (
+        "src/vm/entries.rs",
+        include_str!("../../../../src/vm/entries.rs"),
+    ),
     ("src/vm/fits.rs", include_str!("../../../../src/vm/fits.rs")),
     (
         "src/vm/frames.rs",
         include_str!("../../../../src/vm/frames.rs"),
+    ),
+    (
+        "src/vm/globals.rs",
+        include_str!("../../../../src/vm/globals.rs"),
     ),
     (
         "src/vm/immediate.rs",
@@ -40,7 +68,20 @@ const SOURCES: &[(&str, &str)] = &[
         "src/vm/natives.rs",
         include_str!("../../../../src/vm/natives.rs"),
     ),
+    (
+        "src/vm/order.rs",
+        include_str!("../../../../src/vm/order.rs"),
+    ),
+    (
+        "src/vm/pending.rs",
+        include_str!("../../../../src/vm/pending.rs"),
+    ),
+    (
+        "src/vm/predicates.rs",
+        include_str!("../../../../src/vm/predicates.rs"),
+    ),
     ("src/vm/step.rs", include_str!("../../../../src/vm/step.rs")),
+    ("src/vm/walk.rs", include_str!("../../../../src/vm/walk.rs")),
 ];
 
 /// The ledger's rows: copy, source and recorded hash.

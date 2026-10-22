@@ -1,0 +1,15 @@
+# Dispatch by a value's tag, written members, derived ones.
+type Mask: Eq { bits: Integer }
+impl Mask: Eq { eq = self other => (other.bits % 10) == (self.bits % 10) }
+((Mask 1) == (Mask 11), (Mask 1) == (Mask 2))
+type Point: Show { x: Integer, y: Integer }
+impl Point: Show { show = self => show (self.x * 10) }
+p = Point 1 2
+(p.show, show p, show [p, p])
+(Just 1) < (Just 2)
+(1, "b") < (1, "a")
+type L: Len { n: I64 }
+impl L: Len { len = self => 99 }
+size = x => len x
+size (L 1)
+[Point 3 4, Point 1 2] | sort -by (q => q.x)

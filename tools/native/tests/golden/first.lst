@@ -72,8 +72,9 @@ body_0:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-256]
     lea rsi, [rbp-64]
-    mov rdx, 0
-    mov rcx, 3
+    mov rdx, [rbp-24]
+    mov rcx, 0
+    mov r8, 3
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L8
@@ -101,8 +102,9 @@ body_0:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-256]
     lea rsi, [rbp-64]
-    mov rdx, 0
-    mov rcx, 5
+    mov rdx, [rbp-24]
+    mov rcx, 0
+    mov r8, 5
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L8
@@ -163,8 +165,9 @@ body_1:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-160]
     lea rsi, [rbp-64]
-    mov rdx, 1
-    mov rcx, 0
+    mov rdx, [rbp-24]
+    mov rcx, 1
+    mov r8, 0
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L9
@@ -223,8 +226,9 @@ body_1:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-112]
     lea rsi, [rbp-64]
-    mov rdx, 1
-    mov rcx, 3
+    mov rdx, [rbp-24]
+    mov rcx, 1
+    mov r8, 3
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L9
@@ -264,8 +268,9 @@ body_1:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-224]
     lea rsi, [rbp-64]
-    mov rdx, 1
-    mov rcx, 6
+    mov rdx, [rbp-24]
+    mov rcx, 1
+    mov r8, 6
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L9
@@ -347,8 +352,9 @@ body_2:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-144]
     lea rsi, [rbp-64]
-    mov rdx, 2
-    mov rcx, 1
+    mov rdx, [rbp-24]
+    mov rcx, 2
+    mov r8, 1
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L5
@@ -368,8 +374,9 @@ body_2:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-176]
     lea rsi, [rbp-64]
-    mov rdx, 2
+    mov rdx, [rbp-24]
     mov rcx, 2
+    mov r8, 2
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L5
@@ -452,9 +459,10 @@ body_3:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-176]
     lea rsi, [rbp-64]
-    mov rdx, 3
-    mov rcx, 1
-    mov r8, 4
+    mov rdx, [rbp-24]
+    mov rcx, 3
+    mov r8, 1
+    mov r9, 4
     call rt_assign  ; R_X86_64_PLT32 rt_assign-4
     test eax, eax
     jne .L8
@@ -484,9 +492,10 @@ body_3:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-128]
     lea rsi, [rbp-64]
-    mov rdx, 3
-    mov rcx, 2
+    mov rdx, [rbp-24]
+    mov rcx, 3
     mov r8, 2
+    mov r9, 2
     call rt_assign  ; R_X86_64_PLT32 rt_assign-4
     test eax, eax
     jne .L8
@@ -516,8 +525,9 @@ body_3:  ; local
     call rt_copy  ; R_X86_64_PLT32 rt_copy-4
     lea rdi, [rbp-96]
     lea rsi, [rbp-64]
-    mov rdx, 3
+    mov rdx, [rbp-24]
     mov rcx, 3
+    mov r8, 3
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L8
@@ -536,8 +546,9 @@ body_3:  ; local
     call rt_line  ; R_X86_64_PLT32 rt_line-4
     lea rdi, [rbp-80]
     lea rsi, [rbp-64]
-    mov rdx, 3
-    mov rcx, 4
+    mov rdx, [rbp-24]
+    mov rcx, 3
+    mov r8, 4
     call rt_call  ; R_X86_64_PLT32 rt_call-4
     test eax, eax
     jne .L8

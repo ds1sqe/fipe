@@ -1,0 +1,8 @@
+# Witnesses: a generic body dispatches through the meaning it is given.
+g = xs => xs | map (n => n + 1)
+(g [1, 2], g [1.5])
+same = a b => a == b
+(same 1 1, same "a" "b")
+inc = x => x + 1
+h = inc
+(h 1, h 1.5, [1] | map h)

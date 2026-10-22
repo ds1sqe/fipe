@@ -13,11 +13,13 @@ mod common;
 fn an_object_holding_only_fipe_main_and_an_empty_unit_links_and_exits_zero() {
     let dir = common::scratch("only_main");
     let source = dir.join("main.s");
+    // The runtime names `fipe_bodies`, which an empty unit leaves empty.
     std::fs::write(
         &source,
         ".intel_syntax noprefix\n.globl fipe_main\nfipe_main:\n\
          xor eax, eax\nret\n.section .rodata\n.globl fipe_unit\n\
-         fipe_unit: .quad 0\n.section .note.GNU-stack,\"\",@progbits\n",
+         fipe_unit: .quad 0\n.globl fipe_bodies\nfipe_bodies:\n\
+         .section .note.GNU-stack,\"\",@progbits\n",
     )
     .unwrap();
     let object = dir.join("main.o");

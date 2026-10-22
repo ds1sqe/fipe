@@ -1,0 +1,32 @@
+# The higher-order natives, each calling back into the program.
+xs = [5, 3, 8, 1, 9, 2]
+xs | map (n => n * 2)
+xs | filter (n => n > 2)
+xs | fold 0 (acc n => acc + n)
+xs | sort
+xs | sort --desc
+["bb", "a", "ccc"] | sort --by (s => len s)
+[(2, "x"), (1, "y"), (2, "a")] | sort --by { (k, _) => k }
+xs | sum
+[1.5, 2.5] | sum
+x: Vec<Vec<Integer>> = [[1, 2], [], [3]]
+x | flatten
+xs | take 2
+xs | first
+xs | head
+[1, 2, 1, 3, 1] | count
+[Ok 1, Err "no", Err "late"] | collect
+(Just 2) | map (n => n + 1)
+(Just 2).then (n => Just (n * 10))
+"a b\nc" | lines
+type Rank: Eq & Ord { n: Integer }
+impl Rank: Eq { eq = other self => self.n % 10 == other.n % 10 }
+impl Rank: Ord { cmp = other self => (self.n % 10).cmp (other.n % 10) }
+[Rank 13, Rank 21, Rank 32] | sort
+[Rank 1, Rank 11, Rank 2] | count | len
+type Vec2: Add & Zero { x: F64, y: F64 }
+impl Vec2: Add { add = o self => Self (o.x + self.x) (o.y + self.y) }
+impl Vec2: Zero { zero = Self 0.0 0.0 }
+[Vec2 1.0 2.0, Vec2 3.0 4.0] | sum
+e: Vec<Vec2> = []
+e | sum

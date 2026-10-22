@@ -1,0 +1,6 @@
+# Guards: a limited function's parameters, tested on each full call of
+# the value, here each call `map` makes.
+f: U8 -> U8 = n => n
+g = n => map f [n]
+g 3
+g 300

@@ -13,7 +13,7 @@ use crate::{
     start,
 };
 use fipe::value::Value;
-use std::{mem, process};
+use std::{ffi::c_void, mem, process};
 
 /// The status of an export that succeeded.
 const OK: u32 = 0;
@@ -32,6 +32,8 @@ extern "C" {
     /// The unit the object carries: its length in eight bytes
     /// little-endian, then the bytes `codec::Unit` encodes.
     static fipe_unit: [u8; 8];
+    /// The address of each body of the object, by index.
+    static fipe_bodies: [Body; 0];
 }
 
 /// The process entry: runs the program; the exit code `start::main`
@@ -270,26 +272,26 @@ unsafe extern "C" fn rt_line(
     start::with(|state| state.line(site(body, block, index), value));
 }
 
-/// The site's `Assign` of a `Construct` or a `Native` into `out`, its
-/// operands in the consecutive slots from `args`.
+/// The witnesses of a frame of `body`, from its `hidden` slots.
 ///
 /// # Safety
 ///
-/// `out` points to a slot holding a value; `args` to as many slots
-/// holding values as the rvalue has operands.
-#[no_mangle]
-unsafe extern "C" fn rt_assign(
-    out: *mut Value,
-    args: *const Value,
-    body: u64,
-    block: u64,
-    index: u64,
-) -> u32 {
-    let site = site(body, block, index);
-    let count = start::with(|state| state.operands(site));
+/// `hidden` points to as many slots holding values as the body has
+/// witnesses, or the body has none.
+unsafe fn witnesses(hidden: *const Value, body: u64) -> Vec<Value> {
+    let count = start::with(|state| state.hidden(size(body)));
     // SAFETY: as the caller promises.
-    let args = unsafe { read(args, count) };
-    match start::with(|state| ops::assign(state, site, args)) {
+    unsafe { read(hidden, count) }
+}
+
+/// Write an operation's value into `out`, or return the status of its
+/// Fault.
+///
+/// # Safety
+///
+/// `out` points to a slot holding a value.
+unsafe fn land(out: *mut Value, value: Result<Value, Faulted>) -> u32 {
+    match value {
         Ok(value) => {
             // SAFETY: `out` holds a value.
             unsafe { put(out, value) };
@@ -299,32 +301,195 @@ unsafe extern "C" fn rt_assign(
     }
 }
 
-/// The `Call` terminating the block, of a `Native` or `Host` callee,
-/// into `out`, its arguments in the consecutive slots from `args`.
+/// The site's `Assign` of an rvalue the runtime computes into `out`,
+/// its operands in the consecutive slots from `args`, `hidden` the
+/// frame's witnesses.
 ///
 /// # Safety
 ///
 /// `out` points to a slot holding a value; `args` to as many slots
-/// holding values as the call has arguments.
+/// holding values as the rvalue has operands; `hidden` as
+/// [`witnesses`].
+#[no_mangle]
+unsafe extern "C" fn rt_assign(
+    out: *mut Value,
+    args: *const Value,
+    hidden: *const Value,
+    body: u64,
+    block: u64,
+    index: u64,
+) -> u32 {
+    let site = site(body, block, index);
+    let count = start::with(|state| state.operands(site));
+    // SAFETY: as the caller promises.
+    let (args, hidden) =
+        unsafe { (read(args, count), witnesses(hidden, body)) };
+    let value = ops::assign(site, args, &hidden);
+    // SAFETY: `out` holds a value.
+    unsafe { land(out, value) }
+}
+
+/// The `Call` terminating the block, performed by the runtime, into
+/// `out`: its arguments, then its callee's operand, in the consecutive
+/// slots from `args`; `hidden` the frame's witnesses.
+///
+/// # Safety
+///
+/// `out` points to a slot holding a value; `args` to as many slots
+/// holding values as the call reads; `hidden` as [`witnesses`].
 #[no_mangle]
 unsafe extern "C" fn rt_call(
     out: *mut Value,
     args: *const Value,
+    hidden: *const Value,
     body: u64,
     block: u64,
 ) -> u32 {
     let site = start::with(|state| state.terminator(site(body, block, 0)));
     let count = start::with(|state| state.operands(site));
     // SAFETY: as the caller promises.
-    let args = unsafe { read(args, count) };
-    match start::with(|state| ops::call(state, site, args)) {
-        Ok(value) => {
-            // SAFETY: `out` holds a value.
-            unsafe { put(out, value) };
+    let (args, hidden) =
+        unsafe { (read(args, count), witnesses(hidden, body)) };
+    let value = ops::call(site, args, &hidden);
+    // SAFETY: `out` holds a value.
+    unsafe { land(out, value) }
+}
+
+/// `out` = a clone of slot `index` from `base`: a captured value or a
+/// witness of the frame.
+///
+/// # Safety
+///
+/// `base` points to more than `index` consecutive slots holding values;
+/// `out` to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_index(out: *mut Value, base: *const Value, index: u64) {
+    let base = checked_const(base);
+    // SAFETY: slot `index` of `base` holds a value.
+    let value = unsafe { (*base.add(size(index))).clone() };
+    // SAFETY: `out` holds a value.
+    unsafe { put(out, value) };
+}
+
+/// `out` = a value definition's global, computed by its body first when
+/// unset.
+///
+/// # Safety
+///
+/// `out` points to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_global(out: *mut Value, definition: u64) -> u32 {
+    let value = ops::global(size(definition));
+    // SAFETY: `out` holds a value.
+    unsafe { land(out, value) }
+}
+
+/// The site's `Store` of the value of `from`.
+///
+/// # Safety
+///
+/// `from` points to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_store(
+    from: *const Value,
+    body: u64,
+    block: u64,
+    index: u64,
+) {
+    // SAFETY: `from` holds a value.
+    let value = unsafe { (*checked_const(from)).clone() };
+    start::with(|state| state.store(site(body, block, index), value));
+}
+
+/// The site's `Enter` of the value of `slot`, which takes the guarded
+/// function when the entry rebuilds it.
+///
+/// # Safety
+///
+/// `slot` points to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_enter(
+    slot: *mut Value,
+    body: u64,
+    block: u64,
+    index: u64,
+) -> u32 {
+    // SAFETY: `slot` holds a value.
+    let value = unsafe { (*checked(slot)).clone() };
+    match ops::enter(site(body, block, index), value) {
+        Ok(Some(guarded)) => {
+            // SAFETY: `slot` holds a value.
+            unsafe { put(slot, guarded) };
             OK
         }
+        Ok(None) => OK,
         Err(Faulted) => FAULT,
     }
+}
+
+/// A body of the object, as `fipe_bodies` holds it.
+type Body = unsafe extern "C" fn(
+    *const c_void,
+    *const c_void,
+    *const c_void,
+    *mut c_void,
+) -> u32;
+
+/// Enter body `body` of the object through `fipe_bodies`: its result,
+/// or the Fault it kept.
+///
+/// # Errors
+///
+/// When the body Faults.
+pub fn invoke(
+    body: usize,
+    args: &[Value],
+    captures: &[Value],
+    hidden: &[Value],
+) -> Result<Value, Faulted> {
+    // Slots the body reads past these would be a defect of the code
+    // generator, not a Fault of the program.
+    let fits = start::with(|state| {
+        state.program.bodies.get(body).is_some_and(|shape| {
+            shape.arity == args.len()
+                && shape.captures == captures.len()
+                && shape.hidden.len() == hidden.len()
+        })
+    });
+    if !fits {
+        abort();
+    }
+    let mut out = Value::Unit;
+    // SAFETY: the object's `fipe_bodies` holds one body per index of the
+    // program it was built from, which startup checked; each takes its
+    // spots, captures and witnesses as slots, which these slices hold
+    // and outlive the call, and its result slot, which holds a value.
+    let status = unsafe {
+        let entry = bodies_table().add(body).read();
+        entry(
+            args.as_ptr().cast(),
+            captures.as_ptr().cast(),
+            hidden.as_ptr().cast(),
+            std::ptr::from_mut(&mut out).cast(),
+        )
+    };
+    if status == OK {
+        Ok(out)
+    } else {
+        Err(Faulted)
+    }
+}
+
+/// The object's table of bodies.
+#[cfg(not(test))]
+fn bodies_table() -> *const Body {
+    std::ptr::addr_of!(fipe_bodies).cast()
+}
+
+/// The test harness links no object: no body is entered.
+#[cfg(test)]
+fn bodies_table() -> *const Body {
+    abort()
 }
 
 /// The block's switch had no case for its value: Faults `Unreachable`.

@@ -1,53 +1,102 @@
 //! What the generated code does with locals beyond copying them, copied
 //! from `src/vm/assign.rs` (an rvalue into a local) and `src/vm/step.rs`
-//! (a field read and a switch's key).
-use super::{budget, natives::Kind, Faulted, Site, State};
+//! (a field read, a switch's key, a global read before the step that
+//! reads it).
+use super::{calls, casts, fail, Ctx, Faulted, Frame, Site};
+use crate::start;
 use fipe::{
     mir::{Rvalue, Statement},
-    value::{Record, Value},
+    value::{Closure, Record, Value},
 };
 use std::rc::Rc;
 
-/// The value of the site's `Assign` of a `Construct` or a `Native`,
-/// its operands read into `args` by the generated code.
+/// The value of the site's `Assign` of an rvalue the runtime computes,
+/// its operands read into `args` by the generated code; `hidden` the
+/// frame's witnesses.
 ///
 /// # Errors
 ///
-/// When the native Faults; the Fault is kept.
+/// When a native or a cast Faults; the Fault is kept.
 ///
 /// # Panics
 ///
 /// At another statement, a defect of the lowering.
 pub fn assign(
-    state: &mut State,
     site: Site,
-    args: Vec<Value>,
+    mut args: Vec<Value>,
+    hidden: &[Value],
 ) -> Result<Value, Faulted> {
-    let op = match state.statement(site) {
-        Statement::Assign(
-            _,
-            Rvalue::Construct {
-                meaning,
-                constructor,
-                ..
-            },
-        ) => {
-            return Ok(Value::Record(Rc::new(Record {
-                meaning: *meaning,
-                constructor: *constructor,
-                fields: args,
-            })));
+    let ctx = Ctx::get();
+    let frame = Frame::new(site.body, hidden);
+    let node = ctx.node(site);
+    let block = &ctx.program.bodies[site.body].blocks[site.block];
+    let Statement::Assign(dest, rvalue) = &block.statements[site.index] else {
+        unreachable!("an assign site")
+    };
+    Ok(match rvalue {
+        Rvalue::Construct {
+            meaning,
+            constructor,
+            ..
+        } => Value::Record(Rc::new(Record {
+            meaning: *meaning,
+            constructor: *constructor,
+            fields: args,
+        })),
+        Rvalue::Tuple(_) => Value::Tuple(Rc::new(args)),
+        Rvalue::Array(_) => Value::seq(args),
+        // Captures are copied now, meanings substituted by this frame.
+        Rvalue::Closure { body, meanings, .. } => {
+            Value::Function(Rc::new(Closure {
+                body: *body,
+                captures: args,
+                meanings: meanings
+                    .iter()
+                    .map(|ty| frame.substitute(&ctx, ty))
+                    .collect(),
+                filled: Vec::new(),
+                guards: Vec::new(),
+            }))
         }
-        Statement::Assign(_, Rvalue::Native { op, .. }) => *op,
+        Rvalue::Cast { row, .. } => {
+            // The target is the local's type, witnesses in place.
+            let target = frame.local_type(&ctx, *dest);
+            let value = args.pop().expect("the cast's value");
+            casts::cast(*row, &target, value, &ctx.prelude)
+                .map_err(|reason| fail(node, reason))?
+        }
+        // A native rvalue computes at once.
+        Rvalue::Native { op, .. } => {
+            let result = frame.local_type(&ctx, *dest);
+            calls::native(&ctx, *op, args, Some(result), node)?
+        }
         other => unreachable!("the generated code assigns {other:?}"),
-    };
-    let Kind::Native(Some(native)) = state.natives.get(op) else {
-        unreachable!("the lowering refuses this native")
-    };
-    let computed = state
-        .pay(budget::size(native, &args))
-        .and_then(|()| super::natives::immediate(native, args, &state.prelude));
-    computed.map_err(|reason| state.faulted(site, reason))
+    })
+}
+
+/// A value definition's global: the stored value, or, unset, the value
+/// its body computes, stored first.
+///
+/// # Errors
+///
+/// When the body Faults.
+///
+/// # Panics
+///
+/// On a global unset with no body, a defect of the program.
+pub fn global(definition: usize) -> Result<Value, Faulted> {
+    let (stored, body) = start::with(|state| {
+        let stored = state.globals[definition].clone();
+        (stored, state.program.globals[definition])
+    });
+    if let Some(value) = stored {
+        return Ok(value);
+    }
+    let body = body
+        .expect("a global with no value has a body, or its line was withdrawn");
+    let value = calls::enter(body, &[], &[], &[])?;
+    start::with(|state| state.globals[definition] = Some(value.clone()));
+    Ok(value)
 }
 
 /// A record's field, a tuple's part, a sequence's element, a packed

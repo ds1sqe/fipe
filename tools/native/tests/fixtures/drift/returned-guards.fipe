@@ -1,0 +1,6 @@
+# A guard past the body's arity tests the function the body returns.
+k: U8 -> U8 -> U8 = x => (y => y)
+apply2 = h a b => h a b
+q = n => apply2 k 1 n
+q 3
+q 300

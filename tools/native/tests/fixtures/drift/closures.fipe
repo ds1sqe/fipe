@@ -1,0 +1,13 @@
+# Closures: captures copied at creation, partial and over-application.
+add3 = a b c => a + b + c
+p = add3 1
+q = p 2
+q 3
+outer = x => (y => (x, y))
+(outer 1) 2
+k = x => (y => x * y)
+k 4 5
+apply2 = g a b => g a b
+apply2 add3 1 2 3
+twice = f => (x => f (f x))
+twice (n => n * 3) 2

@@ -12,15 +12,15 @@ use crate::{
     elf::{Object, Relocation, RelocationKind, Section, Symbol},
     x64::{self, Cond, Function, Inst, Label, Reg},
 };
-use fipe::mir::{
-    self, Callee, Operand, Program, Rvalue, Statement, Terminator,
+use fipe::{
+    ir,
+    mir::{self, Callee, Operand, Program, Rvalue, Statement, Terminator},
 };
 use std::fmt::{self, Write};
 
-// The lowering reads only the table of which natives the runtime has.
-#[allow(dead_code)]
-#[path = "../runtime/src/ops/natives.rs"]
-mod natives;
+// Which operands the runtime reads for a site it performs.
+#[path = "../runtime/src/ops/operands.rs"]
+mod operands;
 
 /// Why a program does not lower.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,10 +54,9 @@ const SLOT: i32 = 16;
 ///
 /// [`Error::Unsupported`] for the first form not lowered yet.
 pub fn lower(program: &Program) -> Result<Vec<Function>, Error> {
-    let natives = natives::Natives::new(&program.tables.borrow());
     let mut functions = Vec::with_capacity(program.bodies.len() + 1);
     for index in 0..program.bodies.len() {
-        functions.push(Lowering::new(program, index, &natives).body()?);
+        functions.push(Lowering::new(program, index).body()?);
     }
     functions.push(Function {
         name: "fipe_main".into(),
@@ -156,32 +155,26 @@ const fn imm(value: usize) -> u64 {
 struct Lowering<'a> {
     index: usize,
     body: &'a mir::Body,
-    natives: &'a natives::Natives,
     code: Vec<Inst>,
     /// Locals, then scratch slots.
     slots: usize,
 }
 
 impl<'a> Lowering<'a> {
-    fn new(
-        program: &'a Program,
-        index: usize,
-        natives: &'a natives::Natives,
-    ) -> Self {
+    fn new(program: &'a Program, index: usize) -> Self {
         let body = &program.bodies[index];
         let operands = body.blocks.iter().flat_map(|block| {
             let statements =
                 block.statements.iter().map(|statement| match statement {
-                    Statement::Assign(_, Rvalue::Construct { fields, .. }) => {
-                        fields.len()
-                    }
-                    Statement::Assign(_, Rvalue::Native { args, .. }) => {
-                        args.len()
+                    Statement::Assign(_, rvalue) => {
+                        operands::rvalue(rvalue).map_or(0, <[_]>::len)
                     }
                     _ => 0,
                 });
             let call = match &block.terminator {
-                Terminator::Call { args, .. } => args.len(),
+                Terminator::Call { callee, args, .. } => {
+                    operands::call(callee, args)
+                }
                 _ => 0,
             };
             statements.chain([call])
@@ -191,7 +184,6 @@ impl<'a> Lowering<'a> {
         Self {
             index,
             body,
-            natives,
             code: Vec::new(),
             slots: body.locals.len() + scratch,
         }
@@ -260,7 +252,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Read an operand into slot `slot`.
-    fn operand(&mut self, operand: Operand, slot: usize) -> Result<(), Error> {
+    fn operand(&mut self, operand: Operand, slot: usize) {
         let out = self.slot(slot);
         match operand {
             Operand::Local(local) => {
@@ -278,40 +270,46 @@ impl<'a> Lowering<'a> {
                 ]);
                 self.call("rt_const");
             }
-            Operand::Capture(_) => return self.unsupported("a captured value"),
-            Operand::Global(_) => return self.unsupported("a global"),
-            Operand::Hidden(_) => return self.unsupported("a hidden witness"),
+            Operand::Capture(index) | Operand::Hidden(index) => {
+                // The frame's captures or witnesses, by its arguments.
+                let base = if matches!(operand, Operand::Capture(_)) {
+                    -16
+                } else {
+                    -24
+                };
+                self.emit([
+                    Inst::Lea(Reg::Rdi, out),
+                    Inst::Load(Reg::Rsi, base),
+                    Inst::MovImm(Reg::Rdx, imm(index)),
+                ]);
+                self.call("rt_index");
+            }
+            Operand::Global(definition) => {
+                self.emit([
+                    Inst::Lea(Reg::Rdi, out),
+                    Inst::MovImm(Reg::Rsi, imm(definition)),
+                ]);
+                self.checked("rt_global");
+            }
         }
-        Ok(())
     }
 
     /// Read operands into the scratch slots, in order.
-    fn operands(&mut self, operands: &[Operand]) -> Result<(), Error> {
+    fn operands(&mut self, operands: &[Operand]) {
         let first = self.body.locals.len();
         for (at, operand) in operands.iter().enumerate() {
-            self.operand(*operand, first + at)?;
+            self.operand(*operand, first + at);
         }
-        Ok(())
     }
 
     /// The frame offset of a slot holding the operand's value: its
     /// local, or the first scratch slot it is read into.
-    fn pointer(&mut self, operand: Operand) -> Result<i32, Error> {
+    fn pointer(&mut self, operand: Operand) -> i32 {
         if let Operand::Local(local) = operand {
-            return Ok(self.slot(local));
+            return self.slot(local);
         }
-        self.operand(operand, self.body.locals.len())?;
-        Ok(self.scratch(0))
-    }
-
-    /// Refuse a prelude native the runtime has not copied yet.
-    fn native(&self, op: usize) -> Result<(), Error> {
-        match self.natives.get(op) {
-            natives::Kind::Native(None) => {
-                self.unsupported("a native other than an Integer operation")
-            }
-            natives::Kind::Native(Some(_)) | natives::Kind::Host => Ok(()),
-        }
+        self.operand(operand, self.body.locals.len());
+        self.scratch(0)
     }
 
     fn statement(
@@ -330,13 +328,24 @@ impl<'a> Lowering<'a> {
                 self.assign(block, at, *dest, rvalue)?;
             }
             Statement::Line(operand) => {
-                let from = self.pointer(*operand)?;
+                let from = self.pointer(*operand);
                 self.code.push(Inst::Lea(Reg::Rdi, from));
                 self.site(&[Reg::Rsi, Reg::Rdx, Reg::Rcx], block, Some(at));
                 self.call("rt_line");
             }
-            Statement::Store { .. } => return self.unsupported("a Store"),
-            Statement::Enter { .. } => return self.unsupported("an Enter"),
+            Statement::Store { value, .. } => {
+                let from = self.pointer(*value);
+                self.code.push(Inst::Lea(Reg::Rdi, from));
+                self.site(&[Reg::Rsi, Reg::Rdx, Reg::Rcx], block, Some(at));
+                self.call("rt_store");
+            }
+            Statement::Enter { value, .. } => {
+                // A local's own slot, which may take the guarded closure.
+                let from = self.pointer(*value);
+                self.code.push(Inst::Lea(Reg::Rdi, from));
+                self.site(&[Reg::Rsi, Reg::Rdx, Reg::Rcx], block, Some(at));
+                self.checked("rt_enter");
+            }
             Statement::Push { .. } => return self.unsupported("a Push"),
             Statement::Pop => return self.unsupported("a Pop"),
         }
@@ -352,9 +361,12 @@ impl<'a> Lowering<'a> {
     ) -> Result<(), Error> {
         let out = self.slot(dest);
         match rvalue {
-            Rvalue::Use(operand) => return self.operand(*operand, dest),
+            Rvalue::Use(operand) => {
+                self.operand(*operand, dest);
+                return Ok(());
+            }
             Rvalue::Field(operand, index) => {
-                let from = self.pointer(*operand)?;
+                let from = self.pointer(*operand);
                 self.emit([
                     Inst::Lea(Reg::Rdi, out),
                     Inst::Lea(Reg::Rsi, from),
@@ -363,24 +375,28 @@ impl<'a> Lowering<'a> {
                 self.call("rt_field");
                 return Ok(());
             }
-            Rvalue::Construct { fields, .. } => self.operands(fields)?,
-            Rvalue::Native { op, args } => {
-                self.native(*op)?;
-                self.operands(args)?;
+            Rvalue::Construct { .. }
+            | Rvalue::Native { .. }
+            | Rvalue::Closure { .. }
+            | Rvalue::Tuple(_)
+            | Rvalue::Array(_)
+            | Rvalue::Cast { .. } => {
+                let read = operands::rvalue(rvalue).expect("read operands");
+                self.operands(read);
             }
-            Rvalue::Tuple(_) => return self.unsupported("a Tuple"),
-            Rvalue::Array(_) => return self.unsupported("an Array"),
             Rvalue::Repeat { .. } => return self.unsupported("a Repeat"),
             Rvalue::Length(_) => return self.unsupported("a Length"),
-            Rvalue::Closure { .. } => return self.unsupported("a Closure"),
             Rvalue::Wrap { .. } => return self.unsupported("a Wrap"),
-            Rvalue::Cast { .. } => return self.unsupported("a Cast"),
             Rvalue::Convert { .. } => return self.unsupported("a Convert"),
             Rvalue::Pack { .. } => return self.unsupported("a Pack"),
         }
         let scratch = self.scratch(0);
-        self.emit([Inst::Lea(Reg::Rdi, out), Inst::Lea(Reg::Rsi, scratch)]);
-        self.site(&[Reg::Rdx, Reg::Rcx, Reg::R8], block, Some(at));
+        self.emit([
+            Inst::Lea(Reg::Rdi, out),
+            Inst::Lea(Reg::Rsi, scratch),
+            Inst::Load(Reg::Rdx, -24),
+        ]);
+        self.site(&[Reg::Rcx, Reg::R8, Reg::R9], block, Some(at));
         self.checked("rt_assign");
         Ok(())
     }
@@ -403,7 +419,7 @@ impl<'a> Lowering<'a> {
                 cases,
                 otherwise,
             } => {
-                let from = self.pointer(*value)?;
+                let from = self.pointer(*value);
                 self.code.push(Inst::Lea(Reg::Rdi, from));
                 self.call("rt_switch");
                 for (case, target) in cases {
@@ -429,10 +445,7 @@ impl<'a> Lowering<'a> {
                 dest,
                 target,
             } => {
-                if !meanings.is_empty() {
-                    return self.unsupported("a call with witnesses");
-                }
-                self.called(block, callee, args, *dest)?;
+                self.called(block, callee, args, meanings, *dest);
                 self.code.push(Inst::Jmp(Self::block_label(*target)));
             }
             Terminator::Test { .. } => return self.unsupported("a Test"),
@@ -443,28 +456,20 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// A call's callee with its arguments, the result into `dest`.
+    /// A call's callee with its arguments, the result into `dest`: a
+    /// body without witnesses called directly, any other callee by the
+    /// runtime, which reads the arguments, then the callee's operand.
     fn called(
         &mut self,
         block: usize,
         callee: &Callee,
         args: &[Operand],
+        meanings: &[ir::Type],
         dest: usize,
-    ) -> Result<(), Error> {
-        match callee {
-            Callee::Body(_) | Callee::Host(_) => {}
-            Callee::Native(op) => self.native(*op)?,
-            Callee::Derived { .. } => {
-                return self.unsupported("a Derived callee");
-            }
-            Callee::Dispatch { .. } => {
-                return self.unsupported("a Dispatch callee");
-            }
-            Callee::Value(_) => return self.unsupported("a Value callee"),
-        }
-        self.operands(args)?;
+    ) {
         let (out, scratch) = (self.slot(dest), self.scratch(0));
-        if let Callee::Body(body) = callee {
+        if let (Callee::Body(body), []) = (callee, meanings) {
+            self.operands(args);
             let args = if args.is_empty() {
                 Inst::MovImm(Reg::Rdi, 0)
             } else {
@@ -477,12 +482,21 @@ impl<'a> Lowering<'a> {
                 Inst::Lea(Reg::Rcx, out),
             ]);
             self.checked(&symbol(*body));
-        } else {
-            self.emit([Inst::Lea(Reg::Rdi, out), Inst::Lea(Reg::Rsi, scratch)]);
-            self.site(&[Reg::Rdx, Reg::Rcx], block, None);
-            self.checked("rt_call");
+            return;
         }
-        Ok(())
+        // The VM reads a global the callee names before the arguments'.
+        if let Some(operand) = operands::callee(callee) {
+            let first = self.body.locals.len();
+            self.operand(operand, first + args.len());
+        }
+        self.operands(args);
+        self.emit([
+            Inst::Lea(Reg::Rdi, out),
+            Inst::Lea(Reg::Rsi, scratch),
+            Inst::Load(Reg::Rdx, -24),
+        ]);
+        self.site(&[Reg::Rcx, Reg::R8], block, None);
+        self.checked("rt_call");
     }
 
     fn body(mut self) -> Result<Function, Error> {
