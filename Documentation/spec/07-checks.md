@@ -152,46 +152,52 @@ to 8 are ruled (2026-10-21).
    `!=` narrows only at an end of the range. `&&` narrows by both sides,
    its right side already by the left; `||` narrows the else branch by
    both negations; `!` swaps. An else branch and the later arms take the
-   negation where it is one range of one name; a later arm takes a
-   guard's negation at the same parameter position. A gate pattern
-   narrows its arm. A literal pattern narrows a piped bare `Integer` name
-   to itself in its arm and by `!=` in the later arms. `fault` never
-   returns, so its branch is empty. Branches join: the smallest range
-   that holds both, the names both have. Nothing else leaves a branch.
+   negation where it is one range of one name; a later arm takes a guard's
+   negation at the same parameter position when the guarded arm's patterns
+   are names or `_`. A gate pattern narrows its arm. A literal pattern
+   narrows a piped bare `Integer` name to itself in its arm and, past an
+   unguarded literal arm, by `!=` in the later arms. A condition known
+   `True` or `False` prunes no branch. `fault` never returns, so its
+   branch is empty. Branches join: the smallest range that holds both, the
+   names both have, and of a function, in the value or a part, its
+   parameters met and its results joined. Nothing else leaves a branch.
 5. **Calls.** A call is known by the declared result's limits and by the
-   body, taken once at the declared parameter limits. The body is read
-   for a function of the checked unit, its file modules or an earlier
-   session line; a prelude or host function is known by its declared
-   limits and scheme only, which say what goes in at its variables (a
-   sequence's elements, `Items<a> c`; ruled 2026-10-22). A cycle of
-   undeclared results is unknown.
-6. **Variables.** At a call, what comes out at a type variable is the join
-   of what went in at it and of the declared result limits of each
-   function argument that returns it. It is unknown when something can
-   produce that type unseen: a limit of the scheme whose member's result
-   holds it, or a function argument that returns it with no declared
-   limit. An arm list written as the argument takes what is known at its
-   parameter. With nothing going in, it is unknown, not dead.
+   body, taken once at the declared parameter limits. The body is read for
+   a function of the checked unit, its file modules or an earlier session
+   line; a prelude or host function is known by its declared limits and
+   scheme only, which say what goes in at its variables (a sequence's
+   elements, `Items<a> c`; ruled 2026-10-22). A callee not yet read, as in
+   a cycle, is known by its declared result.
+6. **Variables.** At a call of a function whose body is read, what comes
+   out at a type variable is the join of what went in at it and of the
+   declared result limits of each function argument that returns it. It is
+   unknown when something can produce that type unseen: a limit of the
+   scheme whose member's result holds it, a function argument that returns
+   it with no declared limit, or an argument holding it in a part. An arm
+   list written as the argument takes what is known at its parameter. With
+   nothing going in, it is unknown, not dead.
 7. **Parts.** A construction is known by its parts; a marked pipe joins
    its branches.
 8. **Functions.** A function value enters a place of function type only
    when proved: parameters wider, results narrower, flipping at each
    arrow; at a variable, against what is known there, so `apply f 300`
-   with `f: U8 -> U8` is refuted; where what goes in there is not known
-   to fit, the parameter limits are an open entry tested on each call of
-   the value (ruled 2026-10-22). Any other function entry unproved is a
-   check error in every mode (§Modes). A member meets a member limit by the same proof, so a
-   member with a narrower parameter does not. A call tests its argument
-   against the known parameter limits, an argument not known to fit
-   being an open entry as at any place; branches meet parameters and join
-   results. A partial call `f a` is known by the remaining parameter
-   limits and the result limits. An arm list with no signature has no
-   parameter limits and is known by its body; only a function value from
-   a place without limits is unknown, and calling it gives an unknown
+   with `f: U8 -> U8` is refuted; where what goes in there is not known to
+   fit, the parameter limits are an open entry tested on each call of the
+   value (ruled 2026-10-22). A function value going in whole at a variable
+   is known where it comes out as the call's result (rule 6); elsewhere,
+   as at a constructor or `log`, its parameter limits are such an open
+   entry. Any other function entry unproved is a check error in every mode
+   (§Modes). A member meets a member limit by the same proof, so a member
+   with a narrower parameter does not. A call tests its argument against
+   the known parameter limits, an argument not known to fit being an open
+   entry as at any place. A partial call `f a` is known by the remaining
+   parameter limits and the result limits. An arm list with no signature
+   has no parameter limits and is known by its body; only a function value
+   from a place without limits is unknown, and calling it gives an unknown
    result.
 9. A limit is required only where written. It never moves backward to a
    parameter.
-10. Anything else is unknown.
+10. Anything else is unknown, as a cast's value or a call in a test.
 
 ## Narrow and wide
 

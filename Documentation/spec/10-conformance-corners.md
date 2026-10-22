@@ -88,7 +88,7 @@ each once a defect: a row stays so the defect cannot return.
 | parameterized record fields: `type Pair<A, B> { first: A, second: B }` LF `p: Pair<U8, U8> = Pair 300 400` | both fields enter their limits |
 | bound tuple parts: `t = (1, 300)` LF `ends: U8 * U8 = t` | refuted at the second part |
 | union meaning: `id: U8 \| String = 300` | refuted; String cannot prove an Integer value |
-| function limit narrowing: `f: U8 -> U8 = n => n` LF `apply = g x => g x` LF `y = apply f 300` LF `:checks y` | refuted at check in every mode: at `apply`'s variable `f`'s parameter `U8` meets 300 (rule 8); `y` is not bound |
+| function limit at a variable: `f: U8 -> U8 = n => n` LF `apply = g x => g x` LF `y = apply f 300` LF `:checks y` | refuted at check in every mode: at `apply`'s variable `f`'s parameter `U8` meets 300 (rule 8); `y` is not bound |
 | function at a prelude variable: `f: U8 -> U8 = n => n` LF `map f [1, 2]`; `map f [300]`; `g = n => map f [n]` LF `g 300` | proved; refuted at check; open, tested on each call of `f`, so `g 300` Faults naming 300 (rules 5, 8) |
 | fault in a test: `type Q: Integer where 10 / self < 5` LF `z: Q = 0` | refuted test; no separate divisor entry |
 | field default fault: `type R { n: Integer, d: Integer = (10 / n) }` LF `R 0`; `R 2`; `k => R k` | refuted; proved; one entry per construction, none at the declaration |

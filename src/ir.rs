@@ -248,7 +248,6 @@ pub enum Reason {
     UnknownInput,
     NoRule,
     CompileTimeEvaluation,
-    Narrowing,
     /// The compile phase ran out of its budget: the entry stays open.
     CompileBudget,
 }
@@ -259,7 +258,6 @@ impl core::fmt::Display for Reason {
             Self::UnknownInput => "unknown input",
             Self::NoRule => "no rule",
             Self::CompileTimeEvaluation => "compile-time evaluation",
-            Self::Narrowing => "narrowing",
             Self::CompileBudget => "compile budget exhausted",
         })
     }

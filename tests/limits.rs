@@ -842,7 +842,7 @@ fn written_conversions_drop_source_parts() {
         report
             .checks
             .iter()
-            .any(|check| check.reason == fipe::typed::CheckReason::Narrowing),
+            .any(|check| check.reason == fipe::typed::CheckReason::UnknownInput),
         "{report:?}"
     );
 }
@@ -863,7 +863,7 @@ fn written_sequences_drop_bracket_parts() {
         report
             .checks
             .iter()
-            .any(|check| check.reason == fipe::typed::CheckReason::Narrowing),
+            .any(|check| check.reason == fipe::typed::CheckReason::UnknownInput),
         "{report:?}"
     );
 }

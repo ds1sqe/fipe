@@ -18,10 +18,10 @@ defines the language in eleven numbered chapters, from characters to the
 host; [api](api/) is the crate's Rust boundary for each stage; the programs
 under [examples](examples/) show the language as written. The frontend
 implements lexing, parsing, name resolution and type inference with
-explicit claims and members, static limit checks, gates, timing, holdings, tuples, parameterized containers, flags, collected arguments, checked defaults, recorded call bindings, casts, outcome families, exhaustive patterns
+explicit claims and members, static limit checks with what conditions, calls and function values prove, gates, timing, holdings, tuples, parameterized containers, flags, collected arguments, checked defaults, recorded call bindings, casts, outcome families, exhaustive patterns
 and indexed backend units through `check` and sessions, which `compile`
 lowers to the MIR every backend consumes; `:ir` and `:mir` display them;
-narrowing and execution follow. Their remaining questions are
+execution follows. Their remaining questions are
 recorded in [open rules](spec/11-open.md). The library is independent of every
 host and uses only `core` and `alloc`.
 

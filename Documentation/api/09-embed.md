@@ -181,7 +181,7 @@ typed::Place = Binding(String) | Parameter(Option<String>) | Result
 The phase is compile, init or eval. `test_count` counts the owning type's
 written tests, excluding its bases; when it exceeds one, `:checks` appends the
 written test from `limit` to the type name. Reasons distinguish an unknown
-input, no rule, compile-time evaluation and narrowing. Frequency is once, per
+input, no rule, compile-time evaluation and the budget. Frequency is once, per
 call or per element. The place kind names a binding, parameter, result, field,
 element or payload. Spans identify the place itself where written and belong to
 the source containing the place or limit; imported declarations retain their

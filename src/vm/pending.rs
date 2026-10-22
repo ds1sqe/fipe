@@ -18,9 +18,11 @@ use alloc::{rc::Rc, string::String, vec::Vec};
 #[derive(Debug)]
 pub(super) enum Pending {
     /// Eval/apply: the arguments left after the body returned a function,
-    /// until they are applied; then the result passes through.
+    /// until they are applied; then the result passes through. The guards
+    /// past the body's own parameters move to the function it returned.
     Apply {
         rest: Option<Vec<Value>>,
+        guards: Vec<crate::value::Guard>,
     },
     Map(Map),
     Fold(Fold),
@@ -151,13 +153,29 @@ impl Pending {
         returned: Option<Value>,
     ) -> Step {
         match self {
-            Self::Apply { rest } => match (rest.take(), returned) {
-                (Some(rest), Some(function)) => {
-                    Step::Call(Invoke::Function(function, rest))
+            Self::Apply { rest, guards } => {
+                let returned = returned.map(|value| match value {
+                    Value::Function(closure) if !guards.is_empty() => {
+                        let mut closure = (*closure).clone();
+                        let filled = closure.filled.len();
+                        closure.guards.extend(guards.drain(..).map(|g| {
+                            crate::value::Guard {
+                                spot: g.spot + filled,
+                                ..g
+                            }
+                        }));
+                        Value::Function(Rc::new(closure))
+                    }
+                    value => value,
+                });
+                match (rest.take(), returned) {
+                    (Some(rest), Some(function)) => {
+                        Step::Call(Invoke::Function(function, rest))
+                    }
+                    (None, Some(value)) => Step::Done(value),
+                    (_, None) => unreachable!("an apply waits on the body"),
                 }
-                (None, Some(value)) => Step::Done(value),
-                (_, None) => unreachable!("an apply waits on the body"),
-            },
+            }
             Self::Once(call) => match (call.take(), returned) {
                 (Some(invoke), None) => Step::Call(invoke),
                 (None, Some(value)) => Step::Done(value),

@@ -5,11 +5,12 @@ compiled. Fipe is its own Rust crate with no dependencies or editor coupling.
 
 This development version implements lexing, parsing, name resolution and
 type inference with explicit claims and members, and static limit checks with
-gates and a plan of open entries, using `core` and `alloc` and no unsafe code.
+gates, what conditions, calls and function values prove, and a plan of open
+entries, using `core` and `alloc` and no unsafe code.
 Timing, holdings, tuples, parameterized containers, flags, collected arguments,
 defaults, call bindings, casts, outcome families and exhaustive patterns are checked;
 `check` and sessions emit indexed backend units, and `:ir` displays them.
-Narrowing and execution follow. The
+Execution follows. The
 [specification](Documentation/spec/README.md) defines the language; the
 prior implementation is version 0.1.0, Git `7606ff7`.
 

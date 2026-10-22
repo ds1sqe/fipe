@@ -121,7 +121,7 @@ impl Pass<'_> {
 
     /// The open entry of a function value at a callee's variables: the
     /// value's own limits at each open parameter, tested per call.
-    fn open_function(
+    pub(super) fn open_function(
         &mut self,
         ty: &Type,
         opens: &[(usize, Type)],
@@ -181,7 +181,7 @@ impl Pass<'_> {
         {
             return Some(true);
         }
-        let Type::Function { parameter, result } = place else {
+        let Type::Function { parameter, .. } = place else {
             return self.settled(place, value, span);
         };
         let at = takes.first().cloned().flatten();
@@ -192,6 +192,24 @@ impl Pass<'_> {
                 }
                 _ => (None, None),
             };
+        // A value known as a function is tested by its known parameter
+        // limits: its own type may have lost them at a type variable.
+        let known_parameter = value
+            .function
+            .as_deref()
+            .map(|function| function.parameters.first().cloned().flatten());
+        if known_parameter == Some(None) {
+            return self.function_result(
+                place,
+                own_result,
+                value,
+                (takes, position),
+                span,
+                Some(true),
+            );
+        }
+        let known_parameter = known_parameter.flatten();
+        let own_parameter = known_parameter.as_ref().or(own_parameter);
         let entering = at.clone().unwrap_or_else(|| {
             let mut known = Known::default();
             self.place_facts(parameter, &mut known);
@@ -221,28 +239,34 @@ impl Pass<'_> {
         if accepts == Some(false) {
             return accepts;
         }
-        // Results narrower: what the value gives past this parameter.
-        let mut rest =
-            value
-                .function
-                .as_deref()
-                .map_or_else(Known::default, |function| {
-                    match function.parameters.len() {
-                        0 | 1 => function.result.clone(),
-                        _ => Known {
-                            function: Some(alloc::boxed::Box::new(
-                                super::known::Function {
-                                    parameters: function.parameters[1..]
-                                        .to_vec(),
-                                    result: function.result.clone(),
-                                    feeds: None,
-                                    takes: Vec::new(),
-                                },
-                            )),
-                            ..Known::default()
-                        },
-                    }
-                });
+        self.function_result(
+            place,
+            own_result,
+            value,
+            (takes, position),
+            span,
+            accepts,
+        )
+    }
+
+    /// The rest of [`Self::function_outcome`] once the first parameter
+    /// `accepts`: results narrower, what the value gives past it.
+    fn function_result(
+        &mut self,
+        place: &Type,
+        own_result: Option<&Type>,
+        value: &Known,
+        (takes, position): (&[Option<Known>], usize),
+        span: Span,
+        accepts: Option<bool>,
+    ) -> Option<bool> {
+        let Type::Function { result, .. } = place else {
+            return accepts;
+        };
+        let mut rest = value
+            .function
+            .as_deref()
+            .map_or_else(Known::default, |function| function.after(1));
         // A value with no function knowledge is known by its type's
         // result limits; one with it, by what it is known to give: an
         // arm list without a signature has none of the type it was
@@ -376,7 +400,7 @@ impl Pass<'_> {
         place: Span,
         frequency: Frequency,
     ) {
-        if !arguments.iter().any(super::has_limits) {
+        if !arguments.iter().any(super::has_limits) && !known.carries() {
             return;
         }
         let value_is_place = self.value_ty.as_ref().is_some_and(|value| {
@@ -520,11 +544,7 @@ impl Pass<'_> {
         }) {
             // Elements known alike, the bytes of a text, meet the limits
             // they have passed; otherwise nothing is known of one.
-            let each =
-                known.element.as_deref().cloned().unwrap_or_else(|| Known {
-                    narrowing: known.narrowing,
-                    ..Known::default()
-                });
+            let each = known.element.as_deref().cloned().unwrap_or_default();
             self.enter_part(
                 Place::Element,
                 crate::ir::Projection::Element,
@@ -545,13 +565,9 @@ impl Pass<'_> {
         let facts: alloc::collections::BTreeMap<_, _> =
             known.parts.iter().map(|(n, k)| (n.as_str(), k)).collect();
         for (index, ty) in parts.iter().enumerate() {
-            let fact = facts.get(index.to_string().as_str()).map_or_else(
-                || Known {
-                    narrowing: known.narrowing,
-                    ..Known::default()
-                },
-                |k| (*k).clone(),
-            );
+            let fact = facts
+                .get(index.to_string().as_str())
+                .map_or_else(Known::default, |k| (*k).clone());
             self.enter_part(
                 Place::Part(index),
                 crate::ir::Projection::Part(index),
@@ -590,10 +606,7 @@ impl Pass<'_> {
                 }
             }
             _ => {
-                let payload = Known {
-                    narrowing: known.narrowing,
-                    ..Known::default()
-                };
+                let payload = Known::default();
                 for (index, argument) in arguments.iter().enumerate() {
                     let name = if index == 0 { "Ok" } else { "Err" };
                     let part = known
@@ -877,8 +890,6 @@ impl Pass<'_> {
                         || self.entry_phase == Some(Phase::Compile)
                     {
                         Reason::CompileTimeEvaluation
-                    } else if known.narrowing {
-                        Reason::Narrowing
                     } else {
                         Reason::UnknownInput
                     },

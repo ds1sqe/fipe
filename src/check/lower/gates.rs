@@ -196,9 +196,6 @@ impl Index {
                     crate::typed::CheckReason::CompileTimeEvaluation => {
                         ir::Reason::CompileTimeEvaluation
                     }
-                    crate::typed::CheckReason::Narrowing => {
-                        ir::Reason::Narrowing
-                    }
                     crate::typed::CheckReason::CompileBudget => {
                         ir::Reason::CompileBudget
                     }

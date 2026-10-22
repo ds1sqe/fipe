@@ -134,7 +134,7 @@ impl Infer<'_> {
     }
 
     /// A packed place: an `A | B`, or a meaning of member limits, and a
-    /// limited type narrowing either.
+    /// limited type that narrows either.
     pub(super) fn packed(&mut self, ty: &Type) -> bool {
         let ty = super::meaning(ty);
         matches!(ty, Type::Either(_))

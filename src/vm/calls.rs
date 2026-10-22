@@ -264,12 +264,26 @@ impl Machine {
         let rest = args.split_off(remaining);
         let mut spots = closure.filled.clone();
         spots.append(&mut args);
-        let back = if rest.is_empty() {
+        // A guard past the body's parameters tests the function it
+        // returns, at the spot that function takes.
+        let beyond: Vec<_> = closure
+            .guards
+            .iter()
+            .filter(|guard| guard.spot >= arity)
+            .map(|guard| crate::value::Guard {
+                spot: guard.spot - arity,
+                ..guard.clone()
+            })
+            .collect();
+        let back = if rest.is_empty() && beyond.is_empty() {
             back
         } else {
             self.frames.push(Frame::Native(super::frames::NativeFrame {
                 node,
-                pending: Pending::Apply { rest: Some(rest) },
+                pending: Pending::Apply {
+                    rest: (!rest.is_empty()).then_some(rest),
+                    guards: beyond,
+                },
                 back,
                 result: None,
             }));

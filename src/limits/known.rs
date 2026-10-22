@@ -1,6 +1,7 @@
 use crate::ast::BinaryOp as B;
+use crate::types::Type;
 use crate::{ast::BinaryOp, token::Magnitude};
-use alloc::{string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use core::{cmp::Ordering, fmt};
 
 /// A signed exact integer, with canonical positive zero.
@@ -362,15 +363,16 @@ pub struct Known {
     pub constructor: Option<String>,
     /// What is known of a function value (07-checks §What is known 5).
     pub(crate) function: Option<alloc::boxed::Box<Function>>,
-    pub narrowing: bool,
 }
 
-/// What is known of a function: its parameters' and its result's facts,
-/// and, when its result is a type variable, where that variable is fed
-/// (07-checks §What is known 5, 6).
+/// What is known of a function: its parameters' limits and its result's
+/// facts, and, when its result is a type variable, where that variable is
+/// fed (07-checks §What is known 5, 6).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Function {
-    pub(crate) parameters: Vec<Known>,
+    /// Each parameter's limits as the type that tests them, `None` when
+    /// it has none: a call tests its argument against them (rule 8).
+    pub(crate) parameters: Vec<Option<Type>>,
     pub(crate) result: Known,
     /// `None` when the result is no variable of the function's scheme or
     /// something may produce it unseen.
@@ -466,8 +468,10 @@ impl fmt::Display for Known {
 
 impl Known {
     /// What is known after two branches meet (07-checks §What is known
-    /// 4): the smallest range that holds both and the names both have.
-    /// Nothing else leaves a branch; a dead branch is skipped.
+    /// 4, 8): the smallest range that holds both, the names both have,
+    /// and of a function, in the value or a part, its parameters met and
+    /// its results joined. Nothing else leaves a branch; a dead branch is
+    /// skipped.
     #[must_use]
     pub(crate) fn join(&self, other: &Self) -> Self {
         if self.is_dead() {
@@ -494,9 +498,47 @@ impl Known {
                 .filter(|name| other.names.contains(name))
                 .cloned()
                 .collect(),
-            narrowing: self.narrowing || other.narrowing,
+            function: match (&self.function, &other.function) {
+                (Some(a), Some(b)) => Some(Box::new(a.join(b))),
+                // A function not known has no parameter limits and an
+                // unknown result.
+                (Some(f), None) | (None, Some(f)) => {
+                    Some(Box::new(Function::of(f.parameters.clone())))
+                }
+                (None, None) => None,
+            },
+            parts: self
+                .parts
+                .iter()
+                .filter_map(|(name, part)| {
+                    let (_, other) =
+                        other.parts.iter().find(|(n, _)| n == name)?;
+                    Some((name.clone(), part.join(other).functions()?))
+                })
+                .collect(),
             ..Self::default()
         }
+    }
+    /// The function knowledge of a value and of its parts alone: what
+    /// leaves a branch inside a part (rule 8), `None` when there is none.
+    fn functions(&self) -> Option<Self> {
+        let parts: Vec<_> = self
+            .parts
+            .iter()
+            .filter_map(|(name, part)| Some((name.clone(), part.functions()?)))
+            .collect();
+        (self.function.is_some() || !parts.is_empty()).then(|| Self {
+            function: self.function.clone(),
+            parts,
+            ..Self::default()
+        })
+    }
+    /// Whether a function this value is or holds has a parameter limit.
+    pub(crate) fn carries(&self) -> bool {
+        self.function.as_deref().is_some_and(|f| {
+            f.parameters.iter().any(Option::is_some) || f.result.carries()
+        }) || self.parts.iter().any(|(_, part)| part.carries())
+            || self.element.as_deref().is_some_and(Self::carries)
     }
     /// What is known of both a value's sources: the range both hold and
     /// the names of either. A dead side stays dead.
@@ -518,6 +560,17 @@ impl Known {
                 self.names.push(name.clone());
             }
         }
+        match (&mut self.function, &other.function) {
+            (function @ None, Some(other)) => *function = Some(other.clone()),
+            (Some(function), Some(other)) => {
+                for (mine, theirs) in
+                    function.parameters.iter_mut().zip(&other.parameters)
+                {
+                    *mine = both(mine.take(), theirs.as_ref());
+                }
+            }
+            _ => (),
+        }
         self
     }
     /// What a function's result carries to its calls: the value's own
@@ -533,14 +586,15 @@ impl Known {
             ..self.clone()
         }
     }
-    /// What of one branch may leave it: its range and names.
+    /// What of one branch may leave it: its range, its names and the
+    /// function knowledge of it and of its parts.
     pub(crate) fn branch(&self) -> Self {
+        let functions = self.functions().unwrap_or_default();
         Self {
             failure: self.failure.filter(|f| *f != Failure::Fault),
             range: self.range.clone(),
             names: self.names.clone(),
-            narrowing: self.narrowing,
-            ..Self::default()
+            ..functions
         }
     }
     pub(crate) fn is_dead(&self) -> bool {
@@ -551,13 +605,10 @@ impl Known {
         if self.failure.is_some() {
             return self.clone();
         }
-        self.parts.iter().find(|(n, _)| n == name).map_or_else(
-            || Self {
-                narrowing: self.narrowing,
-                ..Self::default()
-            },
-            |(_, part)| part.clone(),
-        )
+        self.parts
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or_else(Self::default, |(_, part)| part.clone())
     }
     pub(crate) fn is_exact(&self) -> bool {
         self.exact.is_some()
@@ -582,10 +633,63 @@ impl Known {
             part.rehome(origin);
         }
         if let Some(function) = &mut self.function {
-            for parameter in &mut function.parameters {
-                parameter.rehome(origin);
+            for parameter in function.parameters.iter_mut().flatten() {
+                *parameter = parameter.rehome(origin);
             }
             function.result.rehome(origin);
         }
+    }
+}
+
+impl Function {
+    /// A function known by its parameter limits alone.
+    pub(crate) fn of(parameters: Vec<Option<Type>>) -> Self {
+        Self {
+            parameters,
+            result: Known::default(),
+            feeds: None,
+            takes: Vec::new(),
+        }
+    }
+    /// Two branches' functions (07-checks §What is known 8): parameters
+    /// meet, results join.
+    fn join(&self, other: &Self) -> Self {
+        if self == other {
+            return self.clone();
+        }
+        let n = self.parameters.len().min(other.parameters.len());
+        let parameters = self.parameters[..n]
+            .iter()
+            .zip(&other.parameters[..n])
+            .map(|(a, b)| both(a.clone(), b.as_ref()))
+            .collect();
+        Self {
+            result: self.after(n).join(&other.after(n)),
+            ..Self::of(parameters)
+        }
+    }
+    /// What a call of `n` of its parameters gives: its result, or a
+    /// function of the rest.
+    pub(crate) fn after(&self, n: usize) -> Known {
+        if self.parameters.len() <= n {
+            return self.result.clone();
+        }
+        Known {
+            function: Some(Box::new(Self {
+                result: self.result.clone(),
+                ..Self::of(self.parameters[n..].to_vec())
+            })),
+            ..Known::default()
+        }
+    }
+}
+
+/// The limits of both parameters: a value passed must meet each.
+fn both(a: Option<Type>, b: Option<&Type>) -> Option<Type> {
+    match (a, b) {
+        (a, None) => a,
+        (None, Some(b)) => Some(b.clone()),
+        (Some(a), Some(b)) if a == *b => Some(a),
+        (Some(a), Some(b)) => Some(Type::Both(alloc::vec![a, b.clone()])),
     }
 }

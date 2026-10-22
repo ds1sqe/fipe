@@ -222,3 +222,53 @@ fn an_open_function_entry_tests_each_call_of_the_value() {
     let tables = program.tables.borrow();
     assert!(tables.entries[*entry].label.starts_with("U8 ->"));
 }
+
+/// A run that Faults on 300 entering a `U8` parameter limit.
+fn faults_on_300_at_u8(source: &str) {
+    let program = program(source);
+    let fault = budgeted(&program, 1 << 20).0.unwrap_err();
+    let Reason::Failed { entry, value } = &fault.reason else {
+        panic!("{source}: {fault:?}")
+    };
+    assert_eq!(value, "300", "{source}");
+    let tables = program.tables.borrow();
+    let label = &tables.entries[*entry].label;
+    assert!(
+        label.starts_with("U8") || label.contains("-> U8"),
+        "{label}"
+    );
+}
+
+#[test]
+fn a_function_whose_type_variable_drops_its_limits_is_still_tested() {
+    let f = "f: U8 -> U8 = n => n\n";
+    // What comes out of `log`, a constructor or a body is not
+    // known as `f`: its limits are tested on each call of the value.
+    faults_on_300_at_u8(&format!("{f}r = log f\nr 300"));
+    faults_on_300_at_u8(&format!(
+        "{f}m = Just f\nm | {{ Just g => g 300, Nothing => 0 }}"
+    ));
+    faults_on_300_at_u8(&format!("{f}mk = c => f\nk = n => (mk 1) n\nk 300"));
+    // Known as `f` through a variable, an unknown argument is tested.
+    faults_on_300_at_u8(&format!(
+        "{f}id = x => x\nh2 = g x => g x\nk = n => h2 (id f) n\nk 300"
+    ));
+    faults_on_300_at_u8(&format!(
+        "{f}pick = c f g => if c > 0 {{ f }} else {{ g }}\n\
+         k = n => (pick 1 f f) n\nk 300"
+    ));
+    assert_eq!(
+        format!("{:?}", run(&format!("{f}r = log f\nr 3"))),
+        "Ok(Int(3))"
+    );
+}
+
+#[test]
+fn a_guard_past_a_body_tests_the_function_it_returns() {
+    // `k`'s body takes one parameter; the open entry's second limit
+    // tests the function it returns.
+    let lines = "k: U8 -> U8 -> U8 = x => (y => y)\n\
+                 apply2 = g a b => g a b\nq = n => apply2 k 1 n\n";
+    faults_on_300_at_u8(&format!("{lines}q 300"));
+    assert_eq!(format!("{:?}", run(&format!("{lines}q 3"))), "Ok(Int(3))");
+}

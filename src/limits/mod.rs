@@ -55,7 +55,7 @@ enum Narrows {
     },
 }
 
-/// A narrowing of a local, or of its `len` when `len` holds, by a range,
+/// A local, or its `len` when `len` holds, narrowed to a range,
 /// for the reads inside `span`.
 #[derive(Clone, Debug)]
 struct Narrowed {
@@ -386,8 +386,9 @@ struct Pass<'a> {
     /// The one declared expression this pass types for a use site, a
     /// default for a call or construction or a limited type's test.
     instance: Option<ExprId>,
-    /// The narrowings recorded so far, met by each read they hold.
-    narrowings: Vec<Narrowed>,
+    /// The ranges conditions narrowed locals to so far, met by each read
+    /// they hold.
+    narrowed: Vec<Narrowed>,
     /// What is known at each parameter of a function argument that is a
     /// variable of its callee's scheme, by the argument's index.
     takes: BTreeMap<usize, Vec<Option<Known>>>,
@@ -430,7 +431,7 @@ impl<'a> Pass<'a> {
             contexts: contexts(inputs.module),
             checks_seen: BTreeSet::new(),
             instance: None,
-            narrowings: Vec::new(),
+            narrowed: Vec::new(),
             takes: BTreeMap::new(),
             value_ty: None,
             value_is_place: false,
@@ -1036,30 +1037,29 @@ impl Pass<'_> {
                 matches!(module.expressions[id.0].kind, ExprKind::If { .. })
             })
             .collect();
-        let annotated: BTreeSet<_> = module
+        // A binding without an annotation takes its value as it is.
+        let bound: BTreeMap<_, _> = module
             .expressions
             .iter()
-            .filter_map(|e| {
-                if let ExprKind::Bind {
-                    value,
-                    annotation: Some(_),
-                    ..
-                } = e.kind
-                {
-                    Some(value.0)
-                } else {
-                    None
-                }
+            .filter_map(|e| match e.kind {
+                ExprKind::Bind {
+                    value, annotation, ..
+                } => Some((value.0, annotation.is_some())),
+                _ => None,
             })
             .collect();
         for (id, ty, place, place_kind, variable) in entries {
-            if !has_limits(ty) && !self.typed.expr(*id).is_some_and(has_limits)
+            if !has_limits(ty)
+                && !self.typed.expr(*id).is_some_and(has_limits)
+                && (bound.get(&id.0) == Some(&false)
+                    || !self.typed.known[id.0].carries())
             {
                 continue;
             }
             // A function value at a type variable is what is known there
             // (07-checks §What is known 8): it meets nothing but itself.
             if *variable && matches!(ty, Type::Function { .. }) {
+                self.variable_function(*id, ty, *place, place_kind);
                 continue;
             }
             let expr = &module.expressions[id.0];
@@ -1094,7 +1094,7 @@ impl Pass<'_> {
                 continue;
             }
             if matches!(expr.kind, ExprKind::Arms(_))
-                && annotated.contains(&id.0)
+                && bound.get(&id.0) == Some(&true)
             {
                 continue;
             }
@@ -1138,6 +1138,67 @@ impl Pass<'_> {
         }
     }
 
+    /// A function value entering a type variable, which drops its
+    /// parameter limits from its type: proved when its knowledge comes
+    /// out as the call's result, so later calls test by it (07-checks
+    /// §What is known 6, 8); otherwise its limits are an open entry,
+    /// tested on each call of the value.
+    fn variable_function(
+        &mut self,
+        id: ExprId,
+        ty: &Type,
+        place: Span,
+        place_kind: &Place,
+    ) {
+        let known = self.typed.known[id.0].clone();
+        let opens: Vec<_> = own_limits(&known, self.typed.expr(id))
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, limit)| Some((i, limit?)))
+            .collect();
+        if opens.is_empty() || self.carried(id) {
+            return;
+        }
+        self.place_kind = place_kind.clone();
+        let start = self.typed.checks.len();
+        let frequency = self.frequency(self.module.expressions[id.0].span);
+        self.open_function(ty, &opens, &known, place, frequency);
+        for check in &mut self.typed.checks[start..] {
+            check.value = Some(id);
+        }
+    }
+    /// Whether a value is an argument of a full call whose result is the
+    /// type variable it goes in at: the result is then known by it.
+    fn carried(&self, value: ExprId) -> bool {
+        // ponytail: a scan of the later expressions per such entry; index
+        // arguments by call if a long file slows.
+        (value.0 + 1..self.module.expressions.len()).any(|index| {
+            let call = ExprId(index);
+            let Some(callee) = call_head(self.module, call) else {
+                return false;
+            };
+            let Some(feeds) = self.typed.known[callee.0]
+                .function
+                .as_deref()
+                .and_then(|f| f.feeds.as_ref())
+            else {
+                return false;
+            };
+            let Some(bound) = self
+                .binding_stage(call)
+                .and_then(|s| self.typed.bound.get(&(s.start, s.end)))
+            else {
+                return false;
+            };
+            bound.open.is_empty()
+                && bound.supplies.iter().any(|(spot, _)| {
+                    self.argument(call, bound, *spot)
+                        .map(|a| last_value(self.module, a))
+                        == Some(value)
+                        && feeds.contains(&known::Feed::Value(*spot))
+                })
+        })
+    }
     fn owner(&self, origin: &Origin) -> Option<&Module> {
         match origin {
             Origin::This => Some(self.module),
@@ -1313,8 +1374,11 @@ impl Pass<'_> {
                 lines.last().map_or_else(Known::default, |id| get(*id))
             }
             ExprKind::List(items) => {
+                // A list made into another sequence type is cast, known
+                // by that type's meaning alone (07-checks §What is known
+                // 10).
                 if self.typed.expr(id).is_some_and(|ty| !matches!(crate::infer::meaning(ty), Type::Array { .. }) && !matches!(crate::infer::meaning(ty), Type::Named { name, .. } if name.origin == Origin::Prelude && matches!(name.name.as_str(), "Vec" | "Deque"))) {
-                    return Known { narrowing: true, ..Known::default() };
+                    return Known::default();
                 }
                 let mut parts = vec![(
                     String::from("len"),
@@ -1467,7 +1531,7 @@ impl Pass<'_> {
         for take in &function.takes {
             if let Some(argument) = self.argument(id, bound, take.spot) {
                 found.push((
-                    argument.0,
+                    last_value(self.module, argument).0,
                     take.parameter,
                     self.fed(id, bound, &take.feeds),
                 ));
@@ -1497,11 +1561,10 @@ impl Pass<'_> {
             let Type::Function { parameter, result } = ty else {
                 return Known::default();
             };
-            let mut known = Known::default();
-            if signed {
-                self.place_facts(parameter, &mut known);
-            }
-            parameters.push(known);
+            parameters.push(
+                (signed && has_limits(parameter))
+                    .then(|| (**parameter).clone()),
+            );
             ty = result;
         }
         let mut declared = Known::default();
@@ -1517,10 +1580,8 @@ impl Pass<'_> {
             .meet(&declared);
         Known {
             function: Some(alloc::boxed::Box::new(known::Function {
-                parameters,
                 result,
-                feeds: None,
-                takes: Vec::new(),
+                ..known::Function::of(parameters)
             })),
             ..Known::default()
         }
@@ -1533,21 +1594,22 @@ impl Pass<'_> {
         }
         known
     }
-    /// A call of a function value (07-checks §What is known 5, 6): its
-    /// declared result, met with what the callee is known to give. A
-    /// callee not yet read, in a cycle or past the checked unit, is
-    /// known by the declared result alone; a partial call is a function
-    /// of the remaining parameters.
-    fn applied(&self, id: ExprId) -> Known {
+    /// A call of a function value (07-checks §What is known 5, 6, 8): its
+    /// declared result, met with what the callee is known to give; each
+    /// argument is tested against the callee's known parameter limits
+    /// where its spot's type does not carry them. A callee not yet read,
+    /// in a cycle or past the checked unit, is known by the declared
+    /// result alone; a partial call is a function of the remaining
+    /// parameters.
+    fn applied(&mut self, id: ExprId) -> Known {
         let declared = self.declared(id);
         let Some(callee) = call_head(self.module, id) else {
             return declared;
         };
-        let head = &self.typed.known[callee.0];
+        let head = self.typed.known[callee.0].clone();
         if head.failure == Some(known::Failure::Dependency) {
             return Known {
                 failure: head.failure,
-                narrowing: head.narrowing,
                 ..Known::default()
             };
         }
@@ -1557,50 +1619,105 @@ impl Pass<'_> {
         let Some(bound) = self
             .binding_stage(id)
             .and_then(|s| self.typed.bound.get(&(s.start, s.end)))
+            .cloned()
         else {
             // A bare function stage, as an arm list piped into, takes
             // the piped value as its one argument.
-            let bare = matches!(
-                self.module.expressions[id.0].kind,
-                ExprKind::Pipe { op: PipeOp::Plain, right, .. } if right == callee
-            );
-            return if bare && function.parameters.len() == 1 {
-                function.result.clone().meet(&declared)
-            } else {
-                declared
+            let ExprKind::Pipe {
+                op: PipeOp::Plain,
+                left,
+                right,
+                ..
+            } = self.module.expressions[id.0].kind
+            else {
+                return declared;
             };
+            if right != callee || function.parameters.len() != 1 {
+                return declared;
+            }
+            if let Some(limit) = &function.parameters[0] {
+                self.argument_entry(left, limit, None);
+            }
+            return function.result.clone().meet(&declared);
         };
+        for (spot, _) in &bound.supplies {
+            let (Some(argument), Some(Some(limit))) = (
+                self.argument(id, &bound, *spot),
+                function.parameters.get(*spot),
+            ) else {
+                continue;
+            };
+            let own = bound.spots.get(*spot).map(|(_, ty)| ty);
+            self.argument_entry(argument, limit, own);
+        }
         if !bound.open.is_empty() {
             if !bound.applied.is_empty() {
                 return declared;
             }
             return Known {
                 function: Some(alloc::boxed::Box::new(known::Function {
-                    parameters: bound
-                        .open
-                        .iter()
-                        .filter_map(|i| function.parameters.get(*i).cloned())
-                        .collect(),
                     result: function.result.clone(),
-                    feeds: None,
-                    takes: Vec::new(),
+                    ..known::Function::of(
+                        bound
+                            .open
+                            .iter()
+                            .filter_map(|i| {
+                                function.parameters.get(*i).cloned()
+                            })
+                            .collect(),
+                    )
                 })),
                 ..Known::default()
             };
         }
         let mut result = function.result.clone();
-        if bound.applied.is_empty() {
-            if let Some(feeds) = &function.feeds {
-                result = result.meet(&self.fed(id, bound, feeds));
-            }
+        if let Some(feeds) = &function.feeds {
+            result = result.meet(&self.fed(id, &bound, feeds));
         }
-        for _ in &bound.applied {
-            result = match result.function.as_deref() {
-                Some(f) if f.parameters.len() == 1 => f.result.clone(),
-                _ => Known::default(),
+        for (ty, argument) in &bound.applied {
+            let Some(function) = result.function.take() else {
+                result = Known::default();
+                break;
             };
+            if let Some(Some(limit)) = function.parameters.first() {
+                self.argument_entry(*argument, limit, Some(ty));
+            }
+            result = function.after(1);
         }
         result.meet(&declared)
+    }
+    /// An argument entering a callee's known parameter limit (07-checks
+    /// §What is known 8), unless its spot's own type carries it, whose
+    /// entry inference recorded.
+    fn argument_entry(
+        &mut self,
+        argument: ExprId,
+        limit: &Type,
+        own: Option<&Type>,
+    ) {
+        if own == Some(limit) {
+            return;
+        }
+        let known = self.typed.known[argument.0].clone();
+        let span = self.module.expressions[argument.0].span;
+        let place_kind =
+            core::mem::replace(&mut self.place_kind, Place::Parameter(None));
+        let entry_phase = core::mem::replace(
+            &mut self.entry_phase,
+            (known.demanded || known.is_exact()).then_some(Phase::Compile),
+        );
+        let value_ty = core::mem::replace(
+            &mut self.value_ty,
+            self.typed.expr(argument).cloned(),
+        );
+        let start = self.typed.checks.len();
+        self.enter_value(limit, &known, span, self.frequency(span), None);
+        for check in &mut self.typed.checks[start..] {
+            check.value = Some(argument);
+        }
+        self.place_kind = place_kind;
+        self.entry_phase = entry_phase;
+        self.value_ty = value_ty;
     }
     /// What comes out at a callee's result variable (07-checks §What is
     /// known 6): the join of each argument of its type and each declared
@@ -1635,9 +1752,9 @@ impl Pass<'_> {
                     argument(spot).and_then(|a| self.contents(a))
                 }
             };
-            let Some(known) = known else {
-                return Known::default();
-            };
+            // An unknown feed is a value not known, which a join keeps
+            // nothing of but a function's parameter limits.
+            let known = known.unwrap_or_default();
             joined = Some(match joined {
                 Some(joined) => joined.join(&known),
                 None => known,
@@ -1899,13 +2016,12 @@ impl Pass<'_> {
         if let Some(target) = target {
             let source = first_input(self.module, id)
                 .and_then(|input| self.typed.expr(input));
+            // Across meanings the conversion is a cast: what it gives is
+            // known by the target's limits alone (§What is known 10).
             if source.is_none_or(|source| {
                 crate::infer::meaning(source) != crate::infer::meaning(target)
             }) {
-                known = Known {
-                    narrowing: true,
-                    ..Known::default()
-                };
+                known = Known::default();
             }
             let start = self.typed.checks.len();
             let errors = self.errors.len();
@@ -2074,11 +2190,7 @@ impl Pass<'_> {
             .collect();
         let parameters = types
             .iter()
-            .map(|ty| {
-                let mut known = Known::default();
-                self.place_facts(ty, &mut known);
-                known
-            })
+            .map(|ty| has_limits(ty).then(|| ty.clone()))
             .collect();
         let mut result_known = Known::default();
         self.place_facts(
@@ -2163,7 +2275,7 @@ impl Pass<'_> {
         }
         pairs
     }
-    /// A local read at `read` meets each narrowing whose span holds it.
+    /// A local read at `read` meets each range it is narrowed to there.
     fn local(&self, site: Span, read: Option<Span>) -> Known {
         let site = (site.start, site.end);
         let mut known = self
@@ -2174,7 +2286,7 @@ impl Pass<'_> {
             .unwrap_or_default();
         // ponytail: linear scan; index by site if a long file slows.
         for narrowed in read.iter().flat_map(|read| {
-            self.narrowings.iter().filter(move |n| {
+            self.narrowed.iter().filter(move |n| {
                 n.site == site
                     && n.span.start <= read.start
                     && read.end <= n.span.end
@@ -2190,7 +2302,7 @@ impl Pass<'_> {
         known
     }
     /// What is known of a target, read at `read`: a local meets each
-    /// narrowing whose span holds the read.
+    /// range it is narrowed to where the read is.
     fn target(&self, target: Option<&Target>, read: Option<Span>) -> Known {
         match target {
             Some(Target::Local { site }) => self.local(*site, read),
@@ -2228,7 +2340,6 @@ impl Pass<'_> {
                 {
                     return Known {
                         failure: Some(known::Failure::Dependency),
-                        narrowing: true,
                         ..Known::default()
                     };
                 }
@@ -2328,19 +2439,17 @@ impl Pass<'_> {
                 let mut parameters = Vec::new();
                 let mut ty = ty;
                 while let Type::Function { parameter, result } = ty {
-                    let mut known = Known::default();
-                    self.place_facts(parameter, &mut known);
-                    parameters.push(known);
+                    parameters.push(
+                        has_limits(parameter).then(|| (**parameter).clone()),
+                    );
                     ty = result;
                 }
                 let mut result = Known::default();
                 self.place_facts(ty, &mut result);
                 known.function =
                     Some(alloc::boxed::Box::new(known::Function {
-                        parameters,
                         result,
-                        feeds: None,
-                        takes: Vec::new(),
+                        ..known::Function::of(parameters)
                     }));
             }
         }
@@ -2511,11 +2620,9 @@ fn binary(op: BinaryOp, a: &Known, b: &Known) -> Known {
     {
         return Known {
             failure: Some(known::Failure::Dependency),
-            narrowing: true,
             ..Known::default()
         };
     }
-    let narrowing = a.narrowing || b.narrowing;
     let (a, b) = (
         a.range.clone().unwrap_or_else(Range::unknown),
         b.range.clone().unwrap_or_else(Range::unknown),
@@ -2530,13 +2637,11 @@ fn binary(op: BinaryOp, a: &Known, b: &Known) -> Known {
     ) {
         Known {
             range: Some(a.arithmetic(op, &b)),
-            narrowing,
             ..Known::default()
         }
     } else {
         Known {
             boolean: a.compare(op, &b),
-            narrowing,
             ..Known::default()
         }
     }
@@ -2566,7 +2671,6 @@ fn bool_op(op: PipeOp, a: &Known, b: &Known) -> Known {
     };
     Known {
         boolean,
-        narrowing: a.narrowing || b.narrowing,
         ..Known::default()
     }
 }
@@ -2613,10 +2717,9 @@ fn test(module: &Module, id: ExprId, value: &Known) -> Known {
         ExprKind::Group(ids) => ids
             .last()
             .map_or_else(Known::default, |id| test(module, *id, value)),
-        ExprKind::Call { .. } => Known {
-            narrowing: true,
-            ..Known::default()
-        },
+        // A call, as a test's helper, is unknown here: the body read
+        // once at its declared parameters (rule 5) gives a Bool not
+        // known but for a constant body, which this reading leaves open.
         _ => Known::default(),
     }
 }
@@ -2837,7 +2940,7 @@ impl Pass<'_> {
         match narrows {
             Narrows::Body { span, holds } => {
                 for (site, len, range) in self.condition(id, *holds) {
-                    self.narrowings.push(Narrowed {
+                    self.narrowed.push(Narrowed {
                         span: *span,
                         site,
                         len,
@@ -2887,7 +2990,7 @@ impl Pass<'_> {
             for later in &arms[index + 1..] {
                 if let Some(site) = later.patterns.get(position).and_then(name)
                 {
-                    self.narrowings.push(Narrowed {
+                    self.narrowed.push(Narrowed {
                         span: later.span,
                         site,
                         len,
@@ -2911,7 +3014,7 @@ impl Pass<'_> {
         let mut own = read.clone();
         for arm in arms {
             let mut push = |range: Range| {
-                self.narrowings.push(Narrowed {
+                self.narrowed.push(Narrowed {
                     span: arm.span,
                     site,
                     len: false,
@@ -3081,6 +3184,35 @@ fn signed(module: &Module) -> BTreeSet<usize> {
 }
 
 /// A function type's result past `arity` parameters.
+/// The expression whose value a group or block gives, which enters a
+/// place for it.
+fn last_value(module: &Module, mut id: ExprId) -> ExprId {
+    while let ExprKind::Group(lines) | ExprKind::Block(lines) =
+        &module.expressions[id.0].kind
+    {
+        let Some(last) = lines.last() else { break };
+        id = *last;
+    }
+    id
+}
+
+/// The parameter limits of a function value, in order across its
+/// arrows: by what is known of it, else by its own type.
+fn own_limits(known: &Known, ty: Option<&Type>) -> Vec<Option<Type>> {
+    if let Some(function) = known.function.as_deref() {
+        let mut limits = function.parameters.clone();
+        limits.extend(own_limits(&function.result, None));
+        return limits;
+    }
+    let mut limits = Vec::new();
+    let mut ty = ty.map(crate::infer::meaning);
+    while let Some(Type::Function { parameter, result }) = ty {
+        limits.push(has_limits(parameter).then(|| (**parameter).clone()));
+        ty = Some(crate::infer::meaning(result));
+    }
+    limits
+}
+
 fn peel(mut ty: &Type, arity: usize) -> Option<&Type> {
     for _ in 0..arity {
         let Type::Function { result, .. } = ty else {

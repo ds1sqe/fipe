@@ -650,3 +650,36 @@ fn a_host_function_is_known_by_its_declared_scheme() {
         );
     }
 }
+
+#[test]
+fn a_function_is_known_through_a_variable_and_a_join() {
+    let lines = [
+        "f: U8 -> U8 = n => n",
+        "g: Integer -> Integer = n => n",
+        "id = x => x",
+        "h2 = k x => k x",
+        "pick = c a b => if c > 0 { a } else { b }",
+    ];
+    // What goes in at `id`'s variable comes out: `f`, tested by its
+    // parameter limit wherever it is called.
+    refuted(&lines, "a = h2 (id f) 300");
+    proved(&lines, "a = h2 (id f) 3");
+    refuted(&lines, "e = (id f) 300");
+    // Branches meet parameters: either may be called.
+    refuted(&lines, "b = pick 1 f g 300");
+    refuted(&lines, "b = h2 (pick 1 g f) 300");
+    proved(&lines, "b = pick 1 g g 300");
+    // A body gives what it returns.
+    refuted(&[lines[0], "mk = c => f"], "z = mk 1 300");
+    // Not known to fit: tested on each call.
+    open(&lines, "k = n => h2 (id f) n", CheckReason::UnknownInput);
+}
+
+#[test]
+fn a_function_a_type_variable_loses_is_tested_on_each_call() {
+    let lines = ["f: U8 -> U8 = n => n"];
+    open(&lines, "r = log f", CheckReason::UnknownInput);
+    open(&lines, "m = Just f", CheckReason::UnknownInput);
+    // Known as it goes in at `id`'s variable: nothing to test.
+    proved(&[lines[0], "id = x => x"], "v = id f");
+}
