@@ -325,6 +325,35 @@ fn a_line_breakpoint_in_a_function_shows_its_locals_and_evaluates_a_name() {
 }
 
 #[test]
+fn a_host_default_runs_as_part_of_the_line_that_calls_it() {
+    // Line 24 calls `fs.list`, whose `long` parameter has a default in
+    // the host's fs.fipe.
+    let mut client = Client::new();
+    client.launch(json!({
+        "program": example("05-modules"),
+        "host": root().join("tests/fixtures/host"),
+        "trace": root().join("tests/fixtures/traces/05-modules.txt"),
+    }));
+    client.request(
+        "setBreakpoints",
+        json!({
+            "source": { "path": example("05-modules") },
+            "breakpoints": [{ "line": 24 }],
+        }),
+    );
+    client.request("configurationDone", json!({}));
+    assert_eq!(client.top()["line"], 24);
+    client.request("next", json!({ "threadId": 1 }));
+    assert_eq!(client.last("stopped")["reason"], "step");
+    let top = client.top();
+    assert_eq!(
+        (top["source"]["name"].clone(), top["line"].clone()),
+        (json!("main"), json!(24))
+    );
+    assert_eq!(top["column"], 27, "the `| first` stage");
+}
+
+#[test]
 fn a_compound_value_opens_by_constructor_and_field() {
     let mut client = outcomes();
     client.request(

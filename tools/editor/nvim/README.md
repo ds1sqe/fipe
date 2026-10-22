@@ -101,5 +101,50 @@ In your own Neovim, with the spec installed, open
 7. Write `bad = find ./x | cat` on a new line: an error appears on it.
 8. A breakpoint on line 25 (`e.name`), then `:lua
    require('dap').continue()`: dap-ui opens, stops on line 25 with
-   Locals, Pipe, Effects and Budget scopes; continue to the end, and
-   dap-ui closes on `terminated`.
+   Locals, Globals, Effects and Budget scopes; `next` on to the
+   `map .name` stage of line 30 adds Pipe (a scope only at a stop on a
+   pipe stage); continue to the end, and dap-ui closes on `terminated`.
+
+### Scripted
+
+```sh
+sh tools/editor/nvim/checklist.sh [scratch]
+```
+
+runs the eight items in your Neovim config: a copy, as the smoke's
+`user` mode makes it, with lazy.nvim's update checker off, under
+`unshare -rn` (no network) when that works. Neovim runs in a 220x60
+terminal of a tmux server of its own; the script types each item's
+keys there (`K`, your config's `gd`, `<leader>cr`, `<leader>db` and
+`<leader>do`, insert-mode typing for nvim-cmp, `zc`, `:Inspect`) on
+copies of the two example files, reads the screen with
+`tmux capture-pane`, and reads state with the probes of
+`checklist.lua` over `nvim --remote-expr`. Each item prints PASS or
+FAIL, the exit status is 0 only if all pass, and with a scratch
+directory named the screens stay in `<scratch>/checklist/screens`. It
+asserts:
+
+1. the health report lists `- fipe (id: N)` with `Attached buffers:`
+   1 or more;
+2. a floating window holds `area: F64 -> F64 -> F64` and the screen
+   shows it;
+3. the cursor lands in `geometry.fipe` on line 3, on `Point`, shown on
+   the screen;
+4. lines 13 and 14 read `label` after the rename, on the screen too;
+5. nvim-cmp's open menu holds exactly `Error`, `list`, `remove` and
+   `size` from the server, each drawn with the menu's `fipe` tag;
+6. `use`, a comment, a doc comment, `Ok`, a `|`, `pub` and `if` are
+   each drawn in the 24-bit colour of their tree-sitter capture's
+   highlight group; `:Inspect` on `use` shows `@keyword.import.fipe`;
+   after `zc` line 29 is a closed fold and its body is not drawn;
+7. an error diagnostic on the new line, its message drawn after it;
+8. the stop on 25 with dap-ui's windows open and its scopes element
+   listing Locals, Globals, Effects and Budget (the first three on the
+   screen); `next` reaching a stop whose scopes add Pipe, drawn with
+   its `mark`; after `continue`, no session and no dap-ui window.
+
+What it cannot judge: whether the colours look right in your theme
+(item 6 checks that each token gets its group's colour, not that the
+colour scheme gives the groups good colours), and whether Budget,
+below a long Effects list, is in view without scrolling dap-ui's
+scopes window.

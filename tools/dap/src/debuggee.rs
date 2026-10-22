@@ -348,6 +348,14 @@ impl Debuggee {
         }
         let tables = self.program.tables.borrow();
         let entry = &tables.nodes[node];
+        // A node of another module run in this frame (a parameter's
+        // default, say) is part of the line that called it.
+        if self
+            .frame_namespace(&tables)
+            .is_some_and(|at| at != entry.namespace)
+        {
+            return;
+        }
         let name = &tables.namespaces[entry.namespace];
         let line = Some((
             entry.namespace,
@@ -645,6 +653,13 @@ impl Debuggee {
                 })
             })
             .collect()
+    }
+
+    /// The namespace of the innermost body frame's definition.
+    fn frame_namespace(&self, tables: &Tables) -> Option<usize> {
+        let program = self.machine.program()?;
+        let frame = self.body_frames().pop()?;
+        Some(tables.nodes[program.bodies[frame.body].node].namespace)
     }
 
     fn body_frames(&self) -> Vec<&fipe::vm::BodyFrame> {

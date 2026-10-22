@@ -93,7 +93,7 @@ local function wait_for(name)
 end
 
 -- A config may open dap-ui on launch; headless Neovim has no screen
--- for its layout (the README's checklist covers dap-ui by hand).
+-- for its layout (checklist.sh covers dap-ui in a terminal).
 for _, when in ipairs({ 'before', 'after' }) do
   for _, listeners in pairs(dap.listeners[when]) do
     listeners.dapui_config = nil
