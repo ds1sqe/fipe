@@ -16,7 +16,9 @@ Fipe means Functional Pipeline Language. Five goals govern its design:
 These are goals, not implementation claims. The [specification](spec/README.md)
 defines the language in eleven numbered chapters, from characters to the
 host; [api](api/) is the crate's Rust boundary for each stage; the programs
-under [examples](examples/) show the language as written. The frontend
+under [examples](examples/) show the language as written, and the
+[tour](tour/README.md) walks through the scripts of [dogfood](dogfood/)
+on the std host. The frontend
 implements lexing, parsing, name resolution and type inference with
 explicit claims and members, static limit checks with what conditions, calls and function values prove, gates, timing, holdings, tuples, parameterized containers, flags, collected arguments, checked defaults, recorded call bindings, casts, outcome families, exhaustive patterns
 and indexed backend units through `check` and sessions, which `compile`

@@ -11,8 +11,10 @@ Timing, holdings, tuples, parameterized containers, flags, collected arguments,
 defaults, call bindings, casts, outcome families and exhaustive patterns are checked;
 `check` and sessions emit indexed backend units, and `:ir` displays them.
 Execution follows. The
-[specification](Documentation/spec/README.md) defines the language; the
-prior implementation is version 0.1.0, Git `7606ff7`.
+[specification](Documentation/spec/README.md) defines the language, the
+[tour](Documentation/tour/README.md) walks through scripts on the std
+host with the `fipe` command, and the prior implementation is version
+0.1.0, Git `7606ff7`.
 
 ## Library
 
