@@ -101,3 +101,26 @@ fn a_piped_value_replaces_a_field_default() {
     let source = "type P { x: Integer = 300 }\np = 1 | P\nx: U8 = p.x\nx";
     assert_eq!(shown(source), "1");
 }
+
+#[test]
+fn operands_past_the_spots_apply_the_returned_function() {
+    let mk = "mk = c => (x => x + c)";
+    assert_eq!(
+        session(&[mk, "k = n => mk 1 n", "k 2", "j = n => (mk 1) n", "j 2"]),
+        ["()", "()", "3", "()", "3"]
+    );
+    assert_eq!(shown(&format!("{mk}\nk = n => mk n 1\nk 2")), "3");
+    let a = "a = x => (y => (z => x + y + z))";
+    assert_eq!(shown(&format!("{a}\na 1 2 3")), "6");
+    assert_eq!(shown(&format!("{a}\nb = y => a 1 y 3\nb 2")), "6");
+    let g = "g = x y => (z => x + y + z)";
+    assert_eq!(shown(&format!("{g}\nr = n => g 1 2 n\nr 3")), "6");
+    // A named function returning a partial call.
+    let part = "part = n => mk n\nq = n => part 1 n\nq 2";
+    assert_eq!(shown(&format!("{mk}\n{part}")), "3");
+    // A pipe into a stage whose call is over-applied.
+    assert_eq!(
+        shown(&format!("{mk}\np = n => n | (v => mk 1 v)\np 5")),
+        "6"
+    );
+}

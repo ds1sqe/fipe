@@ -1187,3 +1187,13 @@ fn withdrawing_abandons_a_line_awaiting_a_reply() {
     assert!(session.withdraw(line).is_some());
     let _ = session.reply(Reply::File(None));
 }
+
+#[test]
+fn an_operand_past_the_spots_types_as_an_application_of_the_result() {
+    let mut session = Session::new(host());
+    ok(&mut session, "mk = c => (x => x + c)");
+    ok(&mut session, "k = n => mk 1 n");
+    ok(&mut session, "j = n => (mk 1) n");
+    assert_eq!(query(&mut session, "k"), query(&mut session, "j"));
+    assert_eq!(query(&mut session, "k"), "Add<b> a, Literal b => a -> a");
+}

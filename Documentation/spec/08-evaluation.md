@@ -42,14 +42,17 @@ arguments are kept in order until the signature is known, then bound:
    local of an enclosing function nor the binding it belongs to, so
    `dir (width = 80) (cols = (width / 8)) => …` is well defined. A spot
    with neither stays open. The result is a function of the open spots in
-   order, or the body result. Construction is application: `Point 1` fills
-   `y` from its default, and `Just` stays a function; construction tests
-   the meaning's limits ([limits](06-limits.md) §Gates).
+   order, or the body result; operands past the spots apply that result
+   in turn (`mk 1 n` is `(mk 1) n`). Construction is application:
+   `Point 1` fills `y` from its default, and `Just` stays a function;
+   construction tests the meaning's limits ([limits](06-limits.md)
+   §Gates).
 
 Each bound argument enters its spot ([checks](07-checks.md)). Duplicate
-supply, unknown flags, non-Bool chaining and extra arguments are check
-errors where statically knowable, and a refuted entry always is. `--` is a
-word; quoting prevents flag recognition; there is no end-of-flags marker.
+supply, unknown flags, non-Bool chaining and extra arguments to a result
+that is not a function are check errors where statically knowable, and a
+refuted entry always is. `--` is a word; quoting prevents flag
+recognition; there is no end-of-flags marker.
 T3 resolves inferred Bool parameters.
 
 ```fipe

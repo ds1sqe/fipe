@@ -408,7 +408,10 @@ impl Infer<'_> {
                 None => self.error(stage, Reason::FilledSpot),
             }
         }
-        if let Some(expected) = expected {
+        // The call's type is the open spots' function only when no operand
+        // is left for the result to take; past the spot list, the result
+        // is applied first and the caller's check meets what it returns.
+        if let Some(expected) = expected.filter(|_| extra.is_empty()) {
             let whole = slots
                 .iter()
                 .zip(&filled)
