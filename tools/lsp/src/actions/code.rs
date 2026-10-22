@@ -42,7 +42,7 @@ pub fn actions(
         if !overlaps(*span) {
             continue;
         }
-        if message == "unknown name" {
+        if message.starts_with("unknown name") {
             let name = analysis.text.get(span.0..span.1).unwrap_or_default();
             for module in exporters(analysis, host, path, name) {
                 actions.push(use_action(analysis, &module, name));

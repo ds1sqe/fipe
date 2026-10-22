@@ -40,6 +40,11 @@ impl fmt::Display for resolve::Reason {
                 f.write_str("a default may not name the binding it belongs to")
             }
             Self::UnknownName => f.write_str("unknown name"),
+            Self::UnknownNameIn { module, name } => write!(
+                f,
+                "unknown name; `use {module}` brings the module, so write \
+                 `{module}.{name}` or `use {module}.{name}`"
+            ),
             Self::NoGate { name } => write!(
                 f,
                 "`{name}` has no test, so it is no gate: annotate the \
@@ -203,6 +208,16 @@ impl fmt::Display for infer::Reason {
             }
             Self::Mismatch {
                 expected, actual, ..
+            } if array_lengths_differ(expected, actual) => write!(
+                f,
+                "expected {}, found {}; an array's length is part of its \
+                 type, so a collection that grows is a Vec, seeded with \
+                 to<Vec<T>> []",
+                expected.beside(actual),
+                actual.beside(expected)
+            ),
+            Self::Mismatch {
+                expected, actual, ..
             } => write!(
                 f,
                 "expected {}, found {}",
@@ -290,7 +305,11 @@ impl fmt::Display for infer::Reason {
             Self::NonBoolChaining => {
                 f.write_str("a chained flag needs only Bool spots and no value")
             }
-            Self::FilledSpot => f.write_str("no open spot to fill"),
+            Self::FilledSpot => f.write_str(
+                "no open spot to fill: every spot of the function is \
+                 filled, so the piped value has no place; give the \
+                 function a spot for it",
+            ),
             Self::OpenSpot => {
                 f.write_str("`|!` on Maybe needs a value, not an open spot")
             }
@@ -429,5 +448,33 @@ impl Evaluated {
                 "the sequence of {meaning} Faults on this bracket: {reason}"
             ),
         }
+    }
+}
+
+/// Whether two types differ by an array length alone, read in step:
+/// the mismatch a bare `[]` seed makes against a step that grows it.
+fn array_lengths_differ(expected: &Type, actual: &Type) -> bool {
+    match (expected, actual) {
+        (
+            Type::Array {
+                element: a,
+                length: m,
+            },
+            Type::Array {
+                element: b,
+                length: n,
+            },
+        ) => (m != n && a == b) || array_lengths_differ(a, b),
+        (
+            Type::Function {
+                parameter: p,
+                result: r,
+            },
+            Type::Function {
+                parameter: q,
+                result: s,
+            },
+        ) => array_lengths_differ(p, q) || array_lengths_differ(r, s),
+        _ => false,
     }
 }

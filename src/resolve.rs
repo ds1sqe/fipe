@@ -227,6 +227,11 @@ pub enum Reason {
     /// A default names the binding it belongs to.
     SelfDefault,
     UnknownName,
+    /// An unqualified name a used module exports: `use m` then `name`.
+    UnknownNameIn {
+        module: String,
+        name: String,
+    },
     /// A type without a test cannot be called as a gate.
     NoGate {
         name: String,
@@ -1954,10 +1959,30 @@ impl<'a> Resolver<'a> {
     /// A name in value position, with its qualified tail as members.
     fn missing_value(&self, name: &str, qualified: bool) -> Reason {
         if !qualified && self.lookup_type(name).is_some() {
-            Reason::NoGate { name: name.into() }
-        } else {
-            Reason::UnknownName
+            return Reason::NoGate { name: name.into() };
         }
+        if !qualified {
+            // `use m` brings the module, not its names: say which
+            // module in scope exports this one.
+            let exporter = self.resolved.imports.iter().find_map(|import| {
+                if import.name_span.is_some() {
+                    return None;
+                }
+                let module = match &import.module {
+                    Origin::Host(name) | Origin::File(name) => name.clone(),
+                    _ => return None,
+                };
+                self.exported(&import.module, name, Space::Value)
+                    .map(|_| module)
+            });
+            if let Some(module) = exporter {
+                return Reason::UnknownNameIn {
+                    module,
+                    name: name.into(),
+                };
+            }
+        }
+        Reason::UnknownName
     }
 
     fn value_name(

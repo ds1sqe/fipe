@@ -88,3 +88,48 @@ fn a_run_time_fault_reads_with_what_the_tables_know() {
         "division by zero: divisor is 0"
     );
 }
+
+#[test]
+fn an_unqualified_name_a_used_module_exports_is_named_with_its_module() {
+    let mut declarations = Declarations::new();
+    declarations
+        .module("text", include_str!("../fixtures/host/text.fipe"))
+        .unwrap();
+    let module = parse(lex("use text\ntrim \"  a \"")).unwrap();
+    let errors = resolve(&module, &declarations, &[]).unwrap_err();
+    assert_eq!(
+        errors[0].reason.to_string(),
+        "unknown name; `use text` brings the module, so write `text.trim` \
+         or `use text.trim`"
+    );
+    // Imported by name, or not used at all: the plain words.
+    let module = parse(lex("trim \"  a \"")).unwrap();
+    let errors = resolve(&module, &declarations, &[]).unwrap_err();
+    assert_eq!(errors[0].reason.to_string(), "unknown name");
+}
+
+#[test]
+fn a_filled_function_in_a_pipe_and_a_grown_array_say_what_to_do() {
+    let (_, _, errors) = check(
+        "scan = pick => fold (0, \"\") (st l => st)\n\"a\" | scan (n => n == 0)",
+        &Declarations::new(),
+    );
+    assert!(
+        errors[0]
+            .reason
+            .to_string()
+            .starts_with("no open spot to fill: every spot"),
+        "{}",
+        errors[0].reason
+    );
+    let (_, _, errors) = check(
+        "step = acc x => acc | concat [x]\n[\"a\", \"b\"] | fold [] step",
+        &Declarations::new(),
+    );
+    let words = errors[0].reason.to_string();
+    assert!(words.ends_with("seeded with to<Vec<T>> []"), "{words}");
+    assert!(
+        words.starts_with("expected [a; 1] -> [a; 0], found"),
+        "{words}"
+    );
+}

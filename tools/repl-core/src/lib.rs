@@ -1309,6 +1309,7 @@ const fn unknown(diagnostic: &Diagnostic) -> bool {
         diagnostic,
         Diagnostic::Resolve(fipe::resolve::Error {
             reason: fipe::resolve::Reason::UnknownName
+                | fipe::resolve::Reason::UnknownNameIn { .. }
                 | fipe::resolve::Reason::UnknownType,
             ..
         })

@@ -19,7 +19,7 @@ mod patterns;
 mod thunks;
 
 use crate::{ir, mir, mir::Terminator, value::Value};
-use alloc::{rc::Rc, vec::Vec};
+use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use builder::Builder;
 pub(crate) use constants::{host_reader, prelude_operation, runs_reader};
 use core::cell::{Cell, Ref};
@@ -193,6 +193,10 @@ struct Lowering<'a> {
     stored: Vec<bool>,
     /// Bodies whose index is reserved but not yet lowered.
     pending: Vec<Pending>,
+    /// Each generic local lambda by its slot: its body and the slots it
+    /// captures, for the uses that re-create its closure with their
+    /// witnesses.
+    local_functions: BTreeMap<usize, (usize, Vec<usize>)>,
     /// Lowering one node for the compile phase.
     evaluating: bool,
     /// The first thing the evaluated node reads from outside itself.
@@ -200,6 +204,11 @@ struct Lowering<'a> {
 }
 
 impl<'a> Lowering<'a> {
+    /// The body built for an IR node, when one is.
+    fn body_of(&self, node: usize) -> Option<usize> {
+        self.bodies.iter().rposition(|body| body.node == node)
+    }
+
     fn new(tables: &'a Ref<'a, ir::Tables>, stored: Vec<bool>) -> Self {
         Self {
             prelude: tables
@@ -209,6 +218,7 @@ impl<'a> Lowering<'a> {
             tables,
             bodies: Vec::new(),
             constants: Vec::new(),
+            local_functions: BTreeMap::new(),
             definitions: alloc::vec![None; tables.definitions.len()],
             tests: alloc::vec![None; tables.tests.len()],
             globals: alloc::vec![None; tables.definitions.len()],

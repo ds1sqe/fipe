@@ -20,6 +20,27 @@ fn a_generic_body_dispatches_through_its_witness() {
 }
 
 #[test]
+fn a_generic_local_lambda_takes_its_witnesses_at_each_use() {
+    // The local binding generalizes over `Literal a`; each use supplies
+    // the witness, as a definition's use does.
+    assert_eq!(
+        shown("f = s => { body = n x => n + 1\n s | lines | fold 0 body }\nf \"a\\nb\""),
+        "2"
+    );
+    assert_eq!(
+        shown("f = s => { inc = n => n + 1\n (inc 1, inc 1.5) }\nf ()"),
+        "(2, 2.5)"
+    );
+    // A nested use captures what the lambda captures.
+    assert_eq!(
+        shown(
+            "f = k => { add = n => n + k\n [1, 2] | map (x => add x) }\nf 10"
+        ),
+        "[11, 12]"
+    );
+}
+
+#[test]
 fn arms_switch_on_the_constructor() {
     let source = "m: Maybe<Integer> -> Integer = { Just v => v, Nothing => 0 }\n(m (Just 2), m Nothing)";
     assert_eq!(shown(source), "(2, 0)");

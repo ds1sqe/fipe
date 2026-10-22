@@ -50,6 +50,15 @@ impl<'a> Builder<'_, 'a> {
                 let index = tables.slots[*slot].definition.expect("checked");
                 self.definition(index, meanings, ty, node, dest)
             }
+            // A generic local lambda is re-created at each use with the
+            // use's witnesses after the frame's own.
+            ir::Kind::Local { slot, meanings }
+            | ir::Kind::Capture { slot, meanings }
+                if !meanings.is_empty()
+                    && self.lowering.local_functions.contains_key(slot) =>
+            {
+                self.generic_local(*slot, meanings, ty, node, dest)
+            }
             ir::Kind::Local { slot, .. } | ir::Kind::Capture { slot, .. } => {
                 self.count(node);
                 let operand = self.operand_of_slot(*slot);
@@ -203,7 +212,63 @@ impl<'a> Builder<'_, 'a> {
         }
     }
 
-    /// A plain lambda: one arm of slot patterns and no guard.
+    /// A use of a generic local lambda: its closure made again with
+    /// the use's witnesses after the frame's.
+    fn generic_local(
+        &mut self,
+        slot: usize,
+        meanings: &[ir::Type],
+        ty: &ir::Type,
+        node: usize,
+        dest: Option<usize>,
+    ) -> Operand {
+        self.count(node);
+        let (body, captured) = self.lowering.local_functions[&slot].clone();
+        let mut witnesses = self.inherited();
+        witnesses.extend(meanings.iter().cloned());
+        let closure = Rvalue::Closure {
+            body,
+            captures: captured
+                .iter()
+                .map(|slot| self.operand_of_slot(*slot))
+                .collect(),
+            meanings: witnesses,
+        };
+        self.materialize(closure, dest, ty, node)
+    }
+
+    /// A local slot bound to a generic lambda: its body and captures,
+    /// for the uses that re-create the closure with their witnesses.
+    fn remember_generic(&mut self, slot: usize, value: usize) {
+        let tables = self.tables();
+        if tables.slots[slot].hidden.is_empty() {
+            return;
+        }
+        let mut node = value;
+        while let ir::Kind::Block(parts) = &tables.nodes[node].kind {
+            let [part] = parts.as_slice() else { break };
+            node = *part;
+        }
+        let ir::Kind::Function {
+            hidden, captures, ..
+        } = &tables.nodes[node].kind
+        else {
+            return;
+        };
+        if hidden.is_empty() {
+            return;
+        }
+        let captures = captures.clone();
+        let Some(body) = self.lowering.body_of(node) else {
+            return;
+        };
+        self.lowering.local_functions.insert(slot, (body, captures));
+    }
+
+    /// A plain lambda: one arm of slot patterns and no guard. A generic
+    /// local lambda's own hidden parameters follow the frame's; the
+    /// closure made here leaves them open, and each use re-creates it
+    /// with its witnesses (`Lowering::local_functions`).
     fn function(
         &mut self,
         node: usize,
@@ -211,25 +276,19 @@ impl<'a> Builder<'_, 'a> {
         captures: &[usize],
         arms: &'a [ir::Arm],
     ) -> Rvalue {
-        assert!(
-            hidden.is_empty(),
-            "a definition's function is reached through its definition"
-        );
-        let body = build_function(
-            self.lowering,
-            node,
-            &self.hidden,
-            captures,
-            arms,
-            None,
-        );
+        let mut all = self.hidden.clone();
+        all.extend(hidden.iter().copied());
+        let body =
+            build_function(self.lowering, node, &all, captures, arms, None);
+        let mut meanings = self.inherited();
+        meanings.extend(hidden.iter().copied().map(ir::Type::Parameter));
         Rvalue::Closure {
             body,
             captures: captures
                 .iter()
                 .map(|slot| self.operand_of_slot(*slot))
                 .collect(),
-            meanings: self.inherited(),
+            meanings,
         }
     }
 
@@ -363,6 +422,7 @@ impl<'a> Builder<'_, 'a> {
                 } else {
                     let local = self.slot_local(*slot);
                     self.lower_to(value, Some(local));
+                    self.remember_generic(*slot, value);
                 }
             }
             _ => {

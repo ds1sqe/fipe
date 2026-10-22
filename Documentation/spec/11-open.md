@@ -40,15 +40,6 @@ is E2/H1's.
 typed in this draft; a host call is typed by its declared signature.
 Purity for the compile phase is [checks](07-checks.md) §Phases.
 
-Open, from the dogfood scripts: a binding inside an arm body
-(`f = s => { body = n x => n + 1 … }`) generalizes over `Literal a`,
-and its closure carries the witnesses of its creation, so `1` has none
-at the call and the run Faults where the check passed. **Proposed, not
-ruled:** a local binding fixes each variable carrying a member limit
-at the binding, defaulting `Literal` there, as a binding whose value
-is not a function does; or the check refuses a local binding whose
-scheme keeps a member limit.
-
 ## T3 — Declarations
 
 A trait is a type (ruled 2026-09-29), and every operation lives in a

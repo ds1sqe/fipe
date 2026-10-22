@@ -70,6 +70,7 @@ impl Index {
             sources.iter().zip(&scopes).zip(&bodies)
         {
             self.fill(source, scope, bodies);
+            self.local_functions(scope);
             self.captures(scope);
         }
         self.modules(&sources, &scopes);
@@ -227,8 +228,117 @@ impl Index {
         }
     }
 
-    pub(super) fn captures(&mut self, scope: &Scope) {
+    /// A local binding of a lambda whose scheme keeps a member limit
+    /// (`body = n x => n + 1`): the slot carries hidden meaning
+    /// parameters, so the lambda's function node carries them too and
+    /// each use re-creates the closure with the use's witnesses.
+    pub(super) fn local_functions(&mut self, scope: &Scope) {
+        let tables = self.store.tables();
+        let mut generic = Vec::new();
+        for node in scope.nodes.iter().flatten().copied() {
+            let ir::Kind::Bind { pattern, value } = &tables.nodes[node].kind
+            else {
+                continue;
+            };
+            let ir::PatternKind::Slot(slot) = pattern.kind else {
+                continue;
+            };
+            let signature = &tables.slots[slot];
+            if signature.definition.is_some() || signature.hidden.is_empty() {
+                continue;
+            }
+            let mut body = *value;
+            while let ir::Kind::Block(parts) = &tables.nodes[body].kind {
+                let [part] = parts.as_slice() else { break };
+                body = *part;
+            }
+            if matches!(tables.nodes[body].kind, ir::Kind::Function { .. }) {
+                generic.push((
+                    body,
+                    signature.parameters.clone(),
+                    signature.hidden.clone(),
+                ));
+            }
+        }
+        drop(tables);
+        for (body, parameters, hidden) in generic {
+            if let ir::Kind::Function {
+                parameters: stored,
+                hidden: stored_hidden,
+                ..
+            } = &mut self.store.node_mut(body).kind
+            {
+                *stored = parameters;
+                *stored_hidden = hidden;
+            }
+        }
+    }
+
+    /// A nested function that uses a generic local lambda re-creates
+    /// its closure, so it captures what the lambda captures.
+    fn lambda_captures(
+        scope: &Scope,
+        tables: &ir::Tables,
+        functions: &[usize],
+        sites: &alloc::collections::BTreeMap<usize, crate::token::Span>,
+        captures: &mut alloc::collections::BTreeMap<usize, Vec<usize>>,
+    ) {
         use alloc::collections::BTreeMap;
+        let lambdas: BTreeMap<usize, usize> = scope
+            .nodes
+            .iter()
+            .flatten()
+            .filter_map(|node| match &tables.nodes[*node].kind {
+                ir::Kind::Bind { pattern, value } => match pattern.kind {
+                    ir::PatternKind::Slot(slot)
+                        if !tables.slots[slot].hidden.is_empty() =>
+                    {
+                        let mut body = *value;
+                        while let ir::Kind::Block(parts) =
+                            &tables.nodes[body].kind
+                        {
+                            let [part] = parts.as_slice() else { break };
+                            body = *part;
+                        }
+                        Some((slot, body))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let mut settled = false;
+        while !settled {
+            settled = true;
+            for function in functions {
+                let Some(slots) = captures.get(function).cloned() else {
+                    continue;
+                };
+                for slot in slots {
+                    let Some(lambda) = lambdas.get(&slot) else {
+                        continue;
+                    };
+                    let Some(inner) = captures.get(lambda).cloned() else {
+                        continue;
+                    };
+                    let mine = captures.entry(*function).or_default();
+                    for slot in inner {
+                        let site = sites.get(&slot);
+                        let span = tables.nodes[*function].span;
+                        let outside = site.is_some_and(|site| {
+                            !(span.start <= site.start && site.end <= span.end)
+                        });
+                        if outside && !mine.contains(&slot) {
+                            mine.push(slot);
+                            settled = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn captures(&mut self, scope: &Scope) {
         let first_node = self.store.first_node();
         let tables = self.store.tables();
         let functions: Vec<_> = scope
@@ -244,7 +354,7 @@ impl Index {
             return;
         };
         let namespace = tables.nodes[*first].namespace;
-        let sites: BTreeMap<_, _> = scope
+        let sites: alloc::collections::BTreeMap<_, _> = scope
             .slots
             .iter()
             .map(|(site, slot)| (*slot, *site))
@@ -273,7 +383,8 @@ impl Index {
             (span.start, core::cmp::Reverse(span.end), !function)
         });
         let mut enclosing: Vec<usize> = Vec::new();
-        let mut captures: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        let mut captures: alloc::collections::BTreeMap<usize, Vec<usize>> =
+            alloc::collections::BTreeMap::new();
         let mut external = Vec::new();
         for (index, function) in events {
             let span = tables.nodes[index].span;
@@ -311,6 +422,13 @@ impl Index {
                 external.push((index, ir::Kind::Capture { slot, meanings }));
             }
         }
+        Self::lambda_captures(
+            scope,
+            &tables,
+            &functions,
+            &sites,
+            &mut captures,
+        );
         drop(tables);
         for (index, kind) in external {
             self.store.node_mut(index).kind = kind;

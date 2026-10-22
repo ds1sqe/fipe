@@ -191,6 +191,7 @@ impl Index {
         scope.slots.extend(earlier.iter().copied());
         let bodies = self.definitions(&instance, &scope);
         self.fill(&instance, &scope, &bodies);
+        self.local_functions(&scope);
         self.captures(&scope);
         self.entries(&instance, &scope, &mut Vec::new());
         scope.expression(recorded.value)
