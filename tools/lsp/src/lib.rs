@@ -1,6 +1,7 @@
 //! A language server for Fipe over the `fipe` crate: diagnostics from
 //! every stage, go to definition, references, hover, completion,
-//! rename and formatting. The server
+//! signature help, document and workspace symbols, inlay hints, code
+//! actions, rename and formatting. The server
 //! holds no parser, resolver or checker of its own; it asks the crate
 //! and presents the answers.
 //!
@@ -23,14 +24,16 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use lsp_types::{
-    CompletionParams, Diagnostic, DiagnosticSeverity, DocumentFormattingParams,
-    GotoDefinitionParams, Hover, HoverContents, HoverParams, Location,
+    CodeActionParams, CompletionParams, Diagnostic, DiagnosticSeverity,
+    DocumentFormattingParams, DocumentSymbolParams, GotoDefinitionParams,
+    Hover, HoverContents, HoverParams, InlayHintParams, Location,
     MarkupContent, MarkupKind, PublishDiagnosticsParams, ReferenceParams,
-    RenameParams, TextDocumentPositionParams, Uri,
+    RenameParams, SignatureHelpParams, TextDocumentPositionParams, Uri,
+    WorkspaceSymbolParams,
 };
 use serde_json::{json, Value};
 
-use actions::rename;
+use actions::{code, hints, rename, signature, symbols};
 use analysis::{Analysis, Located, Source};
 use fipe::resolve::{Origin, Target};
 use loader::Host;
@@ -43,6 +46,14 @@ use transport::Frame;
 pub struct Options {
     /// The directory of the host's declaration files.
     pub host: Option<PathBuf>,
+}
+
+/// What the client asked for at `initialize`.
+#[derive(Clone, Copy, Debug)]
+struct Asked {
+    /// Whether inlay hints are offered (`initializationOptions.inlayHints`,
+    /// true unless false).
+    inlay_hints: bool,
 }
 
 /// Where the server is in the protocol's lifecycle.
@@ -60,6 +71,7 @@ struct Server {
     host: Host,
     host_dir: Option<PathBuf>,
     encoding: Encoding,
+    asked: Asked,
     phase: Phase,
     /// Open documents' texts, by URI.
     documents: BTreeMap<String, String>,
@@ -83,6 +95,7 @@ pub fn serve(
         host: loader::host(options.host.as_deref()),
         host_dir: options.host.clone(),
         encoding: Encoding::Utf16,
+        asked: Asked { inlay_hints: true },
         phase: Phase::Waiting,
         documents: BTreeMap::new(),
         analyses: RefCell::new(BTreeMap::new()),
@@ -209,6 +222,31 @@ impl Server {
                     serde_json::from_value(params).map_err(|e| invalid(&e))?;
                 self.rename(&params)
             }
+            "textDocument/signatureHelp" => {
+                let params: SignatureHelpParams =
+                    serde_json::from_value(params).map_err(|e| invalid(&e))?;
+                Ok(self.signature_help(&params.text_document_position_params))
+            }
+            "textDocument/documentSymbol" => {
+                let params: DocumentSymbolParams =
+                    serde_json::from_value(params).map_err(|e| invalid(&e))?;
+                Ok(self.document_symbols(&params.text_document.uri))
+            }
+            "workspace/symbol" => {
+                let params: WorkspaceSymbolParams =
+                    serde_json::from_value(params).map_err(|e| invalid(&e))?;
+                Ok(self.workspace_symbols(&params.query))
+            }
+            "textDocument/inlayHint" => {
+                let params: InlayHintParams =
+                    serde_json::from_value(params).map_err(|e| invalid(&e))?;
+                Ok(self.inlay_hints(&params))
+            }
+            "textDocument/codeAction" => {
+                let params: CodeActionParams =
+                    serde_json::from_value(params).map_err(|e| invalid(&e))?;
+                Ok(self.code_actions(&params))
+            }
             "textDocument/formatting" => {
                 let params: DocumentFormattingParams =
                     serde_json::from_value(params).map_err(|e| invalid(&e))?;
@@ -222,6 +260,9 @@ impl Server {
         if let Some(dir) = params["initializationOptions"]["host"].as_str() {
             self.host_dir = Some(PathBuf::from(dir));
             self.host = loader::host(self.host_dir.as_deref());
+        }
+        if params["initializationOptions"]["inlayHints"] == false {
+            self.asked.inlay_hints = false;
         }
         let offered = &params["capabilities"]["general"]["positionEncodings"];
         let utf8 = offered
@@ -242,6 +283,13 @@ impl Server {
                 "completionProvider": {"triggerCharacters": [".", "-"]},
                 "renameProvider": true,
                 "documentFormattingProvider": true,
+                "signatureHelpProvider": {"triggerCharacters": [" ", "("]},
+                "documentSymbolProvider": true,
+                "workspaceSymbolProvider": true,
+                "inlayHintProvider": self.asked.inlay_hints,
+                "codeActionProvider": {
+                    "codeActionKinds": ["quickfix", "refactor.rewrite"],
+                },
             },
             "serverInfo": {
                 "name": "fipe-lsp",
@@ -428,6 +476,212 @@ impl Server {
             uri,
             position::range(text, *span, self.encoding),
         ))
+    }
+
+    fn signature_help(&self, position: &TextDocumentPositionParams) -> Value {
+        let Some((analysis, offset)) = self.at_exactly(position) else {
+            return Value::Null;
+        };
+        signature::signature_help(&analysis, &self.host, offset)
+            .and_then(|help| serde_json::to_value(help).ok())
+            .unwrap_or(Value::Null)
+    }
+
+    fn document_symbols(&self, uri: &Uri) -> Value {
+        let Some(analysis) = self.analyse(uri.as_str()) else {
+            return Value::Null;
+        };
+        let range = |span: (usize, usize)| {
+            position::range(&analysis.text, span, self.encoding)
+        };
+        let found: Vec<_> = symbols::of_module(
+            &analysis.module,
+            &analysis.text,
+            Some(&analysis.typed),
+        )
+        .iter()
+        .map(|symbol| symbols::document_symbol(symbol, &range))
+        .collect();
+        serde_json::to_value(found).unwrap_or(Value::Null)
+    }
+
+    /// The symbols matching `query` in every open document and the
+    /// file modules beside them, as flat symbol information.
+    fn workspace_symbols(&self, query: &str) -> Value {
+        let mut found = Vec::new();
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let open: Vec<String> = self.documents.keys().cloned().collect();
+        for uri in open {
+            let Some(analysis) = self.analyse(&uri) else {
+                continue;
+            };
+            let mut modules = vec![(
+                uri,
+                &analysis.module,
+                analysis.text.as_str(),
+                Some(&analysis.typed),
+            )];
+            for file in &analysis.files {
+                if seen.contains(&file.path)
+                    || self.documents.contains_key(uri::of(&file.path).as_str())
+                {
+                    continue;
+                }
+                seen.push(file.path.clone());
+                modules.push((
+                    uri::of(&file.path).as_str().to_string(),
+                    &file.module,
+                    file.text.as_str(),
+                    None,
+                ));
+            }
+            for (uri, module, text, typed) in modules {
+                let Ok(uri) = uri.parse::<Uri>() else {
+                    continue;
+                };
+                for symbol in symbols::of_module(module, text, typed) {
+                    for symbol in
+                        std::iter::once(&symbol).chain(&symbol.children)
+                    {
+                        if !symbols::matches(query, &symbol.name) {
+                            continue;
+                        }
+                        #[allow(deprecated)]
+                        // A field of the protocol's struct.
+                        found.push(lsp_types::SymbolInformation {
+                            name: symbol.name.clone(),
+                            kind: symbol.kind,
+                            tags: None,
+                            deprecated: None,
+                            location: Location::new(
+                                uri.clone(),
+                                position::range(
+                                    text,
+                                    symbol.selection,
+                                    self.encoding,
+                                ),
+                            ),
+                            container_name: None,
+                        });
+                    }
+                }
+            }
+        }
+        serde_json::to_value(found).unwrap_or(Value::Null)
+    }
+
+    fn inlay_hints(&self, params: &InlayHintParams) -> Value {
+        if !self.asked.inlay_hints {
+            return Value::Null;
+        }
+        let Some(analysis) = self.analyse(params.text_document.uri.as_str())
+        else {
+            return Value::Null;
+        };
+        let text = &analysis.text;
+        let start = position::offset(text, params.range.start, self.encoding);
+        let end = position::offset(text, params.range.end, self.encoding);
+        let found: Vec<lsp_types::InlayHint> =
+            hints::hints(&analysis, (start, end))
+                .into_iter()
+                .map(|hint| lsp_types::InlayHint {
+                    position: position::range(
+                        text,
+                        (hint.offset, hint.offset),
+                        self.encoding,
+                    )
+                    .start,
+                    label: lsp_types::InlayHintLabel::String(hint.label),
+                    kind: Some(lsp_types::InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(false),
+                    padding_right: Some(false),
+                    data: None,
+                })
+                .collect();
+        serde_json::to_value(found).unwrap_or(Value::Null)
+    }
+
+    fn code_actions(&self, params: &CodeActionParams) -> Value {
+        let uri = &params.text_document.uri;
+        let Some(analysis) = self.analyse(uri.as_str()) else {
+            return Value::Null;
+        };
+        let text = &analysis.text;
+        let range = (
+            position::offset(text, params.range.start, self.encoding),
+            position::offset(text, params.range.end, self.encoding),
+        );
+        let diagnostics: Vec<((usize, usize), String)> = params
+            .context
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                (
+                    (
+                        position::offset(
+                            text,
+                            diagnostic.range.start,
+                            self.encoding,
+                        ),
+                        position::offset(
+                            text,
+                            diagnostic.range.end,
+                            self.encoding,
+                        ),
+                    ),
+                    diagnostic.message.clone(),
+                )
+            })
+            .collect();
+        let path = uri::path(uri);
+        let open =
+            |path: &Path| self.documents.get(uri::of(path).as_str()).cloned();
+        let check = |candidate: &str| {
+            Analysis::new(candidate, path.as_deref(), &self.host, &open)
+                .diagnostics
+                .len()
+        };
+        let actions: Vec<lsp_types::CodeAction> = code::actions(
+            &analysis,
+            &self.host,
+            path.as_deref(),
+            range,
+            &diagnostics,
+            &check,
+        )
+        .into_iter()
+        .map(|action| {
+            let edits: Vec<lsp_types::TextEdit> = action
+                .edits
+                .into_iter()
+                .map(|(span, new_text)| lsp_types::TextEdit {
+                    range: position::range(text, span, self.encoding),
+                    new_text,
+                })
+                .collect();
+            // The protocol keys a workspace edit by `Uri`.
+            #[allow(clippy::mutable_key_type)]
+            let mut changes = std::collections::HashMap::new();
+            changes.insert(uri.clone(), edits);
+            lsp_types::CodeAction {
+                title: action.title,
+                kind: Some(lsp_types::CodeActionKind::from(action.kind)),
+                diagnostics: None,
+                edit: Some(lsp_types::WorkspaceEdit {
+                    changes: Some(changes),
+                    document_changes: None,
+                    change_annotations: None,
+                }),
+                command: None,
+                is_preferred: None,
+                disabled: None,
+                data: None,
+            }
+        })
+        .collect();
+        serde_json::to_value(actions).unwrap_or(Value::Null)
     }
 
     fn definition(&self, position: &TextDocumentPositionParams) -> Value {

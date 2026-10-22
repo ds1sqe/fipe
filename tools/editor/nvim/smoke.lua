@@ -65,6 +65,38 @@ local first = vim.diagnostic.get(badbuf)[1]
 step(seen and first.lnum == 0, 'an error diagnostic on line 1 of the scratch file')
 io.stdout:write('     ' .. (first and first.message or '') .. '\n')
 
+-- Signature help on the scratch file: `fs.list ` names its spots.
+local sig = scratch .. '/sig.fipe'
+vim.fn.writefile({ 'use fs', 'fs.list ' }, sig)
+vim.cmd.edit(vim.fn.fnameescape(sig))
+local sigbuf = vim.api.nvim_get_current_buf()
+step(attached(sigbuf), 'the fipe server attaches to the signature scratch file')
+local sig_params = { textDocument = { uri = vim.uri_from_bufnr(sigbuf) }, position = { line = 1, character = 8 } }
+local sig_replies = vim.lsp.buf_request_sync(sigbuf, 'textDocument/signatureHelp', sig_params, timeout) or {}
+local sig_label
+for _, reply in pairs(sig_replies) do
+  if reply.result and reply.result.signatures and reply.result.signatures[1] then
+    sig_label = reply.result.signatures[1].label
+  end
+end
+step(sig_label ~= nil and sig_label:find('fs.list (dir', 1, true) == 1, 'signature help at `fs.list ` names its spots (' .. (sig_label or 'none') .. ')')
+
+-- Inlay hints: the scratch file's unannotated binding shows its scheme.
+local hint = scratch .. '/hint.fipe'
+vim.fn.writefile({ 'double = n => n * 2' }, hint)
+vim.cmd.edit(vim.fn.fnameescape(hint))
+local hintbuf = vim.api.nvim_get_current_buf()
+step(attached(hintbuf), 'the fipe server attaches to the hint scratch file')
+local hint_params = { textDocument = { uri = vim.uri_from_bufnr(hintbuf) }, range = { start = { line = 0, character = 0 }, ['end'] = { line = 1, character = 0 } } }
+local hint_replies = vim.lsp.buf_request_sync(hintbuf, 'textDocument/inlayHint', hint_params, timeout) or {}
+local hint_label
+for _, reply in pairs(hint_replies) do
+  if reply.result and reply.result[1] then
+    hint_label = reply.result[1].label
+  end
+end
+step(hint_label ~= nil and hint_label:find('->', 1, true) ~= nil, 'an inlay hint shows the binding\'s scheme (' .. (hint_label or 'none') .. ')')
+
 -- nvim-dap: a breakpoint on `e.name` (line 25), then the end.
 vim.cmd.edit(vim.fn.fnameescape(example))
 buf = vim.api.nvim_get_current_buf()

@@ -155,14 +155,14 @@ pub fn spot_hover(
 }
 
 /// A labeled spot: its label, its type as written and its doc line.
-struct Spot {
-    label: String,
-    ty: String,
-    doc: Option<String>,
+pub(crate) struct Spot {
+    pub(crate) label: String,
+    pub(crate) ty: String,
+    pub(crate) doc: Option<String>,
 }
 
 /// The labeled spots of `command`, with their types and doc lines.
-fn spot_details(
+pub(crate) fn spot_details(
     analysis: &Analysis,
     host: &Host,
     command: &[String],
@@ -322,7 +322,7 @@ fn modules(host: &Host, dir: Option<&Path>) -> Vec<Offer> {
 
 /// The command heading the stage that `before` ends inside, by its
 /// name's segments.
-fn command(before: &str) -> Option<Vec<String>> {
+pub(crate) fn command(before: &str) -> Option<Vec<String>> {
     let tokens: Vec<Token> = lex(before)
         .tokens
         .into_iter()

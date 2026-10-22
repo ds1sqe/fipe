@@ -81,7 +81,8 @@ headless Neovim with every XDG directory under a scratch directory:
 
 It opens `Documentation/examples/05-modules.fipe`, waits for the
 server, checks two highlight captures, the fold and indent queries,
-an error diagnostic on a scratch file, an nvim-dap session that
+an error diagnostic on a scratch file, signature help at `fs.list ` and
+an inlay hint on a scratch binding, an nvim-dap session that
 stops at a breakpoint on line 25 and continues to `terminated`, and a
 live session on a scratch script that stops at a breakpoint and
 writes a file in the scratch directory. Each step prints PASS or FAIL;

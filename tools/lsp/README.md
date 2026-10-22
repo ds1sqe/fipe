@@ -58,6 +58,11 @@ changed on disk.
 | completion | after `use`, after `.`, on a flag (`-label`, `-label=` for a non-Bool spot), at a flag's value (the names in scope), and the names in scope; nothing inside a quote, a comment or a doc |
 | rename | the declaration and every use across the document, its file modules and the sibling files that import the name |
 | formatting | the whole document: indentation by open brackets and continuing pipes, one space between tokens that do not touch; CRLF files keep CRLF |
+| signature help | on a space or `(` after a command with labeled spots (a host command, a module's function, a prelude or document function): one signature `name (label: type)…`, each spot a parameter with its doc line; the active spot is the first the checker left open at that call, else the count of operands written |
+| document symbols | the top-level bindings (functions by their scheme), signature-only declarations and types with their fields and constructors, hierarchical |
+| workspace symbols | the same symbols of every open document and the file modules beside them, matched by the query's characters in order, ignoring case |
+| inlay hints | an unannotated binding's scheme after its name (`: Integer`); `initializationOptions.inlayHints = false` turns them off |
+| code actions | on "unknown name", `Import \`m.name\`` for each host module or sibling file exporting it, inserted after the last `use`; on an unannotated binding, `Annotate \`name: scheme\``, offered only when the document checks with it; the crate's suggestions as quick fixes: double the parentheses where both call readings bind, and `\|\|` or `\|:` where an outcome enters a text place |
 
 Positions are UTF-8 when the client offers it, UTF-16 otherwise.
 
@@ -76,6 +81,9 @@ What the actions do not do:
   already written in the file, which could capture or shadow it.
 - Workspace-wide operations stop at the document, its file modules
   and the `.fipe` files beside it.
+- Signature help knows labeled spots only: a function of bare spots
+  answers nothing. Inlay hints and the annotation action write the
+  scheme as the crate spells it, with its variables and obligations.
 
 ## Checks
 
