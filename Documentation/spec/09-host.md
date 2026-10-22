@@ -153,5 +153,7 @@ Where a budget stops a run is the backend's.
 Addresses, allocation and instruction layout are not observations; a
 backend may optimize only while preserving the observation. The checker
 emits one typed intermediate form. The VM is the first backend and the
-oracle for a later native one; an LLVM backend would be a separate crate.
+oracle; the native backend (`tools/native`, x86-64 Linux) is the second,
+and its runs equal the VM's observation and units. An LLVM backend would
+be a separate package.
 Host nondeterminism is open in H1.

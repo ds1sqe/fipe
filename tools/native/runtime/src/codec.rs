@@ -4,6 +4,10 @@
 //! An integer is eight bytes little-endian; text and a list are their
 //! length, then their contents.
 //!
+//! A function crosses only where the host shows it, in a main line or
+//! the run's result, as the placeholder [`function`], which shows as
+//! `<function>`; in a request or a reply it is [`Error::Opaque`].
+//!
 //! `fipe-native` includes this file by path, so the writer and the
 //! reader of each format are one source.
 use fipe::{
@@ -14,7 +18,7 @@ use fipe::{
     mir::Program,
     parse::parse,
     token::{Magnitude, Span},
-    value::{BigInt, Packed, Reason, Record, Value},
+    value::{BigInt, Closure, Packed, Reason, Record, Value},
     vm::Fault,
 };
 use std::{fmt, rc::Rc};
@@ -28,7 +32,8 @@ pub enum Error {
     Tag(u64),
     /// Text that is not UTF-8, or an integer that is not decimal.
     Malformed,
-    /// A closure or a witness, which only the program can read.
+    /// A closure or a witness the host would read, which only the
+    /// program can.
     Opaque,
 }
 
@@ -183,6 +188,19 @@ pub fn fnv(bytes: &[u8]) -> u64 {
     })
 }
 
+/// The value a function in a main line or a result decodes to: a
+/// closure of no body, which only shows, as `<function>`.
+#[must_use]
+pub fn function() -> Value {
+    Value::Function(Rc::new(Closure {
+        body: usize::MAX,
+        captures: Vec::new(),
+        meanings: Vec::new(),
+        filled: Vec::new(),
+        guards: Vec::new(),
+    }))
+}
+
 /// A frame the program writes on fd 3.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Frame {
@@ -206,7 +224,8 @@ impl Frame {
     ///
     /// # Errors
     ///
-    /// [`Error::Opaque`] for a function or a witness in it.
+    /// [`Error::Opaque`] for a witness in it, or a function in a
+    /// request.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut out = Vec::new();
         match self {
@@ -221,9 +240,9 @@ impl Frame {
                 };
                 number(&mut out, 0);
                 number(&mut out, *declaration as u64);
-                values(&mut out, arguments)?;
-                keyed(&mut out, environment)?;
-                keyed(&mut out, lines)?;
+                values(&mut out, arguments, false)?;
+                keyed(&mut out, environment, false)?;
+                keyed(&mut out, lines, true)?;
             }
             Self::Done {
                 result,
@@ -234,14 +253,14 @@ impl Frame {
                 match result {
                     Ok(value) => {
                         number(&mut out, 0);
-                        value_into(&mut out, value)?;
+                        value_into(&mut out, value, true)?;
                     }
                     Err(fault) => {
                         number(&mut out, 1);
                         fault_into(&mut out, fault);
                     }
                 }
-                keyed(&mut out, lines)?;
+                keyed(&mut out, lines, true)?;
                 number(&mut out, *charged);
             }
         }
@@ -257,20 +276,20 @@ impl Frame {
             0 => Ok(Self::Call {
                 request: Request::Call {
                     declaration: input.index()?,
-                    arguments: input.values()?,
-                    environment: input.keyed()?,
+                    arguments: input.values(false)?,
+                    environment: input.keyed(false)?,
                 },
-                lines: input.keyed()?,
+                lines: input.keyed(true)?,
             }),
             1 => {
                 let result = match input.number()? {
-                    0 => Ok(input.value()?),
+                    0 => Ok(input.value(true)?),
                     1 => Err(input.fault()?),
                     tag => return Err(Error::Tag(tag)),
                 };
                 Ok(Self::Done {
                     result,
-                    lines: input.keyed()?,
+                    lines: input.keyed(true)?,
                     charged: input.number()?,
                 })
             }
@@ -289,7 +308,7 @@ pub fn encode_reply(reply: &Result<Value, String>) -> Result<Vec<u8>, Error> {
     match reply {
         Ok(value) => {
             number(&mut out, 0);
-            value_into(&mut out, value)?;
+            value_into(&mut out, value, false)?;
         }
         Err(message) => {
             number(&mut out, 1);
@@ -305,7 +324,7 @@ pub fn encode_reply(reply: &Result<Value, String>) -> Result<Vec<u8>, Error> {
 pub fn decode_reply(input: &[u8]) -> Result<Result<Value, String>, Error> {
     let mut input = Reader(input);
     match input.number()? {
-        0 => Ok(Ok(input.value()?)),
+        0 => Ok(Ok(input.value(false)?)),
         1 => Ok(Err(input.text()?)),
         tag => Err(Error::Tag(tag)),
     }
@@ -320,22 +339,38 @@ fn bytes(out: &mut Vec<u8>, value: &[u8]) {
     out.extend(value);
 }
 
-fn values(out: &mut Vec<u8>, values: &[Value]) -> Result<(), Error> {
+fn values(
+    out: &mut Vec<u8>,
+    values: &[Value],
+    shown: bool,
+) -> Result<(), Error> {
     number(out, values.len() as u64);
-    values.iter().try_for_each(|value| value_into(out, value))
+    values
+        .iter()
+        .try_for_each(|value| value_into(out, value, shown))
 }
 
 /// A list of values each with an index: the `with` keys, the lines'
 /// nodes.
-fn keyed(out: &mut Vec<u8>, items: &[(usize, Value)]) -> Result<(), Error> {
+fn keyed(
+    out: &mut Vec<u8>,
+    items: &[(usize, Value)],
+    shown: bool,
+) -> Result<(), Error> {
     number(out, items.len() as u64);
     items.iter().try_for_each(|(index, value)| {
         number(out, *index as u64);
-        value_into(out, value)
+        value_into(out, value, shown)
     })
 }
 
-fn value_into(out: &mut Vec<u8>, value: &Value) -> Result<(), Error> {
+/// `shown`: the host only shows the value, so a function crosses as
+/// the placeholder.
+fn value_into(
+    out: &mut Vec<u8>,
+    value: &Value,
+    shown: bool,
+) -> Result<(), Error> {
     match value {
         Value::Unit => number(out, 0),
         Value::Int(int) => {
@@ -361,23 +396,24 @@ fn value_into(out: &mut Vec<u8>, value: &Value) -> Result<(), Error> {
         }
         Value::Seq(parts) => {
             number(out, 6);
-            values(out, parts)?;
+            values(out, parts, shown)?;
         }
         Value::Tuple(parts) => {
             number(out, 7);
-            values(out, parts)?;
+            values(out, parts, shown)?;
         }
         Value::Record(record) => {
             number(out, 8);
             number(out, record.meaning as u64);
             number(out, record.constructor as u64);
-            values(out, &record.fields)?;
+            values(out, &record.fields, shown)?;
         }
         Value::Packed(packed) => {
             number(out, 9);
             number(out, packed.meaning as u64);
-            value_into(out, &packed.value)?;
+            value_into(out, &packed.value, shown)?;
         }
+        Value::Function(_) if shown => number(out, 10),
         Value::Function(_) | Value::Meaning(_) => return Err(Error::Opaque),
     }
     Ok(())
@@ -437,17 +473,17 @@ impl Reader<'_> {
         String::from_utf8(taken).map_err(|_| Error::Malformed)
     }
 
-    fn values(&mut self) -> Result<Vec<Value>, Error> {
-        (0..self.number()?).map(|_| self.value()).collect()
+    fn values(&mut self, shown: bool) -> Result<Vec<Value>, Error> {
+        (0..self.number()?).map(|_| self.value(shown)).collect()
     }
 
-    fn keyed(&mut self) -> Result<Vec<(usize, Value)>, Error> {
+    fn keyed(&mut self, shown: bool) -> Result<Vec<(usize, Value)>, Error> {
         (0..self.number()?)
-            .map(|_| Ok((self.index()?, self.value()?)))
+            .map(|_| Ok((self.index()?, self.value(shown)?)))
             .collect()
     }
 
-    fn value(&mut self) -> Result<Value, Error> {
+    fn value(&mut self, shown: bool) -> Result<Value, Error> {
         Ok(match self.number()? {
             0 => Value::Unit,
             1 => Value::Int(self.number()?.cast_signed()),
@@ -467,17 +503,18 @@ impl Reader<'_> {
             }
             4 => Value::F64(f64::from_bits(self.number()?)),
             5 => Value::text(&self.text()?),
-            6 => Value::seq(self.values()?),
-            7 => Value::Tuple(Rc::new(self.values()?)),
+            6 => Value::seq(self.values(shown)?),
+            7 => Value::Tuple(Rc::new(self.values(shown)?)),
             8 => Value::Record(Rc::new(Record {
                 meaning: self.index()?,
                 constructor: self.index()?,
-                fields: self.values()?,
+                fields: self.values(shown)?,
             })),
             9 => Value::Packed(Rc::new(Packed {
                 meaning: self.index()?,
-                value: self.value()?,
+                value: self.value(shown)?,
             })),
+            10 if shown => function(),
             tag => return Err(Error::Tag(tag)),
         })
     }

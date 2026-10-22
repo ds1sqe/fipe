@@ -1,6 +1,8 @@
 //! The runtime archive, scratch files and golden listings of the
 //! tests; each test binary uses a part.
 #![allow(dead_code)]
+use fipe::mir::Program;
+use fipe_native::{codec::Unit, elf, link, lower};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -16,11 +18,13 @@ pub fn scratch(name: &str) -> PathBuf {
 }
 
 /// `libfipe_native_rt.a`, built once per test binary in its own target
-/// directory, so the outer cargo's lock is not waited on.
+/// directory, so the outer cargo's lock is not waited on, in the test's
+/// own profile.
 pub fn runtime() -> &'static Path {
     static ARCHIVE: OnceLock<PathBuf> = OnceLock::new();
     ARCHIVE.get_or_init(|| {
         let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("runtime");
+        let release = !cfg!(debug_assertions);
         let status = Command::new(env!("CARGO"))
             .args(["build", "--locked", "--offline", "--manifest-path"])
             .arg(
@@ -29,11 +33,24 @@ pub fn runtime() -> &'static Path {
             )
             .arg("--target-dir")
             .arg(&target)
+            .args(release.then_some("--release"))
             .status()
             .unwrap();
         assert!(status.success(), "the runtime does not build");
-        target.join("debug/libfipe_native_rt.a")
+        let profile = if release { "release" } else { "debug" };
+        target.join(profile).join("libfipe_native_rt.a")
     })
+}
+
+/// The executable of a unit, linked against the runtime.
+pub fn executable(name: &str, unit: &Unit, program: &Program) -> PathBuf {
+    let dir = scratch(name);
+    let object = lower::object(program, &unit.encode());
+    let path = dir.join(format!("{name}.o"));
+    std::fs::write(&path, elf::write(&object).unwrap()).unwrap();
+    let executable = dir.join(name);
+    link::link(&path, runtime(), &executable).unwrap();
+    executable
 }
 
 /// Runs `program` and returns its exit code.

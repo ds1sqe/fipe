@@ -13,11 +13,11 @@ use fipe::{
 };
 use fipe_native::{
     codec::{self, Frame, Unit},
-    elf, host_declarations, link, lower,
+    host_declarations, lower,
 };
 use std::{
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Stdio},
 };
 
@@ -92,6 +92,7 @@ const DRIFT: &[(&str, &str)] = &[
         include_str!("fixtures/drift/environment.fipe"),
     ),
     ("modules", include_str!("fixtures/drift/modules.fipe")),
+    ("functions", include_str!("fixtures/drift/functions.fipe")),
 ];
 
 /// A fixture's unit under the conformance host, with the file module
@@ -101,17 +102,6 @@ fn unit(source: &str) -> (Unit, Program) {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/host");
     let files = vec![("geometry".into(), examples::GEOMETRY.into())];
     Unit::new(source, host_declarations(&host).unwrap(), files).unwrap()
-}
-
-/// The executable of a unit, linked against the runtime.
-fn executable(name: &str, unit: &Unit, program: &Program) -> PathBuf {
-    let dir = common::scratch(name);
-    let object = lower::object(program, &unit.encode());
-    let path = dir.join(format!("{name}.o"));
-    std::fs::write(&path, elf::write(&object).unwrap()).unwrap();
-    let executable = dir.join(name);
-    link::link(&path, common::runtime(), &executable).unwrap();
-    executable
 }
 
 /// The VM's run under a budget, answered by the conformance host: the
@@ -237,7 +227,7 @@ fn traced(program: &Program, observation: &Observation, main: &str) -> String {
 #[test]
 fn first_observes_and_charges_as_on_the_vm() {
     let (unit, program) = unit(FIRST);
-    let executable = executable("first", &unit, &program);
+    let executable = common::executable("first", &unit, &program);
     let (vm, vm_units) = on_vm(&program, None, FIRST);
     let (native, units, code) = native(&executable, &program, None, FIRST);
     assert_eq!(
@@ -261,7 +251,7 @@ fn first_observes_and_charges_as_on_the_vm() {
 #[test]
 fn under_a_budget_both_fault_at_one_span_with_equal_units() {
     let (unit, program) = unit(FIRST);
-    let executable = executable("first_budget", &unit, &program);
+    let executable = common::executable("first_budget", &unit, &program);
     let (_, whole) = on_vm(&program, None, FIRST);
     for budget in [0, 1, 50, whole / 2, whole - 1, whole] {
         let (vm, vm_units) = on_vm(&program, Some(budget), FIRST);
@@ -278,14 +268,31 @@ fn under_a_budget_both_fault_at_one_span_with_equal_units() {
     }
 }
 
+/// A result as the pipe carries it: a function in it becomes the
+/// placeholder the host shows as `<function>`, the rest is unchanged.
+fn carried(result: Result<Value, Fault>) -> Result<Value, Fault> {
+    let done = Frame::Done {
+        result,
+        lines: Vec::new(),
+        charged: 0,
+    };
+    let Frame::Done { result, .. } =
+        Frame::decode(&done.encode().unwrap()).unwrap()
+    else {
+        unreachable!("a Done frame decodes to one")
+    };
+    result
+}
+
 /// A program run on the VM and natively, unbounded and under budgets
 /// that stop it partway: equal observations (their traces too) and
 /// units each time. The native observation of the unbounded run, its
 /// units and its exit code.
 fn equal(name: &str, source: &str) -> (Observation, u64, i32) {
     let (unit, program) = unit(source);
-    let executable = executable(name, &unit, &program);
-    let (vm, whole) = on_vm(&program, None, source);
+    let executable = common::executable(name, &unit, &program);
+    let (mut vm, whole) = on_vm(&program, None, source);
+    vm.result = carried(vm.result);
     let (observed, units, code) = native(&executable, &program, None, source);
     assert_eq!(
         traced(&program, &observed, source),
@@ -295,7 +302,8 @@ fn equal(name: &str, source: &str) -> (Observation, u64, i32) {
     assert_eq!(observed, vm, "{name}");
     assert_eq!(units, whole, "{name}");
     for budget in [whole / 3, whole / 2, whole.saturating_sub(1)] {
-        let (vm, vm_units) = on_vm(&program, Some(budget), source);
+        let (mut vm, vm_units) = on_vm(&program, Some(budget), source);
+        vm.result = carried(vm.result);
         let (cut, units, _) =
             native(&executable, &program, Some(budget), source);
         assert_eq!(cut, vm, "{name} under budget {budget}");
@@ -330,6 +338,18 @@ fn each_drift_fixture_observes_as_on_the_vm() {
             ("conversions", Err(fault)) => {
                 assert_eq!(fault.reason, Reason::Cast);
             }
+            // A function shows as on the VM, also in the lines a host
+            // call carries.
+            ("functions", Ok(value)) => {
+                assert_eq!(value, codec::function());
+                let success = String::from_utf8_lossy(&observed.success);
+                assert!(
+                    success.starts_with(
+                        "<function>\n(<function>, 1)\nOp \"inc\" <function>\n"
+                    ),
+                    "{success}"
+                );
+            }
             (_, result) => assert!(result.is_ok(), "{name}: {result:?}"),
         }
     }
@@ -357,7 +377,7 @@ fn each_example_observes_as_on_the_vm_and_replays_its_trace() {
 fn a_recursion_without_end_faults_budget_at_the_vm_s_span() {
     let source = "r = n => r (n + 1)\nr 0";
     let (unit, program) = unit(source);
-    let executable = executable("recursion", &unit, &program);
+    let executable = common::executable("recursion", &unit, &program);
     for budget in [1000, 100_000] {
         let (vm, vm_units) = on_vm(&program, Some(budget), source);
         let (native, units, code) =
@@ -389,7 +409,7 @@ fn a_gate_lowers_and_branches_as_on_the_vm() {
 }
 
 #[test]
-fn every_value_but_a_function_or_a_witness_crosses_the_pipe() {
+fn every_value_crosses_the_pipe_a_function_only_where_shown() {
     use fipe::{
         token::Span,
         value::{Packed, Record},
@@ -449,6 +469,26 @@ fn every_value_but_a_function_or_a_witness_crosses_the_pipe() {
     let bytes = codec::encode_reply(&reply).unwrap();
     assert_eq!(codec::decode_reply(&bytes), Ok(reply));
     assert_eq!(Frame::decode(&bytes[..4]), Err(codec::Error::Short));
+    // A function crosses only where the host shows it: in the lines,
+    // not in a request's arguments or a reply.
+    let function = Value::Tuple(Rc::new(vec![codec::function()]));
+    let call = |arguments, lines| Frame::Call {
+        request: Request::Call {
+            declaration: 0,
+            arguments,
+            environment: Vec::new(),
+        },
+        lines,
+    };
+    let shown = call(Vec::new(), vec![(1, function.clone())]);
+    assert_eq!(Frame::decode(&shown.encode().unwrap()), Ok(shown));
+    let asked = call(vec![function.clone()], Vec::new()).encode();
+    assert_eq!(asked, Err(codec::Error::Opaque));
+    let replied = codec::encode_reply(&Ok(function));
+    assert_eq!(replied, Err(codec::Error::Opaque));
+    let mut forged = codec::encode_reply(&Ok(Value::Unit)).unwrap();
+    forged[8] = 10;
+    assert_eq!(codec::decode_reply(&forged), Err(codec::Error::Tag(10)));
     let witness = Value::Meaning(Rc::new(fipe::ir::Type::Unit));
     let opaque = codec::encode_reply(&Ok(witness));
     assert_eq!(opaque, Err(codec::Error::Opaque));

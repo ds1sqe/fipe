@@ -114,8 +114,9 @@ Evaluation is strict; delay is `() => …`; a host `Stream<T>` is pulled on
 demand. `map f` with pure `f` may run in parallel without syntax; impure
 stages stay in order. No coloring: a host call is the host's to perform,
 as a syscall is the kernel's. Open: whether the run blocks in the host or
-suspends until its reply (the VM suspends today,
-[embedding](../api/09-embed.md)); a run left waiting on a reply that never
+suspends until its reply (the VM suspends,
+[embedding](../api/09-embed.md); the native backend blocks on its
+host's reply); a run left waiting on a reply that never
 comes, and cancelling it; asynchronous hosts and threads, and with them
 `Task<T>`. `Stream`, `Task` and `Cell` are declared by the host (09).
 

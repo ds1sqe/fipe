@@ -1,0 +1,9 @@
+# Function values in main lines: alone, in a tuple, in a record, before
+# a host call and as the result; each shows as on the VM.
+inc = x => x + 1
+inc
+(inc, 1)
+type Op { name: String, run: Integer -> Integer }
+Op "inc" inc
+ls | map .name
+inc
