@@ -1,0 +1,20 @@
+# The native backend's first milestone: integer arithmetic past `I64`
+# into `Big`, a recursion, a `case` over a sum, one host call and a
+# division by zero, which Faults.
+use cli
+
+type Shape { Square(side: Integer), Rect(w: Integer, h: Integer) }
+
+area: Shape -> Integer = {
+    Square s => s * s,
+    Rect { w, h } => w * h,
+}
+
+fact: Integer -> Integer = n => if n == 0 { 1 } else { n * (fact (n - 1)) }
+
+# The conformance host's port is 8080, so this divides by zero.
+per: Integer -> Integer = port => (fact 5).div (port - 8080)
+
+fact 25
+(area (Rect 6 7)) - (area (Square 3))
+per cli.port

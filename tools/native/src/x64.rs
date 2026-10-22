@@ -77,6 +77,8 @@ pub enum Inst {
     MovImm(Reg, u64),
     /// `mov dst, src`
     Mov(Reg, Reg),
+    /// `cmp a, b`
+    Cmp(Reg, Reg),
     /// `mov r, [rbp+disp32]`
     Load(Reg, i32),
     /// `mov [rbp+disp32], r`
@@ -108,6 +110,7 @@ impl fmt::Display for Inst {
             Self::Pop(r) => write!(f, "    pop {r}"),
             Self::MovImm(r, value) => write!(f, "    mov {r}, {value}"),
             Self::Mov(dst, src) => write!(f, "    mov {dst}, {src}"),
+            Self::Cmp(a, b) => write!(f, "    cmp {a}, {b}"),
             Self::Load(r, disp) => write!(f, "    mov {r}, [rbp{disp:+}]"),
             Self::Store(disp, r) => write!(f, "    mov [rbp{disp:+}], {r}"),
             Self::Lea(r, disp) => write!(f, "    lea {r}, [rbp{disp:+}]"),
@@ -229,6 +232,13 @@ fn encode(function: &Function, text: &mut Text) -> Result<(), Error> {
                     rex(src.high(), dst.high()),
                     0x89,
                     0xc0 | src.low() << 3 | dst.low(),
+                ]);
+            }
+            Inst::Cmp(a, b) => {
+                code.extend([
+                    rex(b.high(), a.high()),
+                    0x39,
+                    0xc0 | b.low() << 3 | a.low(),
                 ]);
             }
             Inst::Load(r, disp) => frame(code, 0x8b, r, disp),

@@ -1,4 +1,6 @@
-//! The runtime archive and scratch files the tests link with.
+//! The runtime archive, scratch files and golden listings of the
+//! tests; each test binary uses a part.
+#![allow(dead_code)]
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -37,4 +39,16 @@ pub fn runtime() -> &'static Path {
 /// Runs `program` and returns its exit code.
 pub fn run(program: &Path) -> i32 {
     Command::new(program).status().unwrap().code().unwrap()
+}
+
+/// `listing` equals `tests/golden/<name>.lst`; `FIPE_BLESS=1` rewrites
+/// the file instead.
+pub fn golden(name: &str, listing: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(format!("{name}.lst"));
+    if std::env::var_os("FIPE_BLESS").is_some() {
+        std::fs::write(&path, listing).unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), listing);
 }

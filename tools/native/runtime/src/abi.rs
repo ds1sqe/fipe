@@ -1,14 +1,24 @@
 //! The C exports the generated code calls. A local of that code is an
 //! opaque slot holding one [`Value`]; every export takes slot pointers,
-//! checks them and returns a status: [`OK`], or 1 for a Fault, which
-//! the runtime keeps.
+//! checks them, calls a safe function of `ops` and returns a status:
+//! [`OK`], or [`FAULT`] for a Fault, which the runtime keeps.
+//!
+//! A site is a statement or terminator by body, block and position, the
+//! terminator's position being the block's statement count: the runtime
+//! reads what the site does from the program it compiled at startup.
 #![allow(unsafe_code)]
 
+use crate::{
+    ops::{self, Faulted, Site},
+    start,
+};
 use fipe::value::Value;
 use std::{mem, process};
 
 /// The status of an export that succeeded.
 const OK: u32 = 0;
+/// The status of an export that Faulted.
+const FAULT: u32 = 1;
 
 // The generated code reserves 16 bytes, 8-aligned, for each slot.
 const _: () = assert!(mem::size_of::<Value>() == 16);
@@ -16,26 +26,94 @@ const _: () = assert!(mem::align_of::<Value>() == 8);
 
 #[cfg(not(test))] // The test harness has its own `main`.
 extern "C" {
-    /// The program's main body, defined by the generated object.
-    fn fipe_main() -> u32;
+    /// The program's main body, defined by the generated object: its
+    /// result into the slot `out`, its status returned.
+    fn fipe_main(out: *mut std::ffi::c_void) -> u32;
+    /// The unit the object carries: its length in eight bytes
+    /// little-endian, then the bytes `codec::Unit` encodes.
+    static fipe_unit: [u8; 8];
 }
 
-/// The process entry: runs the program; exit status 0 when it
-/// succeeded, 1 when it Faulted.
+/// The process entry: runs the program; the exit code `start::main`
+/// gives.
 #[cfg(not(test))]
 #[no_mangle]
 extern "C" fn main() -> std::ffi::c_int {
-    // SAFETY: `fipe_main` takes no argument and returns a status.
-    std::ffi::c_int::from(unsafe { fipe_main() } != OK)
+    // SAFETY: the object defines `fipe_unit` as its length followed by
+    // that many bytes, in `.rodata`, which lives as long as the process.
+    let unit: &'static [u8] = unsafe {
+        let start = std::ptr::addr_of!(fipe_unit).cast::<u8>();
+        let length = u64::from_le_bytes(fipe_unit);
+        let length = usize::try_from(length).unwrap_or_else(|_| abort());
+        std::slice::from_raw_parts(start.add(8), length)
+    };
+    // SAFETY: `fipe_main` takes the slot of its result, which holds a
+    // value, and returns a status.
+    start::main(unit, |out| unsafe {
+        fipe_main(std::ptr::from_mut(out).cast())
+    })
+}
+
+fn abort() -> ! {
+    process::abort()
 }
 
 /// The slot behind `slot`. A null or misaligned pointer is a bug of the
 /// code generator, not a Fault of the program, so it aborts.
 fn checked(slot: *mut Value) -> *mut Value {
     if slot.is_null() || !slot.is_aligned() {
-        process::abort();
+        abort();
     }
     slot
+}
+
+fn checked_const(slot: *const Value) -> *const Value {
+    checked(slot.cast_mut()).cast_const()
+}
+
+fn site(body: u64, block: u64, index: u64) -> Site {
+    Site {
+        body: size(body),
+        block: size(block),
+        index: size(index),
+    }
+}
+
+fn size(n: u64) -> usize {
+    usize::try_from(n).unwrap_or_else(|_| abort())
+}
+
+/// Clones of `count` slots from `slots`.
+///
+/// # Safety
+///
+/// `slots` points to `count` consecutive slots holding values, or
+/// `count` is 0.
+unsafe fn read(slots: *const Value, count: usize) -> Vec<Value> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let slots = checked_const(slots);
+    // SAFETY: the caller's slots hold `count` values.
+    unsafe { std::slice::from_raw_parts(slots, count) }.to_vec()
+}
+
+/// Replace the value of the slot `out` with `value`.
+///
+/// # Safety
+///
+/// `out` points to a slot holding a value.
+unsafe fn put(out: *mut Value, value: Value) {
+    // SAFETY: the slot holds a value, which the assignment drops.
+    unsafe { *checked(out) = value };
+}
+
+const fn status(result: Result<(), Faulted>) -> u32 {
+    if result.is_ok() {
+        OK
+    } else {
+        FAULT
+    }
 }
 
 /// Writes `Unit` into the empty slot `out`.
@@ -48,4 +126,213 @@ unsafe extern "C" fn rt_unit(out: *mut Value) -> u32 {
     // SAFETY: the slot is valid and empty, so nothing is overwritten.
     unsafe { checked(out).write(Value::Unit) };
     OK
+}
+
+/// Writes `Unit` into `count` empty consecutive slots: a frame's
+/// locals as it opens.
+///
+/// # Safety
+///
+/// `slots` points to `count` consecutive slots holding no value.
+#[no_mangle]
+unsafe extern "C" fn rt_units(slots: *mut Value, count: u64) {
+    let slots = checked(slots);
+    for at in 0..size(count) {
+        // SAFETY: each of the slots is valid and empty.
+        unsafe { slots.add(at).write(Value::Unit) };
+    }
+}
+
+/// Drops the values of `count` consecutive slots: a frame's locals as
+/// it closes, which hold no value after.
+///
+/// # Safety
+///
+/// `slots` points to `count` consecutive slots holding values.
+#[no_mangle]
+unsafe extern "C" fn rt_drops(slots: *mut Value, count: u64) {
+    let slots = checked(slots);
+    for at in 0..size(count) {
+        // SAFETY: each slot holds a value, dropped once.
+        unsafe { slots.add(at).drop_in_place() };
+    }
+}
+
+/// A body's spots: clones of its `count` arguments into `count`
+/// consecutive slots from `spots`.
+///
+/// # Safety
+///
+/// `spots` points to `count` consecutive slots holding values, `args`
+/// to `count` consecutive slots holding values.
+#[no_mangle]
+unsafe extern "C" fn rt_spots(
+    spots: *mut Value,
+    args: *const Value,
+    count: u64,
+) {
+    let count = size(count);
+    // SAFETY: as the caller promises.
+    let args = unsafe { read(args, count) };
+    let spots = checked(spots);
+    for (at, arg) in args.into_iter().enumerate() {
+        // SAFETY: each spot holds a value.
+        unsafe { put(spots.add(at), arg) };
+    }
+}
+
+/// `out` = a clone of `from`, which may be `out`.
+///
+/// # Safety
+///
+/// Both point to slots holding values.
+#[no_mangle]
+unsafe extern "C" fn rt_copy(out: *mut Value, from: *const Value) {
+    // SAFETY: `from` holds a value; the clone is made before `out` is
+    // written.
+    let value = unsafe { (*checked_const(from)).clone() };
+    // SAFETY: `out` holds a value.
+    unsafe { put(out, value) };
+}
+
+/// `out` = the value of `from`, which holds `Unit` after.
+///
+/// # Safety
+///
+/// Both point to distinct slots holding values.
+#[no_mangle]
+unsafe extern "C" fn rt_move(out: *mut Value, from: *mut Value) {
+    // SAFETY: `from` holds a value, replaced by `Unit`.
+    let value = unsafe { checked(from).replace(Value::Unit) };
+    // SAFETY: `out` holds a value.
+    unsafe { put(out, value) };
+}
+
+/// `out` = the prepared constant `index`.
+///
+/// # Safety
+///
+/// `out` points to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_const(out: *mut Value, index: u64) {
+    let index = size(index);
+    let value = start::with(|state| state.program.constants[index].clone());
+    // SAFETY: `out` holds a value.
+    unsafe { put(out, value) };
+}
+
+/// `out` = part `index` of `from`, which may be `out`.
+///
+/// # Safety
+///
+/// Both point to slots holding values.
+#[no_mangle]
+unsafe extern "C" fn rt_field(out: *mut Value, from: *const Value, index: u64) {
+    let index = size(index);
+    // SAFETY: `from` holds a value; the part is cloned before `out` is
+    // written.
+    let value = ops::field(unsafe { &*checked_const(from) }, index);
+    // SAFETY: `out` holds a value.
+    unsafe { put(out, value) };
+}
+
+/// The key the value of `from` switches on.
+///
+/// # Safety
+///
+/// `from` points to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_switch(from: *const Value) -> u64 {
+    // SAFETY: `from` holds a value.
+    ops::switch_key(unsafe { &*checked_const(from) })
+}
+
+/// The site's `Charge`.
+#[no_mangle]
+extern "C" fn rt_charge(body: u64, block: u64, index: u64) -> u32 {
+    status(start::with(|state| state.charge(site(body, block, index))))
+}
+
+/// The site's `Line` of the value of `from`.
+///
+/// # Safety
+///
+/// `from` points to a slot holding a value.
+#[no_mangle]
+unsafe extern "C" fn rt_line(
+    from: *const Value,
+    body: u64,
+    block: u64,
+    index: u64,
+) {
+    // SAFETY: `from` holds a value.
+    let value = unsafe { (*checked_const(from)).clone() };
+    start::with(|state| state.line(site(body, block, index), value));
+}
+
+/// The site's `Assign` of a `Construct` or a `Native` into `out`, its
+/// operands in the consecutive slots from `args`.
+///
+/// # Safety
+///
+/// `out` points to a slot holding a value; `args` to as many slots
+/// holding values as the rvalue has operands.
+#[no_mangle]
+unsafe extern "C" fn rt_assign(
+    out: *mut Value,
+    args: *const Value,
+    body: u64,
+    block: u64,
+    index: u64,
+) -> u32 {
+    let site = site(body, block, index);
+    let count = start::with(|state| state.operands(site));
+    // SAFETY: as the caller promises.
+    let args = unsafe { read(args, count) };
+    match start::with(|state| ops::assign(state, site, args)) {
+        Ok(value) => {
+            // SAFETY: `out` holds a value.
+            unsafe { put(out, value) };
+            OK
+        }
+        Err(Faulted) => FAULT,
+    }
+}
+
+/// The `Call` terminating the block, of a `Native` or `Host` callee,
+/// into `out`, its arguments in the consecutive slots from `args`.
+///
+/// # Safety
+///
+/// `out` points to a slot holding a value; `args` to as many slots
+/// holding values as the call has arguments.
+#[no_mangle]
+unsafe extern "C" fn rt_call(
+    out: *mut Value,
+    args: *const Value,
+    body: u64,
+    block: u64,
+) -> u32 {
+    let site = start::with(|state| state.terminator(site(body, block, 0)));
+    let count = start::with(|state| state.operands(site));
+    // SAFETY: as the caller promises.
+    let args = unsafe { read(args, count) };
+    match start::with(|state| ops::call(state, site, args)) {
+        Ok(value) => {
+            // SAFETY: `out` holds a value.
+            unsafe { put(out, value) };
+            OK
+        }
+        Err(Faulted) => FAULT,
+    }
+}
+
+/// The block's switch had no case for its value: Faults `Unreachable`.
+#[no_mangle]
+extern "C" fn rt_unreachable(body: u64, block: u64) -> u32 {
+    start::with(|state| {
+        let site = state.terminator(site(body, block, 0));
+        state.unreachable(site)
+    });
+    FAULT
 }

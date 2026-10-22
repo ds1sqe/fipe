@@ -79,6 +79,18 @@ fn mov_of_an_immediate_and_a_register() {
 }
 
 #[test]
+fn cmp_of_two_registers() {
+    same(
+        "cmp",
+        vec![
+            (vec![Inst::Cmp(Reg::Rax, Reg::Rcx)], "cmp rax, rcx"),
+            (vec![Inst::Cmp(Reg::R9, Reg::Rax)], "cmp r9, rax"),
+            (vec![Inst::Cmp(Reg::Rdx, Reg::R15)], "cmp rdx, r15"),
+        ],
+    );
+}
+
+#[test]
 fn mov_and_lea_through_the_frame() {
     same(
         "frame",

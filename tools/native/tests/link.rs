@@ -1,7 +1,8 @@
 //! Objects linked against the runtime with `cc` and run.
 use fipe_native::{
+    codec::Unit,
     elf::{self, Object, Relocation, RelocationKind, Section, Symbol},
-    link,
+    link, lower,
     x64::{self, Cond, Function, Inst, Label, Reg},
 };
 use std::{path::Path, process::Command};
@@ -9,13 +10,14 @@ use std::{path::Path, process::Command};
 mod common;
 
 #[test]
-fn an_object_holding_only_fipe_main_links_and_exits_zero() {
+fn an_object_holding_only_fipe_main_and_an_empty_unit_links_and_exits_zero() {
     let dir = common::scratch("only_main");
     let source = dir.join("main.s");
     std::fs::write(
         &source,
         ".intel_syntax noprefix\n.globl fipe_main\nfipe_main:\n\
-         xor eax, eax\nret\n.section .note.GNU-stack,\"\",@progbits\n",
+         xor eax, eax\nret\n.section .rodata\n.globl fipe_unit\n\
+         fipe_unit: .quad 0\n.section .note.GNU-stack,\"\",@progbits\n",
     )
     .unwrap();
     let object = dir.join("main.o");
@@ -59,28 +61,25 @@ fn unit_main() -> Vec<Function> {
     }]
 }
 
-/// `listing` equals `tests/golden/<name>.lst`; `FIPE_BLESS=1` rewrites
-/// the file instead.
-fn golden(name: &str, listing: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden")
-        .join(format!("{name}.lst"));
-    if std::env::var_os("FIPE_BLESS").is_some() {
-        std::fs::write(&path, listing).unwrap();
-    }
-    assert_eq!(std::fs::read_to_string(path).unwrap(), listing);
-}
-
 #[test]
 fn a_hand_built_object_calling_rt_unit_links_and_exits_zero() {
     let functions = unit_main();
-    golden("unit", &x64::listing(&functions));
+    common::golden("unit", &x64::listing(&functions));
     let text = x64::assemble(&functions).unwrap();
     let mut symbols = text.symbols;
+    // An empty unit: an object with no Fipe source runs `fipe_main`
+    // alone.
+    symbols.push(Symbol {
+        name: "fipe_unit".into(),
+        section: Section::Rodata,
+        offset: 0,
+        size: 8,
+        global: true,
+    });
     symbols.push(Symbol {
         name: "fipe_source".into(),
         section: Section::Rodata,
-        offset: 0,
+        offset: 8,
         size: 5,
         global: false,
     });
@@ -94,7 +93,7 @@ fn a_hand_built_object_calling_rt_unit_links_and_exits_zero() {
     let object = Object {
         text: text.bytes,
         text_relocations: text.relocations,
-        rodata: b"unit\0".to_vec(),
+        rodata: b"\0\0\0\0\0\0\0\0unit\0".to_vec(),
         data: vec![0; 8],
         data_relocations: vec![Relocation {
             offset: 0,
@@ -122,6 +121,7 @@ fn a_hand_built_object_calling_rt_unit_links_and_exits_zero() {
         "R_X86_64_64            0000000000000000 fipe_main + 0",
         "FUNC    GLOBAL DEFAULT    1 fipe_main",
         "OBJECT  LOCAL  DEFAULT    2 fipe_source",
+        "OBJECT  GLOBAL DEFAULT    2 fipe_unit",
         "OBJECT  GLOBAL DEFAULT    3 fipe_bodies",
         "NOTYPE  GLOBAL DEFAULT  UND rt_unit",
     ] {
@@ -150,4 +150,53 @@ fn two_symbols_of_one_name_are_refused() {
         elf::write(&object),
         Err(elf::Error::Duplicate("twice".into()))
     );
+}
+
+#[test]
+fn the_cli_builds_an_object_and_an_executable_of_a_file() {
+    let dir = common::scratch("cli");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let host = fixtures.join("../../../tests/fixtures/host");
+    let source = fixtures.join("fixtures/first.fipe");
+    let cli = |output: &Path, more: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_fipe-native"))
+            .arg("build")
+            .arg(&source)
+            .arg("-o")
+            .arg(output)
+            .arg("--host")
+            .arg(&host)
+            .args(more)
+            .output()
+            .unwrap()
+    };
+    // `--object` writes the object the library makes of the same unit.
+    let object = dir.join("first.o");
+    assert!(cli(&object, &["--object"]).status.success());
+    let main = std::fs::read_to_string(&source).unwrap();
+    let declarations = fipe_native::host_declarations(&host).unwrap();
+    let (unit, program) = Unit::new(&main, declarations).unwrap();
+    let expected = lower::object(&program, &unit.encode()).unwrap();
+    assert_eq!(
+        std::fs::read(&object).unwrap(),
+        elf::write(&expected).unwrap()
+    );
+    // Linked and run with no host connected, its host call Faults.
+    let executable = dir.join("first");
+    let runtime = common::runtime().to_str().unwrap();
+    let built = cli(&executable, &["--runtime", runtime]);
+    assert!(built.status.success(), "{built:?}");
+    let run = Command::new(&executable).output().unwrap();
+    assert_eq!(run.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stderr),
+        "fault in main at 20:5: host: no host is connected\n"
+    );
+    // A request it cannot read is refused with the usage.
+    let refused = Command::new(env!("CARGO_BIN_EXE_fipe-native"))
+        .arg("run")
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("usage"));
 }
