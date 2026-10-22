@@ -138,6 +138,14 @@ local function register_dap(opts)
         return trace
       end,
     },
+    {
+      -- Live on the std host: real files under the working directory.
+      type = 'fipe',
+      request = 'launch',
+      name = 'Run this file on this machine',
+      program = '${file}',
+      cwd = '${workspaceFolder}',
+    },
   }
   return true
 end

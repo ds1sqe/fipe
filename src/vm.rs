@@ -528,9 +528,6 @@ impl Machine {
         input: Value,
         line: usize,
     ) -> Option<Outcome<Result<Value, Fault>>> {
-        if self.lines.last().is_some_and(|(node, _)| *node == line) {
-            self.lines.pop();
-        }
         self.input = Some(Input::Applied { line });
         let flow = self.call_value(
             program,

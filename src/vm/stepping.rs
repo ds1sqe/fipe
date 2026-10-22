@@ -1,6 +1,6 @@
 //! A stepped run: the same steps as `run`, handed out as stops before
 //! each statement and terminator and after each write.
-use super::{Fault, Frame, Machine, Stop};
+use super::{Fault, Frame, Input, InputError, Machine, Stop};
 use crate::{
     embed::{Outcome, Reply},
     mir,
@@ -14,6 +14,42 @@ impl Machine {
     pub fn begin(&mut self, program: &mir::Program) {
         self.open(program);
         self.stepping = true;
+    }
+
+    /// Begin a stepped run as [`Machine::run_with_input`] would run it:
+    /// the function the last line makes is applied to `input` at the
+    /// end, and input without the shape of its spot Faults `Host` at
+    /// that line at the first stop.
+    ///
+    /// # Errors
+    /// [`InputError`], before any effect, when the last line is not a
+    /// function of one open spot.
+    pub fn begin_with_input(
+        &mut self,
+        program: &mir::Program,
+        input: Value,
+    ) -> Result<(), InputError> {
+        let spot = super::input_spot(program)?;
+        let line = program.bodies[program.main].node;
+        self.begin(program);
+        let program = self.joined();
+        let misfit = {
+            let tables = program.tables.borrow();
+            (!super::fits::fits(&input, &spot, &tables, &self.prelude()))
+                .then(|| super::fits::named(&spot, &tables))
+        };
+        if let Some(named) = misfit {
+            self.end();
+            let reason = crate::value::Reason::Host(alloc::format!(
+                "the input is not {named}"
+            ));
+            self.stops.push_back(Stop::Done(Err(Self::fault(
+                &program, line, reason,
+            ))));
+            return Ok(());
+        }
+        self.input = Some(Input::Owed { value: input, line });
+        Ok(())
     }
 
     /// Advance a stepped run to its next stop.

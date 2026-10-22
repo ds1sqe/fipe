@@ -99,3 +99,36 @@ fn the_refusal_reads_in_words() {
          spot; this one is not a function"
     );
 }
+
+#[test]
+fn a_stepped_run_applies_the_input_at_its_end() {
+    use fipe::vm::{Machine, Stop};
+    let program = host::program("add = a b => a + b\n1 + 1\nadd 2");
+    let mut machine = Machine::new(None);
+    machine.begin_with_input(&program, Value::Int(5)).unwrap();
+    let result = loop {
+        if let Stop::Done(result) = machine.next_stop() {
+            break result;
+        }
+    };
+    assert_eq!(result, Ok(Value::Int(7)));
+    let values: Vec<_> = machine
+        .lines()
+        .iter()
+        .map(|(_, value)| value.clone())
+        .collect();
+    assert_eq!(values, [Value::Int(2), Value::Int(7)]);
+    // Input of another shape Faults at the last line at the first stop.
+    let mut machine = Machine::new(None);
+    machine
+        .begin_with_input(&program, Value::text("five"))
+        .unwrap();
+    let Stop::Done(Err(fault)) = machine.next_stop() else {
+        panic!("a Fault before any effect")
+    };
+    assert!(matches!(fault.reason, Reason::Host(_)), "{fault:?}");
+    assert!(matches!(
+        Machine::new(None).begin_with_input(&host::program("1"), Value::Int(1)),
+        Err(InputError { spots: 0 })
+    ));
+}

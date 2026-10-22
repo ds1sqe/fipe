@@ -122,11 +122,14 @@ fn every_example_with_a_trace_replays_its_calls() {
 
 #[test]
 fn a_fault_stops_with_reason_exception_at_its_location() {
+    // A trace that records no call: the first host call Faults.
+    let fixtures =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let root = root();
-    // Without a trace every host call fails, so the first one Faults.
     let sent = launch(json!({
         "program": root.join("Documentation/examples/02-outcomes.fipe"),
         "host": root.join("tests/fixtures/host"),
+        "trace": fixtures.join("fault.txt"),
     }));
     let stopped = events(&sent)
         .into_iter()
@@ -139,6 +142,74 @@ fn a_fault_stops_with_reason_exception_at_its_location() {
         description.starts_with("fault in main at ")
             && description.contains("no recorded call"),
         "{description}"
+    );
+}
+
+#[test]
+fn a_launch_without_a_trace_runs_live_on_the_std_host() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("live");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("live.fipe");
+    std::fs::write(
+        &program,
+        "use cli\n\"first\"\n\"written\\n\" | put ./live.txt\ncli.args | join \" \"\n\
+         s => Err (s | text.trim)\n",
+    )
+    .unwrap();
+    let sent = launch(json!({
+        "program": program,
+        "cwd": dir,
+        "args": ["a", "b"],
+        "input": " in \n",
+    }));
+    for message in sent.iter().filter(|m| m["type"] == "response") {
+        assert_eq!(message["success"], true, "{message}");
+    }
+    assert_eq!(outputs(&sent, "stdout").concat(), "first\na b\n");
+    assert_eq!(outputs(&sent, "stderr").concat(), "in\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("live.txt")).unwrap(),
+        "written\n"
+    );
+    let exited = events(&sent)
+        .into_iter()
+        .find(|e| e["event"] == "exited")
+        .expect("an exited event");
+    assert_eq!(exited["body"]["exitCode"], 1);
+    let console = outputs(&sent, "console");
+    assert!(console[0].starts_with("call commands.read"), "{console:?}");
+    assert_eq!(console.last().copied(), Some("value Err \"in\"\n"));
+    // A write outside the roots is refused; input the program cannot
+    // take fails the launch before any effect.
+    std::fs::write(&program, "\"x\" | put ../escape.txt\n").unwrap();
+    let sent = launch(json!({ "program": program, "cwd": dir }));
+    let stopped = events(&sent)
+        .into_iter()
+        .find(|e| e["event"] == "stopped")
+        .expect("a stopped event");
+    assert_eq!(stopped["body"]["reason"], "exception");
+    assert!(
+        stopped["body"]["description"]
+            .as_str()
+            .unwrap()
+            .ends_with("host: ../escape.txt is outside the write roots"),
+        "{stopped}"
+    );
+    assert!(!dir.join("../escape.txt").exists());
+    std::fs::write(&program, "n => n + 1\n").unwrap();
+    let sent = launch(json!({ "program": program, "cwd": dir, "input": "x" }));
+    let response = sent
+        .iter()
+        .find(|m| m["command"] == "launch")
+        .expect("a launch response");
+    assert_eq!(response["success"], false);
+    assert!(
+        response["message"]
+            .as_str()
+            .unwrap()
+            .contains("host input enters only a String or Vec<U8> spot"),
+        "{response}"
     );
 }
 

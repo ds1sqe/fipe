@@ -112,4 +112,28 @@ step(stopped and events[1][2].reason == 'breakpoint', 'the session stops at the 
 step(frame ~= nil and frame.line == 25, 'the top frame is on line 25 (' .. (frame and frame.line or '?') .. ')')
 dap.continue()
 step(wait_for('terminated'), 'continuing runs the program to its end (terminated)')
+
+-- The live configuration: a scratch script writes a file under the
+-- scratch directory, stopping at a breakpoint on its second line.
+local live = scratch .. '/live.fipe'
+vim.fn.writefile({ '"first"', '"written\\n" | put ./live.txt', '[1, 2] | len' }, live)
+vim.cmd.edit(vim.fn.fnameescape(live))
+local livebuf = vim.api.nvim_get_current_buf()
+events = {}
+require('dap.breakpoints').set({}, livebuf, 2)
+local config = vim.deepcopy(dap.configurations.fipe[2])
+config.cwd = scratch
+dap.run(config)
+local live_stopped = wait_for('stopped')
+vim.wait(timeout, function()
+  return dap.session() ~= nil and dap.session().current_frame ~= nil
+end, 50)
+frame = dap.session() and dap.session().current_frame
+step(live_stopped and events[1][2].reason == 'breakpoint', 'the live session stops at the breakpoint')
+step(frame ~= nil and frame.line == 2, 'the live top frame is on line 2 (' .. (frame and frame.line or '?') .. ')')
+step(vim.uv.fs_stat(scratch .. '/live.txt') == nil, 'nothing is written before the breakpoint')
+dap.continue()
+step(wait_for('terminated'), 'the live session runs to its end (terminated)')
+local written = vim.fn.filereadable(scratch .. '/live.txt') == 1 and table.concat(vim.fn.readfile(scratch .. '/live.txt'), '\n') or nil
+step(written == 'written', 'the live session wrote live.txt under the scratch directory')
 finish()

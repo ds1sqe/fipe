@@ -4,7 +4,7 @@
 //! States: waiting for `launch`, launched, then the program's own
 //! phase (running, stopped, faulted, ended) until `disconnect`.
 use crate::{
-    debuggee::{Debuggee, Phase, THREAD},
+    debuggee::{Debuggee, Host, Phase, THREAD},
     lines::Files,
     protocol::Outgoing,
     replay::Replay,
@@ -364,9 +364,10 @@ fn number(value: &Value) -> usize {
 /// Check and lower the program `launch` names. Arguments: `program`
 /// (a path), `host` (a directory of host declaration files:
 /// `commands.fipe` is the command namespace, every other file a module
-/// by its stem), `trace` (a trace fixture to replay; without one every
-/// host call fails), `budget` (units; without one the run is
-/// unbounded) and `stopOnEntry`.
+/// by its stem; the std host's own without one), `trace` (a trace
+/// fixture to replay; without one the std host answers live, under
+/// `cwd`, `allowWrite`, `args` and `input`), `budget` (units; without
+/// one the run is unbounded) and `stopOnEntry`.
 fn launch(arguments: &Value) -> Result<Debuggee, String> {
     let budget = match &arguments["budget"] {
         Value::Null => None,
@@ -386,6 +387,11 @@ fn launch(arguments: &Value) -> Result<Debuggee, String> {
     let mut declarations = Declarations::new();
     if let Some(host) = arguments["host"].as_str() {
         load_host(Path::new(host), &mut declarations, &mut files)?;
+    } else {
+        declarations = fipe_host::declarations();
+        for (name, text) in fipe_host::sources() {
+            files.push(name, None, String::from(*text));
+        }
     }
     let module = parse_partial(lex(&text));
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -406,16 +412,43 @@ fn launch(arguments: &Value) -> Result<Debuggee, String> {
             describe(&errors[0], &files)
         )
     })?;
-    let replay = match arguments["trace"].as_str() {
-        Some(trace) => Replay::parse(&read(Path::new(trace))?)?,
-        None => Replay::default(),
+    let program = fipe::compile::compile(&unit);
+    let (host, input) = if let Some(trace) = arguments["trace"].as_str() {
+        (Host::Replay(Replay::parse(&read(Path::new(trace))?)?), None)
+    } else {
+        let strings = |key: &str| -> Result<Vec<String>, String> {
+            match &arguments[key] {
+                Value::Null => Ok(Vec::new()),
+                Value::Array(items) => items
+                    .iter()
+                    .map(|item| {
+                        item.as_str().map(String::from).ok_or_else(|| {
+                            format!("launch: {key} holds strings, not {item}")
+                        })
+                    })
+                    .collect(),
+                other => Err(format!("launch: {key} is a list, not {other}")),
+            }
+        };
+        let cwd = arguments["cwd"].as_str().unwrap_or(".");
+        let allow: Vec<PathBuf> = strings("allowWrite")?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let policy = fipe_host::Policy::new(Path::new(cwd), &allow)
+            .map_err(|error| format!("launch: the write roots: {error}"))?;
+        let host = fipe_host::Host::new(policy).with_args(strings("args")?);
+        let input = match &arguments["input"] {
+            Value::Null => None,
+            Value::String(text) => {
+                fipe_host::input(&program, &mut text.as_bytes())
+                    .map_err(|reason| format!("launch: {reason}"))?
+            }
+            other => return Err(format!("launch: input is text, not {other}")),
+        };
+        (Host::Live(host), input)
     };
-    Ok(Debuggee::new(
-        fipe::compile::compile(&unit),
-        files,
-        replay,
-        budget,
-    ))
+    Ok(Debuggee::new(program, files, host, input, budget))
 }
 
 /// A check error in words: where it is and the crate's own words for

@@ -18,16 +18,16 @@ source is still hashed, and the drift fixtures of the backend
 | `src/ops/budget.rs` | `src/vm/budget.rs` | `24bcbccc53499125` | paying nodes and units; every native's size term |
 | `src/ops/natives.rs` | `src/vm/natives.rs` | `84f2a99b51c39740` | the natives' table by prelude label and declared type; the members a walk consults |
 | `src/ops/immediate.rs` | `src/vm/immediate.rs` | `1e7b823b09c5fa2a` | what each native does |
-| `src/ops/immediate.rs` | `src/vm/step.rs` | `1cf62f78d5e61be5` | a leaf value |
+| `src/ops/immediate.rs` | `src/vm/step.rs` | `17144aaf187be486` | a leaf value |
 | `src/ops/slots.rs` | `src/vm/assign.rs` | `554ce44f797d1b69` | every rvalue but a use and a field into a local: `Construct`, `Tuple`, `Array`, `Repeat`, `Length`, `Closure`, `Wrap`, `Pack`, `Cast`, `Convert` (its checked modes by `predicates.rs`) and `Native` |
-| `src/ops/slots.rs` | `src/vm/step.rs` | `1cf62f78d5e61be5` | a field read, a switch's key, an unset global's body run first |
+| `src/ops/slots.rs` | `src/vm/step.rs` | `17144aaf187be486` | a field read, a switch's key, an unset global's body run first |
 | `src/ops/slots.rs` | `src/vm/globals.rs` | `bf8acd7711df0b27` | the globals a step reads, before it runs |
 | `src/ops/calls.rs` | `src/vm/calls.rs` | `9ee2a6a250483583` | the callee kinds, a selected row, eval/apply and its guards, a definition's invocation |
-| `src/ops/calls.rs` | `src/vm/step.rs` | `1cf62f78d5e61be5` | a call terminator: its witnesses and result type substituted |
+| `src/ops/calls.rs` | `src/vm/step.rs` | `17144aaf187be486` | a call terminator: its witnesses and result type substituted |
 | `src/ops/calls.rs` | `src/vm/drive.rs` | `8c1145e5023aa21b` | what an invocation runs |
-| `src/ops/calls.rs` | `src/vm.rs` | `06381d1929dc5b80` | a host call and its reply, with the `with` environment and the main lines kept; a module's init body before the main |
-| `src/ops/mod.rs` | `src/vm.rs` | `06381d1929dc5b80` | a Fault at a node; a frame's witnesses substituted in a type |
-| `src/ops/mod.rs` | `src/vm/step.rs` | `1cf62f78d5e61be5` | the `Line`, `Store`, `Push` and `Pop` statements; the `Unreachable` Fault |
+| `src/ops/calls.rs` | `src/vm.rs` | `41ba18cbe822b93b` | a host call and its reply, with the `with` environment and the main lines kept; a module's init body before the main |
+| `src/ops/mod.rs` | `src/vm.rs` | `41ba18cbe822b93b` | a Fault at a node; a frame's witnesses substituted in a type |
+| `src/ops/mod.rs` | `src/vm/step.rs` | `17144aaf187be486` | the `Line`, `Store`, `Push` and `Pop` statements; the `Unreachable` Fault |
 | `src/ops/dispatch.rs` | `src/vm/dispatch.rs` | `d28657e669710376` | a row by a witness or a value's tag; a packed receiver unpacked |
 | `src/ops/dispatch.rs` | `src/compile/dispatch.rs` | `c63e0e5b0f8219a6` | a row by type or head meaning; the witness substitution (`substitute`, `fixed`, `map`) |
 | `src/ops/walk.rs` | `src/vm/walk.rs` | `4a80197bef0ad3a7` | the `eq`, `cmp` and `show` walks by tag, a written member where met |
@@ -37,7 +37,7 @@ source is still hashed, and the drift fixtures of the backend
 | `src/ops/higher.rs` | `src/vm/order.rs` | `23d2ba79df9f369f` | *rewritten*: `sort` (the VM's merge order), `count` |
 | `src/ops/predicates.rs` | `src/vm/predicates.rs` | `323b54ccdc703c4f` | *rewritten*: a predicate run, its owed units paid at each leaf; a `Test` terminator's branch, a checked conversion's verdict |
 | `src/ops/entries.rs` | `src/vm/entries.rs` | `c8bf08f77028feaf` | an entry's components tested; a function entry's guards |
-| `src/ops/entries.rs` | `src/vm/step.rs` | `1cf62f78d5e61be5` | the `Enter` statement |
+| `src/ops/entries.rs` | `src/vm/step.rs` | `17144aaf187be486` | the `Enter` statement |
 | `src/ops/casts.rs` | `src/vm/casts.rs` | `aadbd4b5a7d742a4` | the casts' rows |
 | `src/ops/fits.rs` | `src/vm/fits.rs` | `ca6b093619a2990e` | the shape a reply must have, whole |
 | `src/abi.rs` | `src/vm/frames.rs` | `069d714063b34681` | a frame's locals as it opens |

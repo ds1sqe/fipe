@@ -3,7 +3,7 @@
 use super::{
     frames::{BodyFrame, Frame, NativeFrame},
     pending::Pending,
-    Fault, Flow, Machine, Return,
+    Fault, Flow, Input, Machine, Return,
 };
 use crate::{
     ir, mir,
@@ -128,7 +128,13 @@ impl Machine {
             }
             Statement::Line(value) => {
                 let value = self.operand(program, *value);
-                self.lines.push((node, value));
+                // The line the owed input applies to gets the result
+                // then, not the function, so a stop between sees neither.
+                let owed = matches!(&self.input,
+                    Some(Input::Owed { line, .. }) if *line == node);
+                if !owed {
+                    self.lines.push((node, value));
+                }
             }
         }
         Ok(Flow::Continue)

@@ -1,10 +1,10 @@
 # fipe-dap
 
 A debug adapter for Fipe: the Debug Adapter Protocol over stdio, as a
-package beside the crate. It depends on `fipe` by path and on
-`serde_json`; the crate depends on nothing of it. Every value the
-adapter shows is the VM's and every stop is one the VM took
-(`vm::Machine::begin`, `next_stop`, `answer`).
+package beside the crate. It depends on `fipe` and `fipe-host` by path
+and on `serde_json`; the crate depends on nothing of it. Every value
+the adapter shows is the VM's and every stop is one the VM took
+(`vm::Machine::begin`, `begin_with_input`, `next_stop`, `answer`).
 
 ## Launch configuration
 
@@ -15,6 +15,10 @@ adapter shows is the VM's and every stop is one the VM took
   "program": "/path/to/program.fipe",
   "host": "/path/to/host-declarations",
   "trace": "/path/to/trace.txt",
+  "cwd": "/path/to/run/in",
+  "allowWrite": ["/another/dir"],
+  "args": ["a", "b"],
+  "input": "text for the last line\n",
   "budget": 1000000
 }
 ```
@@ -23,12 +27,18 @@ adapter shows is the VM's and every stop is one the VM took
   directory by stem.
 - `host`: a directory of host declaration files; `commands.fipe` is the
   command namespace, every other `*.fipe` a host module by its stem.
+  Without one, the std host's own declarations (`tools/host/decl`).
 - `trace`: a trace fixture of the crate's conformance host
   (`tests/fixtures/traces/*.txt`, its format in
   `tests/fixtures/traces/README.md`). The replay host answers the Nth host
   call with the Nth recorded reply; a call the trace does not record
   there is answered with a failure, which Faults the run at that call.
-  Without a trace every host call fails.
+  Without a trace the run is live on the std host
+  ([`tools/host/README.md`](../host/README.md)): `cwd` (the working
+  directory, the adapter's own by default) and each `allowWrite`
+  directory are the write roots, `args` is `cli.args`, and `input` is
+  the host input the last line takes (a launch whose `input` the
+  program cannot take fails, before any effect).
 - `budget`: the run's budget in the VM's units, a natural number;
   without one the run is unbounded. Anything else fails the launch.
 
@@ -61,7 +71,9 @@ Events: `output` events carry, by category:
   `Nothing` write nothing, `Just v` and `Ok v` write `v`, `Err e`
   writes `e` to `stderr`; the header of
   `tests/fixtures/host/commands.fipe`), and a Fault's located
-  description on `stderr`;
+  description on `stderr`; live, the std host's own bytes by its sink
+  policy (a `String` as its text, `put out` in order with the lines),
+  sent at each stop and after each call;
 - `console`: the trace's lines, each host call as the trace fixture
   writes it (`call ns.label (args) -> reply`), then the run's value
   (`value …`) or its Fault;
@@ -87,11 +99,10 @@ fixture (`tests/stepping.rs`).
 - No `setVariable`, `restart`, `goto`, `stepBack`, data or function
   breakpoints, conditions or hit counts, `loadedSources` or
   `disassemble`; each is refused as unsupported.
-- The standalone host only replays a trace fixture; a host doing real
-  input and output is the embedding editor's.
-- Writes to a sink (`put`, `append`) are replayed as host calls, not
-  applied: the success output holds the lines' values only, which is
-  what the examples' fixtures hold.
+- Under a trace, writes to a sink (`put`, `append`) are replayed as
+  host calls, not applied: the success output holds the lines' values
+  only, which is what the examples' fixtures hold. Live, they land
+  under the write roots.
 - The one editor client run against it is nvim-dap, through the
   module `tools/editor/nvim` (its smoke stops at a breakpoint and runs
   to `terminated`); the recorded session below is the binary over its

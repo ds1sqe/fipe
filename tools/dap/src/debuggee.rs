@@ -2,7 +2,8 @@
 //! takes, breakpoints, stepping and what each stop shows.
 //!
 //! Every stop is one the VM took (`Machine::next_stop`); the adapter
-//! only decides which of them the client sees.
+//! only decides which of them the client sees. Its host calls are
+//! answered by a [`Host`]: a trace replayed, or the std host live.
 use crate::{
     inspect::{self, Item, References},
     lines::{self, Files, Pipe},
@@ -112,12 +113,34 @@ impl Track {
     }
 }
 
+/// Who answers the run's host calls.
+pub enum Host {
+    /// A trace fixture, the Nth call getting the Nth recorded reply.
+    Replay(Replay),
+    /// The std host on this machine; `stdout` and `stderr` events
+    /// carry its output bytes, by its sink policy.
+    Live(fipe_host::Host),
+}
+
+impl std::fmt::Debug for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Replay(replay) => {
+                f.debug_tuple("Replay").field(replay).finish()
+            }
+            Self::Live(_) => f.write_str("Live(the std host)"),
+        }
+    }
+}
+
 /// A checked program and its run.
 #[derive(Debug)]
 pub struct Debuggee {
     program: Program,
     files: Files,
-    replay: Replay,
+    host: Host,
+    /// Host input the run applies at its end, under the live host.
+    input: Option<Value>,
     machine: Machine,
     pipes: Vec<Pipe>,
     pub phase: Phase,
@@ -140,19 +163,22 @@ pub struct Debuggee {
 }
 
 impl Debuggee {
-    /// A program ready to run under a budget, its host calls replayed.
+    /// A program ready to run under a budget, its host calls answered
+    /// by `host`.
     #[must_use]
     pub fn new(
         program: Program,
         files: Files,
-        replay: Replay,
+        host: Host,
+        input: Option<Value>,
         budget: Option<u64>,
     ) -> Self {
         let pipes = lines::pipes(&program.tables.borrow(), &files);
         Self {
             program,
             files,
-            replay,
+            host,
+            input,
             machine: Machine::new(budget),
             pipes,
             phase: Phase::Idle,
@@ -173,7 +199,13 @@ impl Debuggee {
     /// Start the run: to a breakpoint, or to the first stop when
     /// `entry`.
     pub fn start(&mut self, entry: bool) {
-        self.machine.begin(&self.program);
+        match self.input.take() {
+            // `launch` checked the spot, so this cannot fail.
+            Some(input) => {
+                let _ = self.machine.begin_with_input(&self.program, input);
+            }
+            None => self.machine.begin(&self.program),
+        }
         self.mode = Mode::Continue { entry };
         self.phase = Phase::Running;
     }
@@ -234,9 +266,10 @@ impl Debuggee {
     ///
     /// Output events: `stdout` and `stderr` carry the program's output,
     /// each top-level line's value by the conformance host's policy
-    /// (`tests/fixtures/host/commands.fipe`); `console` carries the
-    /// trace's lines, each host call with its reply and then the run's
-    /// value or Fault, as `tests/fixtures/traces/README.md` states them.
+    /// (`tests/fixtures/host/commands.fipe`) under a replay, or the
+    /// std host's bytes live; `console` carries the trace's lines, each
+    /// host call with its reply and then the run's value or Fault, as
+    /// `tests/fixtures/traces/README.md` states them.
     pub fn advance(&mut self, stops: usize, out: &mut Outgoing) {
         for _ in 0..stops {
             if !self.running() {
@@ -254,12 +287,17 @@ impl Debuggee {
                 Stop::After(node, value) => self.at(node, Some(value), out),
                 Stop::Request(request) => self.call(&request, out),
                 Stop::Done(Ok(value)) => {
-                    let line = format!(
-                        "value {}\n",
-                        show(&value, &self.program.tables.borrow())
-                    );
+                    let tables = self.program.tables.borrow();
+                    let line = format!("value {}\n", show(&value, &tables));
+                    let code = match &self.host {
+                        Host::Replay(_) => 0,
+                        Host::Live(_) => {
+                            fipe_host::exit_code(&Ok(value), &tables)
+                        }
+                    };
+                    drop(tables);
                     output(out, "console", &line);
-                    out.event("exited", json!({ "exitCode": 0 }));
+                    out.event("exited", json!({ "exitCode": code }));
                     out.event("terminated", Json::Null);
                     self.phase = Phase::Ended;
                 }
@@ -294,6 +332,13 @@ impl Debuggee {
             return;
         }
         let tables = self.program.tables.borrow();
+        if let Host::Live(host) = &mut self.host {
+            host.sink.lines(lines, &tables);
+            self.sent_lines = lines.len();
+            drop(tables);
+            self.send_sink(out);
+            return;
+        }
         let prelude = Prelude::new(&tables);
         for (_, value) in &lines[self.sent_lines..] {
             let (category, value) = match value {
@@ -348,19 +393,45 @@ impl Debuggee {
         }
     }
 
-    /// Answer a host call from the replay and send its trace line.
+    /// Answer a host call from the host and send its trace line.
     fn call(&mut self, request: &Request, out: &mut Outgoing) {
         let tables = self.program.tables.borrow();
         let (callee, mut line) = call_line(request, &tables);
-        let reply = self.replay.answer(&callee, &tables);
+        let reply = match &mut self.host {
+            Host::Replay(replay) => replay.answer(&callee, &tables),
+            Host::Live(host) => match host.answer(request, &tables) {
+                Reply::Value(reply) => reply,
+                Reply::File(_) => {
+                    unreachable!("a run asks only for host calls")
+                }
+            },
+        };
         match &reply {
             Ok(value) => write!(line, " -> {}", show(value, &tables)).unwrap(),
             Err(message) => write!(line, " -> failure {message:?}").unwrap(),
         }
         drop(tables);
+        self.send_sink(out);
         output(out, "console", &format!("{line}\n"));
         self.effects.push(line);
         self.machine.answer(Reply::Value(reply));
+    }
+
+    /// Send the live host's output since the last stop as `stdout` and
+    /// `stderr` events.
+    fn send_sink(&mut self, out: &mut Outgoing) {
+        let Host::Live(host) = &mut self.host else {
+            return;
+        };
+        for (category, bytes) in [
+            ("stdout", &mut host.sink.success),
+            ("stderr", &mut host.sink.error),
+        ] {
+            if !bytes.is_empty() {
+                output(out, category, &String::from_utf8_lossy(bytes));
+                bytes.clear();
+            }
+        }
     }
 
     /// Record a stop before or after `node` and stop there when a

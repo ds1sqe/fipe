@@ -13,8 +13,9 @@ One Lua module, `require('fipe')`, for Neovim 0.12 or later. Its
   read in place; highlighting, `foldexpr` from the folds query, and
   nvim-treesitter's `indentexpr` from the indents query when
   nvim-treesitter is installed (Neovim has none of its own);
-- the debug adapter `tools/dap` as `dap.adapters.fipe` and a launch
-  configuration `dap.configurations.fipe`, when nvim-dap is installed.
+- the debug adapter `tools/dap` as `dap.adapters.fipe` and two launch
+  configurations `dap.configurations.fipe` (a trace replayed, or live
+  on the std host), when nvim-dap is installed.
   A lazy-loaded nvim-dap is configured on the first `fipe` buffer.
 
 It works with both branches of nvim-treesitter and without it: the
@@ -56,8 +57,9 @@ Every option is optional; the defaults are paths in this repository.
 | `parser` | `nil`: build from `tools/tree-sitter/src` | a path to a built `fipe.so`, or `false` to leave tree-sitter out |
 | `trace` | the conformance trace `tests/fixtures/traces/<stem>.txt`, when one exists | the trace a launch replays: a path, or a function of the program's path |
 
-The adapter only replays a trace (`tools/dap/README.md`): without one
-every host call fails, and the run Faults at its first host call.
+The first configuration replays the trace (`tools/dap/README.md`);
+the second, "Run this file on this machine", runs live on the std host
+with the workspace folder as its working directory and write root.
 
 ## Smoke
 
@@ -79,9 +81,11 @@ headless Neovim with every XDG directory under a scratch directory:
 
 It opens `Documentation/examples/05-modules.fipe`, waits for the
 server, checks two highlight captures, the fold and indent queries,
-an error diagnostic on a scratch file, and an nvim-dap session that
-stops at a breakpoint on line 25 and continues to `terminated`. Each
-step prints PASS or FAIL; the exit status is 0 only if all pass.
+an error diagnostic on a scratch file, an nvim-dap session that
+stops at a breakpoint on line 25 and continues to `terminated`, and a
+live session on a scratch script that stops at a breakpoint and
+writes a file in the scratch directory. Each step prints PASS or FAIL;
+the exit status is 0 only if all pass.
 
 ## Checklist by hand
 
