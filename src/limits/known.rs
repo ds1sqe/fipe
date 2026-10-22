@@ -375,6 +375,21 @@ pub(crate) struct Function {
     /// `None` when the result is no variable of the function's scheme or
     /// something may produce it unseen.
     pub(crate) feeds: Option<Vec<Feed>>,
+    /// Each parameter of a function argument that is a variable of the
+    /// scheme, and where that variable goes in: a function value passed
+    /// there meets what is known at it (07-checks §What is known 8).
+    pub(crate) takes: Vec<Take>,
+}
+
+/// A function argument's parameter at a scheme variable, and that
+/// variable's feeds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Take {
+    /// The argument's position.
+    pub(crate) spot: usize,
+    /// The argument's own parameter at the variable.
+    pub(crate) parameter: usize,
+    pub(crate) feeds: Vec<Feed>,
 }
 
 /// A parameter where the result's type variable goes in.
@@ -385,6 +400,10 @@ pub(crate) enum Feed {
     /// The argument at this position is a function of this many
     /// parameters returning it.
     Returns(usize, usize),
+    /// The argument at this position holds values of the variable's
+    /// type as its elements: a sequence, or the receiver of a member
+    /// limit that takes them (07-checks §What is known 5).
+    Element(usize),
 }
 
 impl fmt::Display for Known {

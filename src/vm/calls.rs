@@ -257,6 +257,7 @@ impl Machine {
                 captures: closure.captures.clone(),
                 meanings: closure.meanings.clone(),
                 filled,
+                guards: closure.guards.clone(),
             }));
             return self.deliver(program, partial, back);
         }
@@ -274,6 +275,13 @@ impl Machine {
             }));
             Return::Resume
         };
+        let guarded: Vec<_> = closure
+            .guards
+            .iter()
+            .filter_map(|guard| {
+                spots.get(guard.spot).map(|value| (guard, value.clone()))
+            })
+            .collect();
         let frame = BodyFrame::new(
             program,
             closure.body,
@@ -283,6 +291,11 @@ impl Machine {
             back,
         );
         self.frames.push(Frame::Body(frame));
+        // The arguments meet the guards before the body runs, the first
+        // guard first.
+        for (guard, value) in guarded.into_iter().rev() {
+            self.enter_by(guard.predicate.clone(), guard.entry, value, node);
+        }
         Ok(Flow::Continue)
     }
 }

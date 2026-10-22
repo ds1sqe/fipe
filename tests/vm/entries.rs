@@ -202,3 +202,23 @@ fn a_unit_with_a_check_error_has_no_program_to_run() {
     );
     assert!(checked.is_err(), "the wrong field is a check error");
 }
+
+#[test]
+fn an_open_function_entry_tests_each_call_of_the_value() {
+    // `map`'s elements are not known at check: `f`'s parameter limit is
+    // tested on each call `map` makes.
+    let lines = "f: U8 -> U8 = n => n\ng = n => map f [n]\n";
+    assert_eq!(
+        format!("{:?}", run(&format!("{lines}g 3"))),
+        format!("{:?}", run("[3]"))
+    );
+    let source = format!("{lines}g 300");
+    let program = program(&source);
+    let fault = budgeted(&program, 1 << 20).0.unwrap_err();
+    let Reason::Failed { entry, value } = &fault.reason else {
+        panic!("{fault:?}")
+    };
+    assert_eq!(value, "300");
+    let tables = program.tables.borrow();
+    assert!(tables.entries[*entry].label.starts_with("U8 ->"));
+}

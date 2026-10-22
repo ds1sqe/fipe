@@ -28,27 +28,38 @@ fn opaque_claims_supply_every_member() {
     }
 }
 
+/// Whether a source fails with a limit error whose message holds `text`.
+fn limit_error(source: &str, text: &str) -> bool {
+    super::run(source).1.is_err_and(|errors| {
+        errors.iter().any(|e| {
+            matches!(&e.reason, Reason::Limit { message } if message.contains(text))
+        })
+    })
+}
+
 #[test]
-fn member_limits_keep_unimplemented_narrowing_open() {
+fn member_limits_are_met_only_when_proved() {
+    // A member parameter narrower than the claim's is not proved; one
+    // wider, or the same, is.
     for annotation in ["Vec<U8>", "Maybe<U8>", "(Integer -> U8)"] {
         let required = annotation.replace("U8", "Integer");
         let source = format!("type C: Add<{required}> {{ x: Integer }}\nimpl C: Add<{required}> {{ add: {annotation} -> Self -> Self = k self => self }}");
-        let typed = super::run(&source).1.unwrap();
-        assert!(
-            typed.checks.iter().any(
-                |check| check.reason == fipe::typed::CheckReason::Narrowing
-            ),
-            "{source}"
-        );
+        assert!(limit_error(&source, "unproved function entry"), "{source}");
+        let source = format!("type C: Add<{annotation}> {{ x: Integer }}\nimpl C: Add<{annotation}> {{ add: {required} -> Self -> Self = k self => self }}");
+        let typed = super::run(&source).1;
+        assert!(typed.is_ok_and(|t| t.checks.is_empty()), "{source}");
     }
-    let typed =
-        super::run("type A: Len { x: F64 }\nimpl A: Len { len = self => -1 }")
-            .1
-            .unwrap();
-    assert!(typed
-        .checks
-        .iter()
-        .any(|check| check.reason == fipe::typed::CheckReason::Narrowing));
+    // `len` is refuted by its body: -1 is not Natural.
+    assert!(limit_error(
+        "type A: Len { x: F64 }\nimpl A: Len { len = self => -1 }",
+        "refuted entry"
+    ));
+    let typed = super::run(
+        "type A: Len { n: Natural }\nimpl A: Len { len = self => self.n }",
+    )
+    .1
+    .unwrap();
+    assert_eq!(typed.checks, []);
 }
 
 #[test]

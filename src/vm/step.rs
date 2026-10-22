@@ -97,8 +97,26 @@ impl Machine {
                 let value = self.operand(program, *value);
                 self.globals[*definition] = Some(value);
             }
-            Statement::Enter { entry, value } => {
-                let value = self.operand(program, *value);
+            Statement::Enter {
+                entry,
+                value: operand,
+            } => {
+                let value = self.operand(program, *operand);
+                // A function value is not tested; its calls are.
+                if let (Value::Function(closure), Operand::Local(local)) =
+                    (&value, operand)
+                {
+                    let guarded = {
+                        let tables = program.tables.borrow();
+                        let predicate = &tables.entries[*entry].predicate;
+                        matches!(predicate, ir::Predicate::Function { .. })
+                            .then(|| Self::guard(closure, *entry, predicate))
+                    };
+                    if let Some(guarded) = guarded {
+                        self.top().locals[*local] = guarded;
+                        return Ok(Flow::Continue);
+                    }
+                }
                 return Ok(self.enter(program, *entry, value, node));
             }
             Statement::Push { key, value } => {

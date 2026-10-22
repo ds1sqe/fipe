@@ -1019,8 +1019,12 @@ fn global_checks_name_their_functions_with_local_positions() {
     assert!(text.contains("g: eval, per call:"), "{text}");
     assert!(text.contains("at 1:10"), "{text}");
     assert!(!text.contains("at 3:10"), "{text}");
-    let text = written(Repl::new().feed(b"type L: Len { n: Natural }\nimpl L: Len { len = self => self.n }\n:checks\n"));
+    // A member's open entry names its type and member.
+    let text = written(Repl::new().feed(b"type L: Len { n: Natural }\nimpl L: Len { len: Self -> Natural = self => self.n - 1 }\n:checks\n"));
     assert!(text.contains("L.len: eval, per call:"), "{text}");
+    // One proved by its body has none.
+    let text = written(Repl::new().feed(b"type L: Len { n: Natural }\nimpl L: Len { len = self => self.n }\n:checks\n"));
+    assert!(!text.contains("L.len:"), "{text}");
 }
 
 #[test]

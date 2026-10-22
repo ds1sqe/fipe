@@ -313,6 +313,7 @@ impl Infer<'_> {
                     target.clone(),
                     expected.span,
                     expected.place_kind.clone(),
+                    false,
                 ));
             }
             return target;
@@ -356,6 +357,7 @@ impl Infer<'_> {
                 target.clone(),
                 expected.span,
                 expected.place_kind.clone(),
+                false,
             ));
             self.keep(second);
             return target;

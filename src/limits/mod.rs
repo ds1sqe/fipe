@@ -135,7 +135,7 @@ impl Bindings {
 
 pub(crate) fn check(
     inputs: &Inputs<'_>,
-    entries: &[(ExprId, Type, Span, Place)],
+    entries: &[(ExprId, Type, Span, Place, bool)],
     instance: Option<ExprId>,
     typed: &mut Typed,
 ) -> Vec<Error> {
@@ -147,7 +147,7 @@ pub(crate) fn check(
     pass.seed_places();
     pass.check_purity();
     let mut entry_types = vec![None; module.expressions.len()];
-    for (id, ty, _, _) in entries {
+    for (id, ty, ..) in entries {
         entry_types[id.0].get_or_insert(ty);
     }
     for index in 0..module.expressions.len() {
@@ -190,6 +190,26 @@ pub(crate) fn default_proved(
     let mut typed = Typed::default();
     let pass = Pass::new(inputs, &mut typed, Place::Result);
     pass.evaluate_type(ty, known, 0).boolean == Some(true)
+}
+
+/// Whether a function known by its declared type `actual` enters a
+/// place of type `expected` (07-checks §What is known 8).
+pub(crate) fn function_proved(
+    inputs: &Inputs<'_>,
+    expected: &Type,
+    actual: &Type,
+) -> Option<bool> {
+    let mut typed = Typed::default();
+    let mut pass = Pass::new(inputs, &mut typed, Place::Result);
+    let mut known = Known::default();
+    pass.place_facts(actual, &mut known);
+    pass.function_outcome(
+        expected,
+        Some(actual),
+        &known,
+        (&[], 0),
+        Span::default(),
+    )
 }
 
 pub(crate) fn flag_entry(
@@ -368,6 +388,20 @@ struct Pass<'a> {
     instance: Option<ExprId>,
     /// The narrowings recorded so far, met by each read they hold.
     narrowings: Vec<Narrowed>,
+    /// What is known at each parameter of a function argument that is a
+    /// variable of its callee's scheme, by the argument's index.
+    takes: BTreeMap<usize, Vec<Option<Known>>>,
+    /// The type of the value entering, as far as it is followed into
+    /// its parts.
+    value_ty: Option<Type>,
+    /// The entering value is of the record place's own type, so its
+    /// fields have the place's field types.
+    value_is_place: bool,
+    /// The open parameters of the function entry being proved.
+    opens: Vec<(usize, Type)>,
+    /// The arm lists with a signature: an annotated binding's value or
+    /// an `impl` member's.
+    signed: BTreeSet<usize>,
 }
 impl<'a> Pass<'a> {
     fn new(
@@ -397,6 +431,11 @@ impl<'a> Pass<'a> {
             checks_seen: BTreeSet::new(),
             instance: None,
             narrowings: Vec::new(),
+            takes: BTreeMap::new(),
+            value_ty: None,
+            value_is_place: false,
+            opens: Vec::new(),
+            signed: signed(inputs.module),
         }
     }
 }
@@ -916,6 +955,7 @@ impl Pass<'_> {
                     (fact.function.as_deref_mut(), self.typed.binding(id))
                 {
                     function.feeds = feeds(scheme, function.parameters.len());
+                    function.takes = takes(scheme, function.parameters.len());
                 }
             }
             self.pattern_facts(pattern, &fact);
@@ -988,11 +1028,11 @@ impl Pass<'_> {
         }
     }
 
-    fn entries(&mut self, entries: &[(ExprId, Type, Span, Place)]) {
+    fn entries(&mut self, entries: &[(ExprId, Type, Span, Place, bool)]) {
         let module = self.module;
         let branches: Vec<_> = entries
             .iter()
-            .filter(|(id, _, _, _)| {
+            .filter(|(id, ..)| {
                 matches!(module.expressions[id.0].kind, ExprKind::If { .. })
             })
             .collect();
@@ -1012,9 +1052,14 @@ impl Pass<'_> {
                 }
             })
             .collect();
-        for (id, ty, place, place_kind) in entries {
+        for (id, ty, place, place_kind, variable) in entries {
             if !has_limits(ty) && !self.typed.expr(*id).is_some_and(has_limits)
             {
+                continue;
+            }
+            // A function value at a type variable is what is known there
+            // (07-checks §What is known 8): it meets nothing but itself.
+            if *variable && matches!(ty, Type::Function { .. }) {
                 continue;
             }
             let expr = &module.expressions[id.0];
@@ -1036,7 +1081,7 @@ impl Pass<'_> {
                 continue;
             }
             if branches.iter().copied().any(
-                |(outer, outer_ty, outer_place, _)| {
+                |(outer, outer_ty, outer_place, ..)| {
                     let parent = &module.expressions[outer.0];
                     *outer != *id
                         && outer_place == place
@@ -1067,7 +1112,16 @@ impl Pass<'_> {
             self.entry_phase =
                 (fact.demanded || fact.is_exact()).then_some(Phase::Compile);
             let start = self.typed.checks.len();
-            self.enter(ty, &fact, *place, self.frequency(expr.span));
+            self.value_ty = self.typed.expr(*id).cloned();
+            let takes = self.takes.get(&id.0).cloned();
+            self.enter_value(
+                ty,
+                &fact,
+                *place,
+                self.frequency(expr.span),
+                takes.as_deref(),
+            );
+            self.value_ty = None;
             // A field default's open entries are listed per construction
             // site, not at the declaration; what the declaration decides
             // it has reported.
@@ -1384,29 +1438,76 @@ impl Pass<'_> {
                 failure: Some(known::Failure::Never),
                 ..Known::default()
             },
-            _ => self.applied(id),
+            _ => {
+                self.record_takes(id);
+                self.applied(id)
+            }
         }
     }
-    /// What an arm list is known as (07-checks §What is known 5): its
+    /// What is known at each variable parameter of this call's function
+    /// arguments (07-checks §What is known 8), kept for their entries.
+    fn record_takes(&mut self, id: ExprId) {
+        let Some(callee) = call_head(self.module, id) else {
+            return;
+        };
+        let Some(function) = self.typed.known[callee.0].function.as_deref()
+        else {
+            return;
+        };
+        if function.takes.is_empty() {
+            return;
+        }
+        let Some(bound) = self
+            .binding_stage(id)
+            .and_then(|s| self.typed.bound.get(&(s.start, s.end)))
+        else {
+            return;
+        };
+        let mut found = Vec::new();
+        for take in &function.takes {
+            if let Some(argument) = self.argument(id, bound, take.spot) {
+                found.push((
+                    argument.0,
+                    take.parameter,
+                    self.fed(id, bound, &take.feeds),
+                ));
+            }
+        }
+        for (argument, parameter, known) in found {
+            let at = self.takes.entry(argument).or_default();
+            if at.len() <= parameter {
+                at.resize(parameter + 1, None);
+            }
+            at[parameter] = Some(known);
+        }
+    }
+    /// What an arm list is known as (07-checks §What is known 5, 8): its
     /// declared parameters' facts, and its result: the join of its
     /// bodies, read once at those parameters, met with the declared
-    /// result.
+    /// result. An arm list with no signature, as one checked against
+    /// a parameter's function type, declares nothing: it is known by its
+    /// body alone.
     fn arms_value(&self, id: ExprId, arms: &[crate::ast::Arm]) -> Known {
         let Some(mut ty) = self.typed.expr(id) else {
             return Known::default();
         };
+        let signed = self.signed.contains(&id.0);
         let mut parameters = Vec::new();
         for _ in arms.first().map_or(&[][..], |arm| &arm.patterns) {
             let Type::Function { parameter, result } = ty else {
                 return Known::default();
             };
             let mut known = Known::default();
-            self.place_facts(parameter, &mut known);
+            if signed {
+                self.place_facts(parameter, &mut known);
+            }
             parameters.push(known);
             ty = result;
         }
         let mut declared = Known::default();
-        self.place_facts(ty, &mut declared);
+        if signed {
+            self.place_facts(ty, &mut declared);
+        }
         let result = arms
             .iter()
             .map(|arm| self.typed.known[arm.body.0].clone())
@@ -1419,6 +1520,7 @@ impl Pass<'_> {
                 parameters,
                 result,
                 feeds: None,
+                takes: Vec::new(),
             })),
             ..Known::default()
         }
@@ -1481,6 +1583,7 @@ impl Pass<'_> {
                         .collect(),
                     result: function.result.clone(),
                     feeds: None,
+                    takes: Vec::new(),
                 })),
                 ..Known::default()
             };
@@ -1509,19 +1612,7 @@ impl Pass<'_> {
         bound: &crate::typed::Bound,
         feeds: &[known::Feed],
     ) -> Known {
-        let argument = |spot: usize| -> Option<ExprId> {
-            let span = match bound.supplies.iter().find(|(i, _)| *i == spot)? {
-                (_, crate::typed::Supply::Expression(id)) => return Some(*id),
-                (
-                    _,
-                    crate::typed::Supply::Pipe(span)
-                    | crate::typed::Supply::Head(span),
-                ) => *span,
-                _ => return None,
-            };
-            first_input(self.module, id)
-                .filter(|input| self.module.expressions[input.0].span == span)
-        };
+        let argument = |spot: usize| self.argument(id, bound, spot);
         let mut joined: Option<Known> = None;
         for feed in feeds {
             let known = match *feed {
@@ -1540,6 +1631,9 @@ impl Pass<'_> {
                             known
                         })
                     }),
+                known::Feed::Element(spot) => {
+                    argument(spot).and_then(|a| self.contents(a))
+                }
             };
             let Some(known) = known else {
                 return Known::default();
@@ -1550,6 +1644,67 @@ impl Pass<'_> {
             });
         }
         joined.unwrap_or_default()
+    }
+    /// What is known of every element of a sequence argument, joined;
+    /// dead when it has none. `None` when it is no sequence or its
+    /// elements are not known.
+    fn contents(&self, argument: ExprId) -> Option<Known> {
+        let element = match self.typed.expr(argument).map(crate::infer::meaning)
+        {
+            Some(Type::Array { element, .. }) => &**element,
+            Some(Type::Named { name, arguments })
+                if name.origin == Origin::Prelude
+                    && matches!(name.name.as_str(), "Vec" | "Deque")
+                    && arguments.len() == 1 =>
+            {
+                &arguments[0]
+            }
+            _ => return None,
+        };
+        let known = &self.typed.known[argument.0];
+        let parts: Vec<_> = known
+            .parts
+            .iter()
+            .filter(|(name, _)| name != "len")
+            .map(|(_, part)| part.branch())
+            .collect();
+        if let Some(joined) = parts.iter().cloned().reduce(|a, b| a.join(&b)) {
+            return Some(joined);
+        }
+        if known.parts.iter().any(|(name, k)| {
+            name == "len" && k.range == Some(Range::exact(0.into()))
+        }) {
+            return Some(Known {
+                failure: Some(known::Failure::Never),
+                ..Known::default()
+            });
+        }
+        // Elements known alike, or by the element type's limits.
+        let mut each = known
+            .element
+            .as_deref()
+            .map_or_else(Known::default, Known::branch);
+        self.place_facts(element, &mut each);
+        Some(each)
+    }
+    /// The argument a call supplies at a spot, when it is one expression.
+    fn argument(
+        &self,
+        id: ExprId,
+        bound: &crate::typed::Bound,
+        spot: usize,
+    ) -> Option<ExprId> {
+        let span = match bound.supplies.iter().find(|(i, _)| *i == spot)? {
+            (_, crate::typed::Supply::Expression(id)) => return Some(*id),
+            (
+                _,
+                crate::typed::Supply::Pipe(span)
+                | crate::typed::Supply::Head(span),
+            ) => *span,
+            _ => return None,
+        };
+        first_input(self.module, id)
+            .filter(|input| self.module.expressions[input.0].span == span)
     }
     /// What a byte is known to be: a `U8`, with its chain of limits.
     fn byte_facts(&self) -> Known {
@@ -1892,6 +2047,122 @@ impl Pass<'_> {
             })
             .unwrap_or_default()
     }
+    /// A prelude or host function, known by its declared scheme alone
+    /// (07-checks §What is known 5, 8): its parameters' and result's
+    /// limits, and where each variable parameter of a function argument
+    /// is fed.
+    fn declared_function(
+        &self,
+        origin: &Origin,
+        name: &str,
+    ) -> Option<known::Function> {
+        let namespace = match origin {
+            Origin::Prelude => Some(&self.declarations.prelude),
+            Origin::Commands => self.declarations.commands.as_ref(),
+            Origin::Host(module) => self.declarations.get_module(module),
+            _ => None,
+        }?;
+        let declared = namespace.values.iter().find(|v| v.name == name)?;
+        let crate::decl::Kind::Function { spots, result, .. } = &declared.kind
+        else {
+            return None;
+        };
+        let module = &namespace.module;
+        let types: Vec<_> = spots
+            .iter()
+            .map(|spot| self.syntax_type(module, origin, spot.ty))
+            .collect();
+        let parameters = types
+            .iter()
+            .map(|ty| {
+                let mut known = Known::default();
+                self.place_facts(ty, &mut known);
+                known
+            })
+            .collect();
+        let mut result_known = Known::default();
+        self.place_facts(
+            &self.syntax_type(module, origin, *result),
+            &mut result_known,
+        );
+        let first = spots.first().map(|spot| spot.ty);
+        let contents = first
+            .map(|first| self.contents_limits(module, origin, first))
+            .unwrap_or_default();
+        Some(known::Function {
+            parameters,
+            result: result_known,
+            feeds: None,
+            takes: declared_takes(&types, &contents),
+        })
+    }
+    /// The pairs `(a, c)` of a declared scheme's limits saying that the
+    /// argument of type `c` holds values of type `a`: `Items<a> c`, or a
+    /// member limit on `c` taking a function of `a`, as `c.map`.
+    fn contents_limits(
+        &self,
+        module: &Module,
+        origin: &Origin,
+        first: TypeId,
+    ) -> Vec<(String, String)> {
+        let Some(constraints) = module.types.iter().find_map(|node| {
+            let TypeKind::Qualified { constraints, ty } = &node.kind else {
+                return None;
+            };
+            let TypeKind::Function { parameter, .. } = &module.types[ty.0].kind
+            else {
+                return None;
+            };
+            let inner = match &module.types[parameter.0].kind {
+                TypeKind::Labeled { ty, .. } => *ty,
+                _ => *parameter,
+            };
+            (inner == first).then_some(constraints)
+        }) else {
+            return Vec::new();
+        };
+        let mut pairs = Vec::new();
+        for constraint in constraints {
+            match &constraint.kind {
+                crate::ast::ConstraintKind::Named { class, variable } => {
+                    if let Type::Named { name, arguments } =
+                        self.syntax_type(module, origin, *class)
+                    {
+                        if let (true, [a]) = (
+                            name.origin == Origin::Prelude
+                                && name.name == "Items",
+                            arguments.as_slice(),
+                        ) {
+                            let Some(a) = self::variable(a) else { continue };
+                            pairs.push((
+                                String::from(a),
+                                variable
+                                    .segments
+                                    .last()
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            ));
+                        }
+                    }
+                }
+                crate::ast::ConstraintKind::Member { member, ty } => {
+                    let Some(receiver) = member.segments.first() else {
+                        continue;
+                    };
+                    let mut ty = self.syntax_type(module, origin, *ty);
+                    while let Type::Function { parameter, result } = ty {
+                        if let Type::Function { parameter, .. } = *parameter {
+                            if let Some(a) = variable(&parameter) {
+                                pairs.push((String::from(a), receiver.clone()));
+                            }
+                        }
+                        ty = *result;
+                    }
+                }
+            }
+        }
+        pairs
+    }
     /// A local read at `read` meets each narrowing whose span holds it.
     fn local(&self, site: Span, read: Option<Span>) -> Known {
         let site = (site.start, site.end);
@@ -1924,9 +2195,20 @@ impl Pass<'_> {
         match target {
             Some(Target::Local { site }) => self.local(*site, read),
             Some(Target::Value { origin, name })
-                if matches!(origin, Origin::Host(_) | Origin::Commands) =>
+                if matches!(
+                    origin,
+                    Origin::Host(_) | Origin::Commands | Origin::Prelude
+                ) =>
             {
-                self.host_fact(origin, name)
+                let mut known = if *origin == Origin::Prelude {
+                    Known::default()
+                } else {
+                    self.host_fact(origin, name)
+                };
+                if let Some(function) = self.declared_function(origin, name) {
+                    known.function = Some(alloc::boxed::Box::new(function));
+                }
+                known
             }
             Some(Target::Value {
                 origin: Origin::File(stem),
@@ -2038,6 +2320,29 @@ impl Pass<'_> {
         }
         if let Type::Limited { name, .. } = ty {
             self.limit_facts(name, known);
+        }
+        // A function place is known by its parameter and result limits
+        // (07-checks §What is known 2, 8).
+        if let Type::Function { .. } = ty {
+            if known.function.is_none() && has_limits(ty) {
+                let mut parameters = Vec::new();
+                let mut ty = ty;
+                while let Type::Function { parameter, result } = ty {
+                    let mut known = Known::default();
+                    self.place_facts(parameter, &mut known);
+                    parameters.push(known);
+                    ty = result;
+                }
+                let mut result = Known::default();
+                self.place_facts(ty, &mut result);
+                known.function =
+                    Some(alloc::boxed::Box::new(known::Function {
+                        parameters,
+                        result,
+                        feeds: None,
+                        takes: Vec::new(),
+                    }));
+            }
         }
     }
     fn limit_facts(&self, ty: &Type, known: &mut Known) {
@@ -2741,6 +3046,40 @@ impl Pass<'_> {
     }
 }
 
+/// The arm lists a signature declares: annotated bindings' values and
+/// annotated `impl` members.
+fn signed(module: &Module) -> BTreeSet<usize> {
+    let mut signed: BTreeSet<_> = module
+        .expressions
+        .iter()
+        .filter_map(|e| match e.kind {
+            ExprKind::Bind {
+                value,
+                annotation: Some(_),
+                ..
+            } => Some(value.0),
+            _ => None,
+        })
+        .collect();
+    for entry in &module.entries {
+        let Entry::Item(item) = entry else { continue };
+        let ItemKind::Impl { members, .. } = &item.kind else {
+            continue;
+        };
+        for member in members {
+            if let crate::ast::ImplMember::Named {
+                annotation: Some(_),
+                value: Some(value),
+                ..
+            } = member
+            {
+                signed.insert(value.0);
+            }
+        }
+    }
+    signed
+}
+
 /// A function type's result past `arity` parameters.
 fn peel(mut ty: &Type, arity: usize) -> Option<&Type> {
     for _ in 0..arity {
@@ -2774,7 +3113,15 @@ fn feeds(
     let Type::Var(var) = ty else {
         return None;
     };
-    let var = *var;
+    feeds_at(scheme, &parameters, *var)
+}
+
+/// Where a variable of a scheme goes in, over its first parameters.
+fn feeds_at(
+    scheme: &crate::types::Scheme,
+    parameters: &[&Type],
+    var: crate::types::Var,
+) -> Option<Vec<known::Feed>> {
     let own = Type::Var(var);
     if !scheme.variables.contains(&var)
         || scheme.literals.iter().any(|(ty, ..)| ty.contains(var))
@@ -2783,8 +3130,8 @@ fn feeds(
         return None;
     }
     let mut feeds = Vec::new();
-    for (spot, parameter) in parameters.into_iter().enumerate() {
-        if *parameter == own {
+    for (spot, parameter) in parameters.iter().enumerate() {
+        if **parameter == own {
             feeds.push(known::Feed::Value(spot));
             continue;
         }
@@ -2794,7 +3141,7 @@ fn feeds(
         // A function argument: the variable only as one of its
         // parameters, which it takes, or as its result, which it gives.
         let mut arity = 0;
-        let mut result = parameter;
+        let mut result = *parameter;
         while let Type::Function {
             parameter,
             result: rest,
@@ -2814,6 +3161,159 @@ fn feeds(
         }
     }
     Some(feeds)
+}
+
+/// Each parameter of a function parameter, among a scheme's first
+/// `arity`, that is a variable whose feeds are known (07-checks §What is
+/// known 8): what is known at it is what a function value passed there
+/// meets.
+fn takes(scheme: &crate::types::Scheme, arity: usize) -> Vec<known::Take> {
+    let mut parameters = Vec::new();
+    let mut ty = &scheme.ty;
+    for _ in 0..arity {
+        let Type::Function { parameter, result } = ty else {
+            break;
+        };
+        parameters.push(&**parameter);
+        ty = result;
+    }
+    let mut takes = Vec::new();
+    for (spot, mut argument) in parameters.iter().copied().enumerate() {
+        let mut index = 0;
+        while let Type::Function { parameter, result } = argument {
+            if let Type::Var(var) = **parameter {
+                if let Some(feeds) = feeds_at(scheme, &parameters, var) {
+                    takes.push(known::Take {
+                        spot,
+                        parameter: index,
+                        feeds,
+                    });
+                }
+            }
+            index += 1;
+            argument = result;
+        }
+    }
+    takes
+}
+
+/// The takes of a declared scheme's spots (07-checks §What is known 8),
+/// its variables written names: a function spot's parameter at a
+/// variable `v` is fed by each spot of type `v`, each sequence of `v`,
+/// each argument `contents` says holds `v`, and each function spot's
+/// declared result when it gives `v`. It is unknown when a spot holds
+/// `v` otherwise.
+fn declared_takes(
+    spots: &[Type],
+    contents: &[(String, String)],
+) -> Vec<known::Take> {
+    let mut takes = Vec::new();
+    for (spot, mut argument) in spots.iter().enumerate() {
+        let mut index = 0;
+        while let Type::Function { parameter, result } = argument {
+            if let Some(v) = variable(parameter) {
+                if let Some(feeds) = declared_feeds(spots, v, contents) {
+                    takes.push(known::Take {
+                        spot,
+                        parameter: index,
+                        feeds,
+                    });
+                }
+            }
+            index += 1;
+            argument = result;
+        }
+    }
+    takes
+}
+
+fn declared_feeds(
+    spots: &[Type],
+    v: &str,
+    contents: &[(String, String)],
+) -> Option<Vec<known::Feed>> {
+    let mut feeds = Vec::new();
+    for (spot, ty) in spots.iter().enumerate() {
+        if let Type::Function { .. } = ty {
+            // A function spot takes `v` only as a whole parameter and
+            // gives it only as its whole result.
+            let (mut tail, mut arity) = (ty, 0);
+            while let Type::Function { parameter, result } = tail {
+                if mentions(parameter, v) && variable(parameter) != Some(v) {
+                    return None;
+                }
+                arity += 1;
+                tail = result;
+            }
+            if variable(tail) == Some(v) {
+                feeds.push(known::Feed::Returns(spot, arity));
+            } else if mentions(tail, v) {
+                return None;
+            }
+            continue;
+        }
+        let element = match crate::infer::meaning(ty) {
+            Type::Array { element, .. } => Some(&**element),
+            Type::Named { name, arguments }
+                if name.origin == Origin::Prelude
+                    && matches!(name.name.as_str(), "Vec" | "Deque") =>
+            {
+                arguments.first()
+            }
+            _ => None,
+        };
+        match variable(ty) {
+            Some(n) if n == v => feeds.push(known::Feed::Value(spot)),
+            Some(c) if contents.iter().any(|(a, held)| a == v && held == c) => {
+                feeds.push(known::Feed::Element(spot));
+            }
+            _ if element.and_then(variable) == Some(v) => {
+                feeds.push(known::Feed::Element(spot));
+            }
+            _ if mentions(ty, v) => return None,
+            _ => (),
+        }
+    }
+    Some(feeds)
+}
+
+/// A declared scheme's type variable by its written name: rigid, or a
+/// lowercase name the declaration module does not declare.
+fn variable(ty: &Type) -> Option<&str> {
+    match ty {
+        Type::Rigid(n) => Some(n),
+        Type::Named { name, arguments }
+            if arguments.is_empty()
+                && name.name.starts_with(|c: char| c.is_ascii_lowercase()) =>
+        {
+            Some(&name.name)
+        }
+        _ => None,
+    }
+}
+
+/// Whether a declared type mentions the variable written `v`.
+fn mentions(ty: &Type, v: &str) -> bool {
+    if let Some(n) = variable(ty) {
+        return n == v;
+    }
+    match ty {
+        Type::Function { parameter, result } => {
+            mentions(parameter, v) || mentions(result, v)
+        }
+        Type::Named { arguments, .. } => {
+            arguments.iter().any(|a| mentions(a, v))
+        }
+        Type::Tuple(parts) | Type::Both(parts) | Type::Either(parts) => {
+            parts.iter().any(|p| mentions(p, v))
+        }
+        Type::Array { element, .. } => mentions(element, v),
+        Type::Limited { name, meaning } => {
+            mentions(name, v) || mentions(meaning, v)
+        }
+        Type::Not(inner) => mentions(inner, v),
+        _ => false,
+    }
 }
 
 /// Whether a limit of a scheme may produce a value of `var`'s type: a

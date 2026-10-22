@@ -56,10 +56,7 @@ impl Infer<'_> {
             .map(|ty| self.apply(ty))
             .collect();
         pending.extend(
-            self.state
-                .entries
-                .iter()
-                .map(|(_, ty, _, _)| self.apply(ty)),
+            self.state.entries.iter().map(|(_, ty, ..)| self.apply(ty)),
         );
         for index in 0..self.module.patterns.len() {
             if let Some(crate::resolve::Target::Type { origin, name }) =

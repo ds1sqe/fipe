@@ -134,6 +134,7 @@ impl Machine {
             captures,
             meanings,
             filled: Vec::new(),
+            guards: Vec::new(),
         }))
     }
 

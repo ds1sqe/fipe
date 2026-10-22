@@ -341,7 +341,9 @@ struct State {
     modes: BTreeMap<(usize, usize), crate::typed::Mode>,
     subst: Subst,
     types: Vec<Option<Type>>,
-    entries: Vec<(ExprId, Type, Span, crate::typed::Place)>,
+    /// Each value entering a place: its place type, span and kind, and
+    /// whether the place was a type variable when entered.
+    entries: Vec<(ExprId, Type, Span, crate::typed::Place, bool)>,
     checks: Vec<crate::typed::Check>,
     casts: Vec<Option<alloc::boxed::Box<crate::typed::Cast>>>,
     families: Vec<outcome::Pending>,
@@ -1191,8 +1193,8 @@ impl Infer<'_> {
             .state
             .entries
             .iter()
-            .map(|(id, ty, span, kind)| {
-                (*id, subst.apply(ty), *span, kind.clone())
+            .map(|(id, ty, span, kind, variable)| {
+                (*id, subst.apply(ty), *span, kind.clone(), *variable)
             })
             .collect();
         let mut errors = self.state.errors;

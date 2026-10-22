@@ -7,7 +7,11 @@ use super::{
     predicates::{After, Run},
     Flow, Machine, Return,
 };
-use crate::{ir::Projection, mir, value::Value};
+use crate::{
+    ir::{self, Projection},
+    mir,
+    value::Value,
+};
 use alloc::vec::Vec;
 
 impl Machine {
@@ -36,6 +40,49 @@ impl Machine {
             result: None,
         }));
         Flow::Continue
+    }
+}
+
+impl Machine {
+    /// Test one value by a predicate, a Fault naming `entry` on failure:
+    /// a closure's guard on an argument.
+    pub(super) fn enter_by(
+        &mut self,
+        predicate: ir::Predicate,
+        entry: usize,
+        value: Value,
+        node: usize,
+    ) {
+        let run = Run::new(predicate, value, After::Enter(entry));
+        self.frames.push(Frame::Native(NativeFrame {
+            node,
+            pending: Pending::Predicate(run),
+            back: Return::Continue,
+            result: None,
+        }));
+    }
+
+    /// An open function entry: the closure keeps the entry's parameter
+    /// limits, tested on each of its calls (07-checks §What is known 8).
+    pub(super) fn guard(
+        closure: &crate::value::Closure,
+        entry: usize,
+        mut predicate: &ir::Predicate,
+    ) -> Value {
+        let mut closure = closure.clone();
+        let mut spot = closure.filled.len();
+        while let ir::Predicate::Function { parameter, result } = predicate {
+            if **parameter != ir::Predicate::All(Vec::new()) {
+                closure.guards.push(crate::value::Guard {
+                    spot,
+                    entry,
+                    predicate: (**parameter).clone(),
+                });
+            }
+            spot += 1;
+            predicate = result;
+        }
+        Value::Function(alloc::rc::Rc::new(closure))
     }
 }
 

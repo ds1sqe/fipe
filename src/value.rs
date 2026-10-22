@@ -101,6 +101,18 @@ pub struct Closure {
     pub captures: Vec<Value>,
     pub meanings: Vec<ir::Type>,
     pub filled: Vec<Value>,
+    /// The tests its calls run on their arguments before the body: an
+    /// open function entry's parameter limits.
+    pub guards: Vec<Guard>,
+}
+
+/// A spot of a closure tested on each call by a parameter limit of an
+/// open entry, whose failure Faults naming that entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Guard {
+    pub spot: usize,
+    pub entry: usize,
+    pub predicate: ir::Predicate,
 }
 
 /// A signed integer of any size.

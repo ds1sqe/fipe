@@ -70,7 +70,7 @@ No mode skips a test; a trusted entry belongs to a hatch (T4).
 | Check | Compile | Init or eval | Configurable |
 | --- | --- | --- | --- |
 | syntax, names, meanings, member limits, arm coverage | always | never | no |
-| a function entering a place | always | never | no |
+| a function entering a place | always, but at a callee's variable | at such a variable, per call (rule 8) | no |
 | a test: range, length, named test, record limit | proved or refuted | an open entry | yes |
 | `Integer` division by zero | refuted when the divisor is exactly zero | when its range holds zero | no |
 | a host reply against its declaration | never | always | no |
@@ -162,7 +162,9 @@ to 8 are ruled (2026-10-21).
    body, taken once at the declared parameter limits. The body is read
    for a function of the checked unit, its file modules or an earlier
    session line; a prelude or host function is known by its declared
-   limits only. A cycle of undeclared results is unknown.
+   limits and scheme only, which say what goes in at its variables (a
+   sequence's elements, `Items<a> c`; ruled 2026-10-22). A cycle of
+   undeclared results is unknown.
 6. **Variables.** At a call, what comes out at a type variable is the join
    of what went in at it and of the declared result limits of each
    function argument that returns it. It is unknown when something can
@@ -175,8 +177,10 @@ to 8 are ruled (2026-10-21).
 8. **Functions.** A function value enters a place of function type only
    when proved: parameters wider, results narrower, flipping at each
    arrow; at a variable, against what is known there, so `apply f 300`
-   with `f: U8 -> U8` is refuted. A function's entry unproved is a check
-   error in every mode (§Modes). A member meets a member limit by the same proof, so a
+   with `f: U8 -> U8` is refuted; where what goes in there is not known
+   to fit, the parameter limits are an open entry tested on each call of
+   the value (ruled 2026-10-22). Any other function entry unproved is a
+   check error in every mode (§Modes). A member meets a member limit by the same proof, so a
    member with a narrower parameter does not. A call tests its argument
    against the known parameter limits, an argument not known to fit
    being an open entry as at any place; branches meet parameters and join

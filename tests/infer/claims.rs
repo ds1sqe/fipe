@@ -119,11 +119,15 @@ fn arrays_derive_from_parts_and_claims_plan_narrow_parameters() {
         ty("f: [Integer; 2] -> String = a => a.show"),
         "[Integer; 2] -> String"
     );
-    let typed = super::run("type Limit where self.take: Integer -> Integer\ntype V: Limit {}\nimpl V: Limit { take: U8 -> Self -> Integer = n self => n }").1.unwrap();
-    assert!(typed
-        .checks
-        .iter()
-        .any(|check| check.reason == fipe::typed::CheckReason::Narrowing));
+    // A member parameter narrower than the limit's is a check error.
+    let errors = super::run("type Limit where self.take: Integer -> Integer\ntype V: Limit {}\nimpl V: Limit { take: U8 -> Self -> Integer = n self => n }").1.unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(&e.reason, Reason::Limit { message }
+            if message.contains("unproved function entry"))),
+        "{errors:?}"
+    );
 }
 
 #[test]

@@ -1,5 +1,6 @@
 //! Conditions, guards, literal patterns and joins; calls and type
-//! variables (07-checks §What is known 4 to 7).
+//! variables; function values entering places (07-checks §What is
+//! known 4 to 8).
 use super::line;
 use fipe::typed::CheckReason;
 
@@ -246,18 +247,6 @@ fn a_marked_pipe_joins_its_branches() {
     }
 }
 
-/// A line whose only open entries are of a function value, which wait
-/// for rule 8: every other entry is proved.
-fn functions_open(lines: &[&str], text: &str) {
-    let report = line(&mut session(lines), text);
-    assert_eq!(report.diagnostics, [], "{text}: {:?}", report.diagnostics);
-    assert!(
-        report.checks.iter().all(|c| c.name.contains("->")),
-        "{text}: {:?}",
-        report.checks
-    );
-}
-
 const HALF: &str = "half: U8 -> Integer = n => n / 2";
 const MAX: &str = "max = x y if x > y => x, _ y => y";
 const ODD: [&str; 3] = [
@@ -359,7 +348,7 @@ fn a_result_variable_is_the_join_of_what_went_in() {
 #[test]
 fn a_function_argument_returning_the_variable_gives_its_declared_result() {
     let lines = ["twice = f x => f (f x)", "cut: Integer -> U8 = n => 0"];
-    functions_open(&lines, "t: U8 = twice cut 8");
+    proved(&lines, "t: U8 = twice cut 8");
     // An argument with no declared result limit may return anything.
     open(
         &lines,
@@ -432,7 +421,7 @@ fn nested_and_member_arm_lists_are_read_at_their_declared_parameters() {
         "g: Integer -> U8 = x => {\n    k: U8 -> Integer = y => y / 2\n    k 100\n}",
     );
     let lines = ["type W { n: Integer }"];
-    functions_open(&lines, "impl W { halve: U8 -> U8 = n => n / 2 }");
+    proved(&lines, "impl W { halve: U8 -> U8 = n => n / 2 }");
 }
 
 #[test]
@@ -442,4 +431,222 @@ fn a_fault_call_is_dead_and_proves_its_place() {
         &["boom: Integer -> Integer = n => fault \"no\""],
         "b: U8 = boom 1",
     );
+}
+
+/// A line refused with a limit error whose message holds `text`.
+fn refused(lines: &[&str], text: &str, message: &str) {
+    let report = line(&mut session(lines), text);
+    assert!(
+        format!("{:?}", report.diagnostics).contains(message),
+        "{text}: {:?}",
+        report.diagnostics
+    );
+}
+
+const W: &str = "w: U8 -> U8 = n => n";
+
+#[test]
+fn a_function_enters_with_wider_parameters_and_a_narrower_result() {
+    refused(&[W], "v: Integer -> U8 = w", "unproved function entry");
+    proved(&[W], "u: U8 -> Integer = w");
+    proved(&[W], "u: U8 -> U8 = w");
+    proved(&["k: Integer -> U8 = n => 0"], "u: U8 -> Integer = k");
+    refused(
+        &["k: Integer -> Integer = n => 300"],
+        "u: Integer -> U8 = k",
+        "refuted entry",
+    );
+    // A dead result proves anything.
+    proved(
+        &["k: Integer -> Integer = n => fault \"no\""],
+        "u: U8 -> U8 = k",
+    );
+}
+
+#[test]
+fn an_unproved_function_entry_is_an_error_in_every_mode() {
+    let mut strict = session(&[W]);
+    strict.strict(true);
+    for mut session in [session(&[W]), strict] {
+        let report = line(&mut session, "v: Integer -> U8 = w");
+        assert!(
+            format!("{:?}", report.diagnostics)
+                .contains("unproved function entry"),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+    refused(
+        &[W],
+        "v: Compile & (Integer -> U8) = w",
+        "unproved function entry",
+    );
+    proved(&[W], "v: Compile & (U8 -> Integer) = w");
+}
+
+#[test]
+fn parameters_flip_at_each_arrow() {
+    let lines = [
+        "hi: (Integer -> U8) -> U8 = g => g 1",
+        "lo: (U8 -> U8) -> U8 = g => g 1",
+    ];
+    // `hi` calls its argument with any Integer: a U8 -> U8 does not fit.
+    refused(
+        &lines,
+        "p: (U8 -> U8) -> U8 = hi",
+        "unproved function entry",
+    );
+    proved(&lines, "p: (Integer -> U8) -> U8 = lo");
+    proved(&lines, "p: (Integer -> U8) -> Integer = lo");
+    refused(
+        &lines,
+        "p: (U8 -> Integer) -> U8 = lo",
+        "unproved function entry",
+    );
+}
+
+#[test]
+fn a_function_argument_meets_what_is_known_at_its_variable() {
+    let lines = [W, "apply = g x => g x", "twice = f x => f (f x)"];
+    refuted(&lines, "y = apply w 300");
+    proved(&lines, "y: U8 = apply w 3");
+    // At `twice`'s variable go in 8 and what `w` gives: both fit U8.
+    proved(&lines, "y: U8 = twice w 8");
+    // 0..256 goes in: not known to fit, so tested on each call.
+    open(&lines, "y = twice w 256", CheckReason::UnknownInput);
+    // Nothing goes in yet: the partial call's later argument is tested.
+    open(&lines, "p = apply w", CheckReason::UnknownInput);
+    // A function at a variable place is what is known there.
+    proved(&["id = x => x", W], "v = id w");
+    // A declared parameter without limits takes any Integer.
+    refused(
+        &[W, "h: (Integer -> Integer) -> Integer = k => k 300"],
+        "y = h w",
+        "unproved function entry",
+    );
+    // An unknown function value's call gives an unknown result.
+    let report = line(&mut session(&lines[1..2]), "z = apply (n => n) 300");
+    assert_eq!(report.diagnostics, []);
+}
+
+#[test]
+fn an_arm_list_argument_is_known_by_its_body() {
+    let lines = ["hof: (U8 -> U8) -> U8 = k => k 3"];
+    // Its parameter takes what is known at the place's: a U8.
+    proved(&lines, "z = hof (x => x)");
+    proved(&lines, "z = hof (x => if x > 9 { 9 } else { x })");
+    // The place's result limit does not narrow what its body gives.
+    refused(&lines, "z = hof (x => x + 1)", "unproved function entry");
+    refused(&lines, "z = hof (x => 300)", "refuted entry");
+}
+
+#[test]
+fn a_partial_call_enters_by_its_remaining_parameters() {
+    let lines = ["add: U8 -> U8 -> U8 = x y => x"];
+    proved(&lines, "q: U8 -> U8 = add 3");
+    proved(&lines, "q: U8 -> Integer = add 3");
+    refused(
+        &lines,
+        "q: Integer -> U8 = add 3",
+        "unproved function entry",
+    );
+}
+
+#[test]
+fn a_member_meets_its_member_limit_by_the_same_proof() {
+    refused(
+        &["type A: Len { n: Integer }"],
+        "impl A: Len { len = self => -1 }",
+        "refuted entry",
+    );
+    refused(
+        &["type A: Len { n: Integer }"],
+        "impl A: Len { len = self => self.n }",
+        "unproved function entry",
+    );
+    proved(
+        &["type L1: Len { n: Natural }"],
+        "impl L1: Len { len = self => self.n }",
+    );
+    proved(
+        &["type L2: Len { n: U8 }"],
+        "impl L2: Len { len = self => self.n }",
+    );
+}
+
+#[test]
+fn function_parts_enter_by_the_same_proof() {
+    proved(&[W], "t: (U8 -> U8) * U8 = (w, 1)");
+    refused(
+        &[W],
+        "t: (Integer -> U8) * U8 = (w, 1)",
+        "unproved function entry",
+    );
+    proved(&[W], "xs: Vec<U8 -> Integer> = [w]");
+    proved(&["type R { f: U8 -> U8 }"], "r = R (n => n)");
+}
+
+#[test]
+fn a_prelude_function_is_known_by_its_declared_scheme() {
+    // What goes in at `map`'s variable: the elements of its sequence.
+    proved(&[W], "ys = map w [1, 2]");
+    proved(&[W], "ys = [1, 2] | map w");
+    proved(&[W], "ys = map w []");
+    refuted(&[W], "ys = map w [300]");
+    // `Items<a> c`: `filter`'s predicate takes the elements.
+    let lines = [W, "small: U8 -> Bool = n => n < 9"];
+    proved(&lines, "zs = filter small [1, 2]");
+    refuted(&lines, "zs = filter small [300, 400]");
+    // Not known to fit: an open entry tested on each call.
+    open(
+        &lines,
+        "zs = filter small [1, 300]",
+        CheckReason::UnknownInput,
+    );
+    open(&[W], "g = n => map w [n]", CheckReason::UnknownInput);
+    // Elements known by their type's limits.
+    proved(&[W, "xs: Vec<U8> = [1]"], "ys = map w xs");
+}
+
+#[test]
+fn a_host_function_is_known_by_its_declared_scheme() {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .module(
+            "calc",
+            "pub each: (f: a -> b) -> (xs: Vec<a>) -> Vec<b>\n\
+             pub twice: (f: a -> a) -> (x: a) -> a",
+        )
+        .unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for text in ["use calc", W] {
+        assert_eq!(line(&mut session, text).diagnostics, [], "{text}");
+    }
+    for text in ["p = calc.each w [1, 2]", "q = calc.twice w 3"] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}");
+        assert_eq!(report.checks, [], "{text}");
+    }
+    let report = line(&mut session, "p = calc.each w [300]");
+    assert!(
+        format!("{:?}", report.diagnostics).contains("refuted entry"),
+        "{:?}",
+        report.diagnostics
+    );
+    // What `twice` gives back of `w` goes in at its variable too: 300
+    // and 0..255 are not known to fit, so the entry is open, as it is
+    // for an unknown element.
+    for text in ["q = calc.twice w 300", "g = n => calc.each w [n]"] {
+        let report = line(&mut session, text);
+        assert_eq!(report.diagnostics, [], "{text}");
+        assert!(
+            !report.checks.is_empty()
+                && report
+                    .checks
+                    .iter()
+                    .all(|c| c.reason == CheckReason::UnknownInput),
+            "{text}: {:?}",
+            report.checks
+        );
+    }
 }

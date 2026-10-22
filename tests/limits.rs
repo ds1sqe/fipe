@@ -781,22 +781,22 @@ fn union_proof_requires_the_values_meaning() {
 }
 
 #[test]
-fn function_arguments_with_limits_require_narrowing_proof() {
+fn function_arguments_with_limits_are_proved_at_the_variable() {
     let mut session =
         fipe::session::Session::new(fipe::decl::Declarations::new());
     for text in ["f: U8 -> U8 = n => n", "apply = g x => g x"] {
         assert_eq!(line(&mut session, text).diagnostics, []);
     }
+    // At `apply`'s variable `f`'s parameter U8 meets 300: refuted.
     let report = line(&mut session, "y = apply f 300");
-    assert_eq!(report.diagnostics, []);
     assert!(
-        report
-            .checks
-            .iter()
-            .any(|c| c.reason == fipe::typed::CheckReason::Narrowing),
+        format!("{:?}", report.diagnostics).contains("refuted entry"),
         "{:?}",
-        report.checks
+        report.diagnostics
     );
+    let report = line(&mut session, "y = apply f 3");
+    assert_eq!(report.diagnostics, []);
+    assert_eq!(report.checks, []);
 }
 
 #[test]

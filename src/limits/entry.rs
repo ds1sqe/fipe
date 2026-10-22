@@ -20,11 +20,279 @@ impl Pass<'_> {
         place: Span,
         frequency: Frequency,
     ) {
+        use crate::ir::Projection as P;
+        // The entering value's own type follows it into its parts, as
+        // far as its structure shows them; a record's field has the
+        // place's field type when the value is of the place's type.
+        let value_ty = self.value_ty.as_ref().and_then(|value| {
+            match (&projection, crate::infer::meaning(value)) {
+                (P::Part(i), Type::Tuple(parts)) => parts.get(*i).cloned(),
+                (P::Element, Type::Array { element, .. }) => {
+                    Some((**element).clone())
+                }
+                (P::Element, Type::Named { arguments, .. }) => {
+                    arguments.first().cloned()
+                }
+                (P::Payload(i), Type::Named { arguments, .. }) => {
+                    arguments.get(*i).cloned()
+                }
+                (P::Field(_) | P::CaseField { .. }, _)
+                    if self.value_is_place =>
+                {
+                    Some(ty.clone())
+                }
+                _ => None,
+            }
+        });
+        let previous_ty = core::mem::replace(&mut self.value_ty, value_ty);
+        let is_place = self.value_is_place;
         let previous = core::mem::replace(&mut self.place_kind, kind);
         self.path.push(projection);
         self.enter(ty, known, place, frequency);
         self.path.pop();
         self.place_kind = previous;
+        self.value_ty = previous_ty;
+        self.value_is_place = is_place;
+    }
+
+    /// A top-level entry, with what is known at each variable parameter
+    /// when the value is a function argument (07-checks §What is known
+    /// 8).
+    pub(super) fn enter_value(
+        &mut self,
+        ty: &Type,
+        known: &Known,
+        place: Span,
+        frequency: Frequency,
+        takes: Option<&[Option<Known>]>,
+    ) {
+        if matches!(ty, Type::Function { .. }) {
+            self.function_entry(
+                ty,
+                known,
+                place,
+                frequency,
+                takes.unwrap_or(&[]),
+            );
+        } else {
+            self.enter(ty, known, place, frequency);
+        }
+    }
+
+    /// A function value enters a place of function type only when
+    /// proved (07-checks §What is known 8): each parameter of the place
+    /// enters the value's, and the value's result enters the place's,
+    /// flipping at each arrow. Refuted or unproved, it is a check error
+    /// in every mode; but a parameter at a callee's variable where what
+    /// goes in is not known to fit is an open entry, tested on each call
+    /// of the value (ruled 2026-10-22).
+    fn function_entry(
+        &mut self,
+        ty: &Type,
+        known: &Known,
+        place: Span,
+        frequency: Frequency,
+        takes: &[Option<Known>],
+    ) {
+        let value_ty = self.value_ty.clone();
+        let outer = core::mem::take(&mut self.opens);
+        let outcome = self.function_outcome(
+            ty,
+            value_ty.as_ref(),
+            known,
+            (takes, 0),
+            place,
+        );
+        let opens = core::mem::replace(&mut self.opens, outer);
+        let message = match outcome {
+            Some(true) if opens.is_empty() => return,
+            Some(true) => {
+                self.open_function(ty, &opens, known, place, frequency);
+                return;
+            }
+            Some(false) => format!("refuted entry against {ty}"),
+            None => format!("unproved function entry against {ty}"),
+        };
+        self.errors.push(Error {
+            span: place,
+            reason: TypeReason::Limit { message },
+        });
+    }
+
+    /// The open entry of a function value at a callee's variables: the
+    /// value's own limits at each open parameter, tested per call.
+    fn open_function(
+        &mut self,
+        ty: &Type,
+        opens: &[(usize, Type)],
+        known: &Known,
+        place: Span,
+        frequency: Frequency,
+    ) {
+        let mut parameters = Vec::new();
+        let mut rest = ty;
+        let last = opens.iter().map(|(i, _)| *i).max().unwrap_or(0);
+        while let Type::Function { parameter, result } = rest {
+            if parameters.len() > last {
+                break;
+            }
+            let own = opens.iter().find(|(i, _)| *i == parameters.len());
+            parameters.push(
+                own.map_or_else(|| (**parameter).clone(), |(_, t)| t.clone()),
+            );
+            rest = result;
+        }
+        let target = parameters
+            .into_iter()
+            .rev()
+            .fold(rest.clone(), |r, p| Type::function(p, r));
+        let start = self.typed.checks.len();
+        let unknown = Known {
+            function: known.function.clone(),
+            ..Known::default()
+        };
+        self.outcome(
+            (target.to_string(), Origin::This, place),
+            place,
+            frequency,
+            &unknown,
+            &Known::default(),
+        );
+        for check in &mut self.typed.checks[start..] {
+            check.target = Some(target.clone());
+        }
+    }
+
+    /// Whether a value of type `value_ty`, known as `value`, enters a
+    /// place of type `place`; `takes` is what is known at each of the
+    /// place's parameters that is a variable of a callee's scheme, from
+    /// the position given. A parameter there not known to fit is left
+    /// to `opens`, with the value's own parameter type.
+    pub(super) fn function_outcome(
+        &mut self,
+        place: &Type,
+        value_ty: Option<&Type>,
+        value: &Known,
+        (takes, position): (&[Option<Known>], usize),
+        span: Span,
+    ) -> Option<bool> {
+        if value.is_dead()
+            || value.failure == Some(super::known::Failure::Dependency)
+        {
+            return Some(true);
+        }
+        let Type::Function { parameter, result } = place else {
+            return self.settled(place, value, span);
+        };
+        let at = takes.first().cloned().flatten();
+        let (own_parameter, own_result) =
+            match value_ty.map(crate::infer::meaning) {
+                Some(Type::Function { parameter, result }) => {
+                    (Some(&**parameter), Some(&**result))
+                }
+                _ => (None, None),
+            };
+        let entering = at.clone().unwrap_or_else(|| {
+            let mut known = Known::default();
+            self.place_facts(parameter, &mut known);
+            known
+        });
+        // Parameters wider: what the place gives enters the value's
+        // parameter. A value whose own type is unknown is not proved.
+        let accepts = match own_parameter {
+            None => None,
+            Some(own) if at.is_none() && own == &**parameter => Some(true),
+            Some(own @ Type::Function { .. }) => self.function_outcome(
+                own,
+                Some(parameter),
+                &entering,
+                (&[], 0),
+                span,
+            ),
+            Some(own) => self.settled(own, &entering, span),
+        };
+        let accepts = match (accepts, own_parameter) {
+            (None, Some(own)) if at.is_some() => {
+                self.opens.push((position, own.clone()));
+                Some(true)
+            }
+            _ => accepts,
+        };
+        if accepts == Some(false) {
+            return accepts;
+        }
+        // Results narrower: what the value gives past this parameter.
+        let mut rest =
+            value
+                .function
+                .as_deref()
+                .map_or_else(Known::default, |function| {
+                    match function.parameters.len() {
+                        0 | 1 => function.result.clone(),
+                        _ => Known {
+                            function: Some(alloc::boxed::Box::new(
+                                super::known::Function {
+                                    parameters: function.parameters[1..]
+                                        .to_vec(),
+                                    result: function.result.clone(),
+                                    feeds: None,
+                                    takes: Vec::new(),
+                                },
+                            )),
+                            ..Known::default()
+                        },
+                    }
+                });
+        // A value with no function knowledge is known by its type's
+        // result limits; one with it, by what it is known to give: an
+        // arm list without a signature has none of the type it was
+        // checked against.
+        if let (Some(own), None) = (own_result, &value.function) {
+            self.place_facts(own, &mut rest);
+        }
+        let given = if matches!(**result, Type::Function { .. }) {
+            self.function_outcome(
+                result,
+                own_result,
+                &rest,
+                (takes.get(1..).unwrap_or(&[]), position + 1),
+                span,
+            )
+        } else {
+            self.settled(result, &rest, span)
+        };
+        match (accepts, given) {
+            (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        }
+    }
+
+    /// The outcome of entering `ty` with `known`, recording nothing.
+    fn settled(
+        &mut self,
+        ty: &Type,
+        known: &Known,
+        span: Span,
+    ) -> Option<bool> {
+        let (checks, errors) = (self.typed.checks.len(), self.errors.len());
+        let seen = core::mem::take(&mut self.checks_seen);
+        let path = core::mem::take(&mut self.path);
+        let value_ty = self.value_ty.take();
+        self.enter(ty, known, span, Frequency::Once);
+        let outcome = if self.errors.len() > errors {
+            Some(false)
+        } else if self.typed.checks.len() > checks {
+            None
+        } else {
+            Some(true)
+        };
+        self.typed.checks.truncate(checks);
+        self.errors.truncate(errors);
+        self.checks_seen = seen;
+        self.path = path;
+        self.value_ty = value_ty;
+        outcome
     }
 
     pub(super) fn enter(
@@ -75,17 +343,7 @@ impl Pass<'_> {
                 );
             }
             Type::Function { .. } => {
-                let known = Known {
-                    narrowing: true,
-                    ..known.clone()
-                };
-                self.outcome(
-                    (ty.to_string(), Origin::This, place),
-                    place,
-                    frequency,
-                    &known,
-                    &Known::default(),
-                );
+                self.function_entry(ty, known, place, frequency, &[]);
             }
             Type::Both(parts) => {
                 for part in parts {
@@ -121,6 +379,12 @@ impl Pass<'_> {
         if !arguments.iter().any(super::has_limits) {
             return;
         }
+        let value_is_place = self.value_ty.as_ref().is_some_and(|value| {
+            matches!(crate::infer::meaning(value),
+                Type::Named { name: n, arguments: a }
+                    if n == name && a.as_slice() == arguments)
+        });
+        self.value_is_place = value_is_place;
         let Some(module) = self.owner(&name.origin) else {
             return;
         };

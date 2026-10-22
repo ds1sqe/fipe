@@ -792,6 +792,7 @@ impl Infer<'_> {
             if let Some(index) = self.items.iter().position(|i| i.site == site)
             {
                 let callee = self.item_callee(index, site);
+                let slot = callee.self_slot;
                 let actual = if let Some(slot) = callee.self_slot {
                     let mut callee = callee;
                     callee.supplied = Some((slot, head.clone(), site));
@@ -800,7 +801,12 @@ impl Infer<'_> {
                     callee.whole()
                 };
                 let ty = self.universal_member(&class, &head, &ty, &actual);
-                self.check_member_type(&ty, &actual, site, span);
+                let value = match &self.items[index].body {
+                    Some(super::Body::Value(value)) => Some(*value),
+                    _ => None,
+                }
+                .map(|value| (value, self.receiving(&ty, slot, &head)));
+                self.check_member_type(&ty, &actual, (site, span), value);
             }
         }
     }
@@ -1157,7 +1163,12 @@ impl Infer<'_> {
                     );
                     let expected =
                         self.universal_member(class, head, expected, &actual);
-                    self.check_member_type(&expected, &actual, span, span);
+                    self.check_member_type(
+                        &expected,
+                        &actual,
+                        (span, span),
+                        None,
+                    );
                 }
             }
         }
@@ -1269,43 +1280,70 @@ impl Infer<'_> {
         crate::types::replace(expected, &replacements)
     }
 
+    /// A member limit's type with the receiver at its slot.
+    fn receiving(
+        &mut self,
+        expected: &Type,
+        slot: Option<usize>,
+        head: &Type,
+    ) -> Type {
+        slot.map_or_else(
+            || expected.clone(),
+            |slot| {
+                let (mut parameters, result) = self
+                    .peel(expected, slot)
+                    .unwrap_or_else(|| (Vec::new(), expected.clone()));
+                parameters.push(head.clone());
+                parameters
+                    .into_iter()
+                    .rev()
+                    .fold(result, |r, p| Type::function(p, r))
+            },
+        )
+    }
+
+    /// A member meets a member limit as a function value enters a place
+    /// (07-checks §What is known 8): proved, or a check error. A member
+    /// with a body is proved by what it is known as, with the other
+    /// entries; one without is known by its declared limits.
+    /// `value` is the member's body with the limit's whole type, its
+    /// receiver included.
     pub(super) fn check_member_type(
         &mut self,
         expected: &Type,
         actual: &Type,
-        span: Span,
-        other: Span,
+        (span, other): (Span, Span),
+        value: Option<(crate::ast::ExprId, Type)>,
     ) {
         let expected = self.apply(expected);
         let actual = self.apply(actual);
         let errors = self.state.errors.len();
         self.unify(&expected, &actual, span, other);
-        if self.state.errors.len() == errors && !limits_fit(&actual, &expected)
-        {
-            let known = crate::limits::known::Known {
-                narrowing: true,
-                ..Default::default()
-            };
-            self.state.checks.push(crate::typed::Check {
-                value: None,
-                path: Vec::new(),
-                target: Some(expected.clone()),
-                place: span,
-                place_kind: crate::typed::Place::Result,
-                limit: other,
-                phase: crate::typed::Phase::Eval,
-                reason: crate::typed::CheckReason::Narrowing,
-                frequency: crate::typed::Frequency::PerCall,
-                place_origin: crate::resolve::Origin::This,
-                limit_origin: crate::resolve::Origin::This,
-                name: alloc::format!("{expected}"),
-                test_count: 1,
-                known,
-                gate: false,
-                when_integer: false,
-                owner: None,
-            });
+        if self.state.errors.len() != errors || limits_fit(&actual, &expected) {
+            return;
         }
+        if let Some((value, whole)) = value {
+            self.state.entries.push((
+                value,
+                whole,
+                span,
+                crate::typed::Place::Result,
+                false,
+            ));
+            return;
+        }
+        let message = match crate::limits::function_proved(
+            &self.limit_inputs(),
+            &expected,
+            &actual,
+        ) {
+            Some(true) => return,
+            Some(false) => alloc::format!("refuted entry against {expected}"),
+            None => {
+                alloc::format!("unproved function entry against {expected}")
+            }
+        };
+        self.error(span, super::Reason::Limit { message });
     }
 }
 
@@ -1413,20 +1451,12 @@ impl Infer<'_> {
             self.block_error(item.site, class, "has the wrong receiver");
             return;
         }
-        let expected = slot.map_or_else(
-            || expected.clone(),
-            |slot| {
-                let (mut parameters, result) = self
-                    .peel(expected, slot)
-                    .unwrap_or_else(|| (Vec::new(), expected.clone()));
-                parameters.push(head.clone());
-                parameters
-                    .into_iter()
-                    .rev()
-                    .fold(result, |r, p| Type::function(p, r))
-            },
-        );
-        self.check_member_type(&expected, &item.ty, item.site, other);
+        let expected = self.receiving(expected, slot, head);
+        let value = match &item.body {
+            Some(super::Body::Value(value)) => Some((*value, expected.clone())),
+            _ => None,
+        };
+        self.check_member_type(&expected, &item.ty, (item.site, other), value);
     }
 }
 

@@ -55,7 +55,16 @@ impl Builder<'_, '_> {
                 self.materialize(rvalue, dest, ty, node)
             }
             ir::Kind::Enter { entry, value } => {
-                let value = self.lower_to(*value, dest);
+                let mut value = self.lower_to(*value, dest);
+                // A function entry guards the value in its local.
+                if matches!(
+                    tables.entries[*entry].predicate,
+                    ir::Predicate::Function { .. }
+                ) && !matches!(value, Operand::Local(_))
+                {
+                    let local = self.local(ty.clone(), None);
+                    value = self.place(value, Some(local), node);
+                }
                 self.lowering
                     .reach_predicate(&tables.entries[*entry].predicate);
                 self.count(node);

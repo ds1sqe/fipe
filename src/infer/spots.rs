@@ -1035,6 +1035,7 @@ impl Infer<'_> {
         other: Span,
         place_kind: crate::typed::Place,
     ) {
+        let variable = matches!(target, Type::Var(_));
         let target = self.apply(target);
         if let Some(index) = self.expression_ids.get(&span).copied() {
             if matches!(self.module.expressions[index].kind, ExprKind::List(_))
@@ -1057,6 +1058,7 @@ impl Infer<'_> {
                     target.clone(),
                     span,
                     place_kind,
+                    variable,
                 ));
             }
         }
@@ -1781,8 +1783,8 @@ impl<'a> Infer<'a> {
             .state
             .entries
             .iter()
-            .map(|(id, ty, span, kind)| {
-                (*id, self.apply(ty), *span, kind.clone())
+            .map(|(id, ty, span, kind, variable)| {
+                (*id, self.apply(ty), *span, kind.clone(), *variable)
             })
             .collect();
         let errors = crate::limits::check(

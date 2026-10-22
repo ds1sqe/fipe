@@ -32,6 +32,7 @@ impl Infer<'_> {
                 expected.ty.clone(),
                 expected.span,
                 expected.place_kind.clone(),
+                matches!(expected.ty, Type::Var(_)),
             ));
         }
         let ty = self.synth(id, expected);
