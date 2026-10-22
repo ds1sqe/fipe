@@ -222,6 +222,19 @@ pub words: String -> Vec<String>
 ## Split text at a separator.
 ## - at: the separator
 pub split: (at: String) -> String -> Vec<String>
+## Whether the text holds the needle.
+## - needle: the text looked for
+pub contains: (needle: String) -> String -> Bool
+## Whether the text starts with the prefix.
+## - prefix: the text looked for at the start
+pub starts_with: (prefix: String) -> String -> Bool
+## Whether the text ends with the suffix.
+## - suffix: the text looked for at the end
+pub ends_with: (suffix: String) -> String -> Bool
+## The text with every occurrence of one text replaced by another.
+## - from: the text replaced
+## - to: its replacement
+pub replace: (from: String) -> (to: String) -> String -> String
 ## Join text elements with a separator.
 ## - sep: the separator
 pub join: Items<String> c => (sep: String) -> c -> String
@@ -266,6 +279,20 @@ pub head: Items<a> c => c -> a
 ## Keep the first elements.
 ## - n: the maximum number to keep
 pub take: Items<a> c => (n: Natural) -> c -> Vec<a>
+## Skip the first elements.
+## - n: the number to skip
+pub drop: Items<a> c => (n: Natural) -> c -> Vec<a>
+## Return the last element, if present.
+pub last: Items<a> c => c -> Maybe<a>
+## Return the element at a position from zero, if present.
+## - at: the position
+pub nth: Items<a> c => (at: Natural) -> c -> Maybe<a>
+## The elements in the opposite order.
+pub reverse: Items<a> c => c -> Vec<a>
+## Each element with its position from zero.
+pub enumerate: Items<a> c => c -> Vec<Natural * a>
+## Pair the elements of two sequences, to the shorter's length.
+pub zip: Items<a> c, Items<b> d => c -> d -> Vec<a * b>
 ## Join nested sequences into one sequence.
 pub flatten: Items<Vec<a>> c => c -> Vec<a>
 ## Collect successes or return an error.

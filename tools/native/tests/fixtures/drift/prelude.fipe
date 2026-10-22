@@ -1,0 +1,15 @@
+# The sequence and text natives added for everyday scripts: drop,
+# last, nth, reverse, enumerate, zip, contains, starts_with,
+# ends_with, replace.
+xs = [10, 20, 30]
+xs | drop 1
+xs | last
+xs | nth 7
+xs | reverse
+["a", "b"] | enumerate
+zip xs ["x", "y"]
+"2026 ERROR lost" | contains "ERROR"
+"Read Me.TXT" | starts_with "Read"
+"Read Me.TXT" | ends_with ".txt"
+"Read Me.TXT" | replace " " "-"
+["x", "y"] | enumerate | map ((n, s) => join ": " [show (n + 1), s]) | join "\n"

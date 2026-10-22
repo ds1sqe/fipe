@@ -28,7 +28,7 @@ call (`D` itself resolved against the working directory).
 | `rm` | `Src -> Result<(), fs.Error>` | removes a file, a link or an empty directory; a refusal or failure is `Err` |
 | `put` | `(to: Sink) -> Vec<U8> -> ()` | `out` writes the success output; a path is created or replaced |
 | `append` | `(to: Sink) -> Vec<U8> -> ()` | as `put`, extending the file |
-| `out` | `Sink` | the success output |
+| `out` | `Sink` | the success output; a `String` reads as a `Sink` by its path, so a binding that shadows `out` makes `put out` write a file named by the data |
 | `root` | `Rd<sys>` | the resource `/` |
 | `Rd` | `U64 -> Rd<api>` | the resource a `sys.lookup` numbered |
 | `Src`, `Sink`, `Entry` read | `String -> Result<Self, ParseError>` | a source or sink is its path as written; an entry is the path's, and a missing path Faults, as the conformance host's does |

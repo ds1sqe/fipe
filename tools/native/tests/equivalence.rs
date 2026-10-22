@@ -92,6 +92,7 @@ const DRIFT: &[(&str, &str)] = &[
         include_str!("fixtures/drift/environment.fipe"),
     ),
     ("modules", include_str!("fixtures/drift/modules.fipe")),
+    ("prelude", include_str!("fixtures/drift/prelude.fipe")),
     ("functions", include_str!("fixtures/drift/functions.fipe")),
 ];
 

@@ -124,13 +124,14 @@ comes, and cancelling it; asynchronous hosts and threads, and with them
 
 Ten everyday scripts (`Documentation/dogfood/`) wrote a `(n, acc)`
 `fold` wherever a line or cell is numbered, and tested a substring with
-`len (split pat l) > 1`. **Proposed, not ruled:** `enumerate` (a
-`Vec<a>` to `Vec<Integer * a>`), `contains`, `starts_with`,
-`ends_with`, `replace`, `zip`, `drop`, `last`, `nth`, `reverse`, `min`,
-`max`, `any`, `all`, each a prelude declaration with its doc line, no
-new syntax; and a `:prelude` listing in the REPL. A tuple part is read
-by a pattern only; **proposed:** no projection syntax, the pattern form
-stated in [types](03-types.md) §Tuples with an example.
+`len (split pat l) > 1`. Landed 2026-10-22 as prelude declarations
+with their doc lines, no new syntax: `enumerate`, `zip`, `drop`,
+`last`, `nth`, `reverse`, `contains`, `starts_with`, `ends_with`,
+`replace`. Not added, each written today in one stage: `min` and `max`
+(`sort | first`, `sort -desc | first`), `any` and `all` (`filter f |
+len`), a REPL listing (Tab completes the names in scope). A tuple part
+is read by a pattern only, no projection syntax
+([types](03-types.md) §Fields, functions and branches).
 
 ## H1 — Host and backend observables
 
@@ -149,9 +150,10 @@ E3. Every
 host-declared type admits the codec cast (ruled 2026-09-30). No Reovim
 paths, wire hashes or placeholder budget numbers become language constants.
 Tests replay one host response/effect trace on each backend. From the
-dogfood scripts, open for the std host's contract
-(`tools/host/README.md`): an `Entry` field telling a directory from a
-file, a directory's size as its contents', and a modification time or
-a pinned clock so an `age` test can be golden; a `String` reads as a
-`Sink` by its path, so a shadowed `out` writes a file named by the
-data, which the contract states and the tour warns about.
+dogfood scripts: an `Entry` field telling a directory from a file, a
+directory's size as its contents', and a modification time or a pinned
+clock are changes to the entry's shape, which the user's ruling R2 of
+plan 15 keeps as the conformance host's (2026-10-22); they stay out
+until that ruling changes. A `String` reads as a `Sink` by its path, so
+a shadowed `out` writes a file named by the data: the contract states
+it and the tour warns.

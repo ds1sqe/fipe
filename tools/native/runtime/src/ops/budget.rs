@@ -103,12 +103,19 @@ pub(super) fn size(native: Native, args: &[Value]) -> u64 {
         | Native::Sort
         | Native::Collect
         | Native::Concat
-        | Native::Join => args.iter().map(length).sum(),
+        | Native::Join
+        | Native::Reverse
+        | Native::Enumerate
+        | Native::Zip
+        | Native::Contains
+        | Native::StartsWith
+        | Native::EndsWith
+        | Native::Replace => args.iter().map(length).sum(),
         Native::Flatten => args.first().map_or(0, |outer| {
             let Value::Seq(items) = outer else { return 0 };
             items.len() as u64 + items.iter().map(length).sum::<u64>()
         }),
-        Native::Take => match args {
+        Native::Drop | Native::Nth | Native::Take => match args {
             [Value::Int(count), over] => {
                 u64::try_from(*count).unwrap_or(0).min(length(over))
             }

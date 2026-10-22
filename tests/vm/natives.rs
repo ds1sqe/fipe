@@ -132,3 +132,39 @@ fn conversion_words_as_function_values_pass_their_values() {
     assert_eq!(shown("[1, 2] | map to<U8>"), "[1, 2]");
     assert_eq!(shown("[1, 2] | map try<U8>"), "[Ok 1, Ok 2]");
 }
+
+#[test]
+fn the_sequence_natives_drop_last_nth_reverse_enumerate_and_zip() {
+    assert_eq!(shown("[1, 2, 3] | drop 1"), "[2, 3]");
+    assert_eq!(shown("[1, 2, 3] | drop 5"), "[]");
+    assert_eq!(shown("[1, 2, 3] | last"), "Just 3");
+    assert_eq!(shown("to<Vec<Integer>> [] | last"), "Nothing");
+    assert_eq!(shown("[1, 2, 3] | nth 1"), "Just 2");
+    assert_eq!(shown("[1, 2, 3] | nth 3"), "Nothing");
+    assert_eq!(shown("[1, 2, 3] | reverse"), "[3, 2, 1]");
+    assert_eq!(
+        shown("[\"a\", \"b\"] | enumerate"),
+        "[(0, \"a\"), (1, \"b\")]"
+    );
+    assert_eq!(
+        shown("zip [1, 2, 3] [\"a\", \"b\"]"),
+        "[(1, \"a\"), (2, \"b\")]"
+    );
+    assert_eq!(
+        shown("[\"x\", \"y\"] | enumerate | map ((n, s) => join \": \" [show (n + 1), s]) | join \"\\n\""),
+        "\"1: x\\n2: y\""
+    );
+}
+
+#[test]
+fn the_text_natives_contains_starts_with_ends_with_and_replace() {
+    assert_eq!(shown("\"2026 ERROR lost\" | contains \"ERROR\""), "True");
+    assert_eq!(shown("\"fine\" | contains \"ERROR\""), "False");
+    assert_eq!(shown("\"Read Me.TXT\" | starts_with \"Read\""), "True");
+    assert_eq!(shown("\"Read Me.TXT\" | ends_with \".txt\""), "False");
+    assert_eq!(
+        shown("\"Read Me.TXT\" | replace \" \" \"-\""),
+        "\"Read-Me.TXT\""
+    );
+    assert_eq!(shown("\"aaa\" | replace \"a\" \"b\""), "\"bbb\"");
+}

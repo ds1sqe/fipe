@@ -235,6 +235,62 @@ pub fn immediate(
         }
         Native::Collect => Ok(collect(&arg(0), prelude)),
         Native::Count => higher::count(ctx, &arg(0), node),
+        Native::Drop => {
+            let (count, over) = (arg(0), arg(1));
+            let count = match count {
+                Value::Int(count) => usize::try_from(count).unwrap_or(0),
+                _ => usize::MAX,
+            };
+            Ok(Value::seq(seq(&over).iter().skip(count).cloned().collect()))
+        }
+        Native::Last => {
+            let over = arg(0);
+            Ok(seq(&over).last().map_or_else(
+                || prelude.nothing(),
+                |last| prelude.just(last.clone()),
+            ))
+        }
+        Native::Nth => {
+            let (at, over) = (arg(0), arg(1));
+            let at = match at {
+                Value::Int(at) => usize::try_from(at).ok(),
+                _ => None,
+            };
+            Ok(at
+                .and_then(|at| seq(&over).get(at).cloned())
+                .map_or_else(|| prelude.nothing(), |item| prelude.just(item)))
+        }
+        Native::Reverse => {
+            let over = arg(0);
+            Ok(Value::seq(seq(&over).iter().rev().cloned().collect()))
+        }
+        Native::Enumerate => {
+            let over = arg(0);
+            let pairs = seq(&over)
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let index = i64::try_from(index).expect("a position fits");
+                    Value::Tuple(Rc::new(vec![Value::Int(index), item.clone()]))
+                })
+                .collect();
+            Ok(Value::seq(pairs))
+        }
+        Native::Zip => {
+            let (left, right) = (arg(0), arg(1));
+            let pairs = seq(&left)
+                .iter()
+                .zip(seq(&right).iter())
+                .map(|(a, b)| Value::Tuple(Rc::new(vec![a.clone(), b.clone()])))
+                .collect();
+            Ok(Value::seq(pairs))
+        }
+        Native::Contains => Ok(prelude.bool(text::contains(&arg(0), &arg(1)))),
+        Native::StartsWith => {
+            Ok(prelude.bool(text::starts_with(&arg(0), &arg(1))))
+        }
+        Native::EndsWith => Ok(prelude.bool(text::ends_with(&arg(0), &arg(1)))),
+        Native::Replace => Ok(text::replace(&arg(0), &arg(1), &arg(2))),
         Native::Sort => {
             let (by, desc, over) = (arg(0), arg(1), arg(2));
             higher::sort(ctx, &by, prelude.is_true(&desc), &over, node)

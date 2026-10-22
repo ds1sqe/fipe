@@ -154,7 +154,8 @@ u = if c { 2 } else { "a" }   # check error: no meaning reads both
   set is exhaustive, and a guard alone cannot establish coverage;
   [limits](06-limits.md) §Gates adds a gate with its `!`. The first matching
   arm with a true guard wins. Coverage splits sums, Bool, outcome sides,
-  record fields, tuples and packed meanings; literal patterns and Vec list
+  record fields, tuples (a part is read by a tuple pattern, `(n, acc) = st`;
+  there is no projection form) and packed meanings; literal patterns and Vec list
   patterns never complete a column. A literal pattern is matched by its
   meaning's `eq`, so its meaning claims `Literal` and `Eq`. An uncovered set
   names one missing pattern. `(name = v)` gives the parameter `v`'s type and

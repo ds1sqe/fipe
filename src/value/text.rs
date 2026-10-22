@@ -138,3 +138,27 @@ pub fn lower(a: &Value) -> Value {
 pub fn upper(a: &Value) -> Value {
     Value::Text(Rc::new(text(a).to_uppercase()))
 }
+
+/// Whether the text holds the needle.
+#[must_use]
+pub fn contains(needle: &Value, a: &Value) -> bool {
+    text(a).contains(text(needle))
+}
+
+/// Whether the text starts with the prefix.
+#[must_use]
+pub fn starts_with(prefix: &Value, a: &Value) -> bool {
+    text(a).starts_with(text(prefix))
+}
+
+/// Whether the text ends with the suffix.
+#[must_use]
+pub fn ends_with(suffix: &Value, a: &Value) -> bool {
+    text(a).ends_with(text(suffix))
+}
+
+/// The text with every occurrence of `from` replaced by `to`.
+#[must_use]
+pub fn replace(from: &Value, to: &Value, a: &Value) -> Value {
+    Value::Text(Rc::new(text(a).replace(text(from), text(to))))
+}

@@ -102,6 +102,16 @@ pub(super) enum Native {
     Collect,
     Count,
     Sort,
+    Drop,
+    Last,
+    Nth,
+    Reverse,
+    Enumerate,
+    Zip,
+    Contains,
+    StartsWith,
+    EndsWith,
+    Replace,
 }
 
 /// The dispatch members a walk by tag consults, by index.
@@ -304,6 +314,16 @@ fn by_label(label: &str, of: Of) -> Option<Native> {
         "collect" => Native::Collect,
         "count" => Native::Count,
         "sort" => Native::Sort,
+        "drop" => Native::Drop,
+        "last" => Native::Last,
+        "nth" => Native::Nth,
+        "reverse" => Native::Reverse,
+        "enumerate" => Native::Enumerate,
+        "zip" => Native::Zip,
+        "contains" => Native::Contains,
+        "starts_with" => Native::StartsWith,
+        "ends_with" => Native::EndsWith,
+        "replace" => Native::Replace,
         _ => return None,
     })
 }

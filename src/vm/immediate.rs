@@ -252,6 +252,74 @@ pub(super) fn immediate(
             done(Value::seq(joined))
         }
         Native::Collect => done(collect(&arg(0), prelude)),
+        Native::Drop => {
+            let (count, over) = (arg(0), arg(1));
+            let count = match count {
+                Value::Int(count) => usize::try_from(count).unwrap_or(0),
+                _ => usize::MAX,
+            };
+            done(Value::seq(seq(&over).iter().skip(count).cloned().collect()))
+        }
+        Native::Last => {
+            let over = arg(0);
+            done(seq(&over).last().map_or_else(
+                || prelude.nothing(),
+                |last| prelude.just(last.clone()),
+            ))
+        }
+        Native::Nth => {
+            let (at, over) = (arg(0), arg(1));
+            let at = match at {
+                Value::Int(at) => usize::try_from(at).ok(),
+                _ => None,
+            };
+            done(
+                at.and_then(|at| seq(&over).get(at).cloned()).map_or_else(
+                    || prelude.nothing(),
+                    |item| prelude.just(item),
+                ),
+            )
+        }
+        Native::Reverse => {
+            let over = arg(0);
+            done(Value::seq(seq(&over).iter().rev().cloned().collect()))
+        }
+        Native::Enumerate => {
+            let over = arg(0);
+            let pairs = seq(&over)
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let index = i64::try_from(index).expect("a position fits");
+                    Value::Tuple(Rc::new(alloc::vec![
+                        Value::Int(index),
+                        item.clone()
+                    ]))
+                })
+                .collect();
+            done(Value::seq(pairs))
+        }
+        Native::Zip => {
+            let (left, right) = (arg(0), arg(1));
+            let pairs = seq(&left)
+                .iter()
+                .zip(seq(&right).iter())
+                .map(|(a, b)| {
+                    Value::Tuple(Rc::new(alloc::vec![a.clone(), b.clone()]))
+                })
+                .collect();
+            done(Value::seq(pairs))
+        }
+        Native::Contains => {
+            done(prelude.bool(text::contains(&arg(0), &arg(1))))
+        }
+        Native::StartsWith => {
+            done(prelude.bool(text::starts_with(&arg(0), &arg(1))))
+        }
+        Native::EndsWith => {
+            done(prelude.bool(text::ends_with(&arg(0), &arg(1))))
+        }
+        Native::Replace => done(text::replace(&arg(0), &arg(1), &arg(2))),
         Native::Count => Ok(Count::start(&arg(0))),
         Native::Sort => {
             let (by, desc, over) = (arg(0), arg(1), arg(2));

@@ -15,9 +15,9 @@ source is still hashed, and the drift fixtures of the backend
 
 | Copy | Source | Hash | What |
 | --- | --- | --- | --- |
-| `src/ops/budget.rs` | `src/vm/budget.rs` | `24bcbccc53499125` | paying nodes and units; every native's size term |
-| `src/ops/natives.rs` | `src/vm/natives.rs` | `84f2a99b51c39740` | the natives' table by prelude label and declared type; the members a walk consults |
-| `src/ops/immediate.rs` | `src/vm/immediate.rs` | `1e7b823b09c5fa2a` | what each native does |
+| `src/ops/budget.rs` | `src/vm/budget.rs` | `c77028476d2e4a58` | paying nodes and units; every native's size term |
+| `src/ops/natives.rs` | `src/vm/natives.rs` | `7949d472e67a1738` | the natives' table by prelude label and declared type; the members a walk consults |
+| `src/ops/immediate.rs` | `src/vm/immediate.rs` | `fd03b953b96b6538` | what each native does |
 | `src/ops/immediate.rs` | `src/vm/step.rs` | `17144aaf187be486` | a leaf value |
 | `src/ops/slots.rs` | `src/vm/assign.rs` | `554ce44f797d1b69` | every rvalue but a use and a field into a local: `Construct`, `Tuple`, `Array`, `Repeat`, `Length`, `Closure`, `Wrap`, `Pack`, `Cast`, `Convert` (its checked modes by `predicates.rs`) and `Native` |
 | `src/ops/slots.rs` | `src/vm/step.rs` | `17144aaf187be486` | a field read, a switch's key, an unset global's body run first |
