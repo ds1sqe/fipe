@@ -1,0 +1,36 @@
+# Welford's recurrence avoids subtracting two large squared sums.
+# F64 intermediate overflow Faults even when the mathematical result is finite.
+moments: Vec<F64> -> (F64 * F64 * F64) = xs =>
+    xs | fold (0.0, 0.0, 0.0) ((n, mean, m2) x => {
+        next = n + 1.0
+        delta = x - mean
+        updated = mean + delta / next
+        (next, updated, m2 + delta * (x - updated))
+    })
+
+## Arithmetic mean; empty input returns Nothing.
+pub mean: Vec<F64> -> Maybe<F64> = xs => {
+    (n, average) = xs | fold (0.0, 0.0) ((n, average) x => {
+        next = n + 1.0
+        (next, average + (x - average) / next)
+    })
+    if n == 0.0 { Nothing } else { Just average }
+}
+
+## Population variance, dividing by n; empty input returns Nothing.
+pub variance: Vec<F64> -> Maybe<F64> = xs => {
+    (n, _, m2) = moments xs
+    if n == 0.0 { Nothing } else { Just (m2 / n) }
+}
+
+## Sample variance, dividing by n - 1; fewer than two values returns Nothing.
+pub sample_variance: Vec<F64> -> Maybe<F64> = xs => {
+    (n, _, m2) = moments xs
+    if n < 2.0 { Nothing } else { Just (m2 / (n - 1.0)) }
+}
+
+## Population standard deviation; empty input returns Nothing.
+pub stddev: Vec<F64> -> Maybe<F64> = xs => variance xs |: sqrt
+
+## Sample standard deviation; fewer than two values returns Nothing.
+pub sample_stddev: Vec<F64> -> Maybe<F64> = xs => sample_variance xs |: sqrt

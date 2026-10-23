@@ -269,3 +269,74 @@ fn writes_outside_the_roots_are_refused_in_each_runner_unless_allowed() {
     assert_eq!(shown(&ran), (String::new(), String::new(), 0));
     assert_eq!(fs::read_to_string(other.join("esc.txt")).unwrap(), "x");
 }
+
+#[test]
+fn math_modules_load_from_copied_sources_in_all_runners() {
+    let dir = scratch("math-library");
+    let library = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library");
+    for name in [
+        "math.fipe",
+        "stats.fipe",
+        "summary.fipe",
+        "interpolate.fipe",
+    ] {
+        fs::copy(library.join(name), dir.join(name)).unwrap();
+    }
+    fs::write(
+        dir.join("overflow.fipe"),
+        "use math\nmath.dot [1e308] [2.0]\n",
+    )
+    .unwrap();
+    let scripts = [
+        ("summary.fipe", "(Just 5.0, Just 4.0, Just 2.0)\n", "", 0),
+        ("interpolate.fipe", "(12.5, Just 11.0)\n", "", 0),
+        (
+            "overflow.fipe",
+            "",
+            "fault in math at 14:51: the result is not finite\n",
+            1,
+        ),
+    ];
+    let mut executables = Vec::new();
+    for (script, stdout, stderr, code) in scripts {
+        assert_eq!(
+            shown(&fipe(&dir, &["check", script], b"")),
+            (String::new(), String::new(), 0),
+            "{script} checks"
+        );
+        let expected = (stdout.to_owned(), stderr.to_owned(), code);
+        assert_eq!(
+            shown(&fipe(&dir, &["run", script], b"")),
+            expected,
+            "{script} under VM"
+        );
+        for more in [&[][..], &["--llvm"]] {
+            executables
+                .push((built_with(&dir, script, more), expected.clone()));
+        }
+    }
+    fs::remove_file(dir.join("stats.fipe")).unwrap();
+    let (stdout, stderr, code) =
+        shown(&fipe(&dir, &["check", "summary.fipe"], b""));
+    assert_eq!(stdout, "");
+    assert_eq!(code, 1);
+    assert!(stderr.starts_with("summary.fipe:1:5: unknown module\n"));
+    for name in [
+        "math.fipe",
+        "summary.fipe",
+        "interpolate.fipe",
+        "overflow.fipe",
+    ] {
+        fs::remove_file(dir.join(name)).unwrap();
+    }
+    let empty = dir.join("empty-cwd");
+    fs::create_dir(&empty).unwrap();
+    for (exe, expected) in executables {
+        assert_eq!(
+            shown(&run_exe(&empty, &exe, &[], b"", &[])),
+            expected,
+            "{} without source files",
+            exe.display()
+        );
+    }
+}

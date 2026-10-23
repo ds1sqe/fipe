@@ -1,0 +1,14 @@
+[package]
+name = "fipe-tensor-smoke"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+burn-tensor = { version = "=0.22.1", default-features = false, features = ["std", "flex"] }
+
+[features]
+gpu-vulkan = ["burn-tensor/vulkan"]

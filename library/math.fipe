@@ -1,0 +1,15 @@
+## Interpolate from a to b; t outside [0, 1] extrapolates.
+## Equal endpoints are constant; other intermediate F64 overflow Faults.
+pub lerp: F64 -> F64 -> F64 -> F64 = a b t =>
+    if t == 0.0 { a } else {
+        if t == 1.0 { b } else {
+            if a == b { a } else { (1.0 - t) * a + t * b }
+        }
+    }
+
+## Dot product; unequal lengths return Nothing.
+## Products and their running sum use F64; intermediate overflow Faults.
+pub dot: Vec<F64> -> Vec<F64> -> Maybe<F64> = a b =>
+    if (len a) != (len b) { Nothing } else {
+        Just (zip a b | fold 0.0 (s (x, y) => s + x * y))
+    }

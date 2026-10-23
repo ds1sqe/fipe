@@ -1,0 +1,53 @@
+# Experimental scalar providers
+
+`fipe-ffi` adapts explicitly registered trusted native providers to Fipe's existing
+host request/reply boundary. It is optional and does not depend on Standard.
+ABI version 2 is an experimental, target-specific C-compatible layout; version 1's
+unpublished structured layout is rejected. Independently compiled C providers and
+native/LLVM execution are separate conformance work, not verified by Rust callback
+fixtures.
+
+Only `()`, prelude `Integer`, `F64` and `String` arguments/results are supported.
+Integer transport is the signed i64 subset; larger Fipe integers fail before the
+provider is called, with no truncation. Source I64 lowers to Integer and uses that
+same transport; other erased refinements do not acquire new ABI guarantees.
+F64 must be finite. Text is length-delimited UTF-8, including embedded NUL; a null
+pointer is accepted only for an empty buffer. Opaque types are rejected from the
+checked declaration even when their host-chosen runtime value is text or integer.
+There are no structured values, declared Result/Err outcomes, resources or async
+callbacks in this proof.
+
+The driver registers the declarations, checks/compiles the source, authorizes each
+request and its environment, invokes `Provider::call`, and supplies its result to
+`Machine::reply`. Reply validation remains necessary. Registration/type checking
+never grants authority. Status 0 carries one scalar; status 1 carries a TEXT host
+Fault; unknown statuses, missing/duplicate emissions and invalid scalar metadata
+are contract errors.
+
+## Native safety contract
+
+The descriptor, its code and metadata buffers remain immutable and valid for the
+Provider borrow. All nonempty buffers must designate valid, initialized, aligned
+storage within one live allocation, with a length fitting Rust's isize/PTRDIFF_MAX;
+metadata checks cannot prove pointer provenance or allocation liveness. Initialize
+every FipeValue field, including inactive ones (for C, start with
+`FipeValue reply = {0};` then set tag/payload). Padding need not be initialized.
+Backing storage for a pointer field is required only when its tag selects it;
+inactive pointer fields may be null. Providers validate function labels, argument
+counts and tags before accessing arguments.
+
+Inputs, function-name bytes, context and emitter are borrowed only during Call;
+retain none of them. Emit exactly once, synchronously on the invoking thread,
+without overlap or reentrancy. Emitted Value/text storage remains valid until
+emit returns; text is copied then. Never unwind Rust panics or C++ exceptions
+across either callback boundary. Provider state must be stateless/safely reentrant
+across independent wrappers, or every invocation sharing mutable state must be
+externally serialized. Provider being neither Send nor Sync alone does not protect
+state shared by multiple wrappers.
+
+Native providers have process privileges. Fipe budgets cannot bound their time or
+memory, and invalid native pointers or aborts cannot be recovered by validation.
+The header is [include/fipe.h](include/fipe.h). Offline `.fipi` loading, runtime
+artifact discovery/distribution and CPU/GPU build capability selection are separate
+planned work. This crate does not load libraries or define a resource model or
+scheduler.

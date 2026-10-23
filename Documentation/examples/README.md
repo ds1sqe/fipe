@@ -11,6 +11,10 @@ cargo run -p fipe-cli -- run Documentation/examples/hello.fipe
 The result is `12`. Once installed, use
 `fipe run Documentation/examples/hello.fipe` instead.
 
+The [math and statistics modules](../../library/README.md) include a dataset
+summary and interpolation example, with instructions for copying their source
+modules beside your own script.
+
 The [tour](../tour/README.md) walks through complete scripts. The practical
 scripts in [dogfood](../dogfood/) include word counting, a calculator, CSV
 summation and filesystem reports; each file's opening comment gives its input
