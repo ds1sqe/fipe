@@ -124,8 +124,8 @@ comes, and cancelling it; asynchronous hosts and threads, and with them
 
 Ten everyday scripts (`Documentation/dogfood/`) wrote a `(n, acc)`
 `fold` wherever a line or cell is numbered, and tested a substring with
-`len (split pat l) > 1`. Landed 2026-10-22 as prelude declarations
-with their doc lines, no new syntax: `enumerate`, `zip`, `drop`,
+`len (split pat l) > 1`. Ruled 2026-10-23: the ten names below stand
+as prelude declarations with their doc lines, no new syntax: `enumerate`, `zip`, `drop`,
 `last`, `nth`, `reverse`, `contains`, `starts_with`, `ends_with`,
 `replace`. Not added, each written today in one stage: `min` and `max`
 (`sort | first`, `sort -desc | first`), `any` and `all` (`filter f |
@@ -153,7 +153,7 @@ Tests replay one host response/effect trace on each backend. From the
 dogfood scripts: an `Entry` field telling a directory from a file, a
 directory's size as its contents', and a modification time or a pinned
 clock are changes to the entry's shape, which the user's ruling R2 of
-plan 15 keeps as the conformance host's (2026-10-22); they stay out
-until that ruling changes. A `String` reads as a `Sink` by its path, so
+plan 15 keeps as the conformance host's (2026-10-22, held again
+2026-10-23); they stay out until that ruling changes. A `String` reads as a `Sink` by its path, so
 a shadowed `out` writes a file named by the data: the contract states
 it and the tour warns.
