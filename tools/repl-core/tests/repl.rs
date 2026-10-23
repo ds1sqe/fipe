@@ -1921,3 +1921,21 @@ fn host_sources_load_declarations_without_file_requests() {
     let text = written(repl.feed(b":r ls\n"));
     assert!(text.contains("ls: value commands.ls"), "{text}");
 }
+
+#[test]
+fn supplied_nested_host_modules_keep_their_names_and_complete() {
+    let mut repl = Repl::new();
+    written(repl.host_sources(
+        "host",
+        &[
+            ("text.open", "## Open text.\npub new = 7"),
+            ("client.open", "## Show a region.\npub new = 9"),
+        ],
+    ));
+    let result =
+        written(repl.feed(b"use text.open\nopen.new + client.open.new\n\n"));
+    assert!(result.contains("16"), "{result}");
+    assert_eq!(repl.complete("text.").candidates, ["open"]);
+    assert_eq!(repl.complete("text.open.").candidates, ["new"]);
+    assert_eq!(repl.complete("open.").candidates, ["new"]);
+}

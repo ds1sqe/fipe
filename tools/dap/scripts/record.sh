@@ -5,4 +5,4 @@ set -e
 here=$(cd "$(dirname "$0")/.." && pwd)
 root=$(cd "$here/../.." && pwd)
 (cd "$here" && cargo build --locked --offline -q)
-exec python3 -I "$here/scripts/record.py" "$here/target/debug/fipe-dap" "$root"
+exec python3 -I "$here/scripts/record.py" "$root/target/debug/fipe-dap" "$root"

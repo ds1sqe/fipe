@@ -11,11 +11,13 @@ answers.
 ```sh
 cd tools/lsp
 cargo build --locked --offline --release
-target/release/fipe-lsp --host ../../tests/fixtures/host
+../../target/release/fipe-lsp --host ../../tests/fixtures/host
 ```
 
 `--host <dir>` names the directory of the host's declaration files
-(`commands.fipe` and one file per host module). A client may name it
+(`commands.fipe` and one file per host module). A dotted filename such as
+`text.open.fipe` registers the nested host module `text.open`; its parent
+namespace is created automatically. A client may name it
 instead in `initializationOptions` as `{"host": "<dir>"}`. File
 modules (`use geometry`) are `geometry.fipe` beside the document,
 read from the editor's open buffers first, then from disk.

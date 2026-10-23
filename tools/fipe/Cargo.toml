@@ -1,21 +1,22 @@
 [package]
 name = "fipe-cli"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "The fipe command: run, check, build and talk to Fipe scripts"
-license = "MIT OR Apache-2.0"
-publish = false
+license.workspace = true
+repository.workspace = true
+include = ["/src/**", "/build.rs", "/README.md", "/LICENSE-*", "/Cargo.lock"]
 
 [[bin]]
 name = "fipe"
 path = "src/main.rs"
 
 [dependencies]
-fipe = { path = "../.." }
-fipe-host = { path = "../host" }
-fipe-llvm = { path = "../llvm" }
-fipe-native = { path = "../native" }
-fipe-repl = { path = "../repl" }
+fipe.workspace = true
+fipe-host.workspace = true
+fipe-llvm.workspace = true
+fipe-native.workspace = true
+fipe-repl.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

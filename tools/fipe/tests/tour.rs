@@ -1,4 +1,4 @@
-//! Every `fipe` snippet of the tour (`Documentation/tour/*.md`) is a
+//! Every `fipe` snippet in the README, tour and agent guide is a
 //! whole script that checks against the std host.
 use std::{fs, path::Path, process::Command};
 
@@ -15,6 +15,8 @@ fn every_tour_snippet_checks() {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
         .collect();
+    pages.push(tour.join("../../README.md"));
+    pages.push(tour.join("../agents.md"));
     pages.sort();
     let mut snippets = 0;
     for page in pages {

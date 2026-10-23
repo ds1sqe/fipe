@@ -7,8 +7,9 @@ budget and input/output. No editor, OS or transport is prescribed. H1 in
 ## Compilation units
 
 A compilation unit is one complete line, or a module file with its resolved
-imports. A file is a module named by its stem, and a nested namespace is
-another file; the host resolves the tree and loads sources before
+imports. A file is a module named by its stem. A host may register declaration modules
+with dotted names, such as `text.open`; these form nested host namespaces.
+The host resolves file modules and loads sources before
 evaluation. It supplies each module's identity, its stem in this draft:
 one identity is one module within a run and a session.
 Items are collected before the executable top-level lines, the implicit
@@ -18,8 +19,13 @@ file sources through the [embedding API](../api/09-embed.md).
 
 `use module` runs a module once per unit, where its first `use` stands:
 its bindings in order, effects included; a later `use` of it only brings
-names into scope. `use module n` requests a host-declared API version;
-`use module.name …` brings names into scope. A session line whose unit
+names into scope. `use module n` requests a host-declared API version.
+A `use` path is followed through its module segments: `use text.open` binds
+`open` to the submodule of `text`; `use text.open.new` imports its public
+`new` declaration. Existing `use text.trim` imports `trim` when it is a
+public declaration rather than a submodule. `use text` binds the parent,
+so `text.open.new` names the same declaration. A module import binds its
+last segment, not the module's exports. Several paths may follow `use`. A session line whose unit
 dispatches on a session meaning no earlier line fixed is the check error
 naming it; any other line runs, and a value once computed is never
 recomputed when a later line fixes the meaning. A session line whose run
@@ -31,6 +37,39 @@ error "import cycle" at that `use`. What `pub` exports is
 [syntax](02-syntax.md)'s §Definitions; a module exports its final bindings, a
 name when its final binding is `pub`, and an exported host-callable
 signature is monomorphic. This draft has no `mod`.
+
+## Nested host namespaces
+
+A host registers each module by its full dotted identity, for example
+`Declarations::module("text.open", source)`. Every segment must be a lowercase
+Fipe name, with no empty segment or surrounding whitespace. `prelude` and
+`commands` are reserved root identities. Missing parents are empty namespaces;
+a host may supply declarations for a parent before or after its children.
+
+Submodules are visible namespace members. A submodule and a declared value
+cannot share a name in the same parent; registration rejects either ordering
+of that collision without replacing existing declarations. Replacing a valid
+module preserves its children. Export privacy still applies to declarations
+inside a module. A missing child or private export is a check error.
+
+For a host supplying `text.open` and `client.open`, these names remain distinct
+through checking and execution. A host call's declaration identifies its full
+module, so both modules may export `new` without a wire-name collision.
+
+```text
+use text.open
+text.open.new h
+open.new h
+```
+
+All three lines above assume the host declares `new` and the program binds
+`h`. A local value named `text` shadows that module in expressions; the dot
+then accesses value members. This feature adds no `mod` item or filesystem
+search convention: a file module is still supplied by its stem. Tool hosts
+that load declaration files by filename may use `text.open.fipe` for the
+`text.open` identity.
+
+## Host declarations
 
 A host declares in Fipe, with the declaration forms of
 [syntax](02-syntax.md): one file per host module, named by the module, and

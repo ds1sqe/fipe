@@ -14,19 +14,20 @@ Fipe means Functional Pipeline Language. Five goals govern its design:
    both must agree. An optional LLVM backend is a separate package,
    `tools/llvm`, held to the same agreement.
 
-These are goals, not implementation claims. The [specification](spec/README.md)
-defines the language in eleven numbered chapters, from characters to the
-host; [api](api/) is the crate's Rust boundary for each stage; the programs
-under [examples](examples/) show the language as written, and the
-[tour](tour/README.md) walks through the scripts of [dogfood](dogfood/)
-on the std host. The frontend
-implements lexing, parsing, name resolution and type inference with
-explicit claims and members, static limit checks with what conditions, calls and function values prove, gates, timing, holdings, tuples, parameterized containers, flags, collected arguments, checked defaults, recorded call bindings, casts, outcome families, exhaustive patterns
-and indexed backend units through `check` and sessions, which `compile`
-lowers to the MIR every backend consumes; `:ir` and `:mir` display them;
-execution follows. Their remaining questions are
-recorded in [open rules](spec/11-open.md). The library is independent of every
-host and uses only `core` and `alloc`.
+The [specification](spec/README.md) defines the language and its open questions.
+The [tour](tour/README.md) teaches scripts on the standard host; the
+[examples index](examples/README.md) includes runnable Fipe scripts and Rust
+embedding examples. The [API chapters](api/) describe the crate boundary for
+lexing, parsing, checking, compilation and execution.
 
-Public Rust APIs are experimental. The published 0.1.0 implementation remains
-available in Git at `7606ff7`; it has been replaced on the development branch.
+The implementation includes type inference, static limit checks, a VM,
+native and LLVM backends, a REPL, and editor tooling. The core library uses
+only `core` and `alloc` and depends on no host. The current prerelease is
+`0.2.0-dev.2`; language rules and public Rust APIs are experimental. Published
+`0.1.0` is the earlier language.
+
+For contributors and integrators:
+
+- [Development](development.md): workspace layout, builds and verification.
+- [Agent guidance](agents.md): references and a check/run loop for coding agents.
+- [Publishing](publishing.md): package boundaries and the crates.io release.

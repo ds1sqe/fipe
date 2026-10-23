@@ -133,8 +133,8 @@ pub struct Repl {
     hosted: bool,
     /// Replied file texts by stem, for replays and file diagnostics.
     files: Vec<(String, String)>,
-    /// Declaration sources in HOST order, for written-test descriptions.
-    host_texts: Vec<String>,
+    /// Declaration sources by namespace, for diagnostics and docs.
+    host_texts: Vec<(String, String)>,
     /// The directory the declaration sources came from.
     host_dir: String,
     /// Paths `:load` chose for module names; others are `<name>.fipe`.
@@ -357,7 +357,12 @@ impl Repl {
                         out.0.push(Out::File(host_path(&dir, name)));
                         self.wait = Some(Wait::Host { dir, texts });
                     } else {
-                        self.host(&dir, &texts, &mut out);
+                        let sources: Vec<_> = HOST
+                            .iter()
+                            .zip(&texts)
+                            .map(|(name, text)| (*name, text.as_str()))
+                            .collect();
+                        self.host(&dir, &sources, &mut out);
                     }
                 }
             },
@@ -554,23 +559,16 @@ impl Repl {
         }
     }
 
-    /// Load host declarations given as texts by namespace, in the order
-    /// `:host` reads them from a directory (`commands` first); `dir`
-    /// names where they come from, as a Fault in one is located.
+    /// Load host declarations by namespace, with `commands` first when
+    /// present. Dotted module names create submodules. `dir` names where
+    /// the sources come from, as a Fault in one is located.
     pub fn host_sources(
         &mut self,
         dir: &str,
         sources: &[(&str, &str)],
     ) -> Vec<Out> {
-        let texts: Vec<String> = HOST
-            .iter()
-            .map_while(|name| {
-                let (_, text) = sources.iter().find(|(n, _)| n == name)?;
-                Some(String::from(*text))
-            })
-            .collect();
         let mut out = Outs::default();
-        self.host(dir, &texts, &mut out);
+        self.host(dir, sources, &mut out);
         self.run(&mut out);
         self.finish(out)
     }
@@ -669,12 +667,16 @@ impl Repl {
         let source = match &check.limit_origin {
             Origin::This | Origin::Line(_) => self.session.source(),
             Origin::File(stem) => self.cached(stem)?,
-            Origin::Prelude => include_str!("../../../prelude/prelude.fipe"),
-            Origin::Commands => self.host_texts.first()?.as_str(),
-            Origin::Host(name) => self
+            Origin::Prelude => fipe::decl::prelude_source(),
+            Origin::Commands => self
                 .host_texts
-                .get(HOST.iter().position(|n| *n == name)?)?
+                .iter()
+                .find(|(name, _)| name == "commands")?
+                .1
                 .as_str(),
+            Origin::Host(name) => {
+                self.host_texts.iter().find(|(n, _)| n == name)?.1.as_str()
+            }
         };
         Source::new(source).slice(check.limit)
     }
@@ -1036,8 +1038,9 @@ impl Repl {
                 fipe::decl::prelude_source(),
             ));
         }
-        if let Some(index) = HOST.iter().position(|name| *name == namespace) {
-            let text = self.host_texts.get(index)?;
+        if let Some((_, text)) =
+            self.host_texts.iter().find(|(name, _)| name == namespace)
+        {
             return Some((host_path(&self.host_dir, namespace), text));
         }
         let text = self.cached(namespace)?;
@@ -1067,11 +1070,11 @@ impl Repl {
 
     /// Rebuild the session over the host's declarations and replay the
     /// accepted lines, answering their `use` requests from the cache.
-    fn host(&mut self, dir: &str, texts: &[String], out: &mut Outs) {
+    fn host(&mut self, dir: &str, texts: &[(&str, &str)], out: &mut Outs) {
         let mut declarations = Declarations::new();
         let mut failed = false;
-        for (index, (name, text)) in HOST.iter().zip(texts).enumerate() {
-            let result = if index == 0 {
+        for (name, text) in texts {
+            let result = if *name == "commands" {
                 declarations.commands(text)
             } else {
                 declarations.module(name, text)
@@ -1090,7 +1093,10 @@ impl Repl {
         }
         let lines: Vec<String> =
             self.session.lines().map(String::from).collect();
-        self.host_texts = texts.to_vec();
+        self.host_texts = texts
+            .iter()
+            .map(|(name, text)| (String::from(*name), String::from(*text)))
+            .collect();
         self.host_dir = String::from(dir);
         self.declarations = declarations.clone();
         self.session = Session::new(declarations);

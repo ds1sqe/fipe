@@ -51,8 +51,8 @@ Every option is optional; the defaults are paths in this repository.
 
 | Option | Default | What |
 | --- | --- | --- |
-| `lsp` | `tools/lsp/target/release/fipe-lsp` | the server; `false` leaves it out |
-| `dap` | `tools/dap/target/release/fipe-dap` | the adapter; `false` leaves it out |
+| `lsp` | `target/release/fipe-lsp` | the server; `false` leaves it out |
+| `dap` | `target/release/fipe-dap` | the adapter; `false` leaves it out |
 | `host` | `tests/fixtures/host` | the host declarations the server and the adapter check against |
 | `parser` | `nil`: build from `tools/tree-sitter/src` | a path to a built `fipe.so`, or `false` to leave tree-sitter out |
 | `trace` | the conformance trace `tests/fixtures/traces/<stem>.txt`, when one exists | the trace a launch replays: a path, or a function of the program's path |

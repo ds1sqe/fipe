@@ -17,7 +17,7 @@ mod fits;
 mod higher;
 mod immediate;
 mod natives;
-pub mod operands;
+use fipe_native_core::operands;
 mod predicates;
 mod slots;
 mod walk;

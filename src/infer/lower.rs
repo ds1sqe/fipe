@@ -586,51 +586,48 @@ impl<'a> Infer<'a> {
         vars: &mut Vars,
     ) -> Type {
         let first = name.segments[0].as_str();
-        if name.segments.len() == 2 {
-            // `fs.Error`; `Self.Error` is an associated type, unknown here.
-            return if self.files.iter().any(|(stem, _)| stem == first) {
-                Type::named(
-                    Origin::File(String::from(first)),
-                    &name.segments[1],
-                    arguments,
-                )
-            } else if self.declarations.get_module(first).is_some() {
-                let host = Origin::Host(String::from(first));
-                Type::named(host, &name.segments[1], arguments)
-            } else {
-                self.fresh()
-            };
+        if name.segments.len() == 1 {
+            if let Some((_, ty)) = vars.names.iter().find(|(n, _)| n == first) {
+                return ty.clone();
+            }
+            if first == "Self" {
+                return self.self_type_of(arguments, vars);
+            }
+            if self.type_item(module, first).is_some() {
+                return Type::named(origin.clone(), first, arguments);
+            }
         }
-        if let Some((_, ty)) = vars.names.iter().find(|(n, _)| n == first) {
-            return ty.clone();
-        }
-        if first == "Self" {
-            return self.self_type_of(arguments, vars);
-        }
-        if self.type_item(module, first).is_some() {
-            return Type::named(origin.clone(), first, arguments);
-        }
+        let mut path = name.segments.clone();
         for entry in &module.entries {
             if let Entry::Item(crate::ast::Item {
                 kind: ItemKind::Use { names, .. },
                 ..
             }) = entry
             {
-                for imported in names {
-                    if imported.segments.len() == 2
-                        && imported.segments[1] == first
-                    {
-                        let stem = &imported.segments[0];
-                        let origin =
-                            if self.files.iter().any(|(s, _)| s == stem) {
-                                Origin::File(stem.clone())
-                            } else {
-                                Origin::Host(stem.clone())
-                            };
-                        return Type::named(origin, first, arguments);
-                    }
+                if let Some(imported) = names.iter().find(|imported| {
+                    imported.segments.last().is_some_and(|last| last == first)
+                }) {
+                    path.clone_from(&imported.segments);
+                    path.extend_from_slice(&name.segments[1..]);
+                    break;
                 }
             }
+        }
+        let full = path.join(".");
+        if self.declarations.get_module(&full).is_some() {
+            return module_marker(&Origin::Host(full));
+        }
+        if let Some((name, parents)) =
+            path.split_last().filter(|(_, parents)| !parents.is_empty())
+        {
+            let module = parents.join(".");
+            return if self.files.iter().any(|(stem, _)| *stem == module) {
+                Type::named(Origin::File(module), name, arguments)
+            } else if self.declarations.get_module(&module).is_some() {
+                Type::named(Origin::Host(module), name, arguments)
+            } else {
+                self.fresh()
+            };
         }
         let declarations = self.declarations;
         if declarations.prelude.ty(first).is_some() {

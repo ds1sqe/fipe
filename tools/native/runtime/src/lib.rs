@@ -6,7 +6,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 mod abi;
-pub mod codec;
+pub use fipe_native_core::codec;
 mod host;
 mod ops;
 mod start;

@@ -4,12 +4,20 @@ Fipe means Functional Pipeline Language: embedded, extensible,
 functional, typed and compiled. Its path is source → tokens → syntax
 tree → checked, typed intermediate form → backend, and no effect occurs
 before the whole unit checks. The prelude is part of the language; host
-APIs are supplied declarations. Lexing, parsing, resolution and members
-([04](04-members.md)) are implemented; there is no `trait` item. The
-other forms of the type model are reported as one check error until
-their chapter is implemented, and evaluation and the host are the draft
-for the later stages, with their gaps in [open decisions](11-open.md).
-Published 0.1.0 is the earlier dynamic language and does not conform.
+APIs are supplied declarations.
+
+This specification describes the experimental `0.2.0-dev.2` language. The
+implementation includes parsing, type inference, static checks, a VM and
+native execution. The [conformance chapters](10-conformance.md) describe the
+required observations; [open decisions](11-open.md) identify rules that remain
+unresolved. Publishing the packages does not make those proposals final.
+Published `0.1.0` is the earlier dynamic language and does not conform.
+
+Start with the [tour](../tour/README.md) for runnable scripts, the
+[examples index](../examples/README.md) for embedding examples, or the
+[embedding API](../api/09-embed.md) for Rust integration. Cargo workspace and
+release configuration are described in [development](../development.md) and
+[publishing](../publishing.md); they are tooling concerns, not language syntax.
 
 ## Rule owners
 

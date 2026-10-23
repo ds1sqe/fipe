@@ -353,7 +353,7 @@ fn every_example_call_has_a_binding_record() {
             )
         })
         .collect();
-    assert_eq!(files.len(), 6);
+    assert_eq!(files.len(), 7);
     let mut calls = 0;
     for (stem, module) in &files {
         let resolved = resolve(module, &declarations, &files).unwrap();

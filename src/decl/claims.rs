@@ -202,7 +202,8 @@ fn asked(
     let declaration = core::iter::once(("", module))
         .chain(others.iter().copied())
         .filter(|(prefix, _)| {
-            name.segments.len() == 1 || *prefix == name.segments[0]
+            name.segments.len() == 1
+                || *prefix == name.segments[..name.segments.len() - 1].join(".")
         })
         .map(|(_, m)| m)
         .find_map(|m| {
@@ -418,7 +419,9 @@ fn target_shape(
                 .iter()
                 .filter(|(n, _)| {
                     name.segments.len() == 1
-                        || name.segments.first().is_some_and(|first| first == n)
+                        || *n
+                            == name.segments[..name.segments.len() - 1]
+                                .join(".")
                 })
                 .map(|(_, m)| *m),
         )

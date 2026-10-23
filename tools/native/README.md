@@ -8,8 +8,8 @@ against the runtime (`fipe-native-rt`, in `runtime/`), which holds the
 value operations the machine code calls. The VM is the oracle: a
 native run's observation and charged units equal the VM's.
 
-Both packages depend on the `fipe` crate by path; the crate depends on
-neither. Target: x86-64 Linux, SysV ABI. Toolchain: a Rust toolchain
+Both packages depend on `fipe` and share formats through `fipe-native-core`;
+the core language crate depends on neither backend nor runtime. Target: x86-64 Linux, SysV ABI. Toolchain: a Rust toolchain
 and `cc` (GCC or Clang) with libc.
 
 ## Build
@@ -18,7 +18,7 @@ The runtime is a static library the executable links against:
 
 ```sh
 (cd tools/native/runtime && cargo build --release --locked --offline)
-export FIPE_NATIVE_RT=$PWD/tools/native/runtime/target/release/libfipe_native_rt.a
+export FIPE_NATIVE_RT=$PWD/target/release/libfipe_native_rt.a
 ```
 
 Then compile a program:

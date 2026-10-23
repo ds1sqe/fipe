@@ -20,9 +20,7 @@ use fipe::{
 use std::{fmt, fmt::Write as _, io, path::Path, process::Command};
 
 // Which operands the runtime reads for a site it performs.
-#[path = "../../native/runtime/src/ops/operands.rs"]
-#[allow(dead_code)]
-mod operands;
+use fipe_native_core::operands;
 
 /// The runtime's exports the IR calls, with their LLVM signatures.
 const DECLARATIONS: &str = "\

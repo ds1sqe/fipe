@@ -1,13 +1,15 @@
 [package]
 name = "fipe-llvm"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Fipe's LLVM backend: textual LLVM IR compiled by clang"
-license = "MIT OR Apache-2.0"
-publish = false
+license.workspace = true
+repository.workspace = true
+include = ["/src/**", "/build.rs", "/README.md", "/LICENSE-*", "/Cargo.lock"]
 
 [dependencies]
-fipe = { path = "../.." }
+fipe-native-core.workspace = true
+fipe.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

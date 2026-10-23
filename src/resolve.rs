@@ -190,13 +190,12 @@ fn names(found: &Target, target: &Target) -> bool {
         }
 }
 
-/// One name of a `use` item: the module its first segment names and,
-/// for `use m.name`, what `name` imports.
+/// One `use` path: its module prefix and optional imported export.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Import {
     /// The used module.
     pub module: Origin,
-    /// The span of the module's segment.
+    /// The span of the module path, including any submodules.
     pub module_span: Span,
     /// The span of the imported name's segment, for `use m.name`.
     pub name_span: Option<Span>,
@@ -748,10 +747,10 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// `use m` binds the module's name; `use m.n` binds its export `n`.
+    /// Follow submodules, then import the final module or exported name.
     fn import(&mut self, name: &Name) {
         let module = &name.segments[0];
-        let Some(origin) = self.module_origin(module) else {
+        let Some(mut origin) = self.module_origin(module) else {
             self.error(name.span, Reason::UnknownModule);
             return;
         };
@@ -761,30 +760,42 @@ impl<'a> Resolver<'a> {
         if self.unit && matches!(origin, Origin::File(_)) {
             self.used_faults(name.span, module);
         }
-        let start = name.span.start;
+        let mut consumed = 1;
+        while let Some(member) = name.segments.get(consumed) {
+            let Some(Target::Module(child)) =
+                self.exported(&origin, member, Space::Value)
+            else {
+                break;
+            };
+            origin = child;
+            consumed += 1;
+        }
         let mut import = Import {
             module: origin.clone(),
             module_span: Span {
-                start,
-                end: start + module.len(),
+                start: name.span.start,
+                end: name.span.start
+                    + name.segments[..consumed].join(".").len(),
             },
             name_span: None,
             targets: Vec::new(),
         };
-        if name.segments.len() == 1 {
+        if consumed == name.segments.len() {
             self.resolved.imports.push(import);
             self.define(name, Space::Value, Target::Module(origin), false);
             return;
         }
-        let member = &name.segments[1];
+        let member = &name.segments[consumed];
         import.name_span = Some(Span {
-            start: name.span.end - member.len(),
+            start: import.module_span.end + 1,
             end: name.span.end,
         });
-        for space in [Space::Type, Space::Value] {
-            if let Some(target) = self.exported(&origin, member, space) {
-                import.targets.push(target.clone());
-                self.define(name, space, target, false);
+        if consumed + 1 == name.segments.len() {
+            for space in [Space::Type, Space::Value] {
+                if let Some(target) = self.exported(&origin, member, space) {
+                    import.targets.push(target.clone());
+                    self.define(name, space, target, false);
+                }
             }
         }
         if import.targets.is_empty() {
@@ -900,6 +911,12 @@ impl<'a> Resolver<'a> {
     ) -> Option<Target> {
         match origin {
             Origin::Host(module) => {
+                if space == Space::Value {
+                    let child = alloc::format!("{module}.{name}");
+                    if self.declarations.get_module(&child).is_some() {
+                        return Some(Target::Module(Origin::Host(child)));
+                    }
+                }
                 let namespace = self.declarations.get_module(module)?;
                 match space {
                     Space::Value => {
@@ -2006,28 +2023,7 @@ impl<'a> Resolver<'a> {
                 self.lookup_type(first)
             };
             if let Some(ty) = ty {
-                let member = &name.segments[1];
-                match self.has_member(&ty, member) {
-                    Some(Membership::Absent) => {
-                        self.error(name.span, Reason::UnknownMember);
-                        return None;
-                    }
-                    Some(Membership::Private) => {
-                        self.error(
-                            name.span,
-                            Reason::PrivateMember {
-                                member: member.clone(),
-                            },
-                        );
-                        return None;
-                    }
-                    Some(Membership::Visible) | None => {}
-                }
-                let head = Target::TypeMember {
-                    ty: Box::new(ty),
-                    member: member.clone(),
-                };
-                return Some(members(head, &name.segments[2..]));
+                return self.type_member(ty, name, 1);
             }
         }
         let head = if first == "Self" {
@@ -2053,43 +2049,67 @@ impl<'a> Resolver<'a> {
         }
         // `m.a`: a module's export, which must exist; `m.T.a` reads the
         // namespace of its type `T`, as `T.a` does.
-        if let Target::Module(origin) = &head {
-            let ty = &name.segments[1];
-            if name.segments.len() > 2 && ty.starts_with(char::is_uppercase) {
+        let mut head = head;
+        let mut at = 1;
+        while let Target::Module(origin) = &head {
+            if at == name.segments.len() {
+                return Some(head);
+            }
+            if let Some(child @ Target::Module(_)) =
+                self.exported(origin, &name.segments[at], Space::Value)
+            {
+                head = child;
+                at += 1;
+                continue;
+            }
+            let ty = &name.segments[at];
+            if name.segments.len() > at + 1
+                && ty.starts_with(char::is_uppercase)
+            {
                 if let Some(ty) = self.exported(origin, ty, Space::Type) {
-                    let member = &name.segments[2];
-                    match self.has_member(&ty, member) {
-                        Some(Membership::Absent) => {
-                            self.error(name.span, Reason::UnknownMember);
-                            return None;
-                        }
-                        Some(Membership::Private) => {
-                            self.error(
-                                name.span,
-                                Reason::PrivateMember {
-                                    member: member.clone(),
-                                },
-                            );
-                            return None;
-                        }
-                        Some(Membership::Visible) | None => {}
-                    }
-                    let head = Target::TypeMember {
-                        ty: Box::new(ty),
-                        member: member.clone(),
-                    };
-                    return Some(members(head, &name.segments[3..]));
+                    return self.type_member(ty, name, at + 1);
                 }
             }
             let Some(export) =
-                self.exported(origin, &name.segments[1], Space::Value)
+                self.exported(origin, &name.segments[at], Space::Value)
             else {
                 self.error(name.span, Reason::UnknownMember);
                 return None;
             };
-            return Some(members(export, &name.segments[2..]));
+            return Some(members(export, &name.segments[at + 1..]));
         }
-        Some(members(head, &name.segments[1..]))
+        Some(members(head, &name.segments[at..]))
+    }
+
+    /// A type's member, followed by any value-member tail.
+    fn type_member(
+        &mut self,
+        ty: Target,
+        name: &Name,
+        at: usize,
+    ) -> Option<Target> {
+        let member = &name.segments[at];
+        match self.has_member(&ty, member) {
+            Some(Membership::Absent) => {
+                self.error(name.span, Reason::UnknownMember);
+                return None;
+            }
+            Some(Membership::Private) => {
+                self.error(
+                    name.span,
+                    Reason::PrivateMember {
+                        member: member.clone(),
+                    },
+                );
+                return None;
+            }
+            Some(Membership::Visible) | None => {}
+        }
+        let head = Target::TypeMember {
+            ty: Box::new(ty),
+            member: member.clone(),
+        };
+        Some(members(head, &name.segments[at + 1..]))
     }
 
     /// The uppercase name before `{`: a record type, or a sum's
@@ -2120,19 +2140,31 @@ impl<'a> Resolver<'a> {
             self.error(name.span, Reason::SelfOutsideBody);
             return None;
         }
-        if name.segments.len() == 2 {
-            // `m.T`: a module's exported type.
-            let found = self.module_origin(first).and_then(|origin| {
-                self.exported(&origin, &name.segments[1], Space::Type)
-            });
-            if found.is_none() {
-                self.error(name.span, Reason::UnknownType);
+        if name.segments.len() > 1 {
+            let mut origin = match self.lookup_value(first) {
+                Some(Target::Module(origin)) => Some(origin),
+                None => self.module_origin(first),
+                _ => None,
+            };
+            for (at, member) in name.segments.iter().enumerate().skip(1) {
+                let found = origin.as_ref().and_then(|origin| {
+                    self.exported(origin, member, Space::Type).or_else(|| {
+                        self.exported(origin, member, Space::Value).filter(
+                            |target| matches!(target, Target::Module(_)),
+                        )
+                    })
+                });
+                if at + 1 == name.segments.len() {
+                    if found.is_none() {
+                        self.error(name.span, Reason::UnknownType);
+                    }
+                    return found;
+                }
+                origin = match found {
+                    Some(Target::Module(origin)) => Some(origin),
+                    _ => None,
+                };
             }
-            return found;
-        }
-        if name.segments.len() > 2 {
-            self.error(name.span, Reason::UnknownType);
-            return None;
         }
         if name.segments.len() == 1 && self.parameters.contains(first) {
             return Some(Target::Variable(first.clone()));
@@ -2143,7 +2175,7 @@ impl<'a> Resolver<'a> {
         if name.is_uppercase() {
             self.error(name.span, Reason::UnknownType);
             None
-        } else if let Some(origin) = self.module_origin(first) {
+        } else if let Some(Target::Module(origin)) = self.lookup_value(first) {
             // `Rd<fs>`: an API reference.
             Some(Target::Module(origin))
         } else if NUMERIC.contains(&first.as_str()) {

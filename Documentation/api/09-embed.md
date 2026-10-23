@@ -3,6 +3,40 @@
 [Embedding](../spec/09-host.md) owns what a host supplies; this chapter owns the Rust
 boundary through which a driver supplies it.
 
+## Start in another repository
+
+Add `fipe = "=0.2.0-dev.2"` to your Cargo dependencies. The
+[README](../../README.md#embed-in-rust) contains a minimal checked evaluation;
+[`examples/embed.rs`](../../examples/embed.rs) runs a pipeline and
+[`examples/custom_host.rs`](../../examples/custom_host.rs) supplies a host
+function through the request/reply protocol below. Run them in this workspace
+with `cargo run --example embed` and `cargo run --example custom_host`.
+
+For the standard filesystem/environment host, depend on
+`fipe-host = "=0.2.0-dev.2"`; its [contract](../../tools/host/README.md) and
+`load`, `Policy`, `Host::run` API cover real scripts. Applications defining their
+own capabilities can depend on `fipe` alone. Pin matching prerelease versions
+across the packages you use.
+
+## Register nested host modules
+
+```rust
+use fipe::decl::Declarations;
+
+let mut declarations = Declarations::new();
+declarations.module("text.open", "## Open text.\npub new: Integer -> Integer").unwrap();
+declarations.module("client.open", "## Show a region.\npub new: Integer -> Integer").unwrap();
+assert!(declarations.get_module("text").is_some());
+```
+
+Scripts can use `use text.open` followed by `open.new 1` or `text.open.new 1`;
+`use text` also permits `text.open.new 1`. Import the function directly with
+`use text.open.new`. The call request's declaration index refers to the full
+`text.open` or `client.open` namespace in the program tables. The
+[host specification](../spec/09-host.md#nested-host-namespaces) defines naming,
+privacy and collision rules. `Declarations::submodules` lists immediate
+children for tooling.
+
 ## Requests and replies
 
 ~~~text

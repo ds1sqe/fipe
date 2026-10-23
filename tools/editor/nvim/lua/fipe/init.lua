@@ -11,9 +11,9 @@ local grammar = root .. '/tools/tree-sitter'
 
 local defaults = {
   -- fipe-lsp; false leaves the server out.
-  lsp = root .. '/tools/lsp/target/release/fipe-lsp',
+  lsp = root .. '/target/release/fipe-lsp',
   -- fipe-dap; false leaves the adapter out.
-  dap = root .. '/tools/dap/target/release/fipe-dap',
+  dap = root .. '/target/release/fipe-dap',
   -- The host declarations the server and the adapter check against.
   host = root .. '/tests/fixtures/host',
   -- The parser: false leaves tree-sitter out, nil builds it from

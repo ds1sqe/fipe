@@ -1,6 +1,6 @@
 //! Which operands the generated code reads into consecutive slots for a
-//! site the runtime performs. The lowering includes this file, so the
-//! two never disagree on a count.
+//! site the runtime performs. Both backends and the runtime use these
+//! functions to agree on the count.
 use fipe::mir::{Callee, Operand, Rvalue, Witness};
 
 /// The operands of an assignment the runtime computes, in order; `None`

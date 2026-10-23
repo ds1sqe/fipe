@@ -17,7 +17,7 @@
     }
   ],
   "metadata": {
-    "version": "0.1.0",
+    "version": "0.2.0-dev.2",
     "license": "MIT OR Apache-2.0",
     "description": "Fipe grammar for tree-sitter, generated with tree-sitter CLI 0.26.9",
     "authors": [

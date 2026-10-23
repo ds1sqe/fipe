@@ -413,11 +413,11 @@ fn spots(
                 )
             })
             .unwrap_or_default(),
-        [module, name] => host
+        [parents @ .., name] if !parents.is_empty() => host
             .declarations
-            .get_module(module)
+            .get_module(&parents.join("."))
             .and_then(|namespace| {
-                declared_spots(namespace, host.source(module)?.1, name)
+                declared_spots(namespace, host.source(&namespace.name)?.1, name)
             })
             .unwrap_or_default(),
         _ => Vec::new(),
@@ -496,7 +496,7 @@ fn members(
     reanalyse: &dyn Fn(&str) -> Analysis,
 ) -> Vec<Offer> {
     if let Some(namespace) = host.declarations.get_module(head) {
-        return namespace_names(namespace);
+        return host_members(host, namespace);
     }
     if let Some(index) = analysis.files.iter().position(|f| f.stem == head) {
         return analysis
@@ -514,6 +514,14 @@ fn members(
     else {
         return Vec::new();
     };
+    if let Some(fipe::resolve::Target::Module(fipe::resolve::Origin::Host(
+        name,
+    ))) = again.resolved.expr(id)
+    {
+        if let Some(namespace) = host.declarations.get_module(name) {
+            return host_members(host, namespace);
+        }
+    }
     let Some(ty) = again.typed.expr(id) else {
         return Vec::new();
     };
@@ -545,6 +553,19 @@ fn members(
 }
 
 /// The public names of a declared namespace.
+fn host_members(host: &Host, namespace: &Namespace) -> Vec<Offer> {
+    let mut offers = namespace_names(namespace);
+    offers.extend(host.declarations.submodules(&namespace.name).filter_map(
+        |child| {
+            Some(Offer::new(
+                child.name.rsplit('.').next()?,
+                CompletionItemKind::MODULE,
+            ))
+        },
+    ));
+    offers
+}
+
 fn namespace_names(namespace: &Namespace) -> Vec<Offer> {
     namespace
         .values

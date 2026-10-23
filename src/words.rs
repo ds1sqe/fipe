@@ -115,6 +115,13 @@ impl fmt::Display for decl::SpotProblem {
 impl fmt::Display for decl::Reason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ModuleName { name } => {
+                write!(f, "invalid host module name `{name}`")
+            }
+            Self::ModuleConflict { name } => write!(
+                f,
+                "host submodule `{name}` conflicts with a declared value"
+            ),
             Self::Syntax(reason) => reason.fmt(f),
             Self::ClaimBlock { problem } => {
                 write!(f, "invalid claim block: {problem}")

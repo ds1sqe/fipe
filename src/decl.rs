@@ -67,12 +67,31 @@ impl Declarations {
         Ok(())
     }
 
-    /// A host module, replacing an earlier one of the same name.
+    /// A host module, replacing an earlier one of the same dotted name.
+    /// Missing parents are created as empty namespaces. Every segment must
+    /// be a lowercase name; a submodule cannot share a value name in its parent.
     ///
     /// # Errors
-    /// Syntax errors, lines that declare nothing, duplicate names, and
+    /// Invalid module paths, submodule/value collisions, syntax errors,
+    /// lines that declare nothing, duplicate names, and
     /// forms the checker does not check yet.
     pub fn module(&mut self, name: &str, text: &str) -> Result<(), Vec<Error>> {
+        let named = lex(name);
+        let valid = named.errors.is_empty()
+            && matches!(named.tokens.as_slice(), [token, end]
+                if matches!(end.kind, crate::token::Kind::Eof)
+                    && token.span == (Span { start: 0, end: name.len() })
+                    && matches!(&token.kind, crate::token::Kind::Name(parts)
+                        if parts.iter().all(|part| part.starts_with(char::is_lowercase))))
+            && !matches!(name.split('.').next(), Some("prelude" | "commands"));
+        if !valid {
+            return Err(alloc::vec![Error {
+                span: Span::default(),
+                reason: Reason::ModuleName {
+                    name: String::from(name)
+                },
+            }]);
+        }
         let others: Vec<_> =
             core::iter::once(("prelude", &self.prelude.module))
                 .chain(
@@ -83,9 +102,54 @@ impl Declarations {
                 )
                 .collect();
         let namespace = Namespace::parse_in(name, text, &others)?;
+        let conflict = name
+            .match_indices('.')
+            .find_map(|(at, _)| {
+                let parent = self.get_module(&name[..at])?;
+                let child = name[at + 1..].split('.').next()?;
+                parent
+                    .value(child)
+                    .map(|_| String::from(&name[..at + 1 + child.len()]))
+            })
+            .or_else(|| {
+                self.submodules(name).find_map(|child| {
+                    let member = child.name.rsplit('.').next()?;
+                    namespace.value(member).map(|_| child.name.clone())
+                })
+            });
+        if let Some(name) = conflict {
+            return Err(alloc::vec![Error {
+                span: Span::default(),
+                reason: Reason::ModuleConflict { name },
+            }]);
+        }
+        for (at, _) in name.match_indices('.') {
+            let parent = &name[..at];
+            if self.get_module(parent).is_none() {
+                self.modules.push(Namespace {
+                    name: String::from(parent),
+                    module: Module::default(),
+                    types: Vec::new(),
+                    values: Vec::new(),
+                });
+            }
+        }
         self.modules.retain(|module| module.name != name);
         self.modules.push(namespace);
         Ok(())
+    }
+
+    /// The immediate host submodules of a namespace.
+    pub fn submodules<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> impl Iterator<Item = &'a Namespace> {
+        self.modules.iter().filter(move |module| {
+            module
+                .name
+                .rsplit_once('.')
+                .is_some_and(|(parent, _)| parent == name)
+        })
     }
 
     #[must_use]
@@ -321,6 +385,14 @@ pub struct Error {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
+    /// A host module name is not a dotted path of lowercase names.
+    ModuleName {
+        name: String,
+    },
+    /// A submodule and a value would occupy the same namespace member.
+    ModuleConflict {
+        name: String,
+    },
     Spots {
         problem: SpotProblem,
     },

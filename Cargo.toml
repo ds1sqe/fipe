@@ -1,15 +1,15 @@
 [package]
 name = "fipe"
-version = "0.2.0-dev.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["Kim Dae Up <ds1sqe@mensakorea.org>"]
 description = "Fipe, an embeddable functional pipeline language"
-repository = "https://github.com/ds1sqe/fipe"
+repository.workspace = true
 include = [
-    "/src/**", "/tests/**", "/Documentation/**", "/prelude/**", "/Cargo.toml",
+    "/src/**", "/tests/**", "/examples/**", "/Documentation/**", "/prelude/**", "/Cargo.toml",
     "/Cargo.lock", "/README.md", "/LICENSE-*",
 ]
-license = "MIT OR Apache-2.0"
+license.workspace = true
 keywords = ["interpreter","compiler"]
 categories =["compilers"]
 
@@ -18,3 +18,34 @@ unsafe_code = "forbid"
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--document-private-items"]
+
+[workspace]
+members = [
+    "tools/dap", "tools/fipe", "tools/host", "tools/llvm", "tools/lsp",
+    "tools/native", "tools/native-core", "tools/native/runtime",
+    "tools/repl", "tools/repl-core", "tools/tree-sitter",
+]
+default-members = ["."]
+resolver = "2"
+
+# Native code and the no_std Linux REPL must not unwind.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[workspace.package]
+version = "0.2.0-dev.2"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ds1sqe/fipe"
+
+[workspace.dependencies]
+fipe = { version = "=0.2.0-dev.2", path = "." }
+fipe-host = { version = "=0.2.0-dev.2", path = "tools/host" }
+fipe-native-core = { version = "=0.2.0-dev.2", path = "tools/native-core" }
+fipe-llvm = { version = "=0.2.0-dev.2", path = "tools/llvm" }
+fipe-native = { version = "=0.2.0-dev.2", path = "tools/native" }
+fipe-repl-core = { version = "=0.2.0-dev.2", path = "tools/repl-core" }
+fipe-repl = { version = "=0.2.0-dev.2", path = "tools/repl" }

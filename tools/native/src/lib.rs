@@ -3,8 +3,7 @@
 //! against the runtime `libfipe_native_rt.a`.
 #![forbid(unsafe_code)]
 
-#[path = "../runtime/src/codec.rs"]
-pub mod codec;
+pub use fipe_native_core::codec;
 pub mod elf;
 pub mod link;
 pub mod lower;

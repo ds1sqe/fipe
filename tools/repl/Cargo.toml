@@ -1,10 +1,11 @@
 [package]
 name = "fipe-repl"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "The Fipe REPL program"
-license = "MIT OR Apache-2.0"
-publish = false
+license.workspace = true
+repository.workspace = true
+include = ["/src/**", "/build.rs", "/README.md", "/LICENSE-*", "/Cargo.lock"]
 
 [lib]
 name = "fipe_repl"
@@ -26,11 +27,5 @@ std = []
 linux = []
 
 [dependencies]
-fipe = { path = "../.." }
-fipe-repl-core = { path = "../repl-core" }
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
+fipe.workspace = true
+fipe-repl-core.workspace = true

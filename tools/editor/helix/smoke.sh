@@ -58,7 +58,7 @@ cp -R "$root/tools/tree-sitter/editors/helix/queries/fipe" \
 language-servers = ["fipe-lsp"]'
   cat <<EOF
 [language-server.fipe-lsp]
-command = "$root/tools/lsp/target/release/fipe-lsp"
+command = "$root/target/release/fipe-lsp"
 args = ["--host", "$root/tests/fixtures/host"]
 
 [[grammar]]

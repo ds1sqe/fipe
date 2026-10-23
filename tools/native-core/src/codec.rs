@@ -8,8 +8,8 @@
 //! the run's result, as the placeholder [`function`], which shows as
 //! `<function>`; in a request or a reply it is [`Error::Opaque`].
 //!
-//! `fipe-native` includes this file by path, so the writer and the
-//! reader of each format are one source.
+//! Both backends and the runtime use this crate, so each format has
+//! one implementation.
 use fipe::{
     check,
     decl::Declarations,

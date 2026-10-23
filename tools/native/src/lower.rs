@@ -21,8 +21,7 @@ use fipe::{
 use std::fmt::Write;
 
 // Which operands the runtime reads for a site it performs.
-#[path = "../runtime/src/ops/operands.rs"]
-mod operands;
+use fipe_native_core::operands;
 
 /// The bytes of the frame before the slots: the four arguments.
 const HEADER: i32 = 32;

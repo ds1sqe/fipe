@@ -1,13 +1,14 @@
 [package]
 name = "fipe-host"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "The std host: Fipe scripts against the real machine"
-license = "MIT OR Apache-2.0"
-publish = false
+license.workspace = true
+repository.workspace = true
+include = ["/src/**", "/build.rs", "/README.md", "/LICENSE-*", "/Cargo.lock", "/decl/**"]
 
 [dependencies]
-fipe = { path = "../.." }
+fipe.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -7,7 +7,7 @@
 //! constructors and imports, the modules, the host's commands and the
 //! prelude.
 
-use crate::{edit::Completion, Repl, COMMANDS, HOST};
+use crate::{edit::Completion, Repl, COMMANDS};
 use alloc::{
     collections::BTreeSet,
     string::{String, ToString},
@@ -97,8 +97,39 @@ impl Repl {
 
     /// The members after `head.`.
     fn members(&self, head: &str) -> Vec<String> {
+        let expanded = self.session.lines().find_map(|line| {
+            let module = parse_partial(lex(line));
+            module.entries.iter().find_map(|entry| {
+                let Entry::Item(Item {
+                    kind: ItemKind::Use { names, .. },
+                    ..
+                }) = entry
+                else {
+                    return None;
+                };
+                names.iter().find_map(|name| {
+                    let (first, rest) =
+                        head.split_once('.').unwrap_or((head, ""));
+                    let imported = name.segments.join(".");
+                    (name.segments.last().is_some_and(|name| name == first)
+                        && self.declarations.get_module(&imported).is_some())
+                    .then(|| {
+                        if rest.is_empty() {
+                            imported
+                        } else {
+                            alloc::format!("{imported}.{rest}")
+                        }
+                    })
+                })
+            })
+        });
+        let head = expanded.as_deref().unwrap_or(head);
         if let Some(namespace) = self.declarations.get_module(head) {
-            return public_names(namespace);
+            let mut names = public_names(namespace);
+            names.extend(self.declarations.submodules(head).filter_map(
+                |child| child.name.rsplit('.').next().map(String::from),
+            ));
+            return names;
         }
         if let Some(text) = self.cached(head) {
             return exports(&parse_partial(lex(text)));
@@ -126,8 +157,11 @@ impl Repl {
         );
         let host = declarations.commands.iter().chain(&declarations.modules);
         for namespace in host {
-            let at = HOST.iter().position(|known| *known == namespace.name);
-            if let Some(text) = at.and_then(|at| self.host_texts.get(at)) {
+            if let Some((_, text)) = self
+                .host_texts
+                .iter()
+                .find(|(name, _)| *name == namespace.name)
+            {
                 type_members(&namespace.module, text, &name, &mut members);
             }
         }
