@@ -9,5 +9,8 @@ publish = false
 [dependencies]
 fipe = { path = "../.." }
 
+[dev-dependencies]
+fipe-llvm = { path = "../llvm" }
+
 [lints.rust]
 unsafe_code = "forbid"

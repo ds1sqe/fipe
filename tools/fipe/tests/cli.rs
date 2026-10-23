@@ -70,20 +70,23 @@ fn run_exe(
 
 /// The executable `fipe build` makes of `script` in `dir`.
 fn built(dir: &Path, script: &str) -> PathBuf {
-    let exe = dir.join(format!("{script}.exe"));
+    built_with(dir, script, &[])
+}
+
+/// As `built`, with further build options and a name of their own.
+fn built_with(dir: &Path, script: &str, more: &[&str]) -> PathBuf {
+    let exe = dir.join(format!("{script}{}.exe", more.concat()));
     let runtime = runtime().to_str().unwrap();
-    let out = fipe(
-        dir,
-        &[
-            "build",
-            script,
-            "-o",
-            exe.to_str().unwrap(),
-            "--runtime",
-            runtime,
-        ],
-        b"",
-    );
+    let mut args = vec![
+        "build",
+        script,
+        "-o",
+        exe.to_str().unwrap(),
+        "--runtime",
+        runtime,
+    ];
+    args.extend(more);
+    let out = fipe(dir, &args, b"");
     assert!(out.status.success(), "{out:?}");
     exe
 }
@@ -151,13 +154,15 @@ fn run_and_the_built_executable_give_equal_bytes_and_exit_codes() {
             let written = fs::read_to_string(dir.join("out.txt")).unwrap();
             assert_eq!(written, "written\n");
         }
-        let _ = fs::remove_file(dir.join("out.txt"));
-        let exe = built(&dir, script);
-        let ran = shown(&run_exe(&dir, &exe, args, input, &[]));
-        assert_eq!(ran, expected, "{script} as an executable");
-        if *script == "ok.fipe" {
-            let written = fs::read_to_string(dir.join("out.txt")).unwrap();
-            assert_eq!(written, "written\n");
+        for more in [&[][..], &["--llvm"]] {
+            let _ = fs::remove_file(dir.join("out.txt"));
+            let exe = built_with(&dir, script, more);
+            let ran = shown(&run_exe(&dir, &exe, args, input, &[]));
+            assert_eq!(ran, expected, "{script} as an executable {more:?}");
+            if *script == "ok.fipe" {
+                let written = fs::read_to_string(dir.join("out.txt")).unwrap();
+                assert_eq!(written, "written\n");
+            }
         }
     }
     assert!(!dir.join("effect.txt").exists());

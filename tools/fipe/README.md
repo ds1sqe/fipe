@@ -8,7 +8,7 @@ declarations, the sink policy, input, exit codes and write roots).
 fipe run FILE [--budget N] [--allow-write DIR]... [-- ARG...]
 fipe check FILE...
 fipe repl [--strict] [--budget N] [--compile-budget N] [--allow-write DIR]...
-fipe build FILE -o EXE [--runtime LIB]
+fipe build FILE -o EXE [--runtime LIB] [--llvm]
 fipe help
 ```
 
@@ -37,11 +37,15 @@ Linux executable carrying the std host's declarations: run without a
 host pipe, it answers through the std host in the process, as `run`
 does, with `FIPE_ALLOW_WRITE` (directories separated by `:`) as its
 further write roots and its own arguments as `cli.args`. The runtime
-archive is `--runtime LIB` or `FIPE_NATIVE_RT`. Exit 0 when built, 1
-when it cannot be built or linked, 2 when the script does not check.
+archive is `--runtime LIB` or `FIPE_NATIVE_RT`. With `--llvm` the
+object comes from the LLVM backend ([`tools/llvm`](../llvm/README.md)),
+LLVM IR compiled by `clang-23`, linked against the same runtime. Exit 0
+when built, 1 when it cannot be built or linked, 2 when the script does
+not check.
 
 One script gives equal stdout, stderr and exit code under `run` and
-as a built executable; `tests/cli.rs` holds that for exit 0, 1 and 2.
+as an executable from either backend; `tests/cli.rs` holds that for
+exit 0, 1 and 2.
 
 ## Development
 

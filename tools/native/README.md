@@ -214,6 +214,10 @@ in `tests/golden/`.
 
 ## Checks
 
+`FIPE_BACKEND=llvm cargo test --test equivalence` runs the same suite
+on objects from the LLVM backend ([`tools/llvm`](../llvm/README.md)),
+which links this runtime.
+
 From each of `tools/native` and `tools/native/runtime`: `cargo fmt
 --check`, `cargo test --locked --offline` (also `--release`), `cargo
 clippy --locked --offline --all-targets -- -D warnings -D clippy::all

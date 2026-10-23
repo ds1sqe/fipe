@@ -12,12 +12,20 @@ version = "0.1.0"
 dependencies = [
  "fipe",
  "fipe-host",
+ "fipe-llvm",
  "fipe-native",
  "fipe-repl",
 ]
 
 [[package]]
 name = "fipe-host"
+version = "0.1.0"
+dependencies = [
+ "fipe",
+]
+
+[[package]]
+name = "fipe-llvm"
 version = "0.1.0"
 dependencies = [
  "fipe",

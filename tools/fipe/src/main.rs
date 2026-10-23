@@ -10,10 +10,11 @@
 //! - `fipe repl [--strict] [--budget N] [--compile-budget N]
 //!   [--allow-write DIR]...` is the REPL over the std host.
 //! - `fipe help` (`--help`, `-h`) prints this usage.
-//! - `fipe build FILE -o EXE [--runtime LIB]` builds a native
-//!   executable that answers through the std host; the runtime archive
-//!   is `--runtime` or `FIPE_NATIVE_RT`; exit 1 when it cannot be
-//!   built, 2 when the script does not check.
+//! - `fipe build FILE -o EXE [--runtime LIB] [--llvm]` builds a native
+//!   executable that answers through the std host, its object from the
+//!   x86-64 backend or, with `--llvm`, from LLVM IR compiled by clang;
+//!   the runtime archive is `--runtime` or `FIPE_NATIVE_RT`; exit 1
+//!   when it cannot be built, 2 when the script does not check.
 #![forbid(unsafe_code)]
 
 use fipe_host::{load, Host, LoadError, Policy};
@@ -29,7 +30,7 @@ usage: fipe run FILE [--budget N] [--allow-write DIR]... [-- ARG...]
        fipe check FILE...
        fipe repl [--strict] [--budget N] [--compile-budget N] \
 [--allow-write DIR]...
-       fipe build FILE -o EXE [--runtime LIB]
+       fipe build FILE -o EXE [--runtime LIB] [--llvm]
        fipe help
 ";
 
@@ -43,6 +44,7 @@ struct Options {
     strict: bool,
     output: Option<PathBuf>,
     runtime: Option<PathBuf>,
+    llvm: bool,
     /// The script's arguments, after `--`.
     args: Vec<String>,
 }
@@ -75,6 +77,7 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<Options, String> {
             }
             "--allow-write" => options.allow.push(PathBuf::from(value()?)),
             "--strict" => options.strict = true,
+            "--llvm" => options.llvm = true,
             "-o" => options.output = Some(PathBuf::from(value()?)),
             "--runtime" => options.runtime = Some(PathBuf::from(value()?)),
             "--" => {
@@ -213,7 +216,7 @@ fn repl(args: &[String]) -> Ran {
 }
 
 fn build(args: &[String]) -> Ran {
-    let options = parse(args, &["-o", "--runtime"]).map_err(usage)?;
+    let options = parse(args, &["-o", "--runtime", "--llvm"]).map_err(usage)?;
     let file = one_file(&options)?;
     let output = options
         .output
@@ -240,12 +243,18 @@ fn build(args: &[String]) -> Ran {
                 "no runtime: pass --runtime or set FIPE_NATIVE_RT",
             ))
         })?;
-    let object = lower::object(&program, &unit.encode());
-    let bytes =
-        elf::write(&object).map_err(|error| failed(error.to_string()))?;
     let path = output.with_extension("o");
-    std::fs::write(&path, &bytes)
-        .map_err(|error| failed(format!("{}: {error}", path.display())))?;
+    if options.llvm {
+        let ir = fipe_llvm::module(&program, &unit.encode());
+        fipe_llvm::compile(&ir, &path)
+            .map_err(|error| failed(error.to_string()))?;
+    } else {
+        let object = lower::object(&program, &unit.encode());
+        let bytes =
+            elf::write(&object).map_err(|error| failed(error.to_string()))?;
+        std::fs::write(&path, &bytes)
+            .map_err(|error| failed(format!("{}: {error}", path.display())))?;
+    }
     let linked = link::link(&path, &runtime, output);
     let _ = std::fs::remove_file(&path);
     linked.map_err(|error| failed(error.to_string()))?;

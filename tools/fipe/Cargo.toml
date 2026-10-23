@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 fipe = { path = "../.." }
 fipe-host = { path = "../host" }
+fipe-llvm = { path = "../llvm" }
 fipe-native = { path = "../native" }
 fipe-repl = { path = "../repl" }
 

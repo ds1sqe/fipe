@@ -11,7 +11,8 @@ Fipe means Functional Pipeline Language. Five goals govern its design:
 4. Typed: inference and generalization follow Haskell with Rust-like spelling.
    Checking finishes before execution and produces a typed intermediate form.
 5. Compiled: backends consume that form. The VM precedes a native backend;
-   both must agree. An optional LLVM backend would be a separate crate.
+   both must agree. An optional LLVM backend is a separate package,
+   `tools/llvm`, held to the same agreement.
 
 These are goals, not implementation claims. The [specification](spec/README.md)
 defines the language in eleven numbered chapters, from characters to the

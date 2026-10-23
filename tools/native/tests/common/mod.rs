@@ -42,12 +42,19 @@ pub fn runtime() -> &'static Path {
     })
 }
 
-/// The executable of a unit, linked against the runtime.
+/// The executable of a unit, linked against the runtime: its object
+/// from this backend, or from the LLVM backend (`tools/llvm`) when
+/// `FIPE_BACKEND=llvm`, which runs every equivalence test on it.
 pub fn executable(name: &str, unit: &Unit, program: &Program) -> PathBuf {
     let dir = scratch(name);
-    let object = lower::object(program, &unit.encode());
     let path = dir.join(format!("{name}.o"));
-    std::fs::write(&path, elf::write(&object).unwrap()).unwrap();
+    if std::env::var("FIPE_BACKEND").as_deref() == Ok("llvm") {
+        let ir = fipe_llvm::module(program, &unit.encode());
+        fipe_llvm::compile(&ir, &path).unwrap();
+    } else {
+        let object = lower::object(program, &unit.encode());
+        std::fs::write(&path, elf::write(&object).unwrap()).unwrap();
+    }
     let executable = dir.join(name);
     link::link(&path, runtime(), &executable).unwrap();
     executable
