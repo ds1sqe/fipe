@@ -89,7 +89,9 @@ pub enum Stop {
 }
 
 /// Why a run cannot take host input: its last top-level line is not a
-/// function of one open spot. `spots` is how many open spots the line
+/// function of one open spot.
+///
+/// `spots` is how many open spots the line
 /// has: `0` for a value that is not a function, a binding, or no line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputError {

@@ -2,7 +2,9 @@
 
 A host embeds Fipe by providing declarations, environment, an optional
 budget and input/output. No editor, OS or transport is prescribed. H1 in
-[open decisions](11-open.md) holds what conformance still needs.
+[open decisions](11-open.md) holds what conformance still needs. The
+[layer ownership guide](../architecture.md) separates Core and Embed from
+application Hosts and the optional Standard implementation.
 
 ## Compilation units
 
@@ -12,6 +14,12 @@ with dotted names, such as `text.open`; these form nested host namespaces.
 The host resolves file modules and loads sources before
 evaluation. It supplies each module's identity, its stem in this draft:
 one identity is one module within a run and a session.
+A type declared in that file keeps its module and declaration name: `Point`
+in `geometry` is `geometry.Point`, shared by every function returning it.
+Repeated imports and preceding session lines do not change that identity;
+the same source supplied under another stem belongs to another module.
+Backend table indices are local references, not persistent type identities
+or content fingerprints.
 Items are collected before the executable top-level lines, the implicit
 main. The whole unit checks before any effect; a source, API or version
 that fails to resolve is a check error. A Rust driver supplies lines and
@@ -118,6 +126,11 @@ constructors and functions. `fs`, `sys`, `cli`, `root`, `env`, `Rd`, `put`
 and `append` are host declarations, not reserved words; the conformance
 host declares exactly those the corpus uses. Host PATH is a policy for
 the command namespace, not a requirement.
+
+Standard's `text`, `fs`, `sys` and `cli` modules and its `Rd` constructor
+are implementation declarations, not requirements of the Host contract. An
+application Host supplies its own declarations; only `prelude` and `commands`
+are reserved root identities.
 
 ## Environment and resources
 

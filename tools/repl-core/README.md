@@ -1,7 +1,9 @@
 # fipe-repl-core
 
 An embeddable Fipe REPL with no I/O. It uses `core` and `alloc` and depends
-only on `fipe`.
+only on `fipe`. It is an optional Embed facility in the
+[layer ownership model](../../Documentation/architecture.md); application Hosts
+can use it without Standard. The driver owns I/O and output presentation.
 
 Feed bytes to `Repl::feed`, handle each `Out` in order, and call `Repl::flush`
 at end of input. The driver writes `Out::Write`, supplies file sources through

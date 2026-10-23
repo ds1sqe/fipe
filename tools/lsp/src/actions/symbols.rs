@@ -15,8 +15,9 @@ pub struct Symbol {
     pub children: Vec<Self>,
 }
 
-/// The symbols of a module's top-level entries, in source order: a
-/// binding (a function when its scheme is one, when `typed` knows
+/// The symbols of a module's top-level entries, in source order.
+///
+/// A binding (a function when its scheme is one, when `typed` knows
 /// it), a signature-only declaration, a type with its fields and
 /// constructors.
 #[must_use]

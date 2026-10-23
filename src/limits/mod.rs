@@ -150,7 +150,7 @@ pub(crate) fn check(
     for (id, ty, ..) in entries {
         entry_types[id.0].get_or_insert(ty);
     }
-    for index in 0..module.expressions.len() {
+    for (index, entry_type) in entry_types.iter().enumerate() {
         let id = ExprId(index);
         if pass.typed.expr(id).is_none() {
             continue;
@@ -159,7 +159,7 @@ pub(crate) fn check(
         pass.construction_entry(id, &mut known);
         pass.settle_default_divisors(id);
         pass.settle_default_sites(id);
-        pass.expression_holding(id, entry_types[index]);
+        pass.expression_holding(id, *entry_type);
         pass.typed.known[index] = known.clone();
         pass.binding_facts(id);
         for narrows in conditions.get(&id.0).into_iter().flatten() {

@@ -2,8 +2,8 @@
 //! from one directory, and the file modules a document's `use` lines
 //! name, each `<stem>.fipe` beside the document.
 
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{fmt, fs, io};
 
 use fipe::ast::{Entry, ItemKind, Module};
 use fipe::decl::Declarations;
@@ -11,7 +11,7 @@ use fipe::lex::lex;
 use fipe::parse::parse_partial;
 
 /// The host's declarations and the sources they came from.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Host {
     pub declarations: Declarations,
     /// Each declaration file: its namespace (`commands` or a module
@@ -21,7 +21,163 @@ pub struct Host {
     pub errors: Vec<String>,
 }
 
+/// One explicitly selected offline declaration source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Interface {
+    pub module: String,
+    pub path: PathBuf,
+}
+
+/// A selected interface failed without changing the admitted host.
+#[derive(Debug)]
+pub struct InterfaceError {
+    pub input: Interface,
+    pub reason: InterfaceProblem,
+}
+
+#[derive(Debug)]
+pub enum InterfaceProblem {
+    Invalid(&'static str),
+    Duplicate {
+        first: PathBuf,
+    },
+    Read(io::Error),
+    Declarations {
+        text: String,
+        errors: Vec<fipe::decl::Error>,
+    },
+}
+
+impl fmt::Display for InterfaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "interface {} ({}): ",
+            self.input.module,
+            self.input.path.display()
+        )?;
+        match &self.reason {
+            InterfaceProblem::Invalid(reason) => f.write_str(reason),
+            InterfaceProblem::Duplicate { first } => write!(
+                f,
+                "duplicate module; first selected from {}",
+                first.display()
+            ),
+            InterfaceProblem::Read(error) => write!(f, "cannot read: {error}"),
+            InterfaceProblem::Declarations { text, errors } => {
+                for (index, error) in errors.iter().enumerate() {
+                    if index != 0 {
+                        f.write_str("; ")?;
+                    }
+                    let at = crate::position::position(
+                        text,
+                        error.span.start,
+                        crate::position::Encoding::Utf8,
+                    );
+                    write!(
+                        f,
+                        "{}:{}: {}",
+                        u64::from(at.line) + 1,
+                        u64::from(at.character) + 1,
+                        error.reason
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for InterfaceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.reason {
+            InterfaceProblem::Read(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 impl Host {
+    /// Add explicit `.fipi` inputs as one immutable snapshot, in dependency order.
+    ///
+    /// # Errors
+    /// Invalid identities/paths, duplicate selected modules, read or declaration errors.
+    /// The original host remains unchanged on every failure.
+    pub fn with_interfaces(
+        &self,
+        inputs: &[Interface],
+    ) -> Result<Self, InterfaceError> {
+        self.with_interfaces_open(inputs, &|_| None)
+    }
+
+    /// Stage interfaces using open text before disk, preserving selected source paths.
+    ///
+    /// # Errors
+    /// The same identity, duplicate, read and declaration failures as `with_interfaces`.
+    pub fn with_interfaces_open(
+        &self,
+        inputs: &[Interface],
+        open: &dyn Fn(&Path) -> Option<String>,
+    ) -> Result<Self, InterfaceError> {
+        for (index, input) in inputs.iter().enumerate() {
+            let fail = |reason| InterfaceError {
+                input: input.clone(),
+                reason,
+            };
+            if !input.path.is_absolute()
+                || input.path.extension().is_none_or(|ext| ext != "fipi")
+            {
+                return Err(fail(InterfaceProblem::Invalid(
+                    "expected an absolute .fipi filesystem path",
+                )));
+            }
+            if Declarations::new().module(&input.module, "").is_err() {
+                return Err(fail(InterfaceProblem::Invalid(
+                    "invalid or reserved module identity",
+                )));
+            }
+            let first = self
+                .sources
+                .iter()
+                .map(|(name, path, _)| (name, path))
+                .chain(
+                    inputs[..index]
+                        .iter()
+                        .map(|prior| (&prior.module, &prior.path)),
+                )
+                .find(|(name, _)| **name == input.module);
+            if let Some((_, first)) = first {
+                return Err(fail(InterfaceProblem::Duplicate {
+                    first: first.clone(),
+                }));
+            }
+        }
+        let mut candidate = self.clone();
+        for input in inputs {
+            let text = open(&input.path)
+                .map_or_else(|| fs::read_to_string(&input.path), Ok)
+                .map_err(|error| InterfaceError {
+                    input: input.clone(),
+                    reason: InterfaceProblem::Read(error),
+                })?;
+            candidate
+                .declarations
+                .module(&input.module, &text)
+                .map_err(|errors| InterfaceError {
+                    input: input.clone(),
+                    reason: InterfaceProblem::Declarations {
+                        text: text.clone(),
+                        errors,
+                    },
+                })?;
+            candidate.sources.push((
+                input.module.clone(),
+                input.path.clone(),
+                text,
+            ));
+        }
+        Ok(candidate)
+    }
     /// The path and text of the declaration file of `namespace`.
     #[must_use]
     pub fn source(&self, namespace: &str) -> Option<(&Path, &str)> {

@@ -1,5 +1,9 @@
 # fipe-host: the std host
 
+`fipe-host` implements Standard in the [layer ownership model](../../Documentation/architecture.md).
+It is optional for application embedding: a custom Host can use `fipe` alone
+and supply its own declarations and request replies.
+
 The std host runs a Fipe script against the real machine: its files,
 its arguments and its environment. `fipe run`, `fipe repl`, a live DAP
 launch and a native executable answer through it, so one script gives

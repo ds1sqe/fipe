@@ -36,7 +36,7 @@ use serde_json::{json, Value};
 use actions::{code, hints, rename, signature, symbols};
 use analysis::{Analysis, Located, Source};
 use fipe::resolve::{Origin, Target};
-use loader::Host;
+use loader::{Host, Interface, InterfaceError, InterfaceProblem};
 use position::Encoding;
 use transport::Frame;
 
@@ -66,10 +66,55 @@ enum Phase {
     ShutDown,
 }
 
+/// Original selection and its initial canonical identity, including after deletion.
+struct SelectedInterface {
+    input: Interface,
+    canonical: PathBuf,
+}
+
+impl SelectedInterface {
+    fn matches(&self, path: &Path) -> bool {
+        path == self.input.path || path == self.canonical
+    }
+}
+
+enum ReloadError {
+    Selection(InterfaceError),
+    Input { input: Interface, message: String },
+}
+
+impl ReloadError {
+    const fn input(&self) -> &Interface {
+        match self {
+            Self::Selection(error) => &error.input,
+            Self::Input { input, .. } => input,
+        }
+    }
+
+    fn message(&self) -> String {
+        match self {
+            Self::Selection(error) => error.to_string(),
+            Self::Input { input, message } => format!(
+                "interface {} ({}): {message}",
+                input.module,
+                input.path.display()
+            ),
+        }
+    }
+}
+
+struct ReloadFailure {
+    error: ReloadError,
+    uri: String,
+}
+
 /// The server's state between messages.
 struct Server {
     host: Host,
     host_dir: Option<PathBuf>,
+    interface_base: Host,
+    interfaces: Vec<SelectedInterface>,
+    reload_error: Option<ReloadFailure>,
     encoding: Encoding,
     asked: Asked,
     phase: Phase,
@@ -94,6 +139,9 @@ pub fn serve(
     let mut server = Server {
         host: loader::host(options.host.as_deref()),
         host_dir: options.host.clone(),
+        interface_base: Host::default(),
+        interfaces: Vec::new(),
+        reload_error: None,
         encoding: Encoding::Utf16,
         asked: Asked { inlay_hints: true },
         phase: Phase::Waiting,
@@ -169,8 +217,7 @@ impl Server {
     fn request(&mut self, method: &str, params: Value) -> Answer {
         match (self.phase, method) {
             (Phase::Waiting, "initialize") => {
-                self.phase = Phase::Running;
-                return Ok(self.initialize(&params));
+                return self.initialize(&params);
             }
             (Phase::Waiting, _) => {
                 return Err((
@@ -256,11 +303,67 @@ impl Server {
         }
     }
 
-    fn initialize(&mut self, params: &Value) -> Value {
-        if let Some(dir) = params["initializationOptions"]["host"].as_str() {
-            self.host_dir = Some(PathBuf::from(dir));
-            self.host = loader::host(self.host_dir.as_deref());
+    fn initialize(&mut self, params: &Value) -> Answer {
+        let mut interfaces = Vec::new();
+        if let Some(selected) =
+            params["initializationOptions"].get("interfaces")
+        {
+            let selected = selected.as_array().ok_or_else(|| {
+                (-32602, String::from("interfaces must be an array"))
+            })?;
+            for entry in selected {
+                let module = entry.get("module").and_then(Value::as_str);
+                let path = entry.get("path").and_then(Value::as_str);
+                let (Some(module), Some(path)) = (module, path) else {
+                    return Err((
+                        -32602,
+                        String::from(
+                            "each interface requires string module and path",
+                        ),
+                    ));
+                };
+                interfaces.push(loader::Interface {
+                    module: module.to_owned(),
+                    path: PathBuf::from(path),
+                });
+            }
         }
+        let host_dir = params["initializationOptions"]["host"]
+            .as_str()
+            .map_or_else(
+                || self.host_dir.clone(),
+                |dir| Some(PathBuf::from(dir)),
+            );
+        let base = if params["initializationOptions"]["host"].is_string() {
+            loader::host(host_dir.as_deref())
+        } else {
+            self.host.clone()
+        };
+        let host = base
+            .with_interfaces(&interfaces)
+            .map_err(|error| (-32602, error.to_string()))?;
+        let selected = interfaces
+            .into_iter()
+            .map(|input| {
+                let canonical =
+                    std::fs::canonicalize(&input.path).map_err(|error| {
+                        (
+                            -32602,
+                            format!(
+                                "interface {} ({}): cannot resolve: {error}",
+                                input.module,
+                                input.path.display()
+                            ),
+                        )
+                    })?;
+                Ok(SelectedInterface { input, canonical })
+            })
+            .collect::<Result<Vec<_>, (i64, String)>>()?;
+        self.interface_base = base;
+        self.interfaces = selected;
+        self.host = host;
+        self.host_dir = host_dir;
+        self.phase = Phase::Running;
         if params["initializationOptions"]["inlayHints"] == false {
             self.asked.inlay_hints = false;
         }
@@ -273,7 +376,7 @@ impl Server {
         } else {
             Encoding::Utf16
         };
-        json!({
+        Ok(json!({
             "capabilities": {
                 "positionEncoding": if utf8 { "utf-8" } else { "utf-16" },
                 "textDocumentSync": 2,
@@ -295,12 +398,167 @@ impl Server {
                 "name": "fipe-lsp",
                 "version": env!("CARGO_PKG_VERSION"),
             },
-        })
+        }))
+    }
+
+    fn selected_interface(&self, uri: &str) -> Option<&SelectedInterface> {
+        let path = uri.parse::<Uri>().ok().and_then(|uri| uri::path(&uri))?;
+        self.interfaces
+            .iter()
+            .find(|selected| selected.matches(&path))
+    }
+
+    fn interface_buffer<'a>(
+        &'a self,
+        selected: &SelectedInterface,
+    ) -> Result<Option<(&'a str, &'a str)>, ReloadError> {
+        let mut chosen: Option<(&str, &str, bool)> = None;
+        for (uri, text) in &self.documents {
+            let Some(path) =
+                uri.parse::<Uri>().ok().and_then(|uri| uri::path(&uri))
+            else {
+                continue;
+            };
+            if !selected.matches(&path) {
+                continue;
+            }
+            let original = path == selected.input.path;
+            if let Some((prior_uri, prior_text, prior_original)) = chosen {
+                if prior_text != text {
+                    return Err(ReloadError::Input {
+                        input: selected.input.clone(),
+                        message: format!(
+                            "ambiguous interface buffers {prior_uri} and {uri}"
+                        ),
+                    });
+                }
+                if prior_original || !original {
+                    continue;
+                }
+            }
+            chosen = Some((uri, text, original));
+        }
+        Ok(chosen.map(|(uri, text, _)| (uri, text)))
+    }
+
+    fn interface_candidate(&self) -> Result<Host, ReloadError> {
+        let mut buffers = BTreeMap::new();
+        for selected in &self.interfaces {
+            if std::fs::canonicalize(&selected.input.path)
+                .is_ok_and(|path| path != selected.canonical)
+            {
+                return Err(ReloadError::Input {
+                    input: selected.input.clone(),
+                    message: String::from("selected target changed; start a new server to select it"),
+                });
+            }
+            if let Some((_, text)) = self.interface_buffer(selected)? {
+                buffers.insert(selected.input.path.clone(), text.to_owned());
+            }
+        }
+        let inputs: Vec<_> = self
+            .interfaces
+            .iter()
+            .map(|selected| selected.input.clone())
+            .collect();
+        self.interface_base
+            .with_interfaces_open(&inputs, &|path| buffers.get(path).cloned())
+            .map_err(ReloadError::Selection)
+    }
+
+    fn interface_error_uri(&self, input: &Interface) -> String {
+        let selected = self
+            .interfaces
+            .iter()
+            .find(|selected| selected.input.module == input.module);
+        if let Some(selected) = selected {
+            for wanted in [&input.path, &selected.canonical] {
+                if let Some(uri) = self.documents.keys().find(|uri| {
+                    uri.parse::<Uri>()
+                        .ok()
+                        .and_then(|uri| uri::path(&uri))
+                        .as_ref()
+                        == Some(wanted)
+                }) {
+                    return uri.clone();
+                }
+            }
+        }
+        uri::of(&input.path).as_str().to_owned()
+    }
+
+    fn reload_interfaces(&mut self) -> Vec<Value> {
+        let mut published = Vec::new();
+        if let Some(prior) = self.reload_error.take() {
+            published.extend(publish(&prior.uri, Vec::new()));
+        }
+        match self.interface_candidate() {
+            Ok(candidate) => self.host = candidate,
+            Err(error) => {
+                let uri = self.interface_error_uri(error.input());
+                self.reload_error = Some(ReloadFailure { error, uri });
+            }
+        }
+        self.analyses.borrow_mut().clear();
+        for uri in self.documents.keys() {
+            if self.selected_interface(uri).is_some() {
+                published.extend(publish(uri, Vec::new()));
+            } else {
+                published.extend(self.diagnose(uri));
+            }
+        }
+        if let Some(failure) = &self.reload_error {
+            let diagnostics = match &failure.error {
+                ReloadError::Selection(InterfaceError {
+                    input,
+                    reason: InterfaceProblem::Declarations { text, errors },
+                }) => errors
+                    .iter()
+                    .map(|error| Diagnostic {
+                        range: position::range(
+                            text,
+                            (error.span.start, error.span.end),
+                            self.encoding,
+                        ),
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        source: Some(String::from("fipe")),
+                        message: format!(
+                            "interface {} ({}): {}",
+                            input.module,
+                            input.path.display(),
+                            error.reason
+                        ),
+                        ..Diagnostic::default()
+                    })
+                    .collect(),
+                _ => vec![Diagnostic {
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some(String::from("fipe")),
+                    message: failure.error.message(),
+                    ..Diagnostic::default()
+                }],
+            };
+            published.extend(publish(&failure.uri, diagnostics));
+        }
+        published
     }
 
     /// Handle a notification; the messages it publishes.
     fn notification(&mut self, method: &str, params: &Value) -> Vec<Value> {
         if method == "workspace/didChangeWatchedFiles" {
+            let selected =
+                params["changes"].as_array().is_some_and(|changes| {
+                    changes
+                        .iter()
+                        .filter(|change| {
+                            matches!(change["type"].as_u64(), Some(1..=3))
+                        })
+                        .filter_map(|change| change["uri"].as_str())
+                        .any(|uri| self.selected_interface(uri).is_some())
+                });
+            if selected {
+                return self.reload_interfaces();
+            }
             // A file changed on disk: every analysis may read it.
             self.analyses.borrow_mut().clear();
             let open: Vec<String> = self.documents.keys().cloned().collect();
@@ -330,6 +588,14 @@ impl Server {
                 self.documents.remove(&uri);
             }
             _ => return Vec::new(),
+        }
+        if self.selected_interface(&uri).is_some() {
+            let mut published = Vec::new();
+            if method == "textDocument/didClose" {
+                published.extend(publish(&uri, Vec::new()));
+            }
+            published.extend(self.reload_interfaces());
+            return published;
         }
         // Any analysis may read the changed document as a file module.
         self.analyses.borrow_mut().clear();
@@ -383,7 +649,7 @@ impl Server {
     /// The diagnostics of open document `uri`, as a notification.
     fn diagnose(&self, uri: &str) -> Option<Value> {
         let analysis = self.analyse(uri)?;
-        let diagnostics = analysis
+        let mut diagnostics: Vec<Diagnostic> = analysis
             .diagnostics
             .iter()
             .map(|(span, message)| Diagnostic {
@@ -394,11 +660,22 @@ impl Server {
                 ..Diagnostic::default()
             })
             .collect();
+        if let Some(failure) = &self.reload_error {
+            diagnostics.push(Diagnostic {
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some(String::from("fipe")),
+                message: format!("interface reload failed; using last accepted interface metadata: {}", failure.error.message()),
+                ..Diagnostic::default()
+            });
+        }
         publish(uri, diagnostics)
     }
 
     /// The analysis of an open document, made once per change.
     fn analyse(&self, uri: &str) -> Option<Rc<Analysis>> {
+        if self.selected_interface(uri).is_some() {
+            return None;
+        }
         if let Some(kept) = self.analyses.borrow().get(uri) {
             return Some(Rc::clone(kept));
         }
@@ -454,6 +731,30 @@ impl Server {
             }
             Source::Host(name) => {
                 let (path, text) = self.host.source(name)?;
+                if let Some(selected) = self
+                    .interfaces
+                    .iter()
+                    .find(|selected| selected.input.module == *name)
+                {
+                    if self.reload_error.is_some() {
+                        return None;
+                    }
+                    if let Some((uri, buffer)) =
+                        self.interface_buffer(selected).ok()?
+                    {
+                        return if buffer == text {
+                            Some((uri.parse().ok()?, text))
+                        } else {
+                            None
+                        };
+                    }
+                    if std::fs::canonicalize(path).ok()? != selected.canonical
+                        || std::fs::read_to_string(path).ok()? != text
+                    {
+                        return None;
+                    }
+                    return Some((uri::of(path), text));
+                }
                 let path = std::fs::canonicalize(path).ok()?;
                 Some((uri::of(&path), text))
             }
@@ -937,6 +1238,11 @@ impl Server {
 
     fn formatting(&self, document: &Uri) -> Answer {
         let failed = |text: &str| (-32803, String::from(text));
+        if self.selected_interface(document.as_str()).is_some() {
+            return Err(failed(
+                "formatting selected interface buffers is unavailable",
+            ));
+        }
         let analysis = self
             .analyse(document.as_str())
             .ok_or_else(|| failed("the document is not open"))?;

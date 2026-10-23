@@ -64,6 +64,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fipe-ffi"
+version = "0.2.0-dev.2"
+dependencies = [
+ "fipe",
+ "fipe-llvm",
+ "fipe-native",
+]
+
+[[package]]
 name = "fipe-host"
 version = "0.2.0-dev.2"
 dependencies = [

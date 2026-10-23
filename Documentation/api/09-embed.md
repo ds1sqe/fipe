@@ -1,7 +1,8 @@
 # Embedding API
 
 [Embedding](../spec/09-host.md) owns what a host supplies; this chapter owns the Rust
-boundary through which a driver supplies it.
+boundary through which a driver supplies it. The [layer ownership guide](../architecture.md)
+distinguishes this boundary from an application Host and optional Standard.
 
 ## Start in another repository
 
@@ -53,8 +54,22 @@ a returned `Request`; the driver performs it and passes the answer to
 
 | Request | Reply |
 | --- | --- |
-| `File { stem }`: the source of file module `stem`; the driver maps the stem to a path | the text, or `None` when absent |
+| `File { stem }`: the source of file module `stem`; the driver resolves the stem to source text | the text, or `None` when absent |
 | `Call { declaration, arguments, environment }`: a run calls the host declaration `tables.declarations[declaration]` with its arguments in spot order, under the `with` keys (`tables.keys`) and values open, outermost first | `Value(Ok(value))`, a value of the declared result's shape ([MIR](08-mir.md) §Running), or `Value(Err(message))`, which Faults the run with `Host` at the call |
+
+A source stem need not be an OS path: an application Host may resolve it from
+memory or an application resource. Core and Embed perform no source I/O.
+To load a file module, check `use <stem>` and answer its `Request::File`.
+Giving the file's source directly to `Session::line` instead defines session-line
+declarations; it does not assign that file's module identity.
+
+A file type's `types::TypeName` retains `Origin::File(stem)` and its declared
+name. For a runtime `Value::Record`, resolve `meaning` through the unit's
+`tables.meanings`, then its `namespace` through `tables.namespaces`; together
+the namespace and meaning label identify, for example, `geometry.Point`.
+Function results share that identity across imports and fresh sessions.
+Numeric table indices may differ, and normal type display may omit the module;
+neither is a portable identity or a source-content fingerprint.
 
 Sink policy is the host's: it reads each main expression line's value (a lift's
 lines too) from `vm::Machine::lines` as lines end, at a request or the run's

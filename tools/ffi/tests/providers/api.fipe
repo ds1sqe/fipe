@@ -1,0 +1,7 @@
+pub unit: () -> ()
+pub integer: Integer -> Integer
+pub float: F64 -> F64
+pub text: String -> String
+pub choose: Integer -> String -> String
+pub fail: () -> Integer
+pub wrong: () -> Integer

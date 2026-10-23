@@ -1,0 +1,15 @@
+[package]
+name = "fipe-ffi"
+version.workspace = true
+edition.workspace = true
+description = "Native C ABI providers for Fipe hosts"
+license.workspace = true
+repository.workspace = true
+include = ["/src/**", "/include/**", "/README.md", "/examples/**", "/LICENSE-*"]
+
+[dependencies]
+fipe.workspace = true
+
+[dev-dependencies]
+fipe-native.workspace = true
+fipe-llvm.workspace = true

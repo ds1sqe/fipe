@@ -1,10 +1,14 @@
 use fipe::{
-    ast::ExprKind,
+    ast::{Entry, ExprKind},
+    compile,
     decl::Declarations,
     embed::{Outcome, Reply, Request},
     resolve::{Origin, Reason, Target},
     session::{Diagnostic, Report, Session},
     token::Span,
+    types::Type,
+    value::Value,
+    vm::Machine,
 };
 
 fn host() -> Declarations {
@@ -138,6 +142,178 @@ fn use_requests_a_file_module_once() {
         }
     );
     ok(&mut session, "use geometry.Polar");
+}
+
+const FILE_IDENTITY_SOURCE: &str = "pub type Point { pub x: Integer }\n\
+pub first: Integer -> Point = x => Point x\n\
+pub second: Integer -> Point = x => Point x\n";
+
+fn run_file_identity_line(
+    session: &mut Session,
+    machine: &mut Machine,
+    text: &str,
+    loads: &mut usize,
+) -> (Report, Value) {
+    let mut outcome = session.line(text);
+    let report = loop {
+        match outcome {
+            Outcome::Done(report) => break report,
+            Outcome::Request(Request::File { stem }) => {
+                assert!(["geometry", "other"].contains(&stem.as_str()));
+                *loads += 1;
+                outcome = session
+                    .reply(Reply::File(Some(FILE_IDENTITY_SOURCE.into())));
+            }
+            other @ Outcome::Request(_) => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(report.diagnostics, [], "{text}");
+    let program = compile::compile(report.unit.as_ref().unwrap());
+    let Outcome::Done(Ok(value)) = machine.run(&program) else {
+        panic!("failed run: {text}")
+    };
+    (report, value)
+}
+
+fn file_record_identity(report: &Report, value: &Value) -> (usize, String) {
+    let Value::Record(record) = value else {
+        panic!("expected record: {value:?}")
+    };
+    let tables = report.unit.as_ref().unwrap().tables();
+    let meaning = &tables.meanings[record.meaning];
+    (
+        record.meaning,
+        format!("{}.{}", tables.namespaces[meaning.namespace], meaning.label),
+    )
+}
+
+fn assert_file_function_results(session: &mut Session) {
+    let signatures = done(session.query("(geometry.first, geometry.second)"));
+    assert_eq!(signatures.diagnostics, []);
+    let Entry::Line(id) = signatures.entries()[0] else {
+        panic!()
+    };
+    let Type::Tuple(functions) =
+        signatures.typed.as_ref().unwrap().expr(id).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(functions.len(), 2);
+    for function in functions {
+        let Type::Function { result, .. } = function else {
+            panic!()
+        };
+        let Type::Named { name, .. } = &**result else {
+            panic!()
+        };
+        assert_eq!(name.origin, Origin::File("geometry".into()));
+        assert_eq!(name.name, "Point");
+    }
+}
+
+#[test]
+fn file_module_record_identity_is_independent_of_session_lines() {
+    for prefix in [
+        &[][..],
+        &[][..],
+        &["warmup = 7"][..],
+        &["type Point { label: String }", "local = Point \"local\""][..],
+    ] {
+        let mut session = Session::new(Declarations::new());
+        let mut machine = Machine::new(Some(100_000));
+        let mut loads = 0;
+        for text in prefix {
+            run_file_identity_line(
+                &mut session,
+                &mut machine,
+                text,
+                &mut loads,
+            );
+        }
+        for _ in 0..2 {
+            run_file_identity_line(
+                &mut session,
+                &mut machine,
+                "use geometry",
+                &mut loads,
+            );
+        }
+        assert_file_function_results(&mut session);
+        let (report, value) = run_file_identity_line(
+            &mut session,
+            &mut machine,
+            "(geometry.first 1, geometry.second 2)",
+            &mut loads,
+        );
+        let Value::Tuple(values) = value else {
+            panic!()
+        };
+        assert_eq!(values.len(), 2);
+        let first = file_record_identity(&report, &values[0]);
+        assert_eq!(first.1, "geometry.Point");
+        assert_eq!(file_record_identity(&report, &values[1]), first);
+        for (value, expected) in values.iter().zip([1, 2]) {
+            let Value::Record(record) = value else {
+                panic!()
+            };
+            assert_eq!(record.fields, [Value::Int(expected)]);
+        }
+        let (report, value) = run_file_identity_line(
+            &mut session,
+            &mut machine,
+            "geometry.second 3",
+            &mut loads,
+        );
+        assert_eq!(file_record_identity(&report, &value), first);
+        assert_eq!(loads, 1);
+        run_file_identity_line(
+            &mut session,
+            &mut machine,
+            "use other",
+            &mut loads,
+        );
+        let (report, value) = run_file_identity_line(
+            &mut session,
+            &mut machine,
+            "other.first 4",
+            &mut loads,
+        );
+        let other = file_record_identity(&report, &value);
+        assert_eq!(other.1, "other.Point");
+        assert_ne!(other.0, first.0);
+        assert_eq!(loads, 2);
+    }
+
+    for prefix in [&[][..], &["warmup = 7"][..]] {
+        let mut session = Session::new(Declarations::new());
+        let mut machine = Machine::new(Some(100_000));
+        let mut loads = 0;
+        for text in prefix {
+            run_file_identity_line(
+                &mut session,
+                &mut machine,
+                text,
+                &mut loads,
+            );
+        }
+        run_file_identity_line(
+            &mut session,
+            &mut machine,
+            FILE_IDENTITY_SOURCE,
+            &mut loads,
+        );
+        let (report, value) = run_file_identity_line(
+            &mut session,
+            &mut machine,
+            "first 5",
+            &mut loads,
+        );
+        assert_eq!(
+            file_record_identity(&report, &value).1,
+            format!("line {}.Point", prefix.len() + 1)
+        );
+        assert_eq!(loads, 0);
+    }
 }
 
 #[test]

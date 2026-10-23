@@ -1,0 +1,18 @@
+[package]
+name = "fipe-provider-proof"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+members = ["rust-provider"]
+resolver = "2"
+
+[dependencies]
+fipe = { path = "../../../.." }
+fipe-ffi = { path = "../.." }
+fipe-proof-rust-provider = { path = "rust-provider" }
+
+[[test]]
+name = "c_rust"
+path = "proof.rs"

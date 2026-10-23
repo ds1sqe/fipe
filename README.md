@@ -79,6 +79,11 @@ let Outcome::Done(Ok(value)) = machine.run(&program) else {
 assert_eq!(value, Value::Int(3));
 ```
 
+Core, Embed and the Host contract are available from `fipe` alone. An
+application Host supplies its own capabilities; the optional Standard
+implementation is `fipe-host`. The [layer ownership guide](Documentation/architecture.md)
+explains the boundaries and dependency direction.
+
 The budget bounds VM work; it is not a time or memory limit. A program that
 calls a host function returns `Outcome::Request`; your application performs
 the operation and resumes the VM with `Machine::reply`. Host declarations

@@ -19,6 +19,8 @@ The [tour](tour/README.md) teaches scripts on the standard host; the
 [examples index](examples/README.md) includes runnable Fipe scripts and Rust
 embedding examples. The [API chapters](api/) describe the crate boundary for
 lexing, parsing, checking, compilation and execution.
+The [native library boundary](api/10-native-libraries.md) separates existing
+embedding from proposed C/Rust provider integration.
 
 The implementation includes type inference, static limit checks, a VM,
 native and LLVM backends, a REPL, and editor tooling. The core library uses
@@ -28,6 +30,7 @@ only `core` and `alloc` and depends on no host. The current prerelease is
 
 For contributors and integrators:
 
+- [Layer ownership](architecture.md): Core, Embed, application Hosts and optional Standard.
 - [Development](development.md): workspace layout, builds and verification.
 - [Agent guidance](agents.md): references and a check/run loop for coding agents.
 - [Publishing](publishing.md): package boundaries and the crates.io release.

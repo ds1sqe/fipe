@@ -885,8 +885,9 @@ fn member_spans(
     spans
 }
 
-/// The name heading a printed type, past its limits (`Literal a =>
-/// Vec<a>` is `Vec`); `[]` for an array, whose impls are written on
+/// The name heading a printed type, past its limits.
+///
+/// `Literal a => Vec<a>` is `Vec`; `[]` for an array, whose impls are written on
 /// `[T; n]`; empty for a tuple (`a * b`), a function or a variable's
 /// punctuation.
 #[must_use]

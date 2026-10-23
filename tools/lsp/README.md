@@ -38,6 +38,80 @@ open document republishes the other open documents that use it, and
 `workspace/didChangeWatchedFiles` re-analyses everything, for files
 changed on disk.
 
+## Offline interface inputs
+
+Editors can explicitly select declaration-only `.fipi` sources during initialization:
+
+```json
+{
+  "initializationOptions": {
+    "interfaces": [
+      { "module": "demo.math", "path": "/absolute/interfaces/arithmetic.fipi" }
+    ]
+  }
+}
+```
+
+Each entry uses an explicit dotted module identity and an absolute native filesystem
+path ending in `.fipi`; paths are not URIs and have no tilde/environment expansion.
+The basename does not choose identity. List dependencies first: legacy `host`
+declarations load first, then interfaces in the supplied order. The existing host
+directory scan still loads only `.fipe`. Missing `interfaces` or an empty list keeps
+the existing behavior.
+
+Selection is atomic. Duplicate explicitly selected modules, including conflicts
+with legacy host sources or repeated identical module/path entries, fail with both source paths.
+Synthesized namespace parents are not selected sources. Invalid configuration,
+read/UTF-8 failures and declaration errors return initialize error -32602 with
+module/path context and source line/column when available. Failed initialization
+leaves the server waiting (-32002 for analysis requests); a corrected initialize
+request may retry, though editor retry behavior varies. A missing or invalid
+selected interface never falls back to a sibling implementation or provider.
+
+Interfaces use existing host declaration syntax, including written constants,
+defaults, type limits and impls. Editing/checking needs no provider binary, native
+loading, build/generator execution, SDK or device. Existing bounded pure checking
+is allowed; runtime-dependent defaults remain runtime work. Hover/completion and
+definition use the selected text, with exact Unicode/line-ending spans and actual
+`.fipi` paths; definition URIs use the existing canonical path behavior.
+
+The selected module/path list stays fixed until a new server is initialized.
+Selected `didOpen`/`didChange`/`didClose` and `workspace/didChangeWatchedFiles` events
+reload the entire interface batch atomically, using open text before disk. Full
+and incremental edits use the negotiated position encoding. Closing a buffer
+returns to disk; a watched event cannot overwrite unsaved text. Legacy host
+sources stay frozen. Clients must send document/watcher notifications; this server
+does not dynamically register filesystem watchers.
+
+A failed reload retains every last accepted declaration/source and reports the
+failure on the selected source. All ordinary open clients also receive an error
+warning that last accepted metadata is in use. Repair clears those diagnostics.
+Hover/completion can continue from that visibly marked metadata, but navigation
+to all selected interfaces is suppressed until the batch is valid. Without an
+open buffer, a disk edit before its watcher event also suppresses stale locations.
+With a matching accepted open buffer, navigation targets that buffer even if its
+disk file was deleted.
+
+Events recognize only each original selected path and its canonical path captured
+at initialization, using the existing file-URI decoder (including percent escapes).
+Both open spellings must have identical text; conflicting buffers fail until they
+agree or one closes. Original open URI wins when both agree, then canonical open
+URI; disk-only locations use the original path with matching text. Other symlink
+aliases are not discovered. Retargeting a symlink requires a new server/selection;
+delete/recreate at the same target is supported. Renaming or creating unselected
+files cannot change module selection. Windows URI/watcher behavior still needs
+its platform qualification.
+
+Selected declaration buffers bypass ordinary script diagnostics. Client documents
+use their admitted metadata; semantic features and formatting *inside* selected
+`.fipi` buffers remain unavailable. These protocol guarantees do not establish a
+real editor's watcher configuration or full interface-authoring support.
+
+This text-only input carries existing unmarked data declarations. It does not
+infer resources from opaque types, import resource-bearing artifact metadata,
+load libraries, or establish runtime artifact identity/authority. Typed resource
+classification and its preservation require the shared resource contract.
+
 ## Clients
 
 - Neovim: the module `tools/editor/nvim` (its README) for your own
