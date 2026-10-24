@@ -6,15 +6,27 @@ use fipe_native::{codec::Unit, elf, link, lower};
 use std::{
     path::{Path, PathBuf},
     process::Command,
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock,
+    },
 };
 
 /// A fresh scratch directory `name` under the tests' target directory.
 pub fn scratch(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    std::fs::create_dir_all(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    loop {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("{name}-{}-{serial}", std::process::id()));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return dir,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            }
+            Err(error) => panic!("create scratch {}: {error}", dir.display()),
+        }
+    }
 }
 
 /// `libfipe_native_rt.a`, built once per test binary in its own target

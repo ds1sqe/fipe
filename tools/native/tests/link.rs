@@ -262,3 +262,29 @@ fn resource_cli_refuses_before_overwriting_an_object() {
         .contains("native execution does not support resource declarations"));
     assert_eq!(std::fs::read(&output).unwrap(), b"preserved");
 }
+
+#[test]
+fn same_named_scratch_directories_preserve_other_callers() {
+    let first = common::scratch("shared-scratch-proof");
+    let sentinel = first.join("sentinel");
+    std::fs::write(&sentinel, b"first caller").unwrap();
+    let second = common::scratch("shared-scratch-proof");
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"first caller");
+    let left = std::thread::spawn(|| common::scratch("shared-scratch-proof"));
+    let right = std::thread::spawn(|| common::scratch("shared-scratch-proof"));
+    let left = left.join().unwrap();
+    let right = right.join().unwrap();
+    let paths = [&first, &second, &left, &right];
+    for (index, path) in paths.iter().enumerate() {
+        assert_eq!(
+            path.parent().unwrap(),
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        );
+        assert!(path.is_dir());
+        for other in &paths[index + 1..] {
+            assert_ne!(path, other);
+        }
+    }
+    assert_eq!(std::fs::read(sentinel).unwrap(), b"first caller");
+}

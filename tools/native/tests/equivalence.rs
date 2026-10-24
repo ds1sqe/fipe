@@ -143,6 +143,8 @@ fn native(
     budget: Option<u64>,
     sources: &trace::Sources<'_>,
 ) -> (Observation, u64, i32) {
+    let stderr_path = executable.with_extension("stderr");
+    let stderr = std::fs::File::create(&stderr_path).unwrap();
     let mut command = Command::new("sh");
     command
         .args(["-c", "exec \"$0\" 3>&1 4<&0 1>&2 0</dev/null"])
@@ -150,7 +152,7 @@ fn native(
         .env_remove("FIPE_BUDGET")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::from(stderr));
     if let Some(budget) = budget {
         command.env("FIPE_BUDGET", budget.to_string());
     }
@@ -161,7 +163,29 @@ fn native(
     let mut trace = Vec::new();
     let (result, charged) = loop {
         let mut length = [0; 8];
-        frames.read_exact(&mut length).unwrap();
+        if let Err(error) = frames.read_exact(&mut length) {
+            drop(replies);
+            let mut supervisor_killed = false;
+            let mut kill_error = None;
+            let status = child.try_wait().unwrap().unwrap_or_else(|| {
+                match child.kill() {
+                    Ok(()) => supervisor_killed = true,
+                    Err(error) => kill_error = Some(error.to_string()),
+                }
+                child.wait().unwrap()
+            });
+            let mut stderr = Vec::new();
+            std::fs::File::open(&stderr_path)
+                .unwrap()
+                .take(65_536)
+                .read_to_end(&mut stderr)
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&stderr);
+            panic!(
+                "native frame header: {error}; executable={}; budget={budget:?}; status={status}; supervisor_killed={supervisor_killed}; kill_error={kill_error:?}; stderr(first64KiB)={stderr:?}",
+                executable.display()
+            );
+        }
         let mut payload =
             vec![0; usize::try_from(u64::from_le_bytes(length)).unwrap()];
         frames.read_exact(&mut payload).unwrap();
@@ -188,7 +212,7 @@ fn native(
     };
     drop(replies);
     let output = child.wait_with_output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    assert_eq!(std::fs::read(&stderr_path).unwrap(), b"");
     let code = output.status.code().unwrap();
     (finish(program, sources, result, trace, host), charged, code)
 }
@@ -362,6 +386,7 @@ fn files_observes_as_on_the_vm_and_replays_its_trace() {
 #[test]
 fn each_drift_fixture_observes_as_on_the_vm() {
     for (name, source) in DRIFT {
+        eprintln!("DRIFT BEGIN {name}");
         let (observed, _, code) = equal(name, source);
         assert_eq!(code, i32::from(observed.result.is_err()), "{name}");
         // The guards' fixtures end on the argument a guard refutes, the
