@@ -41,6 +41,7 @@ pub mod highlight;
 mod ir;
 mod mir;
 mod render;
+mod source;
 mod tree;
 
 use alloc::{
@@ -60,11 +61,13 @@ use fipe::{
     lex::{lex, Lexed},
     mir::Program,
     session::{Diagnostic, Report, Session},
-    token::{Kind, Source, Span, Symbol, Token},
+    token::{Kind, Source, Span, Symbol},
     value::Value,
     vm::{Fault, Machine},
 };
 use render::Context;
+use source::{open_quote, pending_doc};
+pub use source::{source_continuation, ContinuationReason, SourceContinuation};
 
 const PROMPT: &str = "fipe> ";
 /// The REPL's own budget per line when the driver names none: a surface
@@ -1840,34 +1843,6 @@ fn continuation(code: &str, lexed: &Lexed) -> Continuation {
     result.depth = depth;
     result.open = depth > 0;
     result
-}
-
-/// A lexer failure at EOF that another physical line can complete.
-fn open_quote(code: &str, lexed: &Lexed) -> Option<char> {
-    lexed.errors.iter().find_map(|error| {
-        if error.span.end != code.len() {
-            return None;
-        }
-        let written = &code[error.span.start..error.span.end];
-        let at = written.find(['\'', '"'])?;
-        let quote = written.as_bytes()[at] as char;
-        ((quote == '\'' && !written[at + 1..].contains('\''))
-            || (quote == '"' && written.ends_with('\\')))
-        .then_some(quote)
-    })
-}
-
-fn pending_doc(tokens: &[Token]) -> bool {
-    let Some(last) = tokens
-        .iter()
-        .rposition(|token| !matches!(token.kind, Kind::Newline | Kind::Eof))
-    else {
-        return false;
-    };
-    if !matches!(tokens[last].kind, Kind::Doc(_) | Kind::InnerDoc(_)) {
-        return false;
-    }
-    last == 0 || matches!(tokens[last - 1].kind, Kind::Newline)
 }
 
 /// The Name part of a file stem: from its first letter or `_`, with

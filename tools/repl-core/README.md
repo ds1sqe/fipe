@@ -14,6 +14,26 @@ Use `fipe-repl` for a terminal driver, or `fipe-cli` for the `fipe repl`
 command with filesystem and environment access through the standard host.
 See the crate's API documentation for the request/response protocol.
 
+## Inspect source without a Session
+
+`source_continuation(text)` is a pure source-text query. It returns
+`SourceContinuation::Complete` or `Open(ContinuationReason)` for an unfinished
+line continuation, delimiter, quote or documentation comment. It does not
+construct a `Session` or `Repl`, perform lookup, evaluate code, or do I/O.
+
+Pass exact UTF-8 text: a final LF or CRLF is significant. For example,
+`"1 + 1"` is Complete, `"[1,\n"` is Open(Delimiter), and a trailing backslash
+join remains Open(LineContinuation) even if the parser already accepts the
+preceding expression. A following unjoined blank line ends a line continuation.
+Comments and quoted text do not contribute bracket or backslash lookalikes.
+
+Complete permits submission for normal diagnostics; it does not promise valid
+source. Open describes an unfinished construct, not a guarantee that some suffix
+can make it valid. The caller may always force submission through its existing
+executor. Colon commands and the terminal REPL's blank-line submission policy
+are outside this query. The REPL keeps its incremental quote handling and error
+recovery; it does not repeatedly run the whole-source query while feeding lines.
+
 `Repl::host_sources` accepts declarations by their full module names, including
 `text.open`. Supply `commands` first when present, then modules in dependency
 order. The directory-based `:host` command still reads the conformance host's
