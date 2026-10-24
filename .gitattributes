@@ -1,1 +1,2 @@
 tests/fixtures/traces/*.txt text eol=lf
+*.md text eol=lf
