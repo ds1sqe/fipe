@@ -77,6 +77,20 @@ impl fmt::Debug for ResourceType {
     }
 }
 
+/// One explicit position in a pending result's frozen structural type.
+/// Ordinals belong to that result schema, not payloads or portable identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceStep {
+    Tuple(usize),
+    Field {
+        constructor: usize,
+        field: usize,
+    },
+    /// The homogeneous type element, not an instance index.
+    Element,
+    Packed(usize),
+}
+
 /// Why a checked resource witness cannot be obtained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceError {
@@ -87,9 +101,14 @@ pub enum ResourceError {
     NoPendingCall,
     NotResourceResult,
     NonConcrete,
+    InvalidPath { step: usize },
+    Budget,
 }
 impl fmt::Display for ResourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::InvalidPath { step } = self {
+            return write!(f, "invalid resource result path at step {step}");
+        }
         f.write_str(match self {
             Self::NotFound => "resource type not found",
             Self::Ambiguous => "ambiguous resource type",
@@ -98,6 +117,10 @@ impl fmt::Display for ResourceError {
             Self::NoPendingCall => "no pending Host call",
             Self::NotResourceResult => "result is not a direct resource",
             Self::NonConcrete => "resource identity is not concrete",
+            Self::Budget => {
+                "resource result projection exceeded the run budget"
+            }
+            Self::InvalidPath { .. } => unreachable!("handled above"),
         })
     }
 }

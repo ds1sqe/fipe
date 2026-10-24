@@ -2,7 +2,9 @@
 use crate::{
     ir::{self, Type},
     value::{
-        resource::{Descriptor, Forest, ResourceType},
+        resource::{
+            Descriptor, Forest, ResourceError, ResourceStep, ResourceType,
+        },
         Reason,
     },
 };
@@ -475,6 +477,7 @@ pub(super) struct Frozen {
     label: String,
     direct: Option<ResourceType>,
     ordinary: bool,
+    exposes_resources: bool,
     association: Vec<(usize, Rc<()>)>,
     issued: Vec<(usize, Rc<()>)>,
 }
@@ -590,6 +593,7 @@ impl Frozen {
                 label: super::fits::named(ty, tables),
                 direct: None,
                 ordinary: true,
+                exposes_resources: false,
                 association: Vec::new(),
                 issued: Vec::new(),
             });
@@ -611,6 +615,7 @@ impl Frozen {
             label: label.into(),
             direct: None,
             ordinary: false,
+            exposes_resources: false,
             association: Vec::new(),
             issued: Vec::new(),
         };
@@ -672,6 +677,7 @@ impl Frozen {
         if !summary.unresolved.is_empty() {
             return Err(Reason::Host("nonconcrete resource identity".into()));
         }
+        self.exposes_resources = summary.resource;
         let required = self.required_stamps(work)?;
         for index in required {
             work.pay(
@@ -927,10 +933,13 @@ impl Frozen {
             &ir::Tables::default(),
             work,
             &mut |index| {
-                let stamp = self.templates[&index]
-                    .stamp
-                    .as_ref()
-                    .expect("frozen identity stamp");
+                let stamp = self
+                    .templates
+                    .get(&index)
+                    .and_then(|template| template.stamp.as_ref())
+                    .ok_or_else(|| {
+                        Reason::Host("nonconcrete resource identity".into())
+                    })?;
                 for (local, known) in stamps.iter().enumerate() {
                     work.pay(1)?;
                     if Rc::ptr_eq(known, stamp) {
@@ -945,6 +954,108 @@ impl Frozen {
         Ok(ResourceType(Rc::new(Descriptor { root, stamps })))
     }
 }
+const fn projection_error(reason: &Reason) -> ResourceError {
+    if matches!(reason, Reason::Budget) {
+        ResourceError::Budget
+    } else {
+        ResourceError::NonConcrete
+    }
+}
+
+impl Frozen {
+    pub(super) fn project(
+        &self,
+        path: &[ResourceStep],
+        work: &Work,
+    ) -> Result<ResourceType, ResourceError> {
+        if path.is_empty() {
+            return self.direct();
+        }
+        // Unknown/data-only values cannot expose a resource through these paths.
+        if !self.exposes_resources {
+            return Err(ResourceError::NotResourceResult);
+        }
+        let mut selected: Option<Forest> = None;
+        for (position, step) in path.iter().enumerate() {
+            work.pay(1).map_err(|reason| projection_error(&reason))?;
+            let current = selected
+                .as_ref()
+                .map_or(&self.root.0[0], |forest| &forest.0[0]);
+            let next = self.project_step(current, *step, position, work)?;
+            selected = Some(next);
+        }
+        work.pay(1).map_err(|reason| projection_error(&reason))?;
+        let selected =
+            &selected.as_ref().expect("nonempty path selected a type").0[0];
+        let Type::Meaning { index, .. } = selected else {
+            return Err(ResourceError::NotResourceResult);
+        };
+        let template = self
+            .templates
+            .get(index)
+            .ok_or(ResourceError::NonConcrete)?;
+        if !template.resource {
+            return Err(ResourceError::NotResourceResult);
+        }
+        if !concrete(selected, work)
+            .map_err(|reason| projection_error(&reason))?
+        {
+            return Err(ResourceError::NonConcrete);
+        }
+        self.witness(selected, work)
+            .map_err(|reason| projection_error(&reason))
+    }
+
+    fn project_step(
+        &self,
+        current: &Type,
+        step: ResourceStep,
+        position: usize,
+        work: &Work,
+    ) -> Result<Forest, ResourceError> {
+        let invalid = ResourceError::InvalidPath { step: position };
+        let empty = ir::Tables::default();
+        let (part, parameters, arguments): (&Type, &[usize], &[Type]) = match (
+            current, step,
+        ) {
+            (Type::Tuple(parts), ResourceStep::Tuple(index))
+            | (Type::Packed(parts), ResourceStep::Packed(index)) => {
+                (parts.get(index).ok_or(invalid)?, &[], &[])
+            }
+            (Type::Array { element, length }, ResourceStep::Element) if !matches!(length.as_ref(), Type::Number(n) if n.to_u64() == Some(0)) => {
+                (element, &[], &[])
+            }
+            (Type::Meaning { index, arguments }, ResourceStep::Element)
+                if Some(*index) == self.prelude.vec
+                    || Some(*index) == self.prelude.deque =>
+            {
+                (arguments.first().ok_or(invalid)?, &[], &[])
+            }
+            (
+                Type::Meaning { index, arguments },
+                ResourceStep::Field { constructor, field },
+            ) => {
+                let template = self
+                    .templates
+                    .get(index)
+                    .ok_or(ResourceError::NonConcrete)?;
+                if template.resource {
+                    return Err(invalid);
+                }
+                let field = template
+                    .constructors
+                    .get(constructor)
+                    .and_then(|fields| fields.get(field))
+                    .ok_or(invalid)?;
+                (&field.0[0], &template.parameters, arguments)
+            }
+            _ => return Err(invalid),
+        };
+        materialize(part, parameters, arguments, &empty, work, &mut Ok)
+            .map_err(|reason| projection_error(&reason))
+    }
+}
+
 fn nominals(
     ty: &Type,
     pending: &mut Vec<usize>,

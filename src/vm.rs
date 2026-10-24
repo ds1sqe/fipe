@@ -226,6 +226,7 @@ pub(crate) enum Return {
 pub(crate) struct Owed {
     back: Return,
     expected: resource::Frozen,
+    refused: bool,
     site: Fault,
 }
 
@@ -478,9 +479,14 @@ impl Machine {
         let Owed {
             back,
             expected,
+            refused,
             mut site,
         } = self.waiting.take().expect("a host request is owed");
         match reply {
+            Reply::Value(_) if refused => {
+                site.reason = Reason::Budget;
+                Err(site)
+            }
             Reply::Value(Ok(value)) => {
                 let work = self.resource_work();
                 let fits =
@@ -629,6 +635,7 @@ impl Machine {
         self.waiting = Some(Owed {
             back,
             expected,
+            refused: false,
             site: Self::fault(program, node, Reason::Budget),
         });
         Ok(Flow::Request(Request::Call {
@@ -655,11 +662,52 @@ impl Machine {
         crate::value::resource::ResourceType,
         crate::value::resource::ResourceError,
     > {
-        self.waiting
+        let owed = self
+            .waiting
             .as_ref()
-            .ok_or(crate::value::resource::ResourceError::NoPendingCall)?
-            .expected
-            .direct()
+            .ok_or(crate::value::resource::ResourceError::NoPendingCall)?;
+        if owed.refused {
+            return Err(crate::value::resource::ResourceError::Budget);
+        }
+        owed.expected.direct()
+    }
+
+    /// Select a resource type from the same frozen expectation used to admit a reply.
+    ///
+    /// # Errors
+    /// A bad ordinal/kind reports its zero-based path step. An expectation which
+    /// cannot expose resources returns `NotResourceResult` before path validation.
+    /// Budget refusal remains pending until reply/answer or abandonment; stop Host
+    /// work and submit the normal reply to observe the captured Budget terminal.
+    ///
+    /// # Panics
+    /// On an internal defect which removes the owed call during projection.
+    pub fn pending_resource_type_at(
+        &mut self,
+        path: &[crate::value::resource::ResourceStep],
+    ) -> Result<
+        crate::value::resource::ResourceType,
+        crate::value::resource::ResourceError,
+    > {
+        use crate::value::resource::ResourceError;
+        let owed = self.waiting.as_ref().ok_or(ResourceError::NoPendingCall)?;
+        if owed.refused {
+            return Err(ResourceError::Budget);
+        }
+        if path.is_empty() {
+            return owed.expected.direct();
+        }
+        let work = self.resource_work();
+        let result = owed.expected.project(path, &work);
+        let paid = self.pay(work.spent());
+        if paid.is_err() || matches!(result, Err(ResourceError::Budget)) {
+            self.waiting
+                .as_mut()
+                .expect("projection keeps the call pending")
+                .refused = true;
+            return Err(ResourceError::Budget);
+        }
+        result
     }
 
     /// Size the globals and modules to the tables; refresh the natives

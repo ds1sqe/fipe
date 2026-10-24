@@ -192,6 +192,92 @@ are not made iterative by this destructor change.
 no longer source-compatible. Read checked tables through `Unit::tables` instead
 of constructing a checked resource witness from a hand-built table.
 
+### New resources inside composite replies
+
+`Machine::pending_resource_type_at(&mut self, path: &[ResourceStep])` selects
+from the **same immutable pending expectation** used to validate the reply.
+`ResourceStep` is in `value::resource`:
+
+~~~text
+Tuple(index)
+Field { constructor, field }
+Element
+Packed(index)
+~~~
+
+Ordinals are local to the checked result schema, not global Meaning indices or
+portable handles. Records use their sole constructor ordinal 0; variants choose
+one explicitly. `Element` selects a homogeneous Vec/Deque/Array type element,
+not a value index. `Packed` selects one explicit alternative. These operations
+never execute a getter, constructor, default, provider or written member.
+Resource arguments form identity; they are not payload children. Function captures,
+opaque payloads and wildcard data have no constructive child path. Repeated nominal
+steps are allowed and may change generic arguments through frozen field templates.
+
+For example, a trusted `make: () -> Envelope<Rd<a>>` called under an
+`Envelope<Rd<Integer>>` annotation has no direct root witness and its generic `Rd`
+cannot use `registered`. After receiving that real Call, select its field:
+
+```rust,no_run
+use fipe::value::resource::{ResourceError, ResourceStep, ResourceType};
+use fipe::vm::Machine;
+fn pending_leaf(machine: &mut Machine) -> Result<ResourceType, ResourceError> {
+    machine.pending_resource_type_at(&[
+        ResourceStep::Field { constructor: 0, field: 0 },
+    ])
+}
+```
+
+Only after this succeeds may the Host acquire/register a NEW private entry and
+call `domain.issue(&witness, key)`. Put that reference in the ordinary checked
+Envelope shape and reply normally. The full concrete argument structure and nominal
+stamps come from the snapshot, not current declarations or a late registration.
+A witness is neither an ownership transfer nor a fresh grant. Same-typed occurrences
+can reuse a still-valid alias under Host policy.
+
+A fresh resource-bearing Packed needs a checked association, not descriptive Types.
+`Packed::from_data` still refuses resource payloads. A Host can precompile a lawful
+same-context converter, for example `Rd<Integer> -> (Rd<Integer> | String)`, **before**
+the pending factory Call. Obtain the resource witness by a `Packed` path, acquire
+and issue the NEW entry, then use another Machine's `run_with_input` on that
+prechecked converter. Return its exact checked Packed to the original pending
+Machine. All Programs must share the same checked Tables/context and the result
+must pass the original frozen reply admission. This is not an arbitrary builder
+for unseen types; a generic composite factory never falls back to an auxiliary
+direct-resource call to obtain its witness.
+
+The empty path reuses the cached direct accessor without work. `NoPendingCall`
+also costs nothing. A whole frozen expectation proven unable to expose resources
+returns `NotResourceResult` before validating any nonempty path. This includes
+ordinary/data-only results, a whole zero-length resource array, and Function-only
+or opaque-only roots, independently of unrelated registered resources. In a
+resource-bearing tuple/record, however, selecting a zero array and then asking for
+its `Element` is `InvalidPath` at that step. Other wrong kinds or ordinals report
+`InvalidPath { step }` at the first zero-based bad step. An ordinary/data-only
+exhausted leaf is `NotResourceResult`; missing required concrete resource identity
+is `NonConcrete`, never a guessed witness. Such required unresolved identities
+normally refuse the Host request during capture already.
+
+A nonempty resource-relevant path pays 1 before each step inspection, then the
+existing charged materialization of the selected subtree (including field formal
+substitution). It pays 1 before inspecting the final leaf, followed by the existing
+concrete-type and frozen-descriptor work. It does not copy unselected siblings or
+expand recursive layouts eagerly. Successful and invalid lookups retain all spent
+charges and leave the Call pending, so a corrected path can be retried.
+
+On exhaustion the getter returns `ResourceError::Budget`, consumes the remaining
+allowance, and latches that refusal on the pending Call. **Stop backend/effect work.**
+Every subsequent root/path getter returns Budget without new work, even after
+changing the configured budget. Supply the ordinary `Reply::Value(Ok(..))` or
+`Reply::Value(Err(..))` (or stepped `answer`) to observe the captured original-site
+Budget terminal; the supplied result cannot replace it or resume later effects.
+The getter itself does not end the Call. Wrong-kind File replies remain driver
+errors. Abandoning instead drops the pending refusal; a new run starts clean.
+
+This prerelease adds `ResourceStep`, the method and exhaustive `ResourceError`
+variants `InvalidPath` and `Budget`; Rust matches must account for them. No new
+native/FFI wire representation, live schema API or backend cleanup hook follows.
+
 ## Stepping
 
 ~~~text

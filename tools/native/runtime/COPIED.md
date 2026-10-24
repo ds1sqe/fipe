@@ -23,12 +23,12 @@ source is still hashed, and the drift fixtures of the backend
 | `src/ops/slots.rs` | `src/vm/step.rs` | `02ca45d9cbf41787` | a field read, a switch's key, an unset global's body run first |
 | `src/ops/slots.rs` | `src/vm/globals.rs` | `9d804dba464e8e36` | the globals a step reads, before it runs |
 | `src/ops/calls.rs` | `src/vm/calls.rs` | `c4ec8e276183780b` | the callee kinds, selected rows, receiver admission, eval/apply and ordered guard admission, partial/beyond transfers and definition invocation |
-| `src/ops/calls.rs` | `src/vm/resource.rs` | `ae8f978b61104b08` | charged iterative semantic C/closure meanings and raw predicate Type materialization: Read/Finish, substitution, limbs, Session modes and guarded partial roots |
+| `src/ops/calls.rs` | `src/vm/resource.rs` | `d778950e9dfc691e` | charged iterative semantic C/closure meanings and raw predicate Type materialization: Read/Finish, substitution, limbs, Session modes and guarded partial roots |
 | `src/ops/calls.rs` | `src/vm/step.rs` | `02ca45d9cbf41787` | a call terminator: its witnesses and result type substituted |
 | `src/ops/calls.rs` | `src/vm/pending.rs` | `af5bd18fb7e68618` | supplied targets/caller result, lazy source-owner/index guard selection and ordered current-argument updates; synchronous instead of resumed frames |
 | `src/ops/calls.rs` | `src/vm/drive.rs` | `01a45314db002f16` | what an invocation runs |
-| `src/ops/calls.rs` | `src/vm.rs` | `756b82220945bfaa` | a host call and its reply, with the `with` environment and the main lines kept; a module's init body before the main |
-| `src/ops/mod.rs` | `src/vm.rs` | `756b82220945bfaa` | a Fault at a node; a frame's witnesses substituted in a type |
+| `src/ops/calls.rs` | `src/vm.rs` | `edfa7f137e99c0ee` | a host call and its reply, with the `with` environment and the main lines kept; a module's init body before the main |
+| `src/ops/mod.rs` | `src/vm.rs` | `edfa7f137e99c0ee` | a Fault at a node; a frame's witnesses substituted in a type |
 | `src/ops/mod.rs` | `src/vm/step.rs` | `02ca45d9cbf41787` | the `Line`, `Store`, `Push` and `Pop` statements; the `Unreachable` Fault |
 | `src/ops/dispatch.rs` | `src/vm/dispatch.rs` | `e6b4d274193e09ee` | a row by a witness or a value's tag; a packed receiver unpacked |
 | `src/ops/dispatch.rs` | `src/compile/dispatch.rs` | `7b60d1d81c17a66c` | a row by type or head meaning; the witness substitution (`substitute`, `fixed`, `map`) |
@@ -38,13 +38,13 @@ source is still hashed, and the drift fixtures of the backend
 | `src/ops/higher.rs` | `src/vm/pending.rs` | `af5bd18fb7e68618` | *rewritten*: `map`, `fold`, `filter`, `sum` |
 | `src/ops/higher.rs` | `src/vm/order.rs` | `23d2ba79df9f369f` | *rewritten*: `sort` (the VM's merge order), `count` |
 | `src/ops/predicates.rs` | `src/vm/predicates.rs` | `a25d6f881c760ed9` | *rewritten*: root snapshot and per-component preparation, immediate leaf payment, creator-bound witnesses; branch and checked conversion verdicts |
-| `src/ops/predicates.rs` | `src/vm/resource.rs` | `ae8f978b61104b08` | charged raw Predicate snapshot/preparation traversal; Type events delegate to the existing `calls.rs` engine |
-| `src/ops/predicates.rs` | `src/value/resource.rs` | `87560a047b4c8fa4` | iterative owned Predicate forest cleanup; Test meanings drain through the existing Type forest |
+| `src/ops/predicates.rs` | `src/vm/resource.rs` | `d778950e9dfc691e` | charged raw Predicate snapshot/preparation traversal; Type events delegate to the existing `calls.rs` engine |
+| `src/ops/predicates.rs` | `src/value/resource.rs` | `15ccd591dcf21aee` | iterative owned Predicate forest cleanup; Test meanings drain through the existing Type forest |
 | `src/ops/entries.rs` | `src/vm/entries.rs` | `0e13913df15849b8` | projected components and creator-bound guards; ordinary snapshot before empty-component capture/run bypass, function-local attachment before snapshot |
 | `src/ops/entries.rs` | `src/vm/step.rs` | `02ca45d9cbf41787` | the `Enter` statement |
 | `src/ops/casts.rs` | `src/vm/casts.rs` | `aadbd4b5a7d742a4` | the casts' rows |
 | `src/ops/fits.rs` | `src/vm/fits.rs` | `718e23b91f020ceb` | the shape a reply must have, whole |
-| `src/ops/fits.rs` | `src/value/resource.rs` | `87560a047b4c8fa4` | shared API dependency, not a copied walker: proof-independent logical data traversal also used by `mod.rs` and `start.rs` admission |
+| `src/ops/fits.rs` | `src/value/resource.rs` | `15ccd591dcf21aee` | shared API dependency, not a copied walker: proof-independent logical data traversal also used by `mod.rs` and `start.rs` admission |
 | `src/abi.rs` | `src/vm/frames.rs` | `b47f09afaba72665` | a frame's locals as it opens |
 
 ## VM lifecycle/context review (2026-10-23)
@@ -138,8 +138,7 @@ record reviewed upstream bytes, not source equality or universal safety.
 
 ## CI helper-move provenance reconciliation
 
-The preceding bound-admission review is historical a364 evidence. The table's
-current source identity is
+The preceding bound-admission review is historical a364 evidence. That helper-move review used source identity
 `06db593ccac2b6353c2ab8781e6eda081867f531952c62e1937b1e09715215b4`.
 Hashes cover complete source files, including private tests.
 Core helper moves retain the reviewed operand, payment, owner and publication
@@ -155,3 +154,14 @@ These helper-only correspondences add no resource transport or execution-depth
 claim. Private-test and startup-helper cleanup changes provenance bytes without
 changing the copied production behavior. Recorded hashes identify the reviewed
 source; they do not replace exact-source drift or backend qualification.
+
+## Composite-result projection provenance
+
+ResourceStep and the projection errors are additive Rust embedding APIs. Frozen
+result paths and their Budget refusal belong to a suspended Machine call; only
+explicit pending-result selection can latch that refusal. Native execution rejects
+marked Programs and has no pending getter. Its ordinary synchronous host reply,
+Fault attribution, predicate preparation and Type materialization remain unchanged.
+The fallible frozen-stamp lookup constructs resource descriptors, not native Type
+copies. Shared logical-data traversal and iterative forest cleanup are unchanged.
+These reviewed source hashes add no native resource transport or authority.

@@ -2937,3 +2937,1100 @@ fn ordinary_frozen_explicit_function_position_still_accepts_genuine_alias_captur
     // opaque callback or infer its body/capture signature from its receipt.
     // Existing retired-alias checked-function invocation regression stays unchanged.
 }
+
+const PACKED_CONVERTER_CALIBRATION_HOST: &str = r"pub type resource Rd<T>
+pub seed: Rd<Integer>
+pub make: () -> (Rd<Integer> | String)
+";
+
+const PACKED_CONVERTER_CALIBRATION_SOURCE: &str = r"use csv
+wrap: csv.Rd<Integer> -> (csv.Rd<Integer> | String) = x => x
+wrap
+";
+
+const PACKED_CONVERTER_CALIBRATION_SEED: &str = r"use csv
+csv.seed
+";
+
+const PACKED_CONVERTER_CALIBRATION_FACTORY: &str = r"use csv
+csv.make ()
+";
+
+fn packed_converter_calibration_programs() -> [fipe::mir::Program; 3] {
+    let mut host = Declarations::new();
+    host.module("csv", PACKED_CONVERTER_CALIBRATION_HOST)
+        .unwrap();
+    let mut session = fipe::session::Session::new(host);
+    [
+        PACKED_CONVERTER_CALIBRATION_SOURCE,
+        PACKED_CONVERTER_CALIBRATION_SEED,
+        PACKED_CONVERTER_CALIBRATION_FACTORY,
+    ]
+    .map(|source| {
+        let Outcome::Done(report) = session.line(source) else {
+            panic!("calibration cannot load files");
+        };
+        assert!(
+            report.diagnostics.is_empty(),
+            "{source}: {:?}",
+            report.diagnostics
+        );
+        assert!(report.accepted.is_some());
+        compile::compile(report.unit.as_ref().unwrap())
+    })
+}
+
+fn packed_converter_calibration_result(
+    program: &fipe::mir::Program,
+    request: &fipe::embed::Request,
+    label: &str,
+) -> fipe::ir::Type {
+    let fipe::embed::Request::Call { declaration, .. } = request else {
+        panic!("expected {label} call");
+    };
+    let tables = program.tables.borrow();
+    let declared = &tables.declarations[*declaration];
+    assert_eq!(tables.namespaces[declared.namespace], "csv");
+    assert_eq!(declared.label, label);
+    if label == "make" {
+        let fipe::ir::Type::Function { result, .. } = &declared.ty else {
+            panic!("make declaration is a function");
+        };
+        result.as_ref().clone()
+    } else {
+        declared.ty.clone()
+    }
+}
+
+fn packed_converter_calibration_new_entry(
+    witness: &ResourceType,
+    rows: &mut Vec<Vec<Vec<String>>>,
+) -> Value {
+    assert!(rows.is_empty(), "no preissued alias or entry");
+    rows.push(vec![vec!["new converter private payload".into()]]);
+    ResourceDomain::new()
+        .issue(witness, Rc::from(&b"packed-converter-new-entry"[..]))
+}
+
+fn packed_converter_calibration_witness(
+    seed: &fipe::mir::Program,
+    expected: &fipe::ir::Type,
+) -> ResourceType {
+    let mut calibration = Machine::new(None);
+    let Outcome::Request(request) = calibration.run(seed) else {
+        panic!("direct witness calibration request");
+    };
+    let input = packed_converter_calibration_result(seed, &request, "seed");
+    assert_eq!(&input, expected);
+    let witness = calibration.pending_resource_type().unwrap();
+    assert_eq!(
+        ResourceType::registered(&seed.tables.borrow(), "csv", "Rd"),
+        Err(ResourceError::NotMonomorphic)
+    );
+    assert!(calibration.abandon());
+    witness
+}
+
+fn packed_converter_calibration_wrap(
+    converter: &fipe::mir::Program,
+    factory: &fipe::mir::Program,
+    input: &fipe::ir::Type,
+    expected: &fipe::ir::Type,
+    fresh: &Value,
+) -> Rc<fipe::value::Packed> {
+    assert!(fipe::value::Packed::from_data(
+        input.clone(),
+        expected.clone(),
+        fresh
+    )
+    .is_none());
+    let mut wrapping = Machine::new(None);
+    let outcome = wrapping.run_with_input(converter, fresh.clone()).unwrap();
+    let Outcome::Done(Ok(Value::Packed(packed))) = outcome else {
+        panic!("converter must admit input and produce checked Packed without a Host request: {outcome:?}");
+    };
+    assert!(Rc::ptr_eq(
+        &wrapping.program().unwrap().tables,
+        &factory.tables
+    ));
+    assert_eq!(packed.source_type(), input);
+    assert_eq!(packed.target_type(), expected);
+    let Value::Resource(original) = fresh else {
+        panic!("genuine new resource");
+    };
+    assert!(
+        matches!(packed.value(), Value::Resource(value) if Rc::ptr_eq(value, original))
+    );
+    assert!(wrapping.charged() > 0);
+    packed
+}
+
+fn packed_converter_calibration_input(
+    converter: &fipe::mir::Program,
+) -> fipe::ir::Type {
+    use fipe::{
+        ir::Type,
+        mir::{Rvalue, Statement},
+    };
+    let input = fipe::vm::input_spot(converter).unwrap();
+    {
+        let tables = converter.tables.borrow();
+        let Type::Meaning { index, arguments } = &input else {
+            panic!("nominal resource input");
+        };
+        assert_eq!(tables.meanings[*index].label, "Rd");
+        assert_eq!(tables.namespaces[tables.meanings[*index].namespace], "csv");
+        let [Type::Meaning { index, arguments }] = arguments.as_slice() else {
+            panic!("actual Integer argument");
+        };
+        assert_eq!(tables.meanings[*index].label, "Integer");
+        assert!(arguments.is_empty());
+    }
+    assert!(
+        converter
+            .bodies
+            .iter()
+            .any(|body| body.blocks.iter().any(|block| block
+                .statements
+                .iter()
+                .any(|statement| matches!(
+                    statement,
+                    Statement::Assign(_, Rvalue::Pack { .. })
+                )))),
+        "checked converter must actually pack"
+    );
+    input
+}
+
+#[test]
+fn resource_packed_converter_calibration_uses_a_new_entry() {
+    let [converter, seed, factory] = packed_converter_calibration_programs();
+    assert!(Rc::ptr_eq(&converter.tables, &seed.tables));
+    assert!(Rc::ptr_eq(&converter.tables, &factory.tables));
+    let input = packed_converter_calibration_input(&converter);
+    let mut rows = Vec::new();
+    let witness = packed_converter_calibration_witness(&seed, &input);
+    assert!(rows.is_empty());
+    let mut awaiting = Machine::new(None);
+    let Outcome::Request(request) = awaiting.run(&factory) else {
+        panic!("composite factory request");
+    };
+    let expected =
+        packed_converter_calibration_result(&factory, &request, "make");
+    assert!(
+        matches!(&expected, fipe::ir::Type::Packed(parts) if parts.len() == 2 && parts.contains(&input)),
+        "actual Packed alternatives: {expected:?}"
+    );
+    assert_eq!(
+        awaiting.pending_resource_type(),
+        Err(ResourceError::NotResourceResult)
+    );
+    assert!(
+        rows.is_empty(),
+        "nothing acquired before pending composite call"
+    );
+    eprintln!("converter calibration: input={input:?}, factory expected={expected:?}, entries_before={}", rows.len());
+    let frozen_meanings = factory.tables.borrow().meanings.clone();
+    // Calibration exception only: full projection replaces this direct witness.
+    let fresh = packed_converter_calibration_new_entry(&witness, &mut rows);
+    assert_eq!(rows.len(), 1);
+    let packed = packed_converter_calibration_wrap(
+        &converter, &factory, &input, &expected, &fresh,
+    );
+    assert_eq!(
+        factory.tables.borrow().meanings,
+        frozen_meanings,
+        "no nominal declarations/layouts introduced after capture"
+    );
+    let outcome = awaiting
+        .reply(&factory, Reply::Value(Ok(Value::Packed(packed.clone()))));
+    let Outcome::Done(Ok(Value::Packed(returned))) = outcome else {
+        panic!("frozen actual reply admission: {outcome:?}");
+    };
+    assert!(Rc::ptr_eq(&returned, &packed));
+    assert_eq!(returned.value(), &fresh);
+    assert_eq!(
+        rows,
+        vec![vec![vec!["new converter private payload".to_owned()]]]
+    );
+    assert!(awaiting.charged() > 0);
+    eprintln!(
+        "fresh checked Packed accepted: entries={}, factory_charged={}",
+        rows.len(),
+        awaiting.charged()
+    );
+}
+
+const PROJECTION_ENVELOPE_HEADER: &str = "pub type resource Rd<T>\npub type Envelope<T> { pub value: T }\npub make: () -> Envelope<Rd<a>>";
+const PROJECTION_ENVELOPE_SOURCE: &str =
+    "use csv\nvalue: csv.Envelope<csv.Rd<Integer>> = csv.make ()\nvalue";
+
+fn projection_named(program: &fipe::mir::Program, label: &str) -> usize {
+    let tables = program.tables.borrow();
+    tables
+        .meanings
+        .iter()
+        .position(|meaning| {
+            meaning.label == label
+                && tables.namespaces[meaning.namespace] == "csv"
+        })
+        .unwrap()
+}
+fn projection_request(
+    machine: &mut Machine,
+    program: &fipe::mir::Program,
+    label: &str,
+) {
+    let Outcome::Request(fipe::embed::Request::Call { declaration, .. }) =
+        machine.run(program)
+    else {
+        panic!("pending {label}");
+    };
+    let joined = machine.program().unwrap();
+    let tables = joined.tables.borrow();
+    assert_eq!(tables.declarations[declaration].label, label);
+    assert_eq!(
+        tables.namespaces[tables.declarations[declaration].namespace],
+        "csv"
+    );
+}
+fn projection_new(
+    witness: &ResourceType,
+    entries: &mut Vec<Vec<String>>,
+) -> Value {
+    assert!(
+        entries.is_empty(),
+        "no backend entry before projected witness"
+    );
+    entries.push(vec!["new projected private payload".into()]);
+    ResourceDomain::new().issue(witness, Rc::from(&b"new-projected-entry"[..]))
+}
+fn projection_record(
+    meaning: usize,
+    constructor: usize,
+    fields: Vec<Value>,
+) -> Value {
+    Value::Record(Rc::new(fipe::value::Record {
+        meaning,
+        constructor,
+        fields,
+    }))
+}
+const fn projection_envelope_path() -> [fipe::value::resource::ResourceStep; 1]
+{
+    [fipe::value::resource::ResourceStep::Field {
+        constructor: 0,
+        field: 0,
+    }]
+}
+
+#[test]
+fn resource_projection_generic_envelope_factory_uses_only_pending_witness() {
+    let program =
+        program(PROJECTION_ENVELOPE_HEADER, PROJECTION_ENVELOPE_SOURCE);
+    let envelope = projection_named(&program, "Envelope");
+    let mut machine = Machine::new(None);
+    let mut entries = Vec::new();
+    projection_request(&mut machine, &program, "make");
+    assert_eq!(
+        ResourceType::registered(&program.tables.borrow(), "csv", "Rd"),
+        Err(ResourceError::NotMonomorphic)
+    );
+    assert_eq!(
+        machine.pending_resource_type(),
+        Err(ResourceError::NotResourceResult)
+    );
+    let before = machine.charged();
+    let witness = machine
+        .pending_resource_type_at(&projection_envelope_path())
+        .unwrap();
+    assert!(machine.charged() > before);
+    assert!(entries.is_empty());
+    let value = projection_new(&witness, &mut entries);
+    let reply = projection_record(envelope, 0, vec![value]);
+    assert!(
+        matches!(machine.reply(&program, Reply::Value(Ok(reply.clone()))), Outcome::Done(Ok(returned)) if returned == reply)
+    );
+    assert_eq!(
+        entries,
+        vec![vec!["new projected private payload".to_owned()]]
+    );
+}
+
+#[test]
+fn resource_projection_fresh_packed_factory_has_no_seed_witness() {
+    use fipe::value::resource::ResourceStep;
+    let mut host = Declarations::new();
+    host.module(
+        "csv",
+        "pub type resource Rd<T>\npub make: () -> (Rd<a> | String)",
+    )
+    .unwrap();
+    let mut session = fipe::session::Session::new(host);
+    let converter =
+        session_program(&mut session, PACKED_CONVERTER_CALIBRATION_SOURCE);
+    let factory = session_program(
+        &mut session,
+        "use csv\nvalue: csv.Rd<Integer> | String = csv.make ()\nvalue",
+    );
+    assert!(Rc::ptr_eq(&converter.tables, &factory.tables));
+    assert!(factory
+        .tables
+        .borrow()
+        .declarations
+        .iter()
+        .all(|declaration| declaration.label != "seed"));
+    let input = packed_converter_calibration_input(&converter);
+    let expected = factory.bodies[factory.main].locals[0].ty.clone();
+    let caller = &factory.bodies[factory.main];
+    for block in &caller.blocks {
+        for statement in &block.statements {
+            if let fipe::mir::Statement::Assign(
+                dest,
+                fipe::mir::Rvalue::Pack { tag, .. },
+            ) = statement
+            {
+                eprintln!(
+                    "caller checked re-pack source={tag:?}, target={:?}",
+                    caller.locals[*dest].ty
+                );
+            }
+        }
+    }
+    assert!(
+        matches!(&expected, fipe::ir::Type::Packed(parts) if parts.first() == Some(&input))
+    );
+    let mut awaiting = Machine::new(None);
+    let mut entries = Vec::new();
+    projection_request(&mut awaiting, &factory, "make");
+    assert_eq!(
+        awaiting.pending_resource_type(),
+        Err(ResourceError::NotResourceResult)
+    );
+    assert_eq!(
+        awaiting.pending_resource_type_at(&[ResourceStep::Packed(99)]),
+        Err(ResourceError::InvalidPath { step: 0 })
+    );
+    let witness = awaiting
+        .pending_resource_type_at(&[ResourceStep::Packed(0)])
+        .unwrap();
+    assert!(entries.is_empty());
+    let fresh = projection_new(&witness, &mut entries);
+    let packed = packed_converter_calibration_wrap(
+        &converter, &factory, &input, &expected, &fresh,
+    );
+    let result = awaiting
+        .reply(&factory, Reply::Value(Ok(Value::Packed(packed.clone()))));
+    let Outcome::Done(Ok(Value::Packed(returned))) = result else {
+        panic!("projected Packed reply must succeed");
+    };
+    assert!(
+        !Rc::ptr_eq(&returned, &packed),
+        "caller adds one checked wrapper"
+    );
+    assert_eq!(returned.source_type(), &expected);
+    assert_eq!(returned.target_type(), &expected);
+    let Value::Packed(inner) = returned.value() else {
+        panic!("exactly one caller re-pack");
+    };
+    assert!(
+        Rc::ptr_eq(inner, &packed),
+        "submitted checked Packed remains the inner owner"
+    );
+    assert_eq!(inner.source_type(), &input);
+    assert_eq!(inner.target_type(), &expected);
+    let Value::Resource(original) = &fresh else {
+        panic!("genuine new resource");
+    };
+    assert!(
+        matches!(inner.value(), Value::Resource(resource) if Rc::ptr_eq(resource, original) && resource.resource_type() == &witness)
+    );
+    assert_eq!(entries.len(), 1);
+}
+
+fn projection_container_reply(
+    program: &fipe::mir::Program,
+    kind: usize,
+    value: Value,
+) -> Value {
+    match kind {
+        0 => Value::Tuple(Rc::new(vec![Value::text("ordinary"), value])),
+        1 => projection_record(
+            projection_named(program, "Choice"),
+            0,
+            vec![value],
+        ),
+        2 | 3 => Value::Seq(Rc::new(vec![value])),
+        4 => Value::Seq(Rc::new(vec![value.clone(), value])),
+        _ => unreachable!("finite container cases"),
+    }
+}
+#[test]
+fn resource_projection_tuple_variant_vec_deque_and_array_factories() {
+    use fipe::value::resource::ResourceStep;
+    let cases = [
+        ("String * Rd<()>", ResourceStep::Tuple(1)),
+        (
+            "Choice<Rd<()>>",
+            ResourceStep::Field {
+                constructor: 0,
+                field: 0,
+            },
+        ),
+        ("Vec<Rd<(Integer * Bool)>>", ResourceStep::Element),
+        ("Deque<Rd<()>>", ResourceStep::Element),
+        ("[Rd<()>; 2]", ResourceStep::Element),
+    ];
+    for (kind, (result, step)) in cases.into_iter().enumerate() {
+        let header = format!("pub type resource Rd<T>\npub type Choice<T> {{ Created(value:T), Empty }}\npub get: {result}");
+        let program = program(&header, "use csv\ncsv.get");
+        let mut machine = Machine::new(None);
+        let mut entries = Vec::new();
+        projection_request(&mut machine, &program, "get");
+        let witness = machine.pending_resource_type_at(&[step]).unwrap();
+        assert!(entries.is_empty());
+        let fresh = projection_new(&witness, &mut entries);
+        let reply = projection_container_reply(&program, kind, fresh);
+        assert!(
+            matches!(machine.reply(&program, Reply::Value(Ok(reply.clone()))), Outcome::Done(Ok(value)) if value == reply),
+            "{result}"
+        );
+        assert_eq!(entries.len(), 1);
+    }
+}
+
+#[test]
+fn resource_projection_invalid_paths_keep_call_and_backend_untouched() {
+    use fipe::value::resource::ResourceStep::{Element, Field, Packed, Tuple};
+    let header = "pub type resource Rd<T>\npub type Envelope<T> { pub value:T }\npub type Choice<T> { Created(value:T), Empty }\npub type Token\npub get: Rd<()> * Envelope<Rd<()>> * Choice<Rd<()>> * Vec<Rd<()>> * [Rd<()>;0] * String * (() -> Rd<()>) * Token";
+    let program = program(header, "use csv\ncsv.get");
+    let mut machine = Machine::new(None);
+    projection_request(&mut machine, &program, "get");
+    let entries: Vec<Vec<String>> = Vec::new();
+    for (path, bad) in [
+        (vec![Tuple(99)], 0),
+        (vec![Packed(0)], 0),
+        (vec![Element], 0),
+        (
+            vec![
+                Tuple(0),
+                Field {
+                    constructor: 0,
+                    field: 0,
+                },
+            ],
+            1,
+        ),
+        (
+            vec![
+                Tuple(1),
+                Field {
+                    constructor: 0,
+                    field: 99,
+                },
+            ],
+            1,
+        ),
+        (
+            vec![
+                Tuple(2),
+                Field {
+                    constructor: 99,
+                    field: 0,
+                },
+            ],
+            1,
+        ),
+        (vec![Tuple(4), Element], 1),
+        (vec![Tuple(6), Tuple(0)], 1),
+        (
+            vec![
+                Tuple(7),
+                Field {
+                    constructor: 0,
+                    field: 0,
+                },
+            ],
+            1,
+        ),
+    ] {
+        assert_eq!(
+            machine.pending_resource_type_at(&path),
+            Err(ResourceError::InvalidPath { step: bad })
+        );
+        assert!(entries.is_empty());
+    }
+    for path in [vec![], vec![Tuple(5)], vec![Tuple(7)]] {
+        assert_eq!(
+            machine.pending_resource_type_at(&path),
+            Err(ResourceError::NotResourceResult)
+        );
+    }
+    assert!(
+        machine
+            .pending_resource_type_at(&[
+                Tuple(1),
+                Field {
+                    constructor: 0,
+                    field: 0
+                }
+            ])
+            .is_ok(),
+        "corrected retry still owns Call"
+    );
+    assert!(machine.abandon());
+    assert_eq!(
+        machine.pending_resource_type_at(&[Tuple(0)]),
+        Err(ResourceError::NoPendingCall)
+    );
+}
+
+fn projection_function_free_shape(header: &str, program: &fipe::mir::Program) {
+    let mut declared = Declarations::new();
+    declared.module("csv", header).unwrap();
+    let namespace = declared.get_module("csv").unwrap();
+    let get = namespace
+        .values
+        .iter()
+        .find(|value| value.name == "get")
+        .unwrap();
+    let fipe::decl::Kind::Function { spots, result, .. } = &get.kind else {
+        panic!("one declared input");
+    };
+    assert_eq!(spots.len(), 1);
+    assert!(
+        matches!(&namespace.module.ty(*result).unwrap().kind, fipe::ast::TypeKind::Named { name, arguments } if name.segments == ["a"] && arguments.is_empty())
+    );
+    assert!(
+        matches!(
+            &program.bodies[program.main].locals[0].ty,
+            fipe::ir::Type::Function { .. }
+        ),
+        "whole Function caller result"
+    );
+}
+
+#[test]
+fn resource_projection_proven_free_precedence_matches_ordinary_fastpath() {
+    use fipe::value::resource::ResourceStep::Tuple;
+    for materialized in [false, true] {
+        let header = if materialized {
+            "pub type resource Rd<T>\npub get: String * Integer"
+        } else {
+            "pub get: String * Integer"
+        };
+        let source = if materialized {
+            "use csv\nkeep: csv.Rd<()> -> csv.Rd<()> = x=>x\ncsv.get"
+        } else {
+            "use csv\ncsv.get"
+        };
+        let program = program(header, source);
+        let mut machine = Machine::new(None);
+        assert_eq!(program.tables.borrow().has_resources, materialized);
+        projection_request(&mut machine, &program, "get");
+        let before = machine.charged();
+        assert_eq!(
+            machine.pending_resource_type_at(&[Tuple(99)]),
+            Err(ResourceError::NotResourceResult)
+        );
+        assert_eq!(machine.charged(), before);
+        assert!(machine.abandon());
+    }
+    for result in ["[Rd<()>;0]", "() -> Rd<()>", "a", "Token"] {
+        let header = if result == "() -> Rd<()>" {
+            "pub type resource Rd<T>\npub type Token\npub get: () -> a"
+                .to_owned()
+        } else {
+            format!("pub type resource Rd<T>\npub type Token\npub get: () -> ({result})")
+        };
+        let source = if result == "() -> Rd<()>" {
+            "use csv\nkeep: csv.Rd<()> -> csv.Rd<()> = x=>x\nvalue: () -> csv.Rd<()> = csv.get ()\nvalue"
+        } else {
+            "use csv\nkeep: csv.Rd<()> -> csv.Rd<()> = x=>x\ncsv.get ()"
+        };
+        let program = program(&header, source);
+        if result == "() -> Rd<()>" {
+            projection_function_free_shape(&header, &program);
+        }
+        let mut machine = Machine::new(None);
+        projection_request(&mut machine, &program, "get");
+        let before = machine.charged();
+        assert_eq!(
+            machine.pending_resource_type_at(&[Tuple(0)]),
+            Err(ResourceError::NotResourceResult),
+            "{result}"
+        );
+        assert_eq!(machine.charged(), before);
+        assert!(machine.abandon());
+    }
+}
+
+#[test]
+fn resource_projection_recursive_paths_change_all_generic_arguments() {
+    use fipe::value::resource::ResourceStep::Field;
+    let program = program("pub type resource Rd<T>\npub type N<T> { Leaf(value:Rd<T>), Next(value:N<Vec<T>>) }\npub get: N<()>", "use csv\ncsv.get");
+    let nominal = projection_named(&program, "N");
+    let mut machine = Machine::new(None);
+    projection_request(&mut machine, &program, "get");
+    let shallow = machine
+        .pending_resource_type_at(&[Field {
+            constructor: 0,
+            field: 0,
+        }])
+        .unwrap();
+    let deep = machine
+        .pending_resource_type_at(&[
+            Field {
+                constructor: 1,
+                field: 0,
+            },
+            Field {
+                constructor: 0,
+                field: 0,
+            },
+        ])
+        .unwrap();
+    assert_ne!(shallow, deep);
+    let mut entries = Vec::new();
+    let fresh = projection_new(&deep, &mut entries);
+    let reply = projection_record(
+        nominal,
+        1,
+        vec![projection_record(nominal, 0, vec![fresh])],
+    );
+    assert!(
+        matches!(machine.reply(&program, Reply::Value(Ok(reply.clone()))), Outcome::Done(Ok(value)) if value == reply)
+    );
+    let mut wrong = Machine::new(None);
+    projection_request(&mut wrong, &program, "get");
+    let mut bad_entries = Vec::new();
+    let bad = projection_new(&shallow, &mut bad_entries);
+    let reply = projection_record(
+        nominal,
+        1,
+        vec![projection_record(nominal, 0, vec![bad])],
+    );
+    assert!(matches!(
+        wrong.reply(&program, Reply::Value(Ok(reply))),
+        Outcome::Done(Err(_))
+    ));
+}
+
+#[test]
+fn resource_projection_snapshot_and_context_identity_are_frozen() {
+    let first = program(PROJECTION_ENVELOPE_HEADER, PROJECTION_ENVELOPE_SOURCE);
+    let envelope = projection_named(&first, "Envelope");
+    let rd = projection_named(&first, "Rd");
+    let mut machine = Machine::new(None);
+    projection_request(&mut machine, &first, "make");
+    let witness = machine
+        .pending_resource_type_at(&projection_envelope_path())
+        .unwrap();
+    {
+        let mut tables = first.tables.borrow_mut();
+        tables.meanings[envelope].constructors[0].fields[0].ty =
+            fipe::ir::Type::Unit;
+        tables.meanings[rd].resource = false;
+    }
+    assert_eq!(
+        machine
+            .pending_resource_type_at(&projection_envelope_path())
+            .unwrap(),
+        witness
+    );
+    let mut entries = Vec::new();
+    let fresh = projection_new(&witness, &mut entries);
+    let reply = projection_record(envelope, 0, vec![fresh.clone()]);
+    assert!(matches!(
+        machine.reply(&first, Reply::Value(Ok(reply))),
+        Outcome::Done(Ok(_))
+    ));
+    let second =
+        program(PROJECTION_ENVELOPE_HEADER, PROJECTION_ENVELOPE_SOURCE);
+    let mut other = Machine::new(None);
+    projection_request(&mut other, &second, "make");
+    let next = other
+        .pending_resource_type_at(&projection_envelope_path())
+        .unwrap();
+    assert_ne!(
+        witness, next,
+        "same labels/indices in a fresh context are not stamps"
+    );
+    let reply = projection_record(
+        projection_named(&second, "Envelope"),
+        0,
+        vec![fresh],
+    );
+    assert!(matches!(
+        other.reply(&second, Reply::Value(Ok(reply))),
+        Outcome::Done(Err(_))
+    ));
+}
+
+fn projection_budget_program() -> fipe::mir::Program {
+    program(&format!("{PROJECTION_ENVELOPE_HEADER}\npub after: () -> Integer"), "use csv\nvalue: csv.Envelope<csv.Rd<Integer>> = csv.make ()\ncsv.after ()")
+}
+fn projection_budget_measure(
+    program: &fipe::mir::Program,
+) -> (u64, u64, fipe::vm::Fault) {
+    let mut warm = Machine::new(None);
+    projection_request(&mut warm, program, "make");
+    assert!(warm.abandon());
+    let mut machine = Machine::new(None);
+    projection_request(&mut machine, program, "make");
+    let before = machine.charged();
+    machine
+        .pending_resource_type_at(&projection_envelope_path())
+        .unwrap();
+    let after = machine.charged();
+    assert!(after > before);
+    let Outcome::Done(Err(site)) = machine
+        .reply(program, Reply::Value(Err("capture original site".into())))
+    else {
+        panic!("Host error must stop before after");
+    };
+    (before, after, site)
+}
+fn projection_latched(machine: &mut Machine, allowance: u64) {
+    assert_eq!(
+        machine.pending_resource_type_at(&projection_envelope_path()),
+        Err(ResourceError::Budget)
+    );
+    assert_eq!(machine.charged(), allowance);
+    assert_eq!(machine.pending_resource_type(), Err(ResourceError::Budget));
+    assert_eq!(
+        machine.pending_resource_type_at(&[]),
+        Err(ResourceError::Budget)
+    );
+    machine.set_budget(None);
+    assert_eq!(
+        machine.pending_resource_type_at(&projection_envelope_path()),
+        Err(ResourceError::Budget)
+    );
+    assert_eq!(
+        machine.charged(),
+        allowance,
+        "latched retries do no work even after budget change"
+    );
+}
+fn projection_budget_reply(host_error: bool) -> Reply {
+    if host_error {
+        Reply::Value(Err("must not replace Budget".into()))
+    } else {
+        Reply::Value(Ok(Value::Unit))
+    }
+}
+fn projection_assert_budget(
+    fault: &fipe::vm::Fault,
+    original: &fipe::vm::Fault,
+) {
+    assert_eq!(fault.reason, fipe::value::Reason::Budget);
+    assert_eq!(fault.span, original.span);
+    assert_eq!(fault.namespace, original.namespace);
+}
+fn projection_healthy_retry(
+    machine: &mut Machine,
+    program: &fipe::mir::Program,
+) {
+    machine.set_budget(None);
+    projection_request(machine, program, "make");
+    let witness = machine
+        .pending_resource_type_at(&projection_envelope_path())
+        .unwrap();
+    let mut entries = Vec::new();
+    let value = projection_new(&witness, &mut entries);
+    let reply = projection_record(
+        projection_named(program, "Envelope"),
+        0,
+        vec![value],
+    );
+    let Outcome::Request(fipe::embed::Request::Call { declaration, .. }) =
+        machine.reply(program, Reply::Value(Ok(reply)))
+    else {
+        panic!("healthy retry reaches after only following admission");
+    };
+    assert_eq!(
+        machine.program().unwrap().tables.borrow().declarations[declaration]
+            .label,
+        "after"
+    );
+    assert_eq!(
+        machine.reply(program, Reply::Value(Ok(Value::Int(7)))),
+        Outcome::Done(Ok(Value::Int(7)))
+    );
+}
+
+#[test]
+fn resource_projection_direct_budget_latch_precedes_ok_and_host_error() {
+    let program = projection_budget_program();
+    let (before, after, site) = projection_budget_measure(&program);
+    for allowance in [before, after - 1] {
+        for host_error in [false, true] {
+            let mut machine = Machine::new(Some(allowance));
+            projection_request(&mut machine, &program, "make");
+            projection_latched(&mut machine, allowance);
+            let Outcome::Done(Err(fault)) =
+                machine.reply(&program, projection_budget_reply(host_error))
+            else {
+                panic!("exactly one direct Budget, never after Request");
+            };
+            projection_assert_budget(&fault, &site);
+            assert_eq!(machine.charged(), allowance);
+            assert_eq!(
+                machine.pending_resource_type(),
+                Err(ResourceError::NoPendingCall)
+            );
+            assert!(!machine.abandon());
+            projection_healthy_retry(&mut machine, &program);
+        }
+    }
+}
+fn projection_step_request(
+    machine: &mut Machine,
+    program: &fipe::mir::Program,
+) {
+    machine.begin(program);
+    loop {
+        match machine.next_stop() {
+            fipe::vm::Stop::Before(_) | fipe::vm::Stop::After(_, _) => {}
+            fipe::vm::Stop::Request(fipe::embed::Request::Call {
+                declaration,
+                ..
+            }) => {
+                assert_eq!(
+                    machine.program().unwrap().tables.borrow().declarations
+                        [declaration]
+                        .label,
+                    "make"
+                );
+                return;
+            }
+            other => panic!("first stepped pending factory: {other:?}"),
+        }
+    }
+}
+#[test]
+fn resource_projection_stepped_budget_queues_one_original_site_terminal() {
+    let program = projection_budget_program();
+    let (before, after, site) = projection_budget_measure(&program);
+    for allowance in [before, after - 1] {
+        for host_error in [false, true] {
+            let mut machine = Machine::new(Some(allowance));
+            projection_step_request(&mut machine, &program);
+            projection_latched(&mut machine, allowance);
+            machine.answer(projection_budget_reply(host_error));
+            let fipe::vm::Stop::Done(Err(fault)) = machine.next_stop() else {
+                panic!("one queued Budget, no resumed body/provider stop");
+            };
+            projection_assert_budget(&fault, &site);
+            assert_eq!(machine.charged(), allowance);
+            assert!(machine.frames().is_empty());
+            assert!(!machine.abandon());
+            assert_eq!(
+                machine.pending_resource_type_at(&[]),
+                Err(ResourceError::NoPendingCall)
+            );
+            projection_healthy_retry(&mut machine, &program);
+        }
+    }
+}
+#[test]
+fn resource_projection_invalid_retry_and_latched_abandon_preserve_meter_order()
+{
+    use fipe::value::resource::ResourceStep::Tuple;
+    let program = projection_budget_program();
+    let (before, _, _) = projection_budget_measure(&program);
+    let mut healthy = Machine::new(None);
+    projection_request(&mut healthy, &program, "make");
+    assert_eq!(
+        healthy.pending_resource_type_at(&[Tuple(0)]),
+        Err(ResourceError::InvalidPath { step: 0 })
+    );
+    assert_eq!(
+        healthy.charged(),
+        before + 1,
+        "step inspection pays before invalid kind"
+    );
+    assert!(healthy
+        .pending_resource_type_at(&projection_envelope_path())
+        .is_ok());
+    assert!(healthy.abandon());
+    for stepped in [false, true] {
+        let mut machine = Machine::new(Some(before));
+        if stepped {
+            projection_step_request(&mut machine, &program);
+        } else {
+            projection_request(&mut machine, &program, "make");
+        }
+        projection_latched(&mut machine, before);
+        assert!(machine.abandon());
+        assert!(!machine.abandon());
+        assert_eq!(
+            machine.pending_resource_type_at(&[]),
+            Err(ResourceError::NoPendingCall)
+        );
+        projection_healthy_retry(&mut machine, &program);
+    }
+}
+
+#[test]
+fn resource_projection_required_unknown_identity_refuses_before_request() {
+    let program = program(
+        "pub type resource Rd<T>\npub get: Rd<a>",
+        "use csv\ncsv.get",
+    );
+    let mut machine = Machine::new(None);
+    let outcome = machine.run(&program);
+    assert!(
+        matches!(outcome, Outcome::Done(Err(fipe::vm::Fault { reason:fipe::value::Reason::Host(ref message), .. })) if message == "nonconcrete resource identity")
+    );
+    assert_eq!(
+        machine.pending_resource_type_at(&[]),
+        Err(ResourceError::NoPendingCall)
+    );
+}
+
+#[test]
+fn resource_projection_cached_root_and_exact_path_budget_do_not_overcharge() {
+    let direct = program(
+        "pub type resource Rd<T>\npub get: Rd<()>",
+        "use csv\ncsv.get",
+    );
+    let mut machine = Machine::new(None);
+    assert_eq!(
+        machine.pending_resource_type_at(&[]),
+        Err(ResourceError::NoPendingCall)
+    );
+    assert_eq!(machine.charged(), 0);
+    projection_request(&mut machine, &direct, "get");
+    let before = machine.charged();
+    assert_eq!(
+        machine.pending_resource_type_at(&[]),
+        machine.pending_resource_type()
+    );
+    assert_eq!(machine.charged(), before);
+    assert!(machine.abandon());
+    let composite = projection_budget_program();
+    let (_, after, _) = projection_budget_measure(&composite);
+    let mut exact = Machine::new(Some(after));
+    projection_request(&mut exact, &composite, "make");
+    assert!(exact
+        .pending_resource_type_at(&projection_envelope_path())
+        .is_ok());
+    assert_eq!(exact.charged(), after);
+    assert!(exact.abandon());
+}
+
+const PROJECTION_IMPORTED_SOURCE: &str =
+    "use tags\nx: csv.Envelope<csv.Rd<tags.Mark>> = csv.open ()\nx";
+fn projection_import(
+    session: &mut fipe::session::Session,
+    text: &str,
+) -> (fipe::mir::Program, fipe::session::Accepted) {
+    assert!(
+        matches!(session.line(PROJECTION_IMPORTED_SOURCE), Outcome::Request(fipe::embed::Request::File { ref stem }) if stem == "tags")
+    );
+    let Outcome::Done(report) = session.reply(Reply::File(Some(text.into())))
+    else {
+        panic!("metadata import finishes");
+    };
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    (
+        compile::compile(report.unit.as_ref().unwrap()),
+        report.accepted.unwrap(),
+    )
+}
+fn projection_tag_index(program: &fipe::mir::Program) -> usize {
+    let tables = program.tables.borrow();
+    tables
+        .meanings
+        .iter()
+        .position(|meaning| {
+            meaning.label == "Mark"
+                && tables.namespaces[meaning.namespace] == "tags"
+        })
+        .unwrap()
+}
+fn projection_retained_unit_reply(
+    machine: &mut Machine,
+    program: &fipe::mir::Program,
+    witness: &ResourceType,
+    alias: &Value,
+) {
+    projection_request(machine, program, "base");
+    assert_eq!(
+        machine
+            .pending_resource_type_at(&projection_envelope_path())
+            .unwrap(),
+        *witness
+    );
+    let reply = projection_record(
+        projection_named(program, "Envelope"),
+        0,
+        vec![alias.clone()],
+    );
+    assert!(matches!(
+        machine.reply(program, Reply::Value(Ok(reply))),
+        Outcome::Done(Ok(_))
+    ));
+}
+#[test]
+fn resource_projection_retired_argument_index_cannot_rebind_old_witness() {
+    let mut host = Declarations::new();
+    host.module("csv", "pub type resource Rd<T>\npub type Envelope<T> { pub value:T }\npub base: Envelope<Rd<()>>\npub open: () -> Envelope<Rd<a>>").unwrap();
+    let mut session = fipe::session::Session::new(host);
+    let mut machine = Machine::new(None);
+    let base = session_program(&mut session, "use csv\ncsv.base");
+    projection_request(&mut machine, &base, "base");
+    let retained = machine
+        .pending_resource_type_at(&projection_envelope_path())
+        .unwrap();
+    let mut entries = Vec::new();
+    let alias = projection_new(&retained, &mut entries);
+    let reply = projection_record(
+        projection_named(&base, "Envelope"),
+        0,
+        vec![alias.clone()],
+    );
+    assert!(matches!(
+        machine.reply(&base, Reply::Value(Ok(reply))),
+        Outcome::Done(Ok(_))
+    ));
+    let (removed, accepted) =
+        projection_import(&mut session, "pub type Mark {}");
+    let removed_index = projection_tag_index(&removed);
+    projection_request(&mut machine, &removed, "open");
+    let previous = machine
+        .pending_resource_type_at(&projection_envelope_path())
+        .unwrap();
+    let mut removed_entries = Vec::new();
+    let retired = projection_new(&previous, &mut removed_entries);
+    assert!(machine.abandon());
+    let withdrawn = session.withdraw(accepted).unwrap();
+    machine.withdraw(&withdrawn);
+    let healthy = session_program(&mut session, "csv.base");
+    projection_retained_unit_reply(&mut machine, &healthy, &retained, &alias);
+    let (replacement, _) =
+        projection_import(&mut session, "pub type Mark { Next }");
+    assert_eq!(
+        projection_tag_index(&replacement),
+        removed_index,
+        "actual nominal index reuse"
+    );
+    projection_request(&mut machine, &replacement, "open");
+    assert_ne!(
+        machine
+            .pending_resource_type_at(&projection_envelope_path())
+            .unwrap(),
+        previous
+    );
+    let reply = projection_record(
+        projection_named(&replacement, "Envelope"),
+        0,
+        vec![retired],
+    );
+    assert!(matches!(
+        machine.reply(&replacement, Reply::Value(Ok(reply))),
+        Outcome::Done(Err(_))
+    ));
+}
