@@ -35,7 +35,6 @@ jobs:
         shell: bash
     env:
       CI_EXPECTED_HOST: ${{ matrix.host }}
-      CARGO_TARGET_DIR: ${{ runner.temp }}/fipe-target
       CARGO_TERM_COLOR: never
       RUSTC_WRAPPER: ''
       FIPE_CLANG: clang-23
@@ -64,6 +63,8 @@ jobs:
           dpkg-query -W clang-23
           clang-23 --version
       - name: Run checks and retain log
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/fipe-target
         run: |
           mkdir -p "$RUNNER_TEMP/fipe-ci-logs"
           bash scripts/ci.sh '${{ matrix.mode }}' '${{ matrix.profile }}' 2>&1 | tee "$RUNNER_TEMP/fipe-ci-logs/checks.log"
@@ -86,7 +87,6 @@ jobs:
         shell: bash
     env:
       CI_EXPECTED_HOST: x86_64-unknown-linux-gnu
-      CARGO_TARGET_DIR: ${{ runner.temp }}/fipe-target
       RUSTC_WRAPPER: ''
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -95,6 +95,8 @@ jobs:
       - name: Install selected Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal
       - name: Verify packages
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/fipe-target
         run: |
           mkdir -p "$RUNNER_TEMP/fipe-ci-logs"
           bash scripts/ci.sh package 2>&1 | tee "$RUNNER_TEMP/fipe-ci-logs/package.log"
