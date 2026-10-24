@@ -226,6 +226,9 @@ impl<'a> Builder<'_, 'a> {
         let ty = &self.tables().nodes[node].ty;
         let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
         let outcome = self.lower(value);
+        // Rebuild sites retain the original binding span; good-side patterns
+        // lower to Side or bundled Prelude Just/Ok's single payload field.
+        // A compound payload stays inside that field.
         let (constructor, payload) = match &pattern.kind {
             ir::PatternKind::Side { good, payload } => {
                 let (good_side, bad_side) =
@@ -237,9 +240,9 @@ impl<'a> Builder<'_, 'a> {
             } => match parts.as_slice() {
                 [] => (*constructor, None),
                 [part] => (*constructor, Some(part)),
-                _ => todo!("a lift pattern with several parts"),
+                _ => unreachable!("checked lift constructor has at most one payload field"),
             },
-            other => todo!("a lift pattern {other:?}"),
+            other => unreachable!("checked lift is an outcome side or Prelude Just/Ok constructor: {other:?}"),
         };
         let hit = self.open(node);
         let miss = self.open(node);

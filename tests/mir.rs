@@ -54,15 +54,19 @@ const STRAIGHT_LINES: &[&str] = &[
     "type Box: TryFrom<Integer, String> { value: Integer }\nimpl Box: TryFrom<Integer, String> { try_from = n => Ok (Self n) }\n1 | to<Box>",
 ];
 
-fn program(source: &str) -> (ir::Unit, mir::Program) {
+fn checked(source: &str) -> ir::Unit {
     let module = parse(lex(source)).unwrap();
-    let unit = check::check(
+    check::check(
         &module,
         &Declarations::new(),
         &[],
         check::Options::default(),
     )
-    .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
+    .unwrap_or_else(|errors| panic!("{source}: {errors:?}"))
+}
+
+fn program(source: &str) -> (ir::Unit, mir::Program) {
+    let unit = checked(source);
     let program = compile::compile(&unit);
     (unit, program)
 }
@@ -2538,4 +2542,92 @@ fn member_callable_contract_metadata_keeps_declared_places_separate_from_meaning
         );
         let _ = compile::compile(&unit);
     }
+}
+
+fn assert_checked_lift_patterns(unit: &ir::Unit, origin: &str) {
+    let tables = unit.tables();
+    let mut source_lifts = 0;
+    for (index, node) in tables.nodes.iter().enumerate() {
+        let ir::Kind::Lift { pattern, .. } = &node.kind else {
+            continue;
+        };
+        match &pattern.kind {
+            ir::PatternKind::Side { .. } => {}
+            ir::PatternKind::Constructor {
+                meaning,
+                constructor,
+                parts,
+            } => {
+                let owner = &tables.meanings[*meaning];
+                let constructor = &owner.constructors[*constructor];
+                assert_eq!(tables.namespaces[owner.namespace], "prelude");
+                assert!(matches!(
+                    (owner.label.as_str(), constructor.label.as_str()),
+                    ("Maybe", "Just") | ("Result", "Ok")
+                ));
+                assert_eq!(constructor.fields.len(), 1);
+                assert_eq!(
+                    parts.len(),
+                    1,
+                    "compound payload is one outer part"
+                );
+            }
+            other => panic!("unsupported checked Lift pattern: {other:?}"),
+        }
+        if tables.namespaces[node.namespace] == origin
+            && !tables.prepared.contains_key(&index)
+        {
+            source_lifts += 1;
+        }
+    }
+    assert!(
+        source_lifts > 0,
+        "unprepared Lift in actual source {origin}"
+    );
+}
+
+#[test]
+fn checked_lifts_have_supported_outer_patterns() {
+    for source in [
+        "Just x = Just 3\nx + 1",
+        "[:x] = Just 3\nx * 2",
+        "r: Result<Integer, String> = Err \"e\"\nOk x = r\nx + 1",
+        "Just (a, b) = Just (3, 4)\na + b",
+        "(Just x) = Just 3\nx + 1",
+        "((Just (a, b))) = Just (3, 4)\na + b",
+        "f: Maybe<Integer> -> Maybe<Integer> = m => {\n    Just x = m\n    Just (x + 1)\n}\n(f Nothing, f (Just 1))",
+    ] {
+        let unit = checked(source);
+        assert_checked_lift_patterns(&unit, "main");
+        let _ = compile::compile(&unit);
+    }
+}
+
+#[test]
+fn checked_lifts_keep_file_and_session_source_patterns() {
+    let module = parse(lex(
+        "use liftfile\n(liftfile.f Nothing, liftfile.f (Just 1))",
+    ))
+    .unwrap();
+    let file = parse(lex("pub f: Maybe<Integer> -> Maybe<Integer> = m => {\n    Just x = m\n    Just (x + 1)\n}\n")).unwrap();
+    let unit = check::check(
+        &module,
+        &Declarations::new(),
+        &[(String::from("liftfile"), file)],
+        check::Options::default(),
+    )
+    .unwrap();
+    assert_checked_lift_patterns(&unit, "liftfile");
+    let _ = compile::compile(&unit);
+    let mut session = fipe::session::Session::new(Declarations::new());
+    let fipe::embed::Outcome::Done(report) =
+        session.line("Just x = Just 1\ny = x + 1\ny")
+    else {
+        panic!("pure checked Session line")
+    };
+    assert!(report.diagnostics.is_empty());
+    assert!(report.accepted.is_some());
+    let unit = report.unit.as_ref().unwrap();
+    assert_checked_lift_patterns(unit, "line 1");
+    let _ = compile::compile(unit);
 }

@@ -55,3 +55,16 @@ fn a_lines_pattern_names_serve_later_lines() {
         ["()", "()", "3"]
     );
 }
+
+#[test]
+fn grouped_lifts_preserve_hits_and_misses() {
+    assert_eq!(shown("(Just x) = Just 3\nx + 1"), "Just 4");
+    assert_eq!(shown("(Just x) = Nothing\nx + 1"), "Nothing");
+    assert_eq!(shown("((Just (a, b))) = Just (3, 4)\na + b"), "Just 7");
+    assert_eq!(
+        shown(
+            "n: Maybe<Integer * Integer> = Nothing\n((Just (a, b))) = n\na + b"
+        ),
+        "Nothing"
+    );
+}
