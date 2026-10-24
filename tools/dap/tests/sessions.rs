@@ -15,8 +15,9 @@ mod common;
 
 use common::{expected, root};
 
-fn substituted(text: &str) -> String {
-    text.replace("${ROOT}", root().to_str().unwrap())
+fn substituted(text: &str, root: &str) -> String {
+    let encoded = serde_json::to_string(root).unwrap();
+    text.replace("${ROOT}", &encoded[1..encoded.len() - 1])
 }
 
 /// The scripted session `tests/sessions/<name>.json`.
@@ -24,8 +25,11 @@ fn script(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/sessions")
         .join(format!("{name}.json"));
-    serde_json::from_str(&substituted(&std::fs::read_to_string(path).unwrap()))
-        .unwrap()
+    serde_json::from_str(&substituted(
+        &std::fs::read_to_string(path).unwrap(),
+        root().to_str().unwrap(),
+    ))
+    .unwrap()
 }
 
 /// Every message the session sends for `requests`, in order.
@@ -607,4 +611,15 @@ fn no_arguments_and_eof_still_exit_cleanly() {
     assert_eq!(output.status.code(), Some(0));
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn scripted_json_escapes_windows_root_paths_without_changing_them() {
+    let root = r#"C:\Users\名\a"quoted""#;
+    let fixture =
+        r#"{"program":"${ROOT}/main.fipe","outputs":"trace of ${ROOT}"}"#;
+    let decoded: Value =
+        serde_json::from_str(&substituted(fixture, root)).unwrap();
+    assert_eq!(decoded["program"], format!("{root}/main.fipe"));
+    assert_eq!(decoded["outputs"], format!("trace of {root}"));
 }
