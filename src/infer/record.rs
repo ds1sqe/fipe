@@ -82,7 +82,9 @@ impl Infer<'_> {
                     }
                     let bases = self.shape_bases(&template, name, arguments);
                     pending.extend(bases.iter().cloned());
+                    let resource = self.resource(&template);
                     shapes.push(Shape {
+                        resource,
                         ty: template,
                         bases,
                         constructors,
@@ -437,9 +439,10 @@ impl Infer<'_> {
     }
 }
 
-pub(super) fn apply_bound(
+pub(super) fn apply_bound_preserving(
     binding: &mut crate::typed::Bound,
     subst: &crate::types::Subst,
+    pending: &[alloc::rc::Rc<crate::typed::Typed>],
 ) {
     for (_, ty) in &mut binding.spots {
         *ty = subst.apply(ty);
@@ -448,13 +451,14 @@ pub(super) fn apply_bound(
         *ty = subst.apply(ty);
     }
     for (_, default) in &mut binding.defaults {
-        apply_default(default, subst);
+        apply_default_preserving(default, subst, pending);
     }
 }
 
-pub(super) fn apply_default(
+pub(super) fn apply_default_preserving(
     default: &mut DefaultValue,
     subst: &crate::types::Subst,
+    pending: &[alloc::rc::Rc<crate::typed::Typed>],
 ) {
     match default {
         DefaultValue::Type(ty) => *ty = subst.apply(ty),
@@ -473,26 +477,133 @@ pub(super) fn apply_default(
             *ty = subst.apply(ty);
             for (_, ty, value) in fields {
                 *ty = subst.apply(ty);
-                apply_default(value, subst);
+                apply_default_preserving(value, subst, pending);
             }
         }
         DefaultValue::Array { ty, element } => {
             *ty = subst.apply(ty);
-            apply_default(element, subst);
+            apply_default_preserving(element, subst, pending);
         }
         DefaultValue::Expression(instance) => {
-            **instance = apply_recorded(instance, subst);
+            **instance = apply_recorded_preserving(instance, subst, pending);
         }
         DefaultValue::Declared { .. } => (),
     }
 }
 
-pub(super) fn apply_recorded(
+pub(super) fn replace_recorded(
     instance: &crate::typed::DeclaredExpression,
-    subst: &crate::types::Subst,
+    replacements: &[(
+        alloc::rc::Rc<crate::typed::Typed>,
+        crate::typed::DeclaredExpression,
+    )],
 ) -> crate::typed::DeclaredExpression {
+    if let Some((_, finished)) = replacements
+        .iter()
+        .find(|(original, _)| alloc::rc::Rc::ptr_eq(original, &instance.typed))
+    {
+        return finished.clone();
+    }
     let mut instance = instance.clone();
     let typed = alloc::rc::Rc::make_mut(&mut instance.typed);
+    replace_typed(typed, replacements);
+    instance
+}
+/// Replace finalized default snapshots in an already completed owner tree.
+pub(super) fn replace_typed(
+    typed: &mut crate::typed::Typed,
+    replacements: &[(
+        alloc::rc::Rc<crate::typed::Typed>,
+        crate::typed::DeclaredExpression,
+    )],
+) {
+    for nested in typed
+        .default_instances
+        .values_mut()
+        .chain(&mut typed.declared)
+    {
+        *nested = replace_recorded(nested, replacements);
+    }
+    for default in typed.derived_defaults.values_mut() {
+        replace_default(default, replacements);
+    }
+    for step in typed.accesses.values_mut().flatten() {
+        if let Some(bound) = &mut step.bound {
+            replace_bound(bound, replacements);
+        }
+    }
+    for bound in typed.bound.values_mut() {
+        for (_, default) in &mut bound.defaults {
+            replace_default(default, replacements);
+        }
+    }
+    for field in typed
+        .shapes
+        .iter_mut()
+        .flat_map(|shape| &mut shape.constructors)
+        .flat_map(|c| &mut c.fields)
+    {
+        if let Some(default) = &mut field.default {
+            replace_default(default, replacements);
+        }
+    }
+}
+pub(super) fn replace_bound(
+    bound: &mut crate::typed::Bound,
+    replacements: &[(
+        alloc::rc::Rc<crate::typed::Typed>,
+        crate::typed::DeclaredExpression,
+    )],
+) {
+    for (_, default) in &mut bound.defaults {
+        replace_default(default, replacements);
+    }
+}
+pub(super) fn replace_default(
+    default: &mut DefaultValue,
+    replacements: &[(
+        alloc::rc::Rc<crate::typed::Typed>,
+        crate::typed::DeclaredExpression,
+    )],
+) {
+    match default {
+        DefaultValue::Expression(instance) => {
+            **instance = replace_recorded(instance, replacements);
+        }
+        DefaultValue::Record { fields, .. } => {
+            for (_, _, default) in fields {
+                replace_default(default, replacements);
+            }
+        }
+        DefaultValue::Array { element, .. } => {
+            replace_default(element, replacements);
+        }
+        _ => {}
+    }
+}
+
+fn apply_known(
+    known: &mut crate::limits::known::Known,
+    subst: &crate::types::Subst,
+) {
+    for (_, part) in &mut known.parts {
+        apply_known(part, subst);
+    }
+    if let Some(element) = &mut known.element {
+        apply_known(element, subst);
+    }
+    if let Some(function) = &mut known.function {
+        for ty in function.parameters.iter_mut().flatten() {
+            *ty = subst.apply(ty);
+        }
+        apply_known(&mut function.result, subst);
+    }
+}
+
+fn apply_recorded_facts(
+    typed: &mut crate::typed::Typed,
+    subst: &crate::types::Subst,
+) {
     for ty in typed
         .expressions
         .iter_mut()
@@ -515,6 +626,7 @@ pub(super) fn apply_recorded(
     }
     for (_, local) in &mut typed.frozen {
         local.scheme = super::bind::applied(&local.scheme, subst);
+        local.owner = local.owner.as_ref().map(|owner| subst.apply(owner));
     }
     for cast in typed.casts.iter_mut().flatten() {
         cast.from = subst.apply(&cast.from);
@@ -532,6 +644,7 @@ pub(super) fn apply_recorded(
     }
     for check in &mut typed.checks {
         check.target = check.target.as_ref().map(|ty| subst.apply(ty));
+        apply_known(&mut check.known, subst);
     }
     for comparison in typed.pattern_equals.values_mut() {
         *comparison = comparison.applied(subst);
@@ -539,14 +652,30 @@ pub(super) fn apply_recorded(
     for selected in typed.selected.values_mut() {
         *selected = selected.applied(subst);
     }
+}
+
+pub(super) fn apply_recorded_preserving(
+    instance: &crate::typed::DeclaredExpression,
+    subst: &crate::types::Subst,
+    pending: &[alloc::rc::Rc<crate::typed::Typed>],
+) -> crate::typed::DeclaredExpression {
+    if pending
+        .iter()
+        .any(|original| alloc::rc::Rc::ptr_eq(original, &instance.typed))
+    {
+        return instance.clone();
+    }
+    let mut instance = instance.clone();
+    let typed = alloc::rc::Rc::make_mut(&mut instance.typed);
+    apply_recorded_facts(typed, subst);
     for value in typed.derived_defaults.values_mut() {
-        apply_default(value, subst);
+        apply_default_preserving(value, subst, pending);
     }
     for binding in typed.bound.values_mut() {
-        apply_bound(binding, subst);
+        apply_bound_preserving(binding, subst, pending);
     }
     for step in typed.accesses.values_mut().flatten() {
-        *step = step.applied(subst);
+        *step = step.applied_preserving(subst, pending);
     }
     for root in typed.roots.values_mut() {
         *root = root.applied(subst);
@@ -559,7 +688,7 @@ pub(super) fn apply_recorded(
         for field in shape.constructors.iter_mut().flat_map(|c| &mut c.fields) {
             field.ty = subst.apply(&field.ty);
             if let Some(default) = &mut field.default {
-                apply_default(default, subst);
+                apply_default_preserving(default, subst, pending);
             }
         }
     }
@@ -584,7 +713,7 @@ pub(super) fn apply_recorded(
         .values_mut()
         .chain(&mut typed.declared)
     {
-        *nested = apply_recorded(nested, subst);
+        *nested = apply_recorded_preserving(nested, subst, pending);
     }
     instance
 }
@@ -602,15 +731,36 @@ impl Infer<'_> {
             .iter()
             .filter_map(|expr| match expr.kind {
                 ExprKind::Binary {
-                    operator, right, ..
-                } => Some(((operator.start, operator.end), right)),
+                    operator,
+                    left,
+                    right,
+                    ..
+                } => Some(((operator.start, operator.end), left, right)),
                 _ => None,
             })
             .collect();
-        for (site, right) in operators {
+        for (site, left, right) in operators {
             let Some(bound) = self.state.bound.get(&site) else {
                 continue;
             };
+            // A concrete self-only protocol returns a function which consumes
+            // the RHS. Its member-access binding may replace the earlier
+            // synthetic operator binding, so retain the surplus here, last.
+            let receiver_only = bound.spots.len() == 1
+                && bound.open.is_empty()
+                && bound.defaults.is_empty()
+                && bound.applied.is_empty()
+                && (matches!(bound.supplies.as_slice(), [(0, crate::typed::Supply::Expression(value))] if *value == left)
+                    || matches!(bound.supplies.as_slice(), [(0, crate::typed::Supply::Head(span))] if (span.start, span.end) == site));
+            if receiver_only {
+                let mut bound = bound.clone();
+                let ty = self.state.types[right.0]
+                    .as_ref()
+                    .expect("checked operator operand");
+                bound.applied.push((self.apply(ty), right));
+                self.insert(|s| &mut s.bound, site, bound);
+                continue;
+            }
             let [spot] = bound.open.as_slice() else {
                 continue;
             };
@@ -674,7 +824,11 @@ impl crate::typed::Root {
 }
 
 impl crate::typed::Access {
-    pub(super) fn applied(&self, subst: &crate::types::Subst) -> Self {
+    pub(super) fn applied_preserving(
+        &self,
+        subst: &crate::types::Subst,
+        pending: &[alloc::rc::Rc<crate::typed::Typed>],
+    ) -> Self {
         Self {
             head: subst.apply(&self.head),
             callee: subst.apply(&self.callee),
@@ -682,7 +836,7 @@ impl crate::typed::Access {
             selected: self.selected.applied(subst),
             meanings: self.meanings.iter().map(|ty| subst.apply(ty)).collect(),
             bound: self.bound.clone().map(|mut bound| {
-                apply_bound(&mut bound, subst);
+                apply_bound_preserving(&mut bound, subst, pending);
                 bound
             }),
         }
@@ -709,5 +863,110 @@ impl crate::typed::Comparison {
             meanings: self.meanings.iter().map(|ty| subst.apply(ty)).collect(),
             self_slot: self.self_slot,
         }
+    }
+}
+
+#[cfg(test)]
+mod pending_access_tests {
+    use crate::{
+        resolve::Origin,
+        typed::{
+            Access, Bound, DeclaredExpression, DefaultValue, Selected, Typed,
+        },
+        types::{Subst, Type},
+    };
+    use alloc::{rc::Rc, vec};
+
+    #[test]
+    fn intermediate_access_preserves_pending_identity_then_replaces_final_snapshot(
+    ) {
+        let module = crate::parse::parse(crate::lex::lex("7")).expect("module");
+        let resolved = Rc::new(
+            crate::resolve::resolve(
+                &module,
+                &crate::decl::Declarations::new(),
+                &[],
+            )
+            .expect("resolved"),
+        );
+        let crate::ast::Entry::Line(value) = module.entries[0] else {
+            panic!("expression")
+        };
+        let provisional = Rc::new(Typed::default());
+        let child = DeclaredExpression {
+            origin: Origin::This,
+            value,
+            resolved: Rc::clone(&resolved),
+            typed: Rc::clone(&provisional),
+        };
+        let access = Access {
+            head: Type::Unit,
+            callee: Type::Unit,
+            result: Type::Unit,
+            selected: Selected::Field {
+                head: Type::Unit,
+                index: 0,
+            },
+            meanings: vec![],
+            bound: Some(Bound {
+                defaults: vec![(
+                    0,
+                    DefaultValue::Expression(alloc::boxed::Box::new(
+                        child.clone(),
+                    )),
+                )],
+                ..Bound::default()
+            }),
+        };
+        let pending = [Rc::clone(&provisional)];
+        let access = access.applied_preserving(&Subst::default(), &pending);
+        let DefaultValue::Expression(kept) =
+            &access.bound.as_ref().expect("bound").defaults[0].1
+        else {
+            panic!("expression default")
+        };
+        assert!(Rc::ptr_eq(&kept.typed, &provisional));
+        let mut outer = Typed::default();
+        outer.accesses.insert((0, 1), vec![access]);
+        let outer = DeclaredExpression {
+            origin: Origin::This,
+            value,
+            resolved,
+            typed: Rc::new(outer),
+        };
+        let outer = super::apply_recorded_preserving(
+            &outer,
+            &Subst::default(),
+            &pending,
+        );
+        let DefaultValue::Expression(kept) = &outer.typed.accesses[&(0, 1)][0]
+            .bound
+            .as_ref()
+            .expect("bound")
+            .defaults[0]
+            .1
+        else {
+            panic!("nested expression")
+        };
+        assert!(Rc::ptr_eq(&kept.typed, &provisional));
+        let mut finished = child;
+        finished.typed = Rc::new(Typed {
+            main: Some(Type::Tuple(vec![Type::Unit])),
+            ..Typed::default()
+        });
+        let outer =
+            super::replace_recorded(&outer, &[(provisional, finished.clone())]);
+        let DefaultValue::Expression(replaced) = &outer.typed.accesses[&(0, 1)]
+            [0]
+        .bound
+        .as_ref()
+        .expect("bound")
+        .defaults[0]
+            .1
+        else {
+            panic!("completed expression")
+        };
+        assert!(Rc::ptr_eq(&replaced.typed, &finished.typed));
+        assert_eq!(replaced.typed.main, Some(Type::Tuple(vec![Type::Unit])));
     }
 }

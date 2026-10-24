@@ -212,6 +212,11 @@ macro_rules! append {
 }
 
 impl Store {
+    /// A fixed declaration-environment fact, not line-local runtime identity.
+    pub fn resources(&self, present: bool) {
+        self.tables.borrow_mut().has_resources = present;
+    }
+
     /// The tables, for reading.
     pub fn tables(&self) -> Ref<'_, ir::Tables> {
         self.tables.borrow()
@@ -401,6 +406,7 @@ impl Store {
         tables.namespaces.truncate(mark.namespaces);
         tables.keys.truncate(mark.keys);
         tables.meanings.truncate(mark.meanings);
+        tables.resource_cache.truncate(mark.meanings);
         tables.dispatch.truncate(mark.dispatch);
         tables.definitions.truncate(mark.definitions);
         tables.declarations.truncate(mark.declarations);

@@ -30,10 +30,12 @@ fn framed(messages: &[Value]) -> Vec<u8> {
 /// Serve raw `input`; whether the server was shut down, and every
 /// message it wrote.
 fn run(input: Vec<u8>) -> (bool, Vec<Value>) {
+    run_options(input, &Options::default())
+}
+
+fn run_options(input: Vec<u8>, options: &Options) -> (bool, Vec<Value>) {
     let mut output = Vec::new();
-    let clean =
-        serve(&mut Cursor::new(input), &mut output, &Options::default())
-            .unwrap();
+    let clean = serve(&mut Cursor::new(input), &mut output, options).unwrap();
     let mut read = Cursor::new(output);
     let mut replies = Vec::new();
     while let Some(message) = transport::read(&mut read).unwrap() {
@@ -249,5 +251,86 @@ fn a_change_to_a_used_file_republishes_the_documents_that_use_it() {
             .unwrap()
             .is_empty(),
         "{replies:?}"
+    );
+}
+
+#[test]
+fn invalid_host_options_leave_initialization_waiting_and_unmodified() {
+    for host in [
+        json!(null),
+        json!(false),
+        json!(1),
+        json!([]),
+        json!({}),
+        json!(""),
+    ] {
+        let bad = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"initializationOptions":{"host":host,"inlayHints":false},"capabilities":{"general":{"positionEncodings":["utf-8"]}}}});
+        let good =
+            json!({"jsonrpc":"2.0","id":3,"method":"initialize","params":{}});
+        let (_, replies) = run(framed(&[
+            bad,
+            request(2, "workspace/symbol"),
+            good,
+            shutdown_and_exit()[0].clone(),
+            shutdown_and_exit()[1].clone(),
+        ]));
+        assert_eq!(code(&replies, 1), -32602);
+        assert_eq!(code(&replies, 2), -32002);
+        let capabilities =
+            &replies.iter().find(|reply| reply["id"] == 3).unwrap()["result"]
+                ["capabilities"];
+        assert_eq!(capabilities["positionEncoding"], "utf-16");
+        assert_eq!(capabilities["inlayHintProvider"], true);
+    }
+}
+
+#[test]
+fn valid_override_replaces_bad_options_and_base_errors_precede_interfaces() {
+    let missing = root().join("missing-selected-host");
+    let mut bad = initialize();
+    bad["id"] = json!(1);
+    bad["params"]["initializationOptions"]["host"] = json!(missing);
+    bad["params"]["initializationOptions"]["interfaces"] =
+        json!([{"module":"missing","path":"/missing.fipi"}]);
+    let mut good = initialize();
+    good["id"] = json!(2);
+    let document = uri(&root().join("host-retry.fipe"));
+    let (_, replies) = run_options(
+        framed(&[
+            bad,
+            good,
+            json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":document,"languageId":"fipe","version":1,"text":"use config\nconfig."}}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":document},"position":{"line":1,"character":7}}}),
+            shutdown_and_exit()[0].clone(),
+            shutdown_and_exit()[1].clone(),
+        ]),
+        &Options {
+            host: Some(missing.clone()),
+        },
+    );
+    let error = replies.iter().find(|reply| reply["id"] == 1).unwrap();
+    assert_eq!(error["error"]["code"], -32602);
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(missing.to_str().unwrap())
+            && message.contains("cannot enumerate"),
+        "{message}"
+    );
+    assert!(!message.contains("interface"), "{message}");
+    assert!(replies
+        .iter()
+        .find(|reply| reply["id"] == 2)
+        .unwrap()
+        .get("result")
+        .is_some());
+    let completion =
+        &replies.iter().find(|reply| reply["id"] == 3).unwrap()["result"];
+    assert!(
+        completion
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "max_port"),
+        "{completion}"
     );
 }

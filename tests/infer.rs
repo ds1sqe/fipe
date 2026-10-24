@@ -99,6 +99,8 @@ const fn kind(reason: &Reason) -> &'static str {
         Reason::Conversion { .. } => "Conversion",
         Reason::ConflictingConversion => "ConflictingConversion",
         Reason::NotAFunction => "NotAFunction",
+        Reason::NotRecord => "NotRecord",
+        Reason::ResourceInFile { .. } => "ResourceInFile",
         Reason::Spots { .. } => "Spots",
         Reason::DeclarationValue { .. } => "DeclarationValue",
         Reason::Default { .. } => "Default",

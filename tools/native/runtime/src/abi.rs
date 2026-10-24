@@ -406,17 +406,20 @@ unsafe extern "C" fn rt_store(
 ///
 /// # Safety
 ///
-/// `slot` points to a slot holding a value.
+/// `slot` points to a slot holding a value; `hidden` holds this body's witnesses.
 #[no_mangle]
 unsafe extern "C" fn rt_enter(
     slot: *mut Value,
+    hidden: *const Value,
     body: u64,
     block: u64,
     index: u64,
 ) -> u32 {
     // SAFETY: `slot` holds a value.
     let value = unsafe { (*checked(slot)).clone() };
-    match ops::enter(site(body, block, index), value) {
+    // SAFETY: generated code supplies this body's hidden array.
+    let hidden = unsafe { witnesses(hidden, body) };
+    match ops::enter(site(body, block, index), value, &hidden) {
         Ok(Some(guarded)) => {
             // SAFETY: `slot` holds a value.
             unsafe { put(slot, guarded) };
@@ -530,13 +533,20 @@ extern "C" fn rt_pop() {
 ///
 /// # Safety
 ///
-/// `from` points to a slot holding a value.
+/// `from` points to a slot holding a value; `hidden` holds this body's witnesses.
 #[no_mangle]
-unsafe extern "C" fn rt_test(from: *const Value, body: u64, block: u64) -> u64 {
+unsafe extern "C" fn rt_test(
+    from: *const Value,
+    hidden: *const Value,
+    body: u64,
+    block: u64,
+) -> u64 {
     // SAFETY: `from` holds a value.
     let value = unsafe { (*checked_const(from)).clone() };
     let site = start::with(|state| state.terminator(site(body, block, 0)));
-    match ops::branch(site, &value) {
+    // SAFETY: generated code supplies this body's hidden array.
+    let hidden = unsafe { witnesses(hidden, body) };
+    match ops::branch(site, &value, &hidden) {
         Ok(passed) => u64::from(passed),
         Err(Faulted) => 2,
     }

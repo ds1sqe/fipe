@@ -255,11 +255,7 @@ impl Debuggee {
 
     /// How many body frames the run has.
     fn depth(&self) -> usize {
-        self.machine
-            .frames()
-            .iter()
-            .filter(|frame| matches!(frame, Frame::Body(_)))
-            .count()
+        self.visible_bodies().count()
     }
 
     /// Run on for at most `stops` stops, sending what the client sees.
@@ -442,6 +438,23 @@ impl Debuggee {
     /// Record a stop before or after `node` and stop there when a
     /// breakpoint or the step asks to.
     fn at(&mut self, node: usize, value: Option<Value>, out: &mut Outgoing) {
+        // Adapter nodes belong to their first creation site, not to a
+        // new source arrival. Do not let them overwrite source/pipe state.
+        if self
+            .machine
+            .frames()
+            .iter()
+            .rev()
+            .find_map(|frame| match frame {
+                Frame::Body(frame) => {
+                    Some(self.receiver_adapter_body(frame.body))
+                }
+                Frame::Native(_) => None,
+            })
+            .unwrap_or(false)
+        {
+            return;
+        }
         let depth = self.depth();
         self.tracks.truncate(depth);
         let before = value.is_none();
@@ -805,15 +818,31 @@ impl Debuggee {
         Some(tables.nodes[program.bodies[frame.body].node].namespace)
     }
 
-    fn body_frames(&self) -> Vec<&fipe::vm::BodyFrame> {
+    fn receiver_adapter_body(&self, body: usize) -> bool {
+        self.machine.program().is_some_and(|program| {
+            program
+                .receiver_contexts
+                .get(body)
+                .is_some_and(Option::is_some)
+        })
+    }
+
+    fn visible_bodies(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &fipe::vm::BodyFrame> {
         self.machine
             .frames()
             .iter()
             .filter_map(|frame| match frame {
-                Frame::Body(body) => Some(body),
-                Frame::Native(_) => None,
+                Frame::Body(body) if !self.receiver_adapter_body(body.body) => {
+                    Some(body)
+                }
+                Frame::Body(_) | Frame::Native(_) => None,
             })
-            .collect()
+    }
+
+    fn body_frames(&self) -> Vec<&fipe::vm::BodyFrame> {
+        self.visible_bodies().collect()
     }
 
     /// A node's namespace, line and column; a pipe's mark for the pipe

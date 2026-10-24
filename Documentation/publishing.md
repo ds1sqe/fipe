@@ -4,6 +4,12 @@ Fipe's Rust packages are one workspace and are distributed independently on
 crates.io. The release version is `0.2.0-dev.2`. This release adds nested host namespaces to the core and publishes the tools.
 The earlier core prerelease `0.2.0-dev.1` remains available.
 
+The planned `0.2.0` release includes a Rust source compatibility change for
+`fipe::value::Guard`, not present in published `0.2.0-dev.2`: its new `Drop`
+implementation can reject owned field moves, destructuring and struct update
+with E0509. See the [embedding migration guidance](api/09-embed.md#opaque-resource-references)
+before updating consumers; the public fields and value/wire representation remain unchanged.
+
 ## Check the release
 
 Run the [workspace checks](development.md), both embedding examples, and:
@@ -61,3 +67,14 @@ matching [runtime archive](../tools/native/runtime/README.md).
 This process publishes Cargo packages. Editor configuration files and the
 language specification live in the repository; tree-sitter's npm metadata is
 not a Node binding or an npm release procedure.
+
+## Support qualification
+
+Use the [supported floor and target matrix](development.md#compatibility-and-support)
+when checking archives. Clean `cargo install --locked` checks the shipped lock;
+also check a fresh independent consumer on Rust 1.98.1 with Cargo's explicit
+Rust-compatible fallback preference, then compile its resolved graph. Neither
+path-only workspace checks nor resolver preference alone prove published package
+contents or dependency compatibility. Record offline cache limits. Native
+compiler/runtime artifacts require exact Fipe version pairing; Windows and both
+macOS architectures still need actual VM/tooling runtime qualification.

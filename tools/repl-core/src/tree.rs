@@ -263,6 +263,7 @@ fn item_node(kind: &ItemKind) -> Node {
             Node::L(label, Vec::new())
         }
         ItemKind::Type {
+            resource: _,
             name,
             parameters,
             base,

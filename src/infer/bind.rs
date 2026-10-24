@@ -9,8 +9,8 @@
 //! [types.md]: https://github.com/ds1sqe/fipe/blob/develop/Documentation/spec/03-types.md
 
 use super::{
-    is_prelude, prelude, Error, Expected, Infer, Lit, Local, Owed, Reason,
-    Status,
+    is_prelude, prelude, Error, Expected, Generalized, Infer, Lit, Local, Owed,
+    Reason, Status,
 };
 use crate::{
     ast::{ExprId, ExprKind, PatternKind},
@@ -37,6 +37,7 @@ pub(super) struct Mark {
 
 /// One binding at a generalization boundary.
 pub(super) struct Part {
+    pub owner: Option<Type>,
     pub ty: Type,
     pub site: Span,
     pub annotated: bool,
@@ -83,6 +84,7 @@ impl Infer<'_> {
                     |expected| expected.ty.clone(),
                 );
                 let local = Local {
+                    owner: None,
                     scheme: Scheme::mono(ty.clone()),
                     heads: Some(self.heads(arms)),
                 };
@@ -105,18 +107,21 @@ impl Infer<'_> {
         match &pattern_node.kind {
             PatternKind::Name(name) if !name.is_uppercase() => {
                 let part = Part {
+                    owner: None,
                     ty: expected
                         .as_ref()
                         .map_or_else(|| ty.clone(), |e| e.ty.clone()),
                     site: name.span,
                     annotated: annotation.is_some(),
                 };
-                let scheme = self.generalize(&[part], mark, &[]).remove(0);
+                let scheme =
+                    self.generalize(&[part], mark, &[]).remove(0).scheme;
                 let heads = match &module.expressions[value.0].kind {
                     ExprKind::Arms(arms) => Some(self.heads(arms)),
                     _ => None,
                 };
                 let local = Local {
+                    owner: None,
                     scheme: scheme.clone(),
                     heads,
                 };
@@ -202,16 +207,35 @@ impl Infer<'_> {
                 span,
             );
             owed.literal = Some(form.clone());
-            self.state.obligations.push(owed);
+            self.push_owed(owed);
         }
-        for obligation in obligations {
+        for (ordinal, obligation) in obligations.enumerate() {
             if matches!(&obligation, Obligation::Claim { head, class, .. } if is_prelude(class, "Literal") && scheme.literals.iter().any(|(h, _, _)| crate::types::replace(h, &fresh) == *head))
             {
                 continue;
             }
-            self.state.obligations.push(Owed::new(obligation, span));
+            let mut owed = Owed::new(obligation, span);
+            owed.contract_ordinal = Some(ordinal);
+            self.push_owed(owed);
         }
         (ty, fresh.into_iter().map(|(_, ty)| ty).collect())
+    }
+
+    pub(super) fn instantiate_member(
+        &mut self,
+        scheme: &Scheme,
+        owner: Option<&Type>,
+        span: Span,
+    ) -> (Type, Vec<Type>, Option<Type>) {
+        let (ty, meanings) = self.instantiate_with_meanings(scheme, span);
+        let fresh: Vec<_> = scheme
+            .variables
+            .iter()
+            .copied()
+            .zip(meanings.iter().cloned())
+            .collect();
+        let owner = owner.map(|owner| crate::types::replace(owner, &fresh));
+        (ty, meanings, owner)
     }
 
     /// The free variables of the environment: every monomorphic type in
@@ -226,6 +250,9 @@ impl Infer<'_> {
         }
         for used in &self.state.deferred {
             super::gather(&self.apply(&used.ty), &mut seen, &mut vars);
+            if let Some(owner) = &used.owner {
+                super::gather(&self.apply(owner), &mut seen, &mut vars);
+            }
         }
         for var in 0..self.weak {
             let ty = self.apply(&Type::Var(Var(var)));
@@ -280,20 +307,22 @@ impl Infer<'_> {
         vars
     }
 
-    /// Generalize `parts`, typed together, over the obligations owed
-    /// since `mark`. An error while typing them silences ambiguity.
-    pub(super) fn generalize(
-        &mut self,
+    fn generalization_reach(
+        &self,
         parts: &[Part],
-        mark: Mark,
-        group: &[usize],
-    ) -> Vec<Scheme> {
-        self.dots();
-        let env = self.environment(group);
-        let errors = mark.errors;
-        let mark = mark.obligations;
-        let reach: Vec<Vec<Var>> =
-            parts.iter().map(|part| self.reachable(&part.ty)).collect();
+    ) -> (Vec<Vec<Var>>, Vec<Var>) {
+        let reach: Vec<Vec<Var>> = parts
+            .iter()
+            .map(|part| {
+                let root = part.owner.as_ref().map_or_else(
+                    || part.ty.clone(),
+                    |owner| {
+                        Type::Tuple(alloc::vec![part.ty.clone(), owner.clone()])
+                    },
+                );
+                self.reachable(&root)
+            })
+            .collect();
         let stay: Vec<_> = parts
             .iter()
             .zip(&reach)
@@ -302,40 +331,42 @@ impl Infer<'_> {
             })
             .flat_map(|(_, vars)| vars.iter().copied())
             .collect();
+        (reach, stay)
+    }
+
+    /// Generalize `parts`, typed together, over the obligations owed
+    /// since `mark`. An error while typing them silences ambiguity.
+    pub(super) fn generalize(
+        &mut self,
+        parts: &[Part],
+        mark: Mark,
+        group: &[usize],
+    ) -> Vec<Generalized> {
+        self.dots();
+        let env = self.environment(group);
+        let errors = mark.errors;
+        let mark = mark.obligations;
+        let (reach, stay) = self.generalization_reach(parts);
         self.default_literals(mark, &env, &stay);
         self.finish_rebuilds();
         let quiet = self.state.errors.len() > errors;
         let types: Vec<Type> =
             parts.iter().map(|p| self.apply(&p.ty)).collect();
         let mut carried = alloc::vec![Vec::new(); parts.len()];
+        let mut contract_reads: Vec<
+            Vec<Vec<crate::typed::MemberContractRead>>,
+        > = alloc::vec![Vec::new(); parts.len()];
         let mut literals = alloc::vec![Vec::new(); parts.len()];
         let mut kept = Vec::new();
         let mut left: Vec<Obligation> = Vec::new();
         for owed in self.split_obligations(mark) {
             if owed.solved {
-                if let Some(form) = &owed.literal {
-                    let head = self.apply(owed.obligation.subject());
-                    if let Type::Rigid(name) = &head {
-                        for (index, part) in parts.iter().enumerate() {
-                            let mut names = Vec::new();
-                            rigids(&part.ty, &mut names);
-                            if part.annotated && names.contains(name) {
-                                literals[index].push((
-                                    head.clone(),
-                                    form.clone(),
-                                    owed.span,
-                                ));
-                            }
-                        }
-                    }
-                }
-                if owed.assumed {
-                    for (index, part) in parts.iter().enumerate() {
-                        if part.annotated {
-                            carried[index].push(owed.obligation.clone());
-                        }
-                    }
-                }
+                self.carry_solved_obligation(
+                    &owed,
+                    parts,
+                    &mut literals,
+                    &mut carried,
+                );
                 continue;
             }
             let obligation = owed.obligation.map(|ty| self.apply(ty));
@@ -363,8 +394,21 @@ impl Infer<'_> {
                     // Not written: an annotated type leaves it.
                     if part.annotated {
                         keep = true;
-                    } else if !list.contains(&obligation) {
-                        list.push(obligation.clone());
+                    } else {
+                        let ordinal = list
+                            .iter()
+                            .position(|saved| saved == &obligation)
+                            .unwrap_or_else(|| {
+                                list.push(obligation.clone());
+                                list.len() - 1
+                            });
+                        contract_reads[index].resize_with(list.len(), Vec::new);
+                        for read in &owed.contract_reads {
+                            if !contract_reads[index][ordinal].contains(read) {
+                                contract_reads[index][ordinal]
+                                    .push(read.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -382,13 +426,108 @@ impl Infer<'_> {
             .zip(types)
             .zip(carried)
             .zip(literals)
-            .map(|(((part, ty), obligations), literals)| {
-                let mut scheme =
-                    self.scheme(part, ty, obligations, literals, &env);
-                self.trim_claims(&mut scheme);
-                scheme
+            .zip(contract_reads)
+            .map(|((((part, ty), obligations), literals), reads)| {
+                self.generalized_contract_reads(
+                    part,
+                    ty,
+                    obligations,
+                    literals,
+                    &reads,
+                    &env,
+                )
             })
             .collect()
+    }
+
+    fn carry_solved_obligation(
+        &self,
+        owed: &Owed,
+        parts: &[Part],
+        literals: &mut [Vec<(Type, Lit, Span)>],
+        carried: &mut [Vec<Obligation>],
+    ) {
+        if let Some(form) = &owed.literal {
+            let head = self.apply(owed.obligation.subject());
+            if let Type::Rigid(name) = &head {
+                for (index, part) in parts.iter().enumerate() {
+                    let mut names = Vec::new();
+                    rigids(&part.ty, &mut names);
+                    if let Some(owner) = &part.owner {
+                        rigids(owner, &mut names);
+                    }
+                    if part.annotated && names.contains(name) {
+                        literals[index].push((
+                            head.clone(),
+                            form.clone(),
+                            owed.span,
+                        ));
+                    }
+                }
+            }
+        }
+        if owed.assumed {
+            for (index, part) in parts.iter().enumerate() {
+                if part.annotated {
+                    carried[index].push(owed.obligation.clone());
+                }
+            }
+        }
+    }
+
+    fn generalized_contract_reads(
+        &mut self,
+        part: &Part,
+        ty: Type,
+        obligations: Vec<Obligation>,
+        literals: Vec<(Type, Lit, Span)>,
+        reads: &[Vec<crate::typed::MemberContractRead>],
+        env: &[Var],
+    ) -> Generalized {
+        let mut members = obligations
+            .iter()
+            .enumerate()
+            .filter(|(_, obligation)| {
+                matches!(obligation, Obligation::Member { .. })
+            })
+            .map(|(index, _)| reads.get(index).cloned().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .into_iter();
+        let member_count = members.len();
+        let mut scheme = self.scheme(part, ty, obligations, literals, env);
+        assert_eq!(
+            scheme
+                .scheme
+                .obligations
+                .iter()
+                .filter(|obligation| matches!(
+                    obligation,
+                    Obligation::Member { .. }
+                ))
+                .count(),
+            member_count
+        );
+        self.trim_claims(&mut scheme.scheme);
+        // trim_claims preserves every Member and its order; only claims are removed.
+        let final_reads = scheme
+            .scheme
+            .obligations
+            .iter()
+            .map(|obligation| {
+                if matches!(obligation, Obligation::Member { .. }) {
+                    members.next().expect("carried member source identity")
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        assert!(members.next().is_none());
+        self.insert(
+            |s| &mut s.member_contract_reads,
+            (part.site.start, part.site.end),
+            final_reads,
+        );
+        scheme
     }
 
     fn finish_lengths(&mut self, site: Span) {
@@ -439,9 +578,13 @@ impl Infer<'_> {
         obligations: Vec<Obligation>,
         literals: Vec<(Type, Lit, Span)>,
         env: &[Var],
-    ) -> Scheme {
+    ) -> Generalized {
         let mut variables = Vec::new();
         ty.variables(&mut variables);
+        let owner = part.owner.as_ref().map(|owner| self.apply(owner));
+        if let Some(owner) = &owner {
+            owner.variables(&mut variables);
+        }
         if !part.annotated {
             for obligation in &obligations {
                 obligation.variables(&mut variables);
@@ -452,16 +595,22 @@ impl Infer<'_> {
                 (part.site.start, part.site.end),
                 variables.iter().map(|var| Type::Var(*var)).collect(),
             );
-            return Scheme {
-                variables,
-                obligations,
-                literals,
-                ty,
+            return Generalized {
+                scheme: Scheme {
+                    variables,
+                    obligations,
+                    literals,
+                    ty,
+                },
+                owner,
             };
         }
         // The written names, each a quantified variable.
         let mut names = Vec::new();
         rigids(&ty, &mut names);
+        if let Some(owner) = &owner {
+            rigids(owner, &mut names);
+        }
         let fresh: Vec<(String, Var)> = names
             .into_iter()
             .map(|name| (name, self.state.subst.fresh()))
@@ -476,23 +625,26 @@ impl Infer<'_> {
                 .chain(fresh.iter().map(|(name, _)| Type::Rigid(name.clone())))
                 .collect(),
         );
-        Scheme {
-            variables: variables
-                .into_iter()
-                .filter(|v| !env.contains(v))
-                .chain(fresh.iter().map(|(_, var)| *var))
-                .collect(),
-            literals: literals
-                .iter()
-                .map(|(ty, form, span)| {
-                    (unrigid(ty, &fresh), form.clone(), *span)
-                })
-                .collect(),
-            obligations: obligations
-                .iter()
-                .map(|o| o.map(|t| unrigid(t, &fresh)))
-                .collect(),
-            ty: unrigid(&ty, &fresh),
+        Generalized {
+            owner: owner.as_ref().map(|owner| unrigid(owner, &fresh)),
+            scheme: Scheme {
+                variables: variables
+                    .into_iter()
+                    .filter(|v| !env.contains(v))
+                    .chain(fresh.iter().map(|(_, var)| *var))
+                    .collect(),
+                literals: literals
+                    .iter()
+                    .map(|(ty, form, span)| {
+                        (unrigid(ty, &fresh), form.clone(), *span)
+                    })
+                    .collect(),
+                obligations: obligations
+                    .iter()
+                    .map(|o| o.map(|t| unrigid(t, &fresh)))
+                    .collect(),
+                ty: unrigid(&ty, &fresh),
+            },
         }
     }
 
@@ -767,7 +919,7 @@ pub(super) fn applied(scheme: &Scheme, subst: &Subst) -> Scheme {
     }
 }
 
-fn rigids(ty: &Type, out: &mut Vec<String>) {
+pub(super) fn rigids(ty: &Type, out: &mut Vec<String>) {
     match ty {
         Type::Rigid(name) if !out.contains(name) => out.push(name.clone()),
         Type::Named { arguments, .. } => {
@@ -797,7 +949,7 @@ fn rigids(ty: &Type, out: &mut Vec<String>) {
     }
 }
 
-fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
+pub(super) fn unrigid(ty: &Type, fresh: &[(String, Var)]) -> Type {
     match ty {
         Type::Rigid(name) => fresh
             .iter()

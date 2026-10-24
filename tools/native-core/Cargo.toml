@@ -2,6 +2,7 @@
 name = "fipe-native-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Shared formats and operand layout for Fipe native backends"
 license.workspace = true
 repository.workspace = true

@@ -1,36 +1,62 @@
 # Fipe
 
-Fipe means Functional Pipeline Language. Five goals govern its design:
+Start with the route that matches your task. These pages describe the current
+checkout; some development APIs are newer than the published `0.2.0-dev.2`
+baseline. Use matching source and documentation, and consult the
+[compatibility and support policy](development.md#compatibility-and-support)
+for the selected Rust 1.98.1 floor and platform qualification gaps.
 
-1. Embedded: a host supplies declarations, environment, an optional budget
-   and input/output. The language owns no runtime beyond its prelude.
-2. Extensible: files are modules, `pub` exports bindings and types, and a
-   meaning's `impl` holds its members. Host APIs are ordinary modules.
-3. Functional: functions are values, application curries, and every line has
-   a value. There is no assignment or statement-only syntax.
-4. Typed: inference and generalization follow Haskell with Rust-like spelling.
-   Checking finishes before execution and produces a typed intermediate form.
-5. Compiled: backends consume that form. The VM precedes a native backend;
-   both must agree. An optional LLVM backend is a separate package,
-   `tools/llvm`, held to the same agreement.
+## Guides and examples
 
-The [specification](spec/README.md) defines the language and its open questions.
-The [tour](tour/README.md) teaches scripts on the standard host; the
-[examples index](examples/README.md) includes runnable Fipe scripts and Rust
-embedding examples. The [API chapters](api/) describe the crate boundary for
-lexing, parsing, checking, compilation and execution.
-The [native library boundary](api/10-native-libraries.md) separates existing
-embedding from proposed C/Rust provider integration.
+| Your task | Start here |
+| --- | --- |
+| Write scripts with the standard host | [Tour](tour/README.md), then [CLI reference](../tools/fipe/README.md) |
+| Find a runnable script or Rust example | [Examples index](examples/README.md), including the practical dogfood scripts |
+| Embed with an application-owned Host | [Minimal Rust example](../README.md#embed-in-rust), [custom Host example](../examples/custom_host.rs), then [embedding API](api/09-embed.md) |
+| Choose between your Host and Standard | [Layer ownership](architecture.md) and [standard-host contract](../tools/host/README.md) |
+| Write or change Fipe with an agent | [Agent guidance](agents.md) and the [language specification](spec/README.md) |
+| Contribute or verify a checkout | [Development and CI](development.md); [publishing](publishing.md) owns package/release checks |
 
-The implementation includes type inference, static limit checks, a VM,
-native and LLVM backends, a REPL, and editor tooling. The core library uses
-only `core` and `alloc` and depends on no host. The current prerelease is
-`0.2.0-dev.2`; language rules and public Rust APIs are experimental. Published
-`0.1.0` is the earlier language.
+Core, Embed and the Host contract are available from `fipe` alone with `no_std` +
+`alloc`. Standard is optional and supplies OS operations. The examples and owning
+API chapters describe the boundary; this index does not add permission or resource
+guarantees.
 
-For contributors and integrators:
+## Editors and tools
 
-- [Layer ownership](architecture.md): Core, Embed, application Hosts and optional Standard.
-- [Development](development.md): workspace layout, builds and verification.
-- [Agent guidance](agents.md): references and a check/run loop for coding agents.
-- [Publishing](publishing.md): package boundaries and the crates.io release.
+- [Language server](../tools/lsp/README.md): checking, navigation and editor features;
+  use the declarations matching your Host.
+- [Debug adapter](../tools/dap/README.md): current launch and Standard/trace behavior.
+- [REPL](../tools/repl/README.md) and [REPL core](../tools/repl-core/README.md): terminal
+  use or an application-driven loop without I/O.
+- [Tree-sitter](../tools/tree-sitter/README.md): syntax trees and highlighting.
+- [Neovim](../tools/editor/nvim/README.md) and [Helix](../tools/editor/helix/README.md):
+  repository editor setup.
+- [Native backend](../tools/native/README.md), [LLVM backend](../tools/llvm/README.md)
+  and [runtime](../tools/native/runtime/README.md): x86-64 Linux executable tooling.
+- [Experimental scalar providers](../tools/ffi/README.md) and
+  [native library boundary](api/10-native-libraries.md): current checkout VM scalar
+  proof and its limits, not resource or native/LLVM provider support.
+
+Tool and editor links refer to the source repository. They do not imply those
+manuals or configurations are bundled inside the Core crate archive. Each owner
+records its actual platform and feature limits; selected release targets are not
+claims that every platform or integration has passed qualification.
+
+## Reference
+
+The [specification index](spec/README.md) defines language rules;
+[open decisions](spec/11-open.md) are unresolved proposals, not implemented features.
+The [prelude source](../prelude/prelude.fipe) lists built-in declarations.
+
+The API chapters follow the processing boundary:
+
+1. [Lexing](api/01-lexer.md)
+2. [Parsing](api/02-parser.md)
+3. [Checking](api/07-check.md)
+4. [MIR and compilation](api/08-mir.md)
+5. [Embedding, sessions and execution](api/09-embed.md)
+6. [Native library boundary](api/10-native-libraries.md)
+
+The current prerelease remains experimental. Published `0.1.0` is the earlier
+language; examples and APIs from it should not be mixed with this checkout.

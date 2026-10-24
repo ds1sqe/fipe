@@ -7,6 +7,7 @@
 //! its tag. Each returns a [`Reason`] where the language Faults.
 pub mod arith;
 pub mod float;
+pub mod resource;
 pub mod structural;
 pub mod text;
 
@@ -17,6 +18,8 @@ use core::fmt;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Unit,
+    /// A genuine opaque Host reference, never script-constructible data.
+    Resource(Rc<resource::ResourceRef>),
     /// An `Integer` that fits; the common case.
     Int(i64),
     /// An `Integer` that does not fit `i64`; never one that does.
@@ -33,8 +36,8 @@ pub enum Value {
     Record(Rc<Record>),
     Function(Rc<Closure>),
     /// A hidden meaning: the witness a generic body dispatches on.
-    Meaning(Rc<ir::Type>),
-    /// A value of a packed type with the meaning index of its tag.
+    Meaning(Rc<Meaning>),
+    /// An immutable packed value with descriptive source and target types.
     Packed(Rc<Packed>),
 }
 
@@ -78,12 +81,139 @@ impl Value {
     }
 }
 
-/// A packed value: the meaning it was packed as, and the value.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Packed {
-    pub meaning: usize,
-    pub value: Value,
+/// An owned hidden type witness, not a resource identity or authorization.
+///
+/// Cloning its `Rc` preserves aliases; the last owner drops the type iteratively.
+pub struct Meaning {
+    ty: ir::Type,
 }
+impl Meaning {
+    /// Own an existing type tree as a hidden witness.
+    #[must_use]
+    pub const fn new(ty: ir::Type) -> Self {
+        Self { ty }
+    }
+    /// Borrow the underlying type without cloning its tree.
+    #[must_use]
+    pub const fn as_type(&self) -> &ir::Type {
+        &self.ty
+    }
+}
+impl fmt::Debug for Meaning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.ty, f)
+    }
+}
+impl Drop for Meaning {
+    fn drop(&mut self) {
+        let root = core::mem::replace(&mut self.ty, ir::Type::Unit);
+        drop(resource::Forest(alloc::vec![root]));
+    }
+}
+
+/// An immutable packed payload. Its types describe the captured source context;
+/// they are not current-table identities or permission to use a resource.
+#[derive(Clone)]
+pub struct Packed {
+    source: Rc<Meaning>,
+    target: Rc<Meaning>,
+    value: Value,
+    association: Option<Rc<PackAssociation>>,
+}
+#[derive(Debug)]
+pub(crate) struct PackAssociation {
+    pub(crate) bindings: Vec<(usize, Rc<()>)>,
+}
+impl Packed {
+    /// Describe resource-free data without asserting a checked membership claim.
+    /// Returns `None` for a genuine resource anywhere in the payload, including
+    /// closure captures and filled spots. The borrowed payload stays with its owner.
+    #[must_use]
+    pub fn from_data(
+        source: ir::Type,
+        target: ir::Type,
+        value: &Value,
+    ) -> Option<Self> {
+        Self::data_roots(
+            Rc::new(Meaning::new(source)),
+            Rc::new(Meaning::new(target)),
+            value,
+        )
+    }
+    pub(crate) fn data_roots(
+        source: Rc<Meaning>,
+        target: Rc<Meaning>,
+        value: &Value,
+    ) -> Option<Self> {
+        let free = resource::data_only(value, &mut |_| {
+            Ok::<(), core::convert::Infallible>(())
+        });
+        if !free.unwrap_or_else(|never| match never {}) {
+            return None;
+        }
+        Some(Self {
+            source,
+            target,
+            value: value.clone(),
+            association: None,
+        })
+    }
+    /// The original payload type, using indices of its captured source context.
+    /// This description alone is not a current-table identity or resource proof.
+    #[must_use]
+    pub fn source_type(&self) -> &ir::Type {
+        self.source.as_type()
+    }
+    /// The packed contract, in the same captured index context as the source.
+    #[must_use]
+    pub fn target_type(&self) -> &ir::Type {
+        self.target.as_type()
+    }
+    /// Borrow the exact immutable payload; no mutable view can alter its association.
+    #[must_use]
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
+    pub(crate) fn roots(&self) -> (Rc<Meaning>, Rc<Meaning>) {
+        (Rc::clone(&self.source), Rc::clone(&self.target))
+    }
+    pub(crate) fn association(&self) -> Option<&PackAssociation> {
+        self.association.as_deref()
+    }
+    pub(crate) fn checked(
+        source: ir::Type,
+        target: ir::Type,
+        value: Value,
+        bindings: Vec<(usize, Rc<()>)>,
+    ) -> Self {
+        Self {
+            source: Rc::new(Meaning::new(source)),
+            target: Rc::new(Meaning::new(target)),
+            value,
+            association: Some(Rc::new(PackAssociation { bindings })),
+        }
+    }
+}
+impl PartialEq for Packed {
+    fn eq(&self, other: &Self) -> bool {
+        resource::type_equal(self.source_type(), other.source_type())
+            && self.value == other.value
+    }
+}
+impl fmt::Debug for Packed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Metadata can be deeply nested; accessors expose it without a recursive debug walk.
+        f.debug_struct("Packed")
+            .field("value", &self.value)
+            .finish_non_exhaustive()
+    }
+}
+impl PartialEq for Meaning {
+    fn eq(&self, other: &Self) -> bool {
+        resource::type_equal(&self.ty, &other.ty)
+    }
+}
+impl Eq for Meaning {}
 
 /// A constructed value of a meaning, by constructor index.
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +225,9 @@ pub struct Record {
 
 /// A body with what it captured; `filled` is the prefix of spots a
 /// run-time partial application supplied.
+///
+/// Witnesses are dropped iteratively. Transfer owned fields with
+/// `core::mem::take(&mut closure.field)` rather than moving out of this `Drop` type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Closure {
     pub body: usize,
@@ -106,13 +239,38 @@ pub struct Closure {
     pub guards: Vec<Guard>,
 }
 
+impl Drop for Closure {
+    fn drop(&mut self) {
+        drop(resource::Forest(core::mem::take(&mut self.meanings)));
+    }
+}
+
 /// A spot of a closure tested on each call by a parameter limit of an
 /// open entry, whose failure Faults naming that entry.
+///
+/// Drops its predicate tree iteratively. Because `Guard` implements `Drop`,
+/// moving non-`Copy` fields out of an owned guard (including destructuring or
+/// struct update) may fail with E0509. Borrow fields, or clone them when a
+/// separate owned value is needed. The derived `Clone` recursively copies
+/// predicate/type trees and is not charged against a VM budget; iterative
+/// destruction does not make arbitrary deep cloning or execution stack-safe.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Guard {
     pub spot: usize,
     pub entry: usize,
     pub predicate: ir::Predicate,
+    /// Creator-owned witnesses used when a guard reaches a limit test.
+    pub witnesses: Rc<[(usize, Rc<Meaning>)]>,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let predicate = core::mem::replace(
+            &mut self.predicate,
+            ir::Predicate::All(Vec::new()),
+        );
+        drop(resource::Predicates(alloc::vec![predicate]));
+    }
 }
 
 /// A signed integer of any size.

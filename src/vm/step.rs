@@ -94,14 +94,14 @@ impl Machine {
                 return self.assign(program, *dest, rvalue, node);
             }
             Statement::Store { definition, value } => {
-                let value = self.operand(program, *value);
+                let value = self.operand(program, *value)?;
                 self.globals[*definition] = Some(value);
             }
             Statement::Enter {
                 entry,
                 value: operand,
             } => {
-                let value = self.operand(program, *operand);
+                let value = self.operand(program, *operand)?;
                 // A function value is not tested; its calls are.
                 if let (Value::Function(closure), Operand::Local(local)) =
                     (&value, operand)
@@ -110,24 +110,26 @@ impl Machine {
                         let tables = program.tables.borrow();
                         let predicate = &tables.entries[*entry].predicate;
                         matches!(predicate, ir::Predicate::Function { .. })
-                            .then(|| Self::guard(closure, *entry, predicate))
+                            .then(|| {
+                                self.guard(program, closure, *entry, predicate)
+                            })
                     };
                     if let Some(guarded) = guarded {
-                        self.top().locals[*local] = guarded;
+                        self.top().locals[*local] = guarded?;
                         return Ok(Flow::Continue);
                     }
                 }
-                return Ok(self.enter(program, *entry, value, node));
+                return self.enter(program, *entry, value, node);
             }
             Statement::Push { key, value } => {
-                let value = self.operand(program, *value);
+                let value = self.operand(program, *value)?;
                 self.environment.push((*key, value));
             }
             Statement::Pop => {
                 self.environment.pop();
             }
             Statement::Line(value) => {
-                let value = self.operand(program, *value);
+                let value = self.operand(program, *value)?;
                 // The line the owed input applies to gets the result
                 // then, not the function, so a stop between sees neither.
                 let owed = matches!(&self.input,
@@ -142,31 +144,57 @@ impl Machine {
 
     /// Read an operand in the top body frame.
     pub(super) fn operand(
-        &self,
+        &mut self,
         program: &mir::Program,
         operand: Operand,
-    ) -> Value {
+    ) -> Result<Value, Reason> {
+        if let Operand::Hidden(index) = operand {
+            let work = self.resource_work();
+            let result = {
+                let Some(Frame::Body(frame)) = self.frames.last() else {
+                    unreachable!("body frame")
+                };
+                let tables = program.tables.borrow();
+                if !tables.has_resources {
+                    return Ok(Value::Meaning(Rc::new(
+                        crate::value::Meaning::new(
+                            frame.meanings[index].clone(),
+                        ),
+                    )));
+                }
+                super::resource::materialize(
+                    &frame.meanings[index],
+                    &[],
+                    &[],
+                    &tables,
+                    &work,
+                    &mut Ok,
+                )
+            };
+            self.pay(work.spent())?;
+            let mut copied = result?;
+            return Ok(Value::Meaning(Rc::new(crate::value::Meaning::new(
+                copied.0.pop().expect("hidden meaning"),
+            ))));
+        }
         let Some(Frame::Body(frame)) = self.frames.last() else {
-            unreachable!("a body frame is on top")
+            unreachable!("body frame")
         };
-        match operand {
+        Ok(match operand {
             Operand::Local(index) => frame.locals[index].clone(),
             Operand::Const(index) => program.constants[index].clone(),
             Operand::Capture(index) => frame.captures[index].clone(),
             Operand::Global(index) => self.globals[index]
                 .clone()
                 .unwrap_or_else(|| panic!("global {index} is stored first")),
-            Operand::Hidden(index) => {
-                Value::Meaning(Rc::new(frame.meanings[index].clone()))
-            }
-        }
+            Operand::Hidden(_) => unreachable!("handled above"),
+        })
     }
-
     pub(super) fn operands(
-        &self,
+        &mut self,
         program: &mir::Program,
         operands: &[Operand],
-    ) -> Vec<Value> {
+    ) -> Result<Vec<Value>, Reason> {
         operands
             .iter()
             .map(|operand| self.operand(program, *operand))
@@ -175,15 +203,15 @@ impl Machine {
 
     /// The type of a local of the top frame, with the witnesses in.
     pub(super) fn local_type(
-        &self,
+        &mut self,
         program: &mir::Program,
         local: usize,
-    ) -> ir::Type {
+    ) -> Result<ir::Type, Reason> {
         let Some(Frame::Body(frame)) = self.frames.last() else {
-            unreachable!("a body frame is on top")
+            unreachable!("body frame")
         };
         let ty = &program.bodies[frame.body].locals[local].ty;
-        Self::substitute(program, frame, ty)
+        self.substitute(program, ty)
     }
 
     fn terminator(
@@ -204,9 +232,15 @@ impl Machine {
                 cases,
                 otherwise,
             } => {
-                let key = match self.operand(program, *value) {
+                let key = match self
+                    .operand(program, *value)
+                    .map_err(|reason| Self::fault(program, node, reason))?
+                {
                     Value::Record(record) => record.constructor,
-                    Value::Packed(packed) => packed.meaning,
+                    Value::Packed(packed) => match packed.source_type() {
+                        ir::Type::Meaning { index, .. } => *index,
+                        _ => usize::MAX,
+                    },
                     Value::Int(number) => {
                         usize::try_from(number).unwrap_or(usize::MAX)
                     }
@@ -234,24 +268,9 @@ impl Machine {
                 value,
                 pass,
                 fail,
-            } => {
-                let value = self.operand(program, *value);
-                let run = super::predicates::Run::new(
-                    predicate.clone(),
-                    value,
-                    super::predicates::After::Branch,
-                );
-                self.frames.push(Frame::Native(NativeFrame {
-                    node,
-                    pending: Pending::Predicate(run),
-                    back: Return::Branch {
-                        pass: *pass,
-                        fail: *fail,
-                    },
-                    result: None,
-                }));
-                self.resume(program, None)
-            }
+            } => self.predicate_branch(
+                program, predicate, *value, *pass, *fail, node,
+            ),
             Terminator::Call {
                 callee,
                 args,
@@ -262,16 +281,55 @@ impl Machine {
                 program, callee, args, meanings, *dest, *target, node,
             ),
             Terminator::Return => {
-                let Some(Frame::Body(frame)) = self.frames.pop() else {
+                let Some(Frame::Body(mut frame)) = self.frames.pop() else {
                     unreachable!()
                 };
-                let value = frame.locals.into_iter().next().expect("_0");
+                let value = core::mem::take(&mut frame.locals)
+                    .into_iter()
+                    .next()
+                    .expect("_0");
                 self.deliver(program, value, frame.back)
             }
             Terminator::Unreachable => {
                 Err(Self::fault(program, node, Reason::Unreachable))
             }
         }
+    }
+
+    fn predicate_branch(
+        &mut self,
+        program: &mir::Program,
+        predicate: &ir::Predicate,
+        value: mir::Operand,
+        pass: usize,
+        fail: usize,
+        node: usize,
+    ) -> Result<Flow, Fault> {
+        let value = self
+            .operand(program, value)
+            .map_err(|reason| Self::fault(program, node, reason))?;
+        let witnesses = self
+            .predicate_witnesses(program, predicate, false)
+            .map_err(|reason| Self::fault(program, node, reason))?;
+        let snapshot = self
+            .snapshot_predicate(program, predicate)
+            .map_err(|reason| Self::fault(program, node, reason))?;
+        let run = self
+            .owned_predicate_run(
+                program,
+                snapshot,
+                alloc::vec![value],
+                super::predicates::After::Branch,
+                witnesses,
+            )
+            .map_err(|reason| Self::fault(program, node, reason))?;
+        self.frames.push(Frame::Native(NativeFrame {
+            node,
+            pending: Pending::Predicate(run),
+            back: Return::Branch { pass, fail },
+            result: None,
+        }));
+        self.resume(program, None)
     }
 }
 
@@ -289,17 +347,46 @@ impl Machine {
         target: usize,
         node: usize,
     ) -> Result<Flow, Fault> {
-        let args = self.operands(program, args);
-        let (meanings, result) = {
-            let Some(Frame::Body(frame)) = self.frames.last() else {
-                unreachable!()
-            };
-            let meanings = meanings
-                .iter()
-                .map(|ty| Self::substitute(program, frame, ty))
-                .collect();
-            (meanings, self.local_type(program, dest))
+        let receiver_spot = match callee {
+            mir::Callee::Dispatch {
+                witness: mir::Witness::Value(receiver),
+                ..
+            } => {
+                let mut positions =
+                    args.iter().enumerate().filter_map(|(spot, operand)| {
+                        (operand == receiver).then_some(spot)
+                    });
+                let spot = positions.next().expect("a receiver is an argument");
+                assert!(
+                    positions.next().is_none(),
+                    "a receiver operand is unique"
+                );
+                Some(spot)
+            }
+            _ => None,
         };
+        let args = self
+            .operands(program, args)
+            .map_err(|reason| Self::fault(program, node, reason))?;
+        let mut copied = crate::value::resource::Forest::default();
+        for (position, ty) in meanings.iter().enumerate() {
+            let callable = position == 0
+                && matches!(
+                    callee,
+                    mir::Callee::Dispatch {
+                        witness: mir::Witness::Value(_),
+                        ..
+                    }
+                );
+            copied.0.push(
+                self.substitute_charged(program, ty, callable)
+                    .map_err(|reason| Self::fault(program, node, reason))?,
+            );
+        }
+        let result = self
+            .local_type(program, dest)
+            .map_err(|reason| Self::fault(program, node, reason))?;
+        let meanings = core::mem::take(&mut copied.0);
         let back = Return::Into {
             dest,
             block: target,
@@ -312,8 +399,16 @@ impl Machine {
             returns(&program.bodies[frame.body], target)
         };
         let depth = self.frames.len();
-        let flow =
-            self.call(program, callee, args, meanings, result, back, node)?;
+        let flow = self.call(
+            program,
+            callee,
+            receiver_spot,
+            args,
+            meanings,
+            result,
+            back,
+            node,
+        )?;
         if tail && self.frames.len() == depth + 1 {
             self.replace_caller();
         }
@@ -361,7 +456,7 @@ pub(super) fn field(value: &Value, index: usize) -> Value {
     match value {
         Value::Record(record) => record.fields[index].clone(),
         Value::Tuple(parts) | Value::Seq(parts) => parts[index].clone(),
-        Value::Packed(packed) => packed.value.clone(),
+        Value::Packed(packed) => packed.value().clone(),
         Value::Text(_) => crate::value::text::bytes(value),
         other => unreachable!("a field of {other:?}"),
     }
@@ -371,7 +466,11 @@ pub(super) fn field(value: &Value, index: usize) -> Value {
 pub(super) const fn leaf(value: &Value) -> bool {
     !matches!(
         value,
-        Value::Record(_) | Value::Seq(_) | Value::Tuple(_) | Value::Packed(_)
+        Value::Resource(_)
+            | Value::Record(_)
+            | Value::Seq(_)
+            | Value::Tuple(_)
+            | Value::Packed(_)
     )
 }
 

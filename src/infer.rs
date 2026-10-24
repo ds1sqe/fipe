@@ -29,7 +29,7 @@ mod record;
 mod spots;
 mod test;
 mod trial;
-pub(crate) use spots::Supply;
+pub(crate) use spots::{SourceNodes, Supply};
 
 use crate::{
     ast::{Arm, Entry, ExprId, ExprKind, ImplMember, ItemKind, Module, Name},
@@ -40,7 +40,7 @@ use crate::{
     typed::Typed,
     types::{replace, Lit, Mismatch, Obligation, Scheme, Subst, Type, Var},
 };
-use alloc::{collections::BTreeMap, string::String, vec, vec::Vec};
+use alloc::{collections::BTreeMap, rc::Rc, string::String, vec, vec::Vec};
 
 /// A located type error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,6 +95,12 @@ pub enum Reason {
         forms: Vec<String>,
     },
     NotAFunction,
+    /// Record syntax needs a record layout or a sum constructor with fields.
+    NotRecord,
+    /// A file cannot supply marked resource types, directly or through signatures.
+    ResourceInFile {
+        module: String,
+    },
     Conversion {
         source: Option<Type>,
         target: Type,
@@ -318,9 +324,25 @@ pub(crate) fn run(
     infer.finish()
 }
 
-/// Everything inference changes. A trial reading ([`trial`]) journals
-/// its writes and is kept or restored.
-struct State {
+/// One actual invocation, independent of the source expression's identity.
+#[derive(Clone)]
+struct DefaultOwner {
+    key: (Origin, Span),
+}
+
+type LexicalOwner = Option<Rc<DefaultOwner>>;
+
+fn same_owner(a: &LexicalOwner, b: &LexicalOwner) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+/// Immutable lexical facts. Shared solver queues and substitution never live here.
+#[derive(Clone)]
+struct LexicalFacts {
     constructor_fields: BTreeMap<(usize, usize), Vec<usize>>,
     derived_defaults: BTreeMap<(usize, usize), crate::typed::DefaultValue>,
     conversions: BTreeMap<(usize, usize), crate::typed::Conversion>,
@@ -329,8 +351,165 @@ struct State {
     tests: Vec<crate::typed::Test>,
     default_instances:
         BTreeMap<(usize, usize, usize), crate::typed::DeclaredExpression>,
+    member_contracts:
+        BTreeMap<crate::typed::MemberContractUse, crate::typed::MemberContract>,
+    member_contract_reads:
+        BTreeMap<(usize, usize), Vec<Vec<crate::typed::MemberContractRead>>>,
+    contract_stages: BTreeMap<(usize, usize), ContractBindingUse>,
+    contract_refinements: BTreeMap<
+        (crate::typed::MemberContractUse, Span, Span, usize, usize),
+        Type,
+    >,
     accesses: BTreeMap<(usize, usize), Vec<crate::typed::Access>>,
-    roots: BTreeMap<(usize, usize), crate::typed::Root>,
+    roots: BTreeMap<(usize, usize), SavedRoot>,
+    pattern_types: BTreeMap<usize, Type>,
+    selected: BTreeMap<(usize, usize), crate::typed::Selected>,
+    meaning_arguments: BTreeMap<(usize, usize), Vec<Type>>,
+    main_lifts: Vec<bind::Lift>,
+    callee_types: BTreeMap<(usize, usize), Type>,
+    rebuild_types: BTreeMap<(usize, usize), Type>,
+    rebuilds: BTreeMap<(usize, usize), crate::typed::Rebuild>,
+    modes: BTreeMap<(usize, usize), crate::typed::Mode>,
+    types: Vec<Option<Type>>,
+    entries: Vec<crate::limits::EntryInput>,
+    checks: Vec<crate::typed::Check>,
+    casts: Vec<Option<alloc::boxed::Box<crate::typed::Cast>>>,
+    supplied: BTreeMap<(usize, usize), Vec<(String, Supply)>>,
+    bound: BTreeMap<(usize, usize), crate::typed::Bound>,
+    bindings: Vec<Option<Scheme>>,
+    locals: BTreeMap<(usize, usize), Local>,
+    claims: Vec<(Type, bool, Vec<Type>)>,
+    env: Vec<Type>,
+}
+
+impl LexicalFacts {
+    fn capture(state: &State) -> Self {
+        Self {
+            constructor_fields: state.constructor_fields.clone(),
+            derived_defaults: state.derived_defaults.clone(),
+            conversions: state.conversions.clone(),
+            pattern_equals: state.pattern_equals.clone(),
+            body_parameters: state.body_parameters.clone(),
+            tests: state.tests.clone(),
+            default_instances: state.default_instances.clone(),
+            member_contracts: state.member_contracts.clone(),
+            member_contract_reads: state.member_contract_reads.clone(),
+            contract_stages: state.contract_stages.clone(),
+            contract_refinements: state.contract_refinements.clone(),
+            accesses: state.accesses.clone(),
+            roots: state.roots.clone(),
+            pattern_types: state.pattern_types.clone(),
+            selected: state.selected.clone(),
+            meaning_arguments: state.meaning_arguments.clone(),
+            main_lifts: state.main_lifts.clone(),
+            callee_types: state.callee_types.clone(),
+            rebuild_types: state.rebuild_types.clone(),
+            rebuilds: state.rebuilds.clone(),
+            modes: state.modes.clone(),
+            types: state.types.clone(),
+            entries: state.entries.clone(),
+            checks: state.checks.clone(),
+            casts: state.casts.clone(),
+            supplied: state.supplied.clone(),
+            bound: state.bound.clone(),
+            bindings: state.bindings.clone(),
+            locals: state.locals.clone(),
+            claims: state.claims.clone(),
+            env: state.env.clone(),
+        }
+    }
+
+    fn install(&self, state: &mut State) {
+        state.constructor_fields = self.constructor_fields.clone();
+        state.derived_defaults = self.derived_defaults.clone();
+        state.conversions = self.conversions.clone();
+        state.pattern_equals = self.pattern_equals.clone();
+        state.body_parameters = self.body_parameters.clone();
+        state.tests.clone_from(&self.tests);
+        state.default_instances = self.default_instances.clone();
+        state.member_contracts = self.member_contracts.clone();
+        state.member_contract_reads = self.member_contract_reads.clone();
+        state.contract_stages = self.contract_stages.clone();
+        state.contract_refinements = self.contract_refinements.clone();
+        state.accesses = self.accesses.clone();
+        state.roots = self.roots.clone();
+        state.pattern_types = self.pattern_types.clone();
+        state.selected = self.selected.clone();
+        state.meaning_arguments = self.meaning_arguments.clone();
+        state.main_lifts.clone_from(&self.main_lifts);
+        state.callee_types = self.callee_types.clone();
+        state.rebuild_types = self.rebuild_types.clone();
+        state.rebuilds = self.rebuilds.clone();
+        state.modes = self.modes.clone();
+        state.types.clone_from(&self.types);
+        state.entries.clone_from(&self.entries);
+        state.checks.clone_from(&self.checks);
+        state.casts.clone_from(&self.casts);
+        state.supplied = self.supplied.clone();
+        state.bound = self.bound.clone();
+        state.bindings.clone_from(&self.bindings);
+        state.locals = self.locals.clone();
+        state.claims.clone_from(&self.claims);
+        state.env.clone_from(&self.env);
+    }
+
+    fn restore_field(&self, current: &mut Self, field: trial::Field) {
+        match field {
+            trial::Field::Selection => {
+                current.selected.clone_from(&self.selected);
+                current.member_contracts.clone_from(&self.member_contracts);
+                current.contract_stages.clone_from(&self.contract_stages);
+                current
+                    .contract_refinements
+                    .clone_from(&self.contract_refinements);
+                current
+                    .meaning_arguments
+                    .clone_from(&self.meaning_arguments);
+            }
+            trial::Field::DefaultInstances => {
+                current
+                    .default_instances
+                    .clone_from(&self.default_instances);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LexicalContext {
+    owner: LexicalOwner,
+    resolved: Rc<Resolved>,
+    self_type: Option<Type>,
+    home: Option<Origin>,
+    facts: LexicalFacts,
+}
+
+/// Everything inference changes. A trial reading ([`trial`]) journals
+/// its writes and is kept or restored.
+struct State {
+    lexical_owner: LexicalOwner,
+    lexical_resolved: Option<Rc<Resolved>>,
+    lexical_frames: Vec<Rc<LexicalContext>>,
+    constructor_fields: BTreeMap<(usize, usize), Vec<usize>>,
+    derived_defaults: BTreeMap<(usize, usize), crate::typed::DefaultValue>,
+    conversions: BTreeMap<(usize, usize), crate::typed::Conversion>,
+    pattern_equals: BTreeMap<usize, crate::typed::Comparison>,
+    body_parameters: BTreeMap<(usize, usize), Vec<Type>>,
+    tests: Vec<crate::typed::Test>,
+    pending_defaults: Vec<PendingDefault>,
+    default_instances:
+        BTreeMap<(usize, usize, usize), crate::typed::DeclaredExpression>,
+    member_contracts:
+        BTreeMap<crate::typed::MemberContractUse, crate::typed::MemberContract>,
+    member_contract_reads:
+        BTreeMap<(usize, usize), Vec<Vec<crate::typed::MemberContractRead>>>,
+    contract_stages: BTreeMap<(usize, usize), ContractBindingUse>,
+    contract_refinements: BTreeMap<
+        (crate::typed::MemberContractUse, Span, Span, usize, usize),
+        Type,
+    >,
+    accesses: BTreeMap<(usize, usize), Vec<crate::typed::Access>>,
+    roots: BTreeMap<(usize, usize), SavedRoot>,
     pattern_types: BTreeMap<usize, Type>,
     selected: BTreeMap<(usize, usize), crate::typed::Selected>,
     meaning_arguments: BTreeMap<(usize, usize), Vec<Type>>,
@@ -343,7 +522,7 @@ struct State {
     types: Vec<Option<Type>>,
     /// Each value entering a place: its place type, span and kind, and
     /// whether the place was a type variable when entered.
-    entries: Vec<(ExprId, Type, Span, crate::typed::Place, bool)>,
+    entries: Vec<crate::limits::EntryInput>,
     checks: Vec<crate::typed::Check>,
     casts: Vec<Option<alloc::boxed::Box<crate::typed::Cast>>>,
     families: Vec<outcome::Pending>,
@@ -384,14 +563,22 @@ impl State {
     /// A fresh state over `subst` for a module of `size` expressions.
     fn new(subst: Subst, size: usize) -> Self {
         Self {
+            lexical_owner: None,
+            lexical_resolved: None,
+            lexical_frames: Vec::new(),
             conversions: BTreeMap::new(),
             pattern_equals: BTreeMap::new(),
             body_parameters: BTreeMap::new(),
             tests: Vec::new(),
             subst,
+            pending_defaults: Vec::new(),
             default_instances: BTreeMap::new(),
             derived_defaults: BTreeMap::new(),
             constructor_fields: BTreeMap::new(),
+            member_contracts: BTreeMap::new(),
+            member_contract_reads: BTreeMap::new(),
+            contract_stages: BTreeMap::new(),
+            contract_refinements: BTreeMap::new(),
             accesses: BTreeMap::new(),
             roots: BTreeMap::new(),
             pattern_types: BTreeMap::new(),
@@ -432,9 +619,224 @@ impl State {
     }
 }
 
+impl State {
+    const fn move_common(&mut self, target: &mut Self) {
+        core::mem::swap(&mut self.subst, &mut target.subst);
+        core::mem::swap(&mut self.obligations, &mut target.obligations);
+        core::mem::swap(&mut self.families, &mut target.families);
+        core::mem::swap(&mut self.rebuilding, &mut target.rebuilding);
+        core::mem::swap(&mut self.status, &mut target.status);
+        core::mem::swap(&mut self.uses, &mut target.uses);
+        core::mem::swap(&mut self.deferred, &mut target.deferred);
+        core::mem::swap(
+            &mut self.pending_defaults,
+            &mut target.pending_defaults,
+        );
+        core::mem::swap(&mut self.dots_start, &mut target.dots_start);
+        core::mem::swap(&mut self.solving_dots, &mut target.solving_dots);
+        core::mem::swap(&mut self.errors, &mut target.errors);
+        core::mem::swap(&mut self.warnings, &mut target.warnings);
+        core::mem::swap(&mut self.defaults, &mut target.defaults);
+        core::mem::swap(&mut self.lowering, &mut target.lowering);
+        core::mem::swap(&mut self.lowered, &mut target.lowered);
+        core::mem::swap(&mut self.acyclic_types, &mut target.acyclic_types);
+        core::mem::swap(&mut self.lexical_frames, &mut target.lexical_frames);
+    }
+
+    /// Restore one exact context, wherever it is currently suspended.
+    fn restore_capsule(
+        &mut self,
+        old: &LexicalContext,
+        field: Option<trial::Field>,
+    ) {
+        if same_owner(&self.lexical_owner, &old.owner) {
+            if let Some(field) = field {
+                let mut facts = LexicalFacts::capture(self);
+                old.facts.restore_field(&mut facts, field);
+                facts.install(self);
+            } else {
+                old.facts.install(self);
+            }
+            return;
+        }
+        if let Some(frame) = self
+            .lexical_frames
+            .iter_mut()
+            .rev()
+            .find(|frame| same_owner(&frame.owner, &old.owner))
+        {
+            let mut updated = (**frame).clone();
+            if let Some(field) = field {
+                old.facts.restore_field(&mut updated.facts, field);
+            } else {
+                updated = old.clone();
+            }
+            *frame = Rc::new(updated);
+            return;
+        }
+        let pending = self
+            .pending_defaults
+            .iter_mut()
+            .find(|pending| same_owner(&pending.context.owner, &old.owner))
+            .expect("a queued default has its lexical context");
+        let mut updated = (*pending.context).clone();
+        if let Some(field) = field {
+            old.facts.restore_field(&mut updated.facts, field);
+        } else {
+            updated = old.clone();
+        }
+        pending.context = Rc::new(updated);
+    }
+}
+
+impl Infer<'_> {
+    fn lexical_context(&self) -> Rc<LexicalContext> {
+        Rc::new(LexicalContext {
+            owner: self.state.lexical_owner.clone(),
+            resolved: self
+                .state
+                .lexical_resolved
+                .clone()
+                .unwrap_or_else(|| Rc::new(self.resolved.clone())),
+            self_type: self.self_type.clone(),
+            home: self.declared_home.clone(),
+            facts: LexicalFacts::capture(&self.state),
+        })
+    }
+
+    fn push_owed(&mut self, mut owed: Owed) {
+        owed.lexical_owner.clone_from(&self.state.lexical_owner);
+        self.state.obligations.push(owed);
+    }
+
+    fn queued_lexical_context(
+        &self,
+        owner: &LexicalOwner,
+    ) -> Rc<LexicalContext> {
+        self.state
+            .lexical_frames
+            .iter()
+            .rev()
+            .find(|frame| same_owner(&frame.owner, owner))
+            .cloned()
+            .or_else(|| {
+                self.state
+                    .pending_defaults
+                    .iter()
+                    .find(|pending| same_owner(&pending.context.owner, owner))
+                    .map(|pending| Rc::clone(&pending.context))
+            })
+            .expect("a queued lexical owner is active, suspended, or pending")
+    }
+
+    fn with_lexical_owner<R>(
+        &mut self,
+        owner: &LexicalOwner,
+        action: impl FnOnce(&mut Infer<'_>) -> R,
+    ) -> R {
+        if same_owner(&self.state.lexical_owner, owner) {
+            return action(self);
+        }
+        let target = self.queued_lexical_context(owner);
+        let previous = self.lexical_context();
+        let before: Vec<_> = self
+            .state
+            .pending_defaults
+            .iter()
+            .map(|p| Rc::clone(&p.context))
+            .chain(self.state.lexical_frames.iter().cloned())
+            .chain(core::iter::once(Rc::clone(&previous)))
+            .collect();
+        self.journal_shared_context();
+        self.state.lexical_frames.push(Rc::clone(&previous));
+        let mut inner = Infer {
+            module: self.module,
+            resolved: &target.resolved,
+            declarations: self.declarations,
+            files: self.files,
+            frame: self.frame,
+            visiting: self.visiting.clone(),
+            file_cache: self.file_cache,
+            indexes: self.indexes.clone(),
+            expression_ids: self.expression_ids.clone(),
+            operators: self.operators.clone(),
+            weak: self.weak,
+            state: State::new(Subst::default(), self.module.expressions.len()),
+            items: Vec::new(),
+            groups: Vec::new(),
+            self_type: None,
+            declared_home: None,
+            checked_file_scope: self.checked_file_scope.clone(),
+        };
+        target.facts.install(&mut inner.state);
+        self.state.move_common(&mut inner.state);
+        inner.state.lexical_owner.clone_from(&target.owner);
+        inner.state.lexical_resolved = Some(Rc::clone(&target.resolved));
+        inner.items = core::mem::take(&mut self.items);
+        inner.groups = core::mem::take(&mut self.groups);
+        inner.weak = self.weak;
+        inner.self_type.clone_from(&target.self_type);
+        inner.declared_home.clone_from(&target.home);
+        let guard = owner.as_ref().map(|owner| owner.key.clone());
+        let pushed = guard
+            .as_ref()
+            .is_some_and(|key| !inner.state.defaults.contains(key));
+        if pushed {
+            inner
+                .state
+                .defaults
+                .push(guard.clone().expect("owner guard"));
+        }
+        let result = action(&mut inner);
+        if pushed {
+            assert_eq!(inner.state.defaults.pop(), guard);
+        }
+        assert_eq!(
+            inner.state.trials, 0,
+            "lexical callbacks close their trials"
+        );
+        let updated = inner.lexical_context();
+        if let Some(frame) = inner
+            .state
+            .lexical_frames
+            .iter_mut()
+            .rev()
+            .find(|frame| same_owner(&frame.owner, owner))
+        {
+            *frame = updated;
+        } else {
+            inner
+                .state
+                .pending_defaults
+                .iter_mut()
+                .find(|p| same_owner(&p.context.owner, owner))
+                .expect("pending owner")
+                .context = updated;
+        }
+        let caller =
+            inner.state.lexical_frames.pop().expect("suspended caller");
+        inner.state.move_common(&mut self.state);
+        caller.facts.install(&mut self.state);
+        self.state.lexical_owner.clone_from(&caller.owner);
+        self.state.lexical_resolved = Some(Rc::clone(&caller.resolved));
+        self.items = inner.items;
+        self.groups = inner.groups;
+        self.self_type.clone_from(&caller.self_type);
+        self.declared_home.clone_from(&caller.home);
+        for old in before {
+            self.state.journal(trial::Undo::Capsule(old));
+        }
+        result
+    }
+}
+
 /// An obligation, where it arose, and the literal that raised it.
 #[derive(Clone)]
 struct Owed {
+    contract_reads: Vec<crate::typed::MemberContractRead>,
+    contract_use: Option<crate::typed::MemberContractUse>,
+    contract_ordinal: Option<usize>,
+    lexical_owner: LexicalOwner,
     obligation: Obligation,
     span: Span,
     literal: Option<Lit>,
@@ -448,6 +850,10 @@ struct Owed {
 impl Owed {
     const fn new(obligation: Obligation, span: Span) -> Self {
         Self {
+            contract_reads: Vec::new(),
+            contract_use: None,
+            contract_ordinal: None,
+            lexical_owner: None,
             obligation,
             span,
             literal: None,
@@ -462,20 +868,51 @@ impl Owed {
 enum Status {
     Pending,
     Typing,
-    Done(Scheme),
+    Done(alloc::boxed::Box<Generalized>),
 }
 
 #[derive(Clone)]
 struct Use {
+    lexical_owner: LexicalOwner,
+    owner: Option<Type>,
+    /// This use's monomorphic check ran; errors still invalidate completion.
+    checked: bool,
     item: usize,
     ty: Type,
     span: Span,
+}
+
+/// One per-invocation default decision snapshot, private until source completion.
+#[derive(Clone)]
+struct PendingDefault {
+    context: Rc<LexicalContext>,
+    earlier: Vec<Slot>,
+    instance: crate::typed::DeclaredExpression,
+    uses: Vec<(usize, Use)>,
+    invocation: core::ops::Range<usize>,
+    roots: BTreeMap<(usize, usize), SavedRoot>,
+}
+
+/// A root snapshot and the exact paired callee it came from.
+#[derive(Clone)]
+struct SavedRoot {
+    root: crate::typed::Root,
+    callee: Type,
+    owner: Option<Type>,
+}
+
+/// A member scheme and its owner share one set of quantified variables.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Generalized {
+    scheme: Scheme,
+    owner: Option<Type>,
 }
 
 /// A lexical binding's scheme; a session's frame keeps its accepted
 /// lines' bindings in this form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Local {
+    pub(crate) owner: Option<Type>,
     pub(crate) scheme: Scheme,
     /// The spot list of a binding whose value is an arm list.
     pub(crate) heads: Option<Vec<Head>>,
@@ -564,9 +1001,18 @@ struct Slot {
     site: Span,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ContractBindingUse {
+    origin: Origin,
+    site: Span,
+    at: Span,
+}
+
 /// A value about to be applied.
 #[derive(Clone, Debug)]
 struct Callee {
+    contract_binding: Option<ContractBindingUse>,
+    owner: Option<Type>,
     selected: Option<crate::typed::Selected>,
     meanings: Vec<Type>,
     /// The whole type without a spot list; the result with one.
@@ -589,6 +1035,8 @@ struct Callee {
 impl Callee {
     const fn plain(ty: Type) -> Self {
         Self {
+            contract_binding: None,
+            owner: None,
             selected: None,
             meanings: Vec::new(),
             ty,
@@ -665,9 +1113,22 @@ struct Infer<'a> {
     groups: Vec<Group>,
     /// `Self` inside an impl body.
     self_type: Option<Type>,
+    declared_home: Option<Origin>,
+    /// This expression's module is a completed File, with names local to it.
+    checked_file_scope: Option<String>,
 }
 
 impl Infer<'_> {
+    /// Classification follows the nominal owner, never its display label.
+    fn resource(&self, ty: &Type) -> bool {
+        let Type::Named { name, .. } = meaning(ty) else {
+            return false;
+        };
+        self.owner(&name.origin).is_some_and(|module| module.entries.iter().any(|entry| {
+            matches!(entry, Entry::Item(crate::ast::Item { kind: ItemKind::Type { resource: true, name: declared, .. }, .. }) if last(declared) == name.name)
+        }))
+    }
+
     fn fresh(&mut self) -> Type {
         Type::Var(self.state.subst.fresh())
     }
@@ -718,7 +1179,7 @@ impl Infer<'_> {
             ty,
             dot: span,
         };
-        self.state.obligations.push(Owed::new(obligation, span));
+        self.push_owed(Owed::new(obligation, span));
     }
 
     fn item_index(&self, key: &Key) -> Option<usize> {
@@ -743,10 +1204,15 @@ impl Infer<'_> {
                         *dot = span;
                     }
                 }
-                let (ty, meanings) =
-                    self.instantiate_with_meanings(&local.scheme, span);
+                let contract_mark = self.state.obligations.len();
+                let (ty, meanings, owner) = self.instantiate_member(
+                    &local.scheme,
+                    local.owner.as_ref(),
+                    span,
+                );
                 let mut callee = self.with_heads(ty, local.heads.as_deref());
                 callee.meanings = meanings;
+                callee.owner = owner;
                 if !self.state.locals.contains_key(&key) {
                     callee.home = self
                         .frame
@@ -764,6 +1230,16 @@ impl Infer<'_> {
                     origin: callee.home.clone().unwrap_or(Origin::This),
                     site,
                 });
+                let binding = ContractBindingUse {
+                    origin: callee.home.clone().unwrap_or(Origin::This),
+                    site,
+                    at: span,
+                };
+                self.attach_contract_binding(contract_mark, &binding);
+                callee.contract_binding = Some(binding);
+                if self.state.locals.contains_key(&key) {
+                    self.local_contract_view(site, &mut callee);
+                }
                 callee
             }
             None => Callee::plain(self.fresh()),
@@ -772,6 +1248,7 @@ impl Infer<'_> {
 
     fn bind_local(&mut self, name: &Name, ty: Type) {
         let local = Local {
+            owner: None,
             scheme: Scheme::mono(ty),
             heads: None,
         };
@@ -811,6 +1288,51 @@ impl Infer<'_> {
                     }
                 }
             }
+        }
+    }
+
+    fn declare_source_bindings(&mut self) {
+        for entry in &self.module.entries {
+            let Entry::Line(id) = entry else { continue };
+            let ExprKind::Bind {
+                pattern,
+                annotation,
+                value,
+                ..
+            } = &self.module.expressions[id.0].kind
+            else {
+                continue;
+            };
+            let crate::ast::PatternKind::Name(name) =
+                &self.module.patterns[pattern.0].kind
+            else {
+                continue;
+            };
+            let arms = match &self.module.expressions[value.0].kind {
+                ExprKind::Arms(arms) => Some(arms.as_slice()),
+                _ => None,
+            };
+            let ty = match (annotation, arms) {
+                (Some(annotation), _) => self.lower_here(*annotation),
+                (None, Some(arms)) => self.skeleton(arms),
+                (None, None) => self.fresh(),
+            };
+            let mut item = Item::new(
+                Key::Binding(last(name)),
+                ty,
+                arms.map(|a| self.heads(a)),
+                name.span,
+            );
+            item.body = Some(Body::Value(*value));
+            item.annotated = annotation.is_some();
+            let group = self.groups.len();
+            let first = self.items.len();
+            self.push_item(item, group);
+            self.groups.push(Group {
+                members: vec![first],
+                self_type: None,
+                names: Vec::new(),
+            });
         }
     }
 
@@ -993,7 +1515,7 @@ impl Infer<'_> {
             let mut owed = Owed::new(obligation, name.span);
             owed.solved = true;
             owed.assumed = true;
-            self.state.obligations.push(owed);
+            self.push_owed(owed);
         }
         (named, mark)
     }
@@ -1003,6 +1525,7 @@ impl Infer<'_> {
         let module = self.module;
         let resolved = self.resolved;
         let ItemKind::Type {
+            resource: _,
             name,
             base,
             members,
@@ -1092,6 +1615,26 @@ impl Infer<'_> {
 
     fn record_decisions(&self) -> Typed {
         let mut decisions = self.state.decisions();
+        let subst = &self.state.subst;
+        decisions.casts = self
+            .state
+            .casts
+            .iter()
+            .map(|cast| {
+                cast.as_ref().map(|cast| {
+                    alloc::boxed::Box::new(crate::typed::Cast {
+                        operation: cast
+                            .operation
+                            .as_ref()
+                            .map(|operation| operation.applied(subst)),
+                        row: cast.row,
+                        from: subst.apply(&cast.from),
+                        to: subst.apply(&cast.to),
+                    })
+                })
+            })
+            .collect();
+        decisions.constructors = self.file_cache.used_constructors();
         decisions.schemes.extend(
             self.items.iter().zip(&self.state.status).filter_map(
                 |(item, status)| {
@@ -1100,16 +1643,117 @@ impl Infer<'_> {
                     };
                     Some((
                         (item.site.start, item.site.end),
-                        bind::applied(scheme, &self.state.subst),
+                        bind::applied(&scheme.scheme, &self.state.subst),
                     ))
                 },
             ),
         );
         if self.state.errors.is_empty() {
+            self.complete_owned_references(&mut decisions);
             decisions.complete_references(&self.state.subst);
         }
-        decisions.hidden = self.record_hidden(&decisions.schemes);
+        decisions.hidden = self.record_hidden(&decisions.schemes, &decisions);
         decisions
+    }
+
+    fn owned_arguments(
+        &self,
+        member: &Generalized,
+        ty: &Type,
+        actual_owner: &Type,
+    ) -> Vec<Type> {
+        let mut subst = self.state.subst.clone();
+        let fresh: Vec<_> = member
+            .scheme
+            .variables
+            .iter()
+            .map(|v| (*v, Type::Var(subst.fresh())))
+            .collect();
+        subst
+            .unify(&crate::types::replace(&member.scheme.ty, &fresh), ty)
+            .expect("checked member reference");
+        subst
+            .unify(
+                &crate::types::replace(
+                    member.owner.as_ref().expect("member owner"),
+                    &fresh,
+                ),
+                actual_owner,
+            )
+            .expect("checked member owner");
+        fresh.iter().map(|(_, ty)| subst.apply(ty)).collect()
+    }
+
+    fn local_member(
+        &self,
+        selected: &crate::typed::Selected,
+    ) -> Option<&Generalized> {
+        let crate::typed::Selected::Value {
+            origin: Origin::This,
+            site,
+        } = selected
+        else {
+            return None;
+        };
+        let index = self.items.iter().position(|item| item.site == *site)?;
+        let Status::Done(member) = &self.state.status[index] else {
+            return None;
+        };
+        member.owner.as_ref()?;
+        Some(member)
+    }
+
+    fn complete_owned_references(&self, decisions: &mut Typed) {
+        self.complete_saved_references(
+            decisions,
+            &self.state.uses,
+            &self.state.roots,
+        );
+    }
+    fn complete_saved_references(
+        &self,
+        decisions: &mut Typed,
+        uses: &[Use],
+        roots: &BTreeMap<(usize, usize), SavedRoot>,
+    ) {
+        for used in uses.iter().filter(|u| u.checked) {
+            let Status::Done(member) = &self.state.status[used.item] else {
+                continue;
+            };
+            let (Some(_), Some(owner)) = (&member.owner, &used.owner) else {
+                continue;
+            };
+            decisions.meaning_arguments.insert(
+                (used.span.start, used.span.end),
+                self.owned_arguments(member, &used.ty, owner),
+            );
+        }
+        for access in decisions.accesses.values_mut().flatten() {
+            let Some(member) = self.local_member(&access.selected) else {
+                continue;
+            };
+            access.meanings =
+                self.owned_arguments(member, &access.callee, &access.head);
+        }
+        for (site, root) in &mut decisions.roots {
+            let saved = &roots[site];
+            let (Some(member), Some(owner)) =
+                (self.local_member(&root.selected), &saved.owner)
+            else {
+                continue;
+            };
+            root.meanings = self.owned_arguments(member, &saved.callee, owner);
+        }
+        for row in decisions
+            .dispatch
+            .iter_mut()
+            .flat_map(|dispatch| &mut dispatch.rows)
+        {
+            if let Some(member) = self.local_member(&row.selected) {
+                row.meanings =
+                    self.owned_arguments(member, &row.ty, &row.receiver);
+            }
+        }
     }
 
     fn finish(mut self) -> (Typed, Vec<Error>) {
@@ -1126,7 +1770,27 @@ impl Infer<'_> {
         self.record_operations();
         let shapes = self.record_shapes();
         let unsolved = self.settle();
-        let dispatch = self.record_dispatch(&shapes);
+        let mut dispatch = self.record_dispatch(&shapes);
+        loop {
+            let requests: alloc::collections::BTreeSet<_> = dispatch
+                .iter()
+                .map(|dispatch| (dispatch.name.clone(), dispatch.receiverless))
+                .collect();
+            self.record_dispatch_input_tests(&dispatch);
+            if !self.state.errors.is_empty() {
+                break;
+            }
+            if self
+                .dispatch_requests()
+                .iter()
+                .all(|request| requests.contains(request))
+            {
+                break;
+            }
+            // New checked row-input tests can call generic helpers. Rebuild
+            // rows only when their finite semantic request set grows.
+            dispatch = self.record_dispatch(&shapes);
+        }
         let (frozen, weak, session_variables) = self.frozen();
         let decisions = self.record_decisions();
         let inputs = self.limit_inputs();
@@ -1135,28 +1799,11 @@ impl Infer<'_> {
             dispatch,
             shapes,
             declared: self.file_cache.used(),
+            constructors: self.file_cache.used_constructors(),
             main: Some(subst.apply(&main)),
-            rebuilds: self.state.rebuilds,
-            modes: self.state.modes,
-            casts: self
-                .state
-                .casts
-                .iter()
-                .map(|cast| {
-                    cast.as_ref().map(|cast| {
-                        alloc::boxed::Box::new(crate::typed::Cast {
-                            operation: cast
-                                .operation
-                                .as_ref()
-                                .map(|operation| operation.applied(subst)),
-                            row: cast.row,
-                            from: subst.apply(&cast.from),
-                            to: subst.apply(&cast.to),
-                        })
-                    })
-                })
-                .collect(),
-            warnings: self.state.warnings,
+            rebuilds: core::mem::take(&mut self.state.rebuilds),
+            modes: core::mem::take(&mut self.state.modes),
+            warnings: core::mem::take(&mut self.state.warnings),
             expressions: self
                 .state
                 .types
@@ -1171,10 +1818,8 @@ impl Infer<'_> {
                 .collect(),
 
             unsolved,
-            supplied: self.state.supplied,
-            checks: self
-                .state
-                .checks
+            supplied: core::mem::take(&mut self.state.supplied),
+            checks: core::mem::take(&mut self.state.checks)
                 .into_iter()
                 .map(|mut check| {
                     check.target = check.target.map(|ty| subst.apply(&ty));
@@ -1193,13 +1838,21 @@ impl Infer<'_> {
             .state
             .entries
             .iter()
-            .map(|(id, ty, span, kind, variable)| {
-                (*id, subst.apply(ty), *span, kind.clone(), *variable)
+            .map(|(id, ty, span, kind, variable, receiving_call)| {
+                (
+                    *id,
+                    subst.apply(ty),
+                    *span,
+                    kind.clone(),
+                    *variable,
+                    *receiving_call,
+                )
             })
             .collect();
-        let mut errors = self.state.errors;
+        let mut errors = core::mem::take(&mut self.state.errors);
         errors
             .extend(crate::limits::check(&inputs, &entries, None, &mut typed));
+        typed.hidden = self.record_hidden(&typed.schemes, &typed);
         import_checks(self.file_cache, &mut typed);
         errors.sort_by_key(|error| (error.span.start, error.span.end));
         (typed, errors)
@@ -1209,11 +1862,77 @@ impl Infer<'_> {
 /// Every binding and item of a module by its site, frozen.
 type Frozen = Vec<((usize, usize), Local)>;
 
+/// Give a declaration's own stored facts the same canonical binders as its scheme.
+pub(crate) fn canonical_body_type(
+    ty: &Type,
+    binders: &[(String, Var)],
+) -> Type {
+    bind::unrigid(ty, binders)
+}
+
 /// The first variable a frozen scheme quantifies: its variables are
 /// numbered apart from the weak ones, which later lines extend.
 const QUANTIFIED: u32 = 1 << 31;
 
 impl Infer<'_> {
+    fn freeze_member(
+        scheme: &Scheme,
+        owner: Option<&Type>,
+        subst: &Subst,
+        env: &[Var],
+        weak: &[(Var, Type)],
+    ) -> Generalized {
+        let scheme = bind::applied(scheme, subst);
+        let owner = owner.map(|owner| subst.apply(owner));
+        let root = owner.as_ref().map_or_else(
+            || scheme.ty.clone(),
+            |owner| Type::Tuple(alloc::vec![scheme.ty.clone(), owner.clone()]),
+        );
+        let general = Scheme::generalize(
+            &root,
+            &scheme.obligations,
+            env,
+            &Subst::default(),
+        );
+        let mut quantified = if owner.is_some() {
+            scheme.variables.clone()
+        } else {
+            Vec::new()
+        };
+        for var in general.variables {
+            if !quantified.contains(&var) {
+                quantified.push(var);
+            }
+        }
+        quantified.retain(|var| !env.contains(var));
+        let mut names = weak.to_vec();
+        let mut variables = Vec::new();
+        for (index, var) in quantified.iter().enumerate() {
+            let name = Var(QUANTIFIED.saturating_add(count(index)));
+            names.push((*var, Type::Var(name)));
+            variables.push(name);
+        }
+        Generalized {
+            owner: owner.map(|owner| replace(&owner, &names)),
+            scheme: Scheme {
+                variables,
+                obligations: scheme
+                    .obligations
+                    .iter()
+                    .map(|o| o.map(|ty| replace(ty, &names)))
+                    .collect(),
+                literals: scheme
+                    .literals
+                    .iter()
+                    .map(|(ty, form, span)| {
+                        (replace(ty, &names), form.clone(), *span)
+                    })
+                    .collect(),
+                ty: replace(&scheme.ty, &names),
+            },
+        }
+    }
+
     /// Every binding and item by its site, applied and generalized
     /// against the file-level environment, and the weak variables after
     /// this module. A pattern-bound binding is monomorphic in a file, so
@@ -1241,60 +1960,40 @@ impl Infer<'_> {
             let next = self.weak.saturating_add(count(weak.len()));
             weak.push((*var, Type::Var(Var(next))));
         }
-        let freeze = |scheme: &Scheme| {
-            let scheme = bind::applied(scheme, subst);
-            let general = Scheme::generalize(
-                &scheme.ty,
-                &scheme.obligations,
-                &env,
-                &Subst::default(),
-            );
-            let mut names = weak.clone();
-            let mut variables = Vec::new();
-            for (index, var) in general.variables.iter().enumerate() {
-                let name = Var(QUANTIFIED.saturating_add(count(index)));
-                names.push((*var, Type::Var(name)));
-                variables.push(name);
-            }
-            Scheme {
-                variables,
-                obligations: general
-                    .obligations
-                    .iter()
-                    .map(|o| o.map(|ty| replace(ty, &names)))
-                    .collect(),
-                literals: scheme
-                    .literals
-                    .iter()
-                    .map(|(ty, form, span)| {
-                        (replace(ty, &names), form.clone(), *span)
-                    })
-                    .collect(),
-                ty: replace(&general.ty, &names),
-            }
+        let freeze = |scheme: &Scheme, owner: Option<&Type>| {
+            Self::freeze_member(scheme, owner, subst, &env, &weak)
         };
         let mut frozen: Vec<_> = self
             .state
             .locals
             .iter()
             .map(|(site, local)| {
-                let local = Local {
-                    scheme: freeze(&local.scheme),
-                    heads: local.heads.clone(),
-                };
-                (*site, local)
+                let pair = freeze(&local.scheme, local.owner.as_ref());
+                (
+                    *site,
+                    Local {
+                        scheme: pair.scheme,
+                        owner: pair.owner,
+                        heads: local.heads.clone(),
+                    },
+                )
             })
             .collect();
         for (item, status) in self.items.iter().zip(&self.state.status) {
-            let scheme = match status {
-                Status::Done(scheme) => freeze(scheme),
-                _ => freeze(&Scheme::mono(item.ty.clone())),
+            let pair = match status {
+                Status::Done(member) => {
+                    freeze(&member.scheme, member.owner.as_ref())
+                }
+                _ => freeze(&Scheme::mono(item.ty.clone()), None),
             };
-            let local = Local {
-                scheme,
-                heads: item.heads.clone(),
-            };
-            frozen.push(((item.site.start, item.site.end), local));
+            frozen.push((
+                (item.site.start, item.site.end),
+                Local {
+                    scheme: pair.scheme,
+                    owner: pair.owner,
+                    heads: item.heads.clone(),
+                },
+            ));
         }
         let earlier = (0..self.weak).map(|var| {
             let ty = subst.apply(&Type::Var(Var(var)));
@@ -1400,6 +2099,8 @@ impl<'a> Infer<'a> {
             items: Vec::new(),
             groups: Vec::new(),
             self_type: None,
+            declared_home: None,
+            checked_file_scope: None,
         }
     }
 }
@@ -1464,11 +2165,23 @@ pub(crate) fn check_declarations(
             ..
         }) = entry
         {
-            let mut head = infer.lower(
-                &scope,
-                *target,
-                &mut lower::Vars::new(lower::SelfKind::None),
-            );
+            let mut vars = lower::Vars::new(lower::SelfKind::None);
+            let mut head = infer.lower(&scope, *target, &mut vars);
+            // Explicit impl parameters are universal. An omitted target's
+            // arguments still come from its member signature (e.g. Vec Literal).
+            if matches!(&module.types[target.0].kind, crate::ast::TypeKind::Named { arguments, .. } if !arguments.is_empty())
+            {
+                let mut variables = Vec::new();
+                head.variables(&mut variables);
+                let rigid: Vec<_> = variables
+                    .into_iter()
+                    .map(|v| (v, Type::Rigid(alloc::format!("claim{}", v.0))))
+                    .collect();
+                head = crate::types::replace(&head, &rigid);
+                for (_, ty) in &mut vars.names {
+                    *ty = crate::types::replace(ty, &rigid);
+                }
+            }
             if let Type::Named { name, arguments } = &mut head {
                 if let Some((parameters, _)) =
                     infer.type_item(module, &name.name)
@@ -1478,11 +2191,8 @@ pub(crate) fn check_declarations(
                     }
                 }
             }
-            let class = infer.lower(
-                &scope,
-                *claim,
-                &mut lower::Vars::new(lower::SelfKind::Type(head.clone())),
-            );
+            vars.self_kind = lower::SelfKind::Type(head.clone());
+            let class = infer.lower(&scope, *claim, &mut vars);
             infer.check_supplied_claim(&head, &class, *span);
         }
     }
@@ -1517,23 +2227,82 @@ fn test_enters_self(
 }
 
 impl State {
+    fn applied_access_decisions(
+        &self,
+        pending: &[Rc<Typed>],
+    ) -> BTreeMap<(usize, usize), Vec<crate::typed::Access>> {
+        self.accesses
+            .iter()
+            .map(|(site, steps)| {
+                (
+                    *site,
+                    steps
+                        .iter()
+                        .map(|step| {
+                            step.applied_preserving(&self.subst, pending)
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn applied_member_contracts(
+        &self,
+    ) -> BTreeMap<crate::typed::MemberContractUse, crate::typed::MemberContract>
+    {
+        let subst = &self.subst;
+        self.member_contracts
+            .iter()
+            .map(|(key, contract)| {
+                let mut contract = contract.clone();
+                contract.selected = contract.selected.applied(subst);
+                contract.meanings = contract
+                    .meanings
+                    .iter()
+                    .map(|ty| subst.apply(ty))
+                    .collect();
+                contract.receiver = subst.apply(&contract.receiver);
+                contract.callable = subst.apply(&contract.callable);
+                (key.clone(), contract)
+            })
+            .collect()
+    }
+
+    fn applied_derived_defaults(
+        &self,
+        pending: &[Rc<Typed>],
+    ) -> BTreeMap<(usize, usize), crate::typed::DefaultValue> {
+        self.derived_defaults
+            .iter()
+            .map(|(site, value)| {
+                let mut value = value.clone();
+                record::apply_default_preserving(
+                    &mut value,
+                    &self.subst,
+                    pending,
+                );
+                (*site, value)
+            })
+            .collect()
+    }
+
     fn decisions(&self) -> Typed {
         let subst = &self.subst;
+        let pending: Vec<_> = self
+            .pending_defaults
+            .iter()
+            .map(|plan| alloc::rc::Rc::clone(&plan.instance.typed))
+            .collect();
         let mut bound = self.bound.clone();
         for binding in bound.values_mut() {
-            record::apply_bound(binding, subst);
+            record::apply_bound_preserving(binding, subst, &pending);
         }
         Typed {
+            member_contract_reads: self.member_contract_reads.clone(),
+            member_contracts: self.applied_member_contracts(),
             constructor_fields: self.constructor_fields.clone(),
-            derived_defaults: self
-                .derived_defaults
-                .iter()
-                .map(|(site, value)| {
-                    let mut value = value.clone();
-                    record::apply_default(&mut value, subst);
-                    (*site, value)
-                })
-                .collect(),
+            derived_defaults: self.applied_derived_defaults(&pending),
             body_parameters: self.body_parameters.clone(),
             tests: self
                 .tests
@@ -1547,7 +2316,12 @@ impl State {
                 .default_instances
                 .iter()
                 .map(|(site, instance)| {
-                    (*site, record::apply_recorded(instance, subst))
+                    (
+                        *site,
+                        record::apply_recorded_preserving(
+                            instance, subst, &pending,
+                        ),
+                    )
                 })
                 .collect(),
             rebuild_types: self
@@ -1555,20 +2329,11 @@ impl State {
                 .iter()
                 .map(|(site, ty)| (*site, subst.apply(ty)))
                 .collect(),
-            accesses: self
-                .accesses
-                .iter()
-                .map(|(site, steps)| {
-                    (
-                        *site,
-                        steps.iter().map(|step| step.applied(subst)).collect(),
-                    )
-                })
-                .collect(),
+            accesses: self.applied_access_decisions(&pending),
             roots: self
                 .roots
                 .iter()
-                .map(|(site, root)| (*site, root.applied(subst)))
+                .map(|(site, saved)| (*site, saved.root.applied(subst)))
                 .collect(),
             schemes: self
                 .locals

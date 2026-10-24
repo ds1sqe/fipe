@@ -19,7 +19,7 @@ fn program(source: &str) -> fipe::mir::Program {
 #[test]
 fn a_module_defines_each_body_the_main_and_the_unit() {
     let program = program("double = n => n * 2\ndouble 21\n");
-    let ir = fipe_llvm::module(&program, b"unit");
+    let ir = fipe_llvm::module(&program, b"unit").unwrap();
     for index in 0..program.bodies.len() {
         assert!(ir.contains(&format!("define internal i32 @body_{index}(")));
     }
@@ -34,7 +34,7 @@ fn a_module_defines_each_body_the_main_and_the_unit() {
 #[test]
 fn clang_compiles_the_module_to_an_object() {
     let program = program("xs = [1, 2, 3]\nxs | map (n => n + 1) | sum\n");
-    let ir = fipe_llvm::module(&program, b"");
+    let ir = fipe_llvm::module(&program, b"").unwrap();
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("module");
     std::fs::create_dir_all(&dir).unwrap();
     let object = dir.join("sum.o");
@@ -42,4 +42,28 @@ fn clang_compiles_the_module_to_an_object() {
     let bytes = std::fs::read(&object).unwrap();
     assert_eq!(&bytes[..4], b"\x7fELF");
     assert!(!dir.join("sum.ll").exists(), "the IR file is removed");
+}
+
+#[test]
+fn resource_program_module_refuses_private_unused_declarations() {
+    let mut declarations = Declarations::new();
+    declarations
+        .module("private", "type resource Table")
+        .unwrap();
+    let main = parse(lex("1")).unwrap();
+    let checked =
+        check::check(&main, &declarations, &[], check::Options::default())
+            .unwrap();
+    let program = fipe::compile::compile(&checked);
+    assert!(program.tables.borrow().has_resources);
+    assert!(program
+        .tables
+        .borrow()
+        .meanings
+        .iter()
+        .all(|meaning| !meaning.resource));
+    assert_eq!(
+        fipe_llvm::module(&program, b"").unwrap_err(),
+        "native execution does not support resource declarations"
+    );
 }

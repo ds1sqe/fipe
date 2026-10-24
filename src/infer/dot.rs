@@ -27,7 +27,7 @@ impl<'a> Infer<'a> {
             let applied = super::meaning(&self.apply(&current)).clone();
             if matches!(applied, Type::Var(_) | Type::Rigid(_)) {
                 current = self.fresh();
-                self.owe_member(&applied, member, &current, span);
+                self.owe_member(&applied, member, &current, span, index);
                 self.record_access(
                     span,
                     applied.clone(),
@@ -95,18 +95,7 @@ impl<'a> Infer<'a> {
             if index + 1 == members.len() {
                 return callee;
             }
-            current = self.apply_callee(callee, &[], None, span, None);
-            let key = (span.start, span.end);
-            self.journal_key(|s| &mut s.accesses, key);
-            if let Some(step) = self
-                .state
-                .accesses
-                .get_mut(&key)
-                .and_then(|steps| steps.last_mut())
-            {
-                step.result = current.clone();
-                step.bound = self.state.bound.get(&key).cloned();
-            }
+            current = self.complete_member_access(callee, span);
         }
         let mut callee = Callee::plain(current);
         callee.selected = self
@@ -118,29 +107,137 @@ impl<'a> Infer<'a> {
         callee
     }
 
+    fn complete_member_access(&mut self, callee: Callee, span: Span) -> Type {
+        let home = callee.home.clone().unwrap_or(Origin::This);
+        let sources: Vec<_> = callee
+            .spots
+            .iter()
+            .flatten()
+            .map(|slot| (slot.site, slot.value, slot.name.clone()))
+            .collect();
+        let current = self.apply_callee(callee, &[], None, span, None);
+        let key = (span.start, span.end);
+        let mut bound = self.state.bound.get(&key).cloned();
+        if let Some(bound) = &mut bound {
+            self.own_access_defaults(bound, &home, &sources, span);
+        }
+        self.journal_key(|s| &mut s.accesses, key);
+        if let Some(step) = self
+            .state
+            .accesses
+            .get_mut(&key)
+            .and_then(|steps| steps.last_mut())
+        {
+            step.result = current.clone();
+            step.bound = bound;
+        }
+        current
+    }
+
+    fn own_access_defaults(
+        &mut self,
+        bound: &mut crate::typed::Bound,
+        home: &Origin,
+        sources: &[(Span, Option<crate::ast::ExprId>, Option<String>)],
+        stage: Span,
+    ) {
+        for (spot, default) in &mut bound.defaults {
+            let crate::typed::DefaultValue::Declared { origin, value } =
+                default
+            else {
+                continue;
+            };
+            if !self.state.errors.is_empty() {
+                continue;
+            }
+            let source = sources.get(*spot);
+            let matches_source = source.is_some_and(|(site, expected, _)| {
+                bound
+                    .spots
+                    .get(*spot)
+                    .is_some_and(|(actual, _)| actual == site)
+                    && *expected == Some(*value)
+                    && self.effective_default_origin(origin)
+                        == self.effective_default_origin(home)
+            });
+            if matches_source
+                && source.is_some_and(|(site, _, _)| {
+                    self.state.defaults.contains(&(home.clone(), *site))
+                })
+            {
+                continue;
+            }
+            let instance = self
+                .state
+                .default_instances
+                .get(&(stage.start, stage.end, *spot))
+                .filter(|instance| {
+                    matches_source
+                        && instance.value == *value
+                        && self.effective_default_origin(&instance.origin)
+                            == self.effective_default_origin(origin)
+                });
+            if let Some(instance) = instance {
+                *default = crate::typed::DefaultValue::Expression(
+                    alloc::boxed::Box::new(instance.clone()),
+                );
+            } else {
+                self.error(
+                    stage,
+                    Reason::Default {
+                        name: source
+                            .and_then(|(_, _, name)| name.clone())
+                            .unwrap_or_default(),
+                        cause: None,
+                    },
+                );
+            }
+        }
+    }
+
+    fn effective_default_origin(&self, origin: &Origin) -> Origin {
+        if *origin == Origin::This {
+            self.declared_home.as_ref().unwrap_or(origin).clone()
+        } else {
+            origin.clone()
+        }
+    }
+
     fn owe_member(
         &mut self,
         applied: &Type,
         member: &str,
         current: &Type,
         span: Span,
+        step: usize,
     ) {
-        let prior = self.state.obligations.iter().rev().find_map(|o| match &o
-            .obligation
-        {
-            Obligation::Member { head, name, ty, .. }
-                if !o.solved
-                    && name == member
-                    && self.apply(head) == *applied =>
-            {
-                Some(ty.clone())
+        let prior = self.state.obligations.iter().enumerate().rev().find_map(
+            |(index, o)| match &o.obligation {
+                Obligation::Member { head, name, ty, .. }
+                    if !o.solved
+                        && name == member
+                        && self.apply(head) == *applied =>
+                {
+                    Some((index, ty.clone()))
+                }
+                _ => None,
+            },
+        );
+        let read = crate::typed::MemberContractRead { span, step };
+        if let Some((index, prior)) = prior {
+            self.journal_list(|s| &mut s.obligations);
+            if !self.state.obligations[index].contract_reads.contains(&read) {
+                self.state.obligations[index].contract_reads.push(read);
             }
-            _ => None,
-        });
-        if let Some(prior) = prior {
             self.unify(&prior, current, span, span);
         } else {
             self.require_member(applied.clone(), member, current.clone(), span);
+            self.state
+                .obligations
+                .last_mut()
+                .expect("new member requirement")
+                .contract_reads
+                .push(read);
         }
     }
 
@@ -229,6 +326,12 @@ impl<'a> Infer<'a> {
     /// `head.name: ty` on a known head: its field, else the remaining
     /// application of a `self`-spot function to it.
     fn member(&mut self, owed: &Owed) {
+        self.with_lexical_owner(&owed.lexical_owner, |inner| {
+            inner.member_owned(owed);
+        });
+    }
+
+    fn member_owned(&mut self, owed: &Owed) {
         let Obligation::Member { name, dot, .. } = &owed.obligation else {
             self.claim(owed);
             return;
@@ -271,6 +374,7 @@ impl<'a> Infer<'a> {
             self.claim(owed);
             return;
         };
+        let contract_errors = self.state.errors.len();
         let original = self.apply(head);
         let (head, dot) = (
             super::meaning(&original).clone(),
@@ -281,18 +385,7 @@ impl<'a> Infer<'a> {
             },
         );
         if matches!(head, Type::Rigid(_)) {
-            let supplied = self.assumed_member(&head, name, dot);
-            if let Some(supplied) = supplied {
-                self.unify(ty, &supplied, dot, owed.span);
-                return;
-            }
-            self.error(
-                dot,
-                Reason::NoField {
-                    ty: head,
-                    other: owed.span,
-                },
-            );
+            self.solve_rigid_member(head, name, ty, dot, owed.span);
             return;
         }
         if let Some(literal) = owed.literal.clone() {
@@ -324,6 +417,7 @@ impl<'a> Infer<'a> {
             self.unify(ty, &selected, dot, owed.span);
             return;
         }
+        let mut provider = None;
         let value = if let Some((field, selected)) = self.field(&head, name) {
             self.record_field(dot, &head, name, &selected);
             field
@@ -336,8 +430,9 @@ impl<'a> Infer<'a> {
             );
             return;
         } else if let Some(mut callee) = self.self_function(name, &head, dot) {
+            provider = self.member_contract_provider(&callee);
             let slot = callee.self_slot.unwrap_or_default();
-            callee.supplied = Some((slot, head, dot));
+            callee.supplied = Some((slot, head.clone(), dot));
             self.apply_callee(callee, &[], None, dot, None)
         } else if self.hidden_member(&head, name) {
             self.error(
@@ -358,6 +453,102 @@ impl<'a> Infer<'a> {
             return;
         };
         self.unify(ty, &value, dot, owed.span);
+        self.publish_member_contract(
+            owed,
+            contract_errors,
+            provider,
+            original,
+            value,
+        );
+    }
+
+    fn solve_rigid_member(
+        &mut self,
+        head: Type,
+        name: &str,
+        ty: &Type,
+        dot: Span,
+        site: Span,
+    ) {
+        let supplied = self.assumed_member(&head, name, dot);
+        if let Some(supplied) = supplied {
+            self.unify(ty, &supplied, dot, site);
+            return;
+        }
+        self.error(
+            dot,
+            Reason::NoField {
+                ty: head,
+                other: site,
+            },
+        );
+    }
+
+    fn publish_member_contract(
+        &mut self,
+        owed: &Owed,
+        contract_errors: usize,
+        provider: Option<(crate::typed::Selected, Origin, Vec<Type>)>,
+        original: Type,
+        value: Type,
+    ) {
+        if self.state.errors.len() == contract_errors
+            && !owed.contract_reads.is_empty()
+        {
+            if let (Some(key), Some((selected, home, meanings))) =
+                (&owed.contract_use, provider)
+            {
+                self.set_member_contract(
+                    key.clone(),
+                    crate::typed::MemberContract {
+                        selected,
+                        home,
+                        meanings,
+                        receiver: original,
+                        callable: value,
+                        reads: owed.contract_reads.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    fn member_contract_provider(
+        &self,
+        callee: &Callee,
+    ) -> Option<(crate::typed::Selected, Origin, Vec<Type>)> {
+        let crate::typed::Selected::Value { origin, site } =
+            callee.selected.as_ref()?
+        else {
+            return None;
+        };
+        let written = if *origin == Origin::This {
+            self.items.iter().any(|item| {
+                item.site == *site && item.annotated && item.body.is_some()
+            })
+        } else if matches!(
+            origin,
+            Origin::Host(_) | Origin::File(_) | Origin::Line(_)
+        ) {
+            // This callee came from the checked member-selection path. Only
+            // its exact owning declaration decides explicit-contract eligibility.
+            self.owner(origin).is_some_and(|module| module.entries.iter().any(|entry| {
+                let Entry::Item(item) = entry else { return false };
+                let crate::ast::ItemKind::Impl { members, .. } = &item.kind else { return false };
+                members.iter().any(|member| matches!(member,
+                    ImplMember::Named { name, annotation: Some(_), value: Some(_), .. }
+                    if name.span == *site))
+            }))
+        } else {
+            false
+        };
+        written.then(|| {
+            (
+                callee.selected.clone().unwrap(),
+                callee.home.clone().unwrap_or(Origin::This),
+                callee.meanings.clone(),
+            )
+        })
     }
 
     fn record_field(
@@ -607,17 +798,19 @@ impl<'a> Infer<'a> {
         if matches!(owner.origin, Origin::This | Origin::Line(_)) {
             let key = Key::Member(owner.name.clone(), String::from(member));
             if let Some(index) = self.item_index(&key) {
-                return self.item_callee(index, span);
+                let callee = self.item_callee(index, span);
+                return self.bind_member_owner(callee, &named, span);
             }
         }
         if let Some(site) = self.frame_member(&owner, member) {
-            return self.local(site, span);
+            let callee = self.local(site, span);
+            return self.bind_member_owner(callee, &named, span);
         }
         if let Origin::File(stem) = &owner.origin {
             if let Some(callee) =
                 self.file_member(stem, &owner.name, member, span)
             {
-                return callee;
+                return self.bind_member_owner(callee, &named, span);
             }
         }
         self.supplied_member(&owner.origin, &owner.name, &named, member, span)
@@ -628,6 +821,18 @@ impl<'a> Infer<'a> {
                 self.error(span,reason);
                 Callee::plain(self.fresh())
             })
+    }
+
+    fn bind_member_owner(
+        &mut self,
+        callee: Callee,
+        named: &Type,
+        span: Span,
+    ) -> Callee {
+        if let Some(owner) = &callee.owner {
+            self.unify(owner, named, span, span);
+        }
+        callee
     }
 
     pub(super) fn derived_member(
@@ -766,6 +971,14 @@ impl<'a> Infer<'a> {
         member: &str,
         span: Span,
     ) -> Vec<Callee> {
+        // Ordinary local members are collected from their registered items by
+        // the callers; supplied members must not add those definitions again.
+        if *origin == Origin::This
+            && self.declared_home.is_none()
+            && self.checked_file_scope.is_none()
+        {
+            return Vec::new();
+        }
         let mut callees = Vec::new();
         if let Origin::File(stem) = origin {
             let Some((module, typed)) = self.file_typed(stem, span) else {
@@ -786,11 +999,12 @@ impl<'a> Infer<'a> {
                             *site == (name.span.start, name.span.end)
                         })
                     {
-                        let (ty, meanings) =
-                            self.imported_meanings(&local.scheme, stem, span);
+                        let (ty, meanings, owner) =
+                            self.imported_member(local, stem, span);
                         let mut callee =
                             self.with_heads(ty, local.heads.as_deref());
                         callee.meanings = meanings;
+                        callee.owner = owner;
                         callee.selected = Some(crate::typed::Selected::Value {
                             origin: origin.clone(),
                             site: name.span,
@@ -846,14 +1060,21 @@ impl<'a> Infer<'a> {
         member: &str,
         span: Span,
     ) -> Vec<Callee> {
+        if *origin == Origin::This {
+            if let Some(stem) = self.checked_file_scope.clone() {
+                return self.checked_file_scope_members(
+                    &stem, owner, named, member, span,
+                );
+            }
+        }
         let mut callees = Vec::new();
         for (module, scope) in self.impl_scopes(origin, owner) {
             for members in super::lower::impls(module, owner) {
                 for entry in members {
                     let ImplMember::Named {
                         name,
-                        annotation: Some(ty),
-                        value: None,
+                        annotation,
+                        value,
                         ..
                     } = entry
                     else {
@@ -862,6 +1083,21 @@ impl<'a> Infer<'a> {
                     if super::last(name) != member {
                         continue;
                     }
+                    let written = if value.is_some() {
+                        let Some(callee) = self.written_supplied_member(
+                            origin, owner, module, name, named, span,
+                        ) else {
+                            continue;
+                        };
+                        if annotation.is_none() {
+                            callees.push(callee);
+                            continue;
+                        }
+                        Some(callee)
+                    } else {
+                        None
+                    };
+                    let Some(ty) = annotation else { continue };
                     let mut vars = Vars::new(SelfKind::Type(named.clone()));
                     if let Type::Named { arguments, .. } = named {
                         if let Some((parameters, _)) =
@@ -895,12 +1131,182 @@ impl<'a> Infer<'a> {
                     let mut callee = self
                         .finish_callee(slots, result, self_slot, vars, span);
                     callee.home = Some(origin.clone());
-                    callee.selected = Some(crate::typed::Selected::Declared {
-                        origin: origin.clone(),
-                        site: name.span,
-                    });
+                    if let Some(written) = written {
+                        let Some(written) = self.overlay_written_member(
+                            written,
+                            callee,
+                            (module, *ty),
+                            origin,
+                            name,
+                            span,
+                        ) else {
+                            continue;
+                        };
+                        callee = written;
+                    } else {
+                        callee.selected =
+                            Some(crate::typed::Selected::Declared {
+                                origin: origin.clone(),
+                                site: name.span,
+                            });
+                    }
                     callees.push(callee);
                 }
+            }
+        }
+        callees
+    }
+
+    fn overlay_written_member(
+        &mut self,
+        mut written: Callee,
+        declared: Callee,
+        declaration: (&Module, crate::ast::TypeId),
+        origin: &Origin,
+        name: &Name,
+        span: Span,
+    ) -> Option<Callee> {
+        let (module, annotation) = declaration;
+
+        self.unify(&declared.whole(), &written.whole(), span, name.span);
+        // Retain the declared parameter/result limits while the
+        // checked heads keep their actual raw boundary and self.
+        if let Some(spots) = &mut written.spots {
+            let Some((parameters, result)) =
+                self.peel(&declared.whole(), spots.len())
+            else {
+                self.error(
+                    span,
+                    Reason::DeclarationValue {
+                        name: super::last(name),
+                        origin: origin.clone(),
+                        declaration: name.span,
+                    },
+                );
+                return None;
+            };
+            for (slot, parameter) in spots.iter_mut().zip(parameters) {
+                slot.ty = parameter;
+            }
+            written.ty = result;
+        } else {
+            // An alias without checked heads has no raw boundary;
+            // retain the complete declared type before overlay.
+            written.ty = declared.whole();
+        }
+        written.parameters = declared.parameters;
+        self.overlay_declared_signature(
+            &mut written,
+            module,
+            annotation,
+            origin,
+            (&super::last(name), name.span),
+            span,
+        );
+
+        Some(written)
+    }
+
+    fn written_supplied_member(
+        &mut self,
+        origin: &Origin,
+        owner: &str,
+        module: &Module,
+        name: &Name,
+        named: &Type,
+        span: Span,
+    ) -> Option<Callee> {
+        let mut callee = if *origin == Origin::This
+            || self.declared_home.as_ref() == Some(origin)
+        {
+            let index =
+                self.items.iter().position(|item| item.site == name.span)?;
+            self.item_callee(index, span)
+        } else {
+            if matches!(
+                self.file_cache.constructor(&(origin.clone(), name.span)),
+                Some(super::files::Constructor::Checking(_))
+            ) {
+                self.error(
+                    span,
+                    Reason::DeclarationValue {
+                        name: super::last(name),
+                        origin: origin.clone(),
+                        declaration: name.span,
+                    },
+                );
+                return None;
+            }
+            let local =
+                self.supplied_constructor(origin, owner, module, name.span)?;
+            let (ty, meanings, owner) =
+                self.imported_declared_member(&local, origin, span);
+            let mut callee = self.with_heads(ty, local.heads.as_deref());
+            callee.meanings = meanings;
+            callee.owner = owner;
+            callee.selected = Some(crate::typed::Selected::Value {
+                origin: origin.clone(),
+                site: name.span,
+            });
+            callee
+        };
+        if let Some(owner) = &callee.owner {
+            self.unify(owner, named, span, name.span);
+        }
+        callee.home = Some(origin.clone());
+        Some(callee)
+    }
+
+    /// A File default uses the already checked members of its own module.
+    /// Its types remain `This`, while definition/cache identity stays the File.
+    fn checked_file_scope_members(
+        &mut self,
+        stem: &str,
+        owner: &str,
+        named: &Type,
+        member: &str,
+        span: Span,
+    ) -> Vec<Callee> {
+        let origin = Origin::File(String::from(stem));
+        let module = self
+            .owner(&origin)
+            .expect("checked File scope has its module");
+        let typed = self
+            .cached_file(stem)
+            .expect("checked File scope has completed metadata")
+            .typed;
+        let mut callees = Vec::new();
+        for members in super::lower::impls(module, owner) {
+            for entry in members {
+                let ImplMember::Named {
+                    name,
+                    value: Some(_),
+                    ..
+                } = entry
+                else {
+                    continue;
+                };
+                if super::last(name) != member {
+                    continue;
+                }
+                let Some((_, local)) = typed.frozen.iter().find(|(site, _)| {
+                    *site == (name.span.start, name.span.end)
+                }) else {
+                    continue;
+                };
+                // Frozen variables belong to the File's substitution: import the
+                // complete scheme/owner pair, retaining local nominal spelling.
+                let (ty, meanings, owner) =
+                    self.imported_declared_member(local, &Origin::This, span);
+                let mut callee = self.with_heads(ty, local.heads.as_deref());
+                callee.meanings = meanings;
+                callee.owner = owner;
+                callee.home = Some(Origin::File(String::from(stem)));
+                callee.selected = Some(crate::typed::Selected::Value {
+                    origin: Origin::File(String::from(stem)),
+                    site: name.span,
+                });
+                callees.push(self.bind_member_owner(callee, named, span));
             }
         }
         callees
@@ -1060,8 +1466,10 @@ impl<'a> Infer<'a> {
         let Some(local) = local else {
             return Some(Callee::plain(self.fresh()));
         };
-        let ty = self.imported(&local.scheme, stem, span);
+        let (ty, meanings, owner) = self.imported_member(&local, stem, span);
         let mut callee = self.with_heads(ty, local.heads.as_deref());
+        callee.meanings = meanings;
+        callee.owner = owner;
         callee.home = Some(origin.clone());
         callee.selected = Some(crate::typed::Selected::Value { origin, site });
         Some(callee)
@@ -1101,8 +1509,52 @@ impl<'a> Infer<'a> {
     /// A scheme typed in file module `stem`, instantiated here: its
     /// variables are another substitution's, so all are quantified, and
     /// the module's own declarations are named by the module.
-    fn imported(&mut self, scheme: &Scheme, stem: &str, span: Span) -> Type {
-        self.imported_meanings(scheme, stem, span).0
+    fn imported_member(
+        &mut self,
+        local: &super::Local,
+        stem: &str,
+        span: Span,
+    ) -> (Type, Vec<Type>, Option<Type>) {
+        self.imported_declared_member(
+            local,
+            &Origin::File(String::from(stem)),
+            span,
+        )
+    }
+
+    fn imported_declared_member(
+        &mut self,
+        local: &super::Local,
+        origin: &Origin,
+        span: Span,
+    ) -> (Type, Vec<Type>, Option<Type>) {
+        let mut scheme = local.scheme.rehome(origin);
+        let owner = local.owner.as_ref().map(|owner| owner.rehome(origin));
+        let root = owner.as_ref().map_or_else(
+            || scheme.ty.clone(),
+            |owner| Type::Tuple(alloc::vec![scheme.ty.clone(), owner.clone()]),
+        );
+        let general = Scheme::generalize(
+            &root,
+            &scheme.obligations,
+            &[],
+            &Subst::default(),
+        );
+        let mut variables = if owner.is_some() {
+            scheme.variables.clone()
+        } else {
+            Vec::new()
+        };
+        for var in general.variables {
+            if !variables.contains(&var) {
+                variables.push(var);
+            }
+        }
+        for (ty, _, _) in &scheme.literals {
+            ty.variables(&mut variables);
+        }
+        scheme.variables = variables;
+        self.instantiate_member(&scheme, owner.as_ref(), span)
     }
 
     fn imported_meanings(

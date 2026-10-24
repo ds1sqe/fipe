@@ -195,24 +195,49 @@ impl Host {
 pub fn host(dir: Option<&Path>) -> Host {
     let mut host = Host::default();
     let Some(dir) = dir else { return host };
-    let mut names: Vec<String> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            (path.extension()? == "fipe")
-                .then(|| path.file_stem()?.to_str().map(String::from))?
-        })
-        .collect();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            host.errors
+                .push(format!("{}: cannot enumerate: {error}", dir.display()));
+            return host;
+        }
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                host.errors.push(format!(
+                    "{}: cannot read directory entry: {error}",
+                    dir.display()
+                ));
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "fipe") {
+            continue;
+        }
+        if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
+            names.push(name.to_owned());
+        } else {
+            host.errors
+                .push(format!("{}: invalid module filename", path.display()));
+        }
+    }
     names.sort();
     // The command namespace first, as a host declares it.
     names.sort_by_key(|name| name != "commands");
     for name in names {
         let path = dir.join(format!("{name}.fipe"));
-        let Ok(text) = fs::read_to_string(&path) else {
-            host.errors.push(format!("{}: cannot read", path.display()));
-            continue;
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                host.errors
+                    .push(format!("{}: cannot read: {error}", path.display()));
+                continue;
+            }
         };
         let loaded = if name == "commands" {
             host.declarations.commands(&text)
@@ -220,11 +245,20 @@ pub fn host(dir: Option<&Path>) -> Host {
             host.declarations.module(&name, &text)
         };
         if let Err(errors) = loaded {
-            host.errors.push(format!(
-                "{}: {} declaration error(s)",
-                path.display(),
-                errors.len()
-            ));
+            for error in errors {
+                let at = crate::position::position(
+                    &text,
+                    error.span.start,
+                    crate::position::Encoding::Utf8,
+                );
+                host.errors.push(format!(
+                    "{}:{}:{}: {}",
+                    path.display(),
+                    u64::from(at.line) + 1,
+                    u64::from(at.character) + 1,
+                    error.reason
+                ));
+            }
         }
         host.sources.push((name, path, text));
     }

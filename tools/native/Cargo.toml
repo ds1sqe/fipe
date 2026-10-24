@@ -2,6 +2,7 @@
 name = "fipe-native"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Fipe's native backend: x86-64 machine code in an ELF object"
 license.workspace = true
 repository.workspace = true

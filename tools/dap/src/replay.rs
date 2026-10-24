@@ -265,12 +265,9 @@ impl Reader<'_> {
             }
         }
         // An opaque type has no constructors; `show` writes its label.
-        if let Some(meaning) = self
-            .tables
-            .meanings
-            .iter()
-            .position(|m| m.label == label && m.constructors.is_empty())
-        {
+        if let Some(meaning) = self.tables.meanings.iter().position(|m| {
+            !m.resource && m.label == label && m.constructors.is_empty()
+        }) {
             return Ok(Value::Record(Rc::new(Record {
                 meaning,
                 constructor: 0,

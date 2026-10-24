@@ -395,3 +395,226 @@ fn a_streaming_host_writes_as_the_run_goes_and_keeps_nothing() {
     assert_eq!(out.0.borrow().as_slice(), b"first\nsecond\n");
     assert_eq!(err.0.borrow().as_slice(), b"third\n");
 }
+
+#[derive(Clone, Copy)]
+enum OutputFailure {
+    Write,
+    Partial(usize),
+    Flush,
+}
+
+#[derive(Default)]
+struct OutputState {
+    accepted: Vec<u8>,
+    writes: usize,
+    flushes: usize,
+}
+
+#[derive(Clone)]
+struct FailingOutput {
+    mode: OutputFailure,
+    state: std::rc::Rc<std::cell::RefCell<OutputState>>,
+}
+
+impl FailingOutput {
+    fn new(mode: OutputFailure) -> Self {
+        Self {
+            mode,
+            state: std::rc::Rc::default(),
+        }
+    }
+
+    fn snapshot(&self) -> (Vec<u8>, usize, usize) {
+        let state = self.state.borrow();
+        (state.accepted.clone(), state.writes, state.flushes)
+    }
+}
+
+impl std::io::Write for FailingOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut state = self.state.borrow_mut();
+        state.writes += 1;
+        let count = match self.mode {
+            OutputFailure::Write => 0,
+            OutputFailure::Partial(limit) => {
+                bytes.len().min(limit.saturating_sub(state.accepted.len()))
+            }
+            OutputFailure::Flush => bytes.len(),
+        };
+        if count == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "injected output write failure",
+            ));
+        }
+        state.accepted.extend_from_slice(&bytes[..count]);
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.state.borrow_mut().flushes += 1;
+        if matches!(self.mode, OutputFailure::Flush) {
+            return Err(std::io::Error::other("injected output flush failure"));
+        }
+        Ok(())
+    }
+}
+
+fn output_fault(result: &Result<fipe::value::Value, fipe::vm::Fault>) -> &str {
+    match result {
+        Err(fipe::vm::Fault {
+            reason: fipe::value::Reason::Host(message),
+            ..
+        }) => message,
+        other => panic!("expected Host output fault, got {other:?}"),
+    }
+}
+
+#[test]
+fn output_failure_consumes_tails_and_never_retries_either_writer() {
+    let temp = Temp::new();
+    for mode in [
+        OutputFailure::Write,
+        OutputFailure::Partial(2),
+        OutputFailure::Flush,
+    ] {
+        let out = FailingOutput::new(mode);
+        let err = Shared::default();
+        let mut host = Host::new(Policy::new(&temp.0, &[]).unwrap())
+            .streaming(out.clone(), err.clone());
+        host.sink.success.extend(b"abcdef");
+        host.sink.error.extend(b"unattempted");
+        let first = host.flush().unwrap_err();
+        let before = out.snapshot();
+        host.sink.success.extend(b"new discarded bytes");
+        host.sink.error.extend(b"new error bytes");
+        let next = host.flush().unwrap_err();
+        assert_eq!(next.kind(), first.kind());
+        assert_eq!(next.to_string(), first.to_string());
+        assert_eq!(out.snapshot(), before);
+        assert!(err.0.borrow().is_empty());
+        assert!(host.sink.success.is_empty());
+        assert!(host.sink.error.is_empty());
+        let expected: &[u8] = match mode {
+            OutputFailure::Write => b"",
+            OutputFailure::Partial(_) => b"ab",
+            OutputFailure::Flush => b"abcdef",
+        };
+        assert_eq!(before.0, expected);
+    }
+}
+
+#[test]
+fn output_pre_and_post_call_failures_preserve_earlier_effects_only() {
+    for mode in [
+        OutputFailure::Write,
+        OutputFailure::Partial(2),
+        OutputFailure::Flush,
+    ] {
+        for middle in ["\"payload\"", "put out \"payload\""] {
+            let temp = Temp::new();
+            let path = temp.file(
+                "script.fipe",
+                &format!(
+                    "put ./before \"yes\"\n{middle}\nput ./after \"no\"\n"
+                ),
+            );
+            let script = load(&path).unwrap();
+            let out = FailingOutput::new(mode);
+            let mut host = Host::new(Policy::new(&temp.0, &[]).unwrap())
+                .streaming(out.clone(), Shared::default());
+            let (observation, code) = host.run(&script, &mut &b""[..], None);
+            assert_eq!(code, 1);
+            assert!(output_fault(&observation.result)
+                .contains("cannot write output"));
+            assert_eq!(fs::read(temp.path("before")).unwrap(), b"yes");
+            assert!(!temp.path("after").exists());
+            assert!(observation.success.is_empty());
+            assert!(observation.error.is_empty());
+            let before = out.snapshot();
+            assert!(host.flush().is_err());
+            assert_eq!(out.snapshot(), before);
+            if matches!(mode, OutputFailure::Partial(_)) {
+                assert_eq!(before.0, b"pa");
+            }
+        }
+    }
+}
+
+#[test]
+fn output_terminal_failure_changes_success_but_preserves_a_primary_fault() {
+    let temp = Temp::new();
+    let script = load(&temp.file("terminal.fipe", "42\n")).unwrap();
+    for mode in [OutputFailure::Write, OutputFailure::Flush] {
+        let mut host = Host::new(Policy::new(&temp.0, &[]).unwrap())
+            .streaming(FailingOutput::new(mode), Shared::default());
+        let (observation, code) = host.run(&script, &mut &b""[..], None);
+        assert_eq!(code, 1);
+        assert!(
+            output_fault(&observation.result).contains("cannot write output")
+        );
+    }
+    let script = load(&temp.file("fault.fipe", "cat ./absent\n")).unwrap();
+    let mut host = Host::new(Policy::new(&temp.0, &[]).unwrap())
+        .streaming(Shared::default(), FailingOutput::new(OutputFailure::Write));
+    let (observation, code) = host.run(&script, &mut &b""[..], None);
+    assert_eq!(code, 1);
+    assert!(output_fault(&observation.result).contains("no entry ./absent"));
+    assert!(host.flush().is_err());
+}
+
+#[test]
+fn output_input_refusal_keeps_its_primary_fault_and_exit_two() {
+    let temp = Temp::new();
+    let path = temp.file(
+        "input.fipe",
+        "put ./after \"no\"\ncount: String -> Integer = s => len s\ncount\n",
+    );
+    let script = load(&path).unwrap();
+    let mut host = Host::new(Policy::new(&temp.0, &[]).unwrap())
+        .streaming(Shared::default(), FailingOutput::new(OutputFailure::Flush));
+    let (observation, code) = host.run(&script, &mut &b"\xff"[..], None);
+    assert_eq!(code, 2);
+    assert_eq!(
+        output_fault(&observation.result),
+        "the input is not UTF-8 text"
+    );
+    assert!(!temp.path("after").exists());
+    assert!(observation.trace.is_empty());
+    assert!(host.flush().is_err());
+}
+
+#[test]
+fn output_poisoned_reuse_refuses_before_input_until_writers_are_replaced() {
+    struct InputSpy(std::rc::Rc<std::cell::Cell<usize>>);
+    impl std::io::Read for InputSpy {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            self.0.set(self.0.get() + 1);
+            Ok(0)
+        }
+    }
+    let temp = Temp::new();
+    let script = load(&temp.file(
+        "input.fipe",
+        "put ./after \"no\"\ncount: String -> Integer = s => len s\ncount\n",
+    ))
+    .unwrap();
+    let mut host = Host::new(Policy::new(&temp.0, &[]).unwrap())
+        .streaming(FailingOutput::new(OutputFailure::Write), Shared::default());
+    host.sink.success.extend(b"poison");
+    assert!(host.flush().is_err());
+    let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+    let (observation, code) =
+        host.run(&script, &mut InputSpy(reads.clone()), None);
+    assert_eq!(code, 2);
+    assert_eq!(reads.get(), 0);
+    assert!(!temp.path("after").exists());
+    assert!(observation.trace.is_empty());
+    assert!(output_fault(&observation.result).contains("cannot write output"));
+    let out = Shared::default();
+    let mut host = host.streaming(out.clone(), Shared::default());
+    let (_, code) = host.run(&script, &mut &b"ok"[..], None);
+    assert_eq!(code, 0);
+    assert_eq!(fs::read(temp.path("after")).unwrap(), b"no");
+    assert_eq!(out.0.borrow().as_slice(), b"2\n");
+}

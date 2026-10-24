@@ -2,6 +2,7 @@
 name = "fipe-lsp"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "A language server for Fipe over the fipe crate"
 license.workspace = true
 repository.workspace = true

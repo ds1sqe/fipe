@@ -2,6 +2,7 @@
 name = "fipe-host"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "The std host: Fipe scripts against the real machine"
 license.workspace = true
 repository.workspace = true

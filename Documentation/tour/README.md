@@ -1,5 +1,9 @@
 # A tour of Fipe
 
+This tour is for scripts using the standard host. For an application-owned Host,
+start with [embedding in Rust](../../README.md#embed-in-rust); the
+[documentation index](../README.md) routes to APIs, tools and contributor guides.
+
 Five pages, each built on the scripts under
 [`dogfood/`](../dogfood/), which run on the std host with the `fipe`
 command ([`tools/fipe`](../../tools/fipe/README.md)). Every fenced
@@ -17,4 +21,5 @@ checks each one.
 5. [The tools](05-tools.md): `check`, `repl`, `build`, the editor.
 
 The [specification](../spec/README.md) defines each rule the tour
-shows; the [examples](../examples/) show the language as written.
+shows; the [examples index](../examples/README.md) distinguishes runnable programs
+from language and conformance-host fixtures.

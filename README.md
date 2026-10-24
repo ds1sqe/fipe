@@ -4,6 +4,14 @@
 programs by composing values and functions; check the whole program before
 it runs; let the embedding application decide which effects are available.
 
+Choose a starting point:
+
+| Your task | Start here |
+| --- | --- |
+| Embed a language with your application's Host | [Embed in Rust](#embed-in-rust) |
+| Write or run a script with the standard host | [Try a script](#try-a-script) |
+| Find a guide, editor setup or reference | [Documentation index](Documentation/README.md) |
+
 ```fipe
 [1, 2, 3] | map (n => n * 2) | fold 0 (a b => a + b)
 ```
@@ -20,6 +28,15 @@ combining Fipe packages; language rules and Rust APIs may change. The earlier
 `0.1.0` language is different. The [specification](Documentation/spec/README.md)
 describes this implementation, with unresolved rules listed in
 [open decisions](Documentation/spec/11-open.md).
+
+Documentation in this checkout follows its source, including development APIs not
+yet published. The registry commands below install the published `0.2.0-dev.2`
+baseline; they do not deliver every later API described here. Use a matching
+checkout when working with those additions.
+
+See the [compatibility and support policy](Documentation/development.md#compatibility-and-support)
+for Rust 1.98.1, selected platform targets, qualification gaps and final `0.2.x`
+patch guarantees.
 
 ## Try a script
 
@@ -105,9 +122,15 @@ standard host, use [`fipe-host`](tools/host/README.md): `load`, `Policy` and
 | [`fipe-repl-core`](tools/repl-core/README.md) / [`fipe-repl`](tools/repl/README.md) | Embed a REPL without I/O / use its terminal driver |
 | [`fipe-native`](tools/native/README.md) / [`fipe-native-rt`](tools/native/runtime/README.md) | Generate x86-64 Linux executables / supply their runtime |
 | [`fipe-llvm`](tools/llvm/README.md) | Generate LLVM IR and compile it with Clang |
+| [`fipe-ffi`](tools/ffi/README.md) | Experimental scalar-provider adapter; current checkout VM proof only |
 | [`fipe-native-core`](tools/native-core/README.md) | Shared native formats and operand layout |
 | [`fipe-lsp`](tools/lsp/README.md) / [`fipe-dap`](tools/dap/README.md) | Editor language features / debugging |
 | [`tree-sitter-fipe`](tools/tree-sitter/README.md) | Syntax trees and highlighting |
+
+The current checkout's scalar-provider proof covers separately compiled C and Rust
+providers on x86-64 Linux; it does not establish resource transport, native/LLVM
+provider execution or other-platform support. See the [native library boundary](Documentation/api/10-native-libraries.md)
+for the exact contract and remaining work.
 
 Install editor servers with `cargo install fipe-lsp fipe-dap --version
 0.2.0-dev.2 --locked`. [Neovim](tools/editor/nvim/README.md) and
@@ -116,29 +139,20 @@ needs the declarations of your host for host-specific completion and checks.
 
 ## Work on Fipe
 
-All Rust packages share one Cargo workspace, lockfile and `target/` directory.
-The root package is the default; use `--workspace` to check every package.
-From a checkout:
+From a checkout, try the standard-host script and the two embedding examples:
 
 ```sh
-cargo build -p fipe-cli --locked
 cargo run -p fipe-cli -- run Documentation/examples/hello.fipe
 cargo run --example embed
 cargo run --example custom_host
-cargo test --workspace --locked
-cargo fmt --all --check
-cargo clippy --workspace --locked --all-targets -- -D warnings \
-  -D clippy::all -D clippy::pedantic -D clippy::nursery
 ```
 
-The native tests need x86-64 Linux and `cc`; LLVM tests need `clang-23`
-(or `FIPE_CLANG`). The tree-sitter package also needs a C compiler.
-The core alone can be tested with `cargo test -p fipe --locked`.
-
-[Development](Documentation/development.md) explains the workspace and checks.
-[Agent guidance](Documentation/agents.md) gives coding agents the language
-references and validation loop. [Publishing](Documentation/publishing.md)
-describes the package contents and release process.
+[Development](Documentation/development.md) owns workspace builds, verification,
+CI commands and platform prerequisites. [Agent guidance](Documentation/agents.md)
+gives coding agents the language references and validation loop.
+[Publishing](Documentation/publishing.md) describes package contents and release
+checks. Use the [documentation index](Documentation/README.md) to find the owning
+guide or reference before changing a language rule or tool.
 
 ## License
 

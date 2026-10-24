@@ -11,6 +11,11 @@ fn push(found: &mut Vec<usize>, operand: &Operand) {
 
 fn rvalue(found: &mut Vec<usize>, rvalue: &Rvalue) {
     match rvalue {
+        Rvalue::Admit { values, .. } => {
+            for value in values {
+                push(found, value);
+            }
+        }
         Rvalue::Use(value)
         | Rvalue::Field(value, _)
         | Rvalue::Repeat { value, .. }

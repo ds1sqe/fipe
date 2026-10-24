@@ -103,7 +103,7 @@ pub fn parts(value: &Value, tables: &Tables) -> Vec<(String, Item)> {
             .enumerate()
             .map(|(index, part)| (index.to_string(), Item::Value(part.clone())))
             .collect(),
-        Value::Packed(packed) => parts(&packed.value, tables),
+        Value::Packed(packed) => parts(packed.value(), tables),
         _ => Vec::new(),
     }
 }

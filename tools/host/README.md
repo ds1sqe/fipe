@@ -112,6 +112,27 @@ Natural = text => text | lines | len` then `count`.
 | 1 | the run ended with `Err e`, or Faulted |
 | 2 | the script could not run: it does not check, or its input is refused |
 
+## Streaming output failures
+
+`Host::run` flushes earlier main lines before performing the next request,
+and flushes output made by a request before continuing the VM. A newly observed
+write or flush failure ends that run with exit1; earlier effects remain and later
+request effects are not performed. A primary Fault remains primary. An input
+refusal, or reusing a Host whose writers already failed, retains pre-run exit2.
+
+Streaming buffers are consumed before writing. On failure, an unwritten tail and
+any unattempted other-stream bytes are discarded; accepted bytes remain visible.
+No complete delivery or recoverability is promised. The first error poisons the
+whole writer pair: later flushes discard queued bytes and return the same error
+without calling either writer, so a partially accepted prefix is never replayed.
+Only an explicit `Host::streaming` replacement with new writers repairs the pair;
+a new run alone does not. Buffered, nonstreaming observations are unchanged.
+
+Custom streaming drivers using raw `Host::answer` must flush pending lines before
+calling it, flush request output afterward, and stop on a flush error. The raw
+answer method does not manage that driver checkpoint. CLI REPL rendering and its
+fatal adapter path are separately tracked; this is not a whole-REPL output claim.
+
 ## Development
 
 ```sh

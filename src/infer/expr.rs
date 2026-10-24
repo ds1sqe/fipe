@@ -33,6 +33,7 @@ impl Infer<'_> {
                 expected.span,
                 expected.place_kind.clone(),
                 matches!(expected.ty, Type::Var(_)),
+                None,
             ));
         }
         let ty = self.synth(id, expected);
@@ -283,7 +284,7 @@ impl Infer<'_> {
         let mut owed = Owed::new(obligation, span);
         owed.literal = Some(lit);
         owed.literal_argument = expected.is_some_and(|e| e.spot);
-        self.state.obligations.push(owed);
+        self.push_owed(owed);
         ty
     }
 
@@ -350,11 +351,12 @@ impl Infer<'_> {
         let mark = self.mark();
         let ty = self.expr(id, None);
         let part = Part {
+            owner: None,
             ty,
             site: self.span(id),
             annotated: false,
         };
-        let scheme = self.generalize(&[part], mark, &[]).remove(0);
+        let scheme = self.generalize(&[part], mark, &[]).remove(0).scheme;
         self.set_binding(id.0, scheme);
     }
 
@@ -724,7 +726,8 @@ impl Infer<'_> {
         fields: &[FieldValue],
         span: Span,
     ) -> Type {
-        let Some((ty, declared)) = self.record_shape(self.resolved.expr(id))
+        let Some((ty, declared)) =
+            self.record_shape(self.resolved.expr(id), span)
         else {
             for field in fields {
                 self.expr(field.value, None);
@@ -765,6 +768,7 @@ impl Infer<'_> {
     pub(super) fn record_shape(
         &mut self,
         target: Option<&Target>,
+        span: Span,
     ) -> Option<(Type, Vec<super::lower::Field>)> {
         let ty = match target? {
             Target::Type { origin, name } => {
@@ -781,7 +785,10 @@ impl Infer<'_> {
             }
             _ => return None,
         };
-        let fields = self.fields(&ty)?;
+        let Some(fields) = self.fields(&ty) else {
+            self.error(span, Reason::NotRecord);
+            return None;
+        };
         Some((ty, fields))
     }
 }

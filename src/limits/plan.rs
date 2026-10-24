@@ -37,9 +37,22 @@ pub enum Place {
     Part(usize),
     Payload,
 }
+/// Whether this check executes here or reports a default's source-owned check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckRole {
+    /// The value and its expression identifier belong to this checked source.
+    Local,
+    /// Caller-attributed diagnostics; the recorded default owns execution.
+    CallerReport,
+}
+
 /// One open entry, with source identity for each span.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Check {
+    pub role: CheckRole,
+    /// The receiving call in `place_origin` source, when this checks a supply.
+    /// Nested projections retain the original call; diagnostic copies may omit it.
+    pub receiving_call: Option<Span>,
     /// Expression producing the checked value; separate from its diagnostic place.
     pub value: Option<crate::ast::ExprId>,
     pub path: alloc::vec::Vec<crate::ir::Projection>,

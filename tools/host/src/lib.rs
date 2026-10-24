@@ -21,7 +21,7 @@ pub use sink::{located, Sink};
 
 use fipe::{
     decl::Declarations,
-    embed::Outcome,
+    embed::{Outcome, Reply},
     ir,
     mir::Program,
     value::{Prelude, Reason, Value},
@@ -77,6 +77,8 @@ pub struct Host {
     pub sink: Sink,
     /// Where [`Host::flush`] writes the success and error output.
     streams: Option<(Box<dyn Write>, Box<dyn Write>)>,
+    /// The first stream failure; only explicit replacement writers repair it.
+    output_error: Option<Box<(io::ErrorKind, String)>>,
 }
 
 impl Host {
@@ -89,12 +91,14 @@ impl Host {
             resources: Vec::new(),
             sink: Sink::new(),
             streams: None,
+            output_error: None,
         }
     }
 
     /// The same host writing its output to `out` and `err` as a run
-    /// makes it: after each host call and at the run's end. The
-    /// observation's output is then empty.
+    /// makes it: before request effects, after each host call and at
+    /// the run's end. The observation's output is then empty. A failed
+    /// pair stays failed until explicitly replaced with new writers.
     #[must_use]
     pub fn streaming(
         mut self,
@@ -102,28 +106,43 @@ impl Host {
         err: impl Write + 'static,
     ) -> Self {
         self.streams = Some((Box::new(out), Box::new(err)));
+        self.output_error = None;
         self
     }
 
     /// Move the sink's output to the streams, when there are any.
     ///
+    /// Streaming buffers are consumed before writing. An error discards unwritten
+    /// bytes and poisons both writers; later flushes return the first error without
+    /// writing. Replace the writers with [`Host::streaming`] to recover.
+    ///
     /// # Errors
-    /// The writers' errors.
+    /// The first writer error; no delivery or recovery of its unwritten tail is promised.
     pub fn flush(&mut self) -> io::Result<()> {
         let Some((out, err)) = &mut self.streams else {
             return Ok(());
         };
-        if !self.sink.success.is_empty() {
-            out.write_all(&self.sink.success)?;
-            self.sink.success.clear();
-            out.flush()?;
+        let success = std::mem::take(&mut self.sink.success);
+        let error = std::mem::take(&mut self.sink.error);
+        if let Some((kind, message)) = self.output_error.as_deref() {
+            return Err(io::Error::new(*kind, message.clone()));
         }
-        if !self.sink.error.is_empty() {
-            err.write_all(&self.sink.error)?;
-            self.sink.error.clear();
-            err.flush()?;
+        let written: io::Result<()> = (|| {
+            if !success.is_empty() {
+                out.write_all(&success)?;
+                out.flush()?;
+            }
+            if !error.is_empty() {
+                err.write_all(&error)?;
+                err.flush()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = &written {
+            self.output_error =
+                Some(Box::new((error.kind(), error.to_string())));
         }
-        Ok(())
+        written
     }
 
     /// The same host, `cli.args` answering these arguments.
@@ -136,8 +155,9 @@ impl Host {
     /// Run a script under a budget: host input from `input` when its
     /// last line opens a `String` or `Vec<U8>` spot, each host call
     /// answered, main lines and Faults written by the sink policy. The
-    /// observation and the exit code: 0 a value, 1 an `Err` value or a
-    /// Fault, 2 input refused before any effect.
+    /// observation and the exit code: 0 a value, 1 an `Err` value, Fault
+    /// or new output failure, 2 input or a known failed stream refused
+    /// before any effect. A secondary output failure preserves a primary Fault.
     pub fn run(
         &mut self,
         script: &Script,
@@ -146,6 +166,10 @@ impl Host {
     ) -> (Observation, u8) {
         let program = &script.program;
         self.sink = Sink::new();
+        if let Err(error) = self.flush() {
+            return self
+                .refuse(script, &format!("cannot write output: {error}"));
+        }
         let mut machine = Machine::new(budget);
         let outcome = match self::input(program, input) {
             Ok(None) => machine.run(program),
@@ -155,16 +179,23 @@ impl Host {
             },
             Err(reason) => return self.refuse(script, &reason),
         };
-        let (result, trace) = self.drive(&mut machine, program, outcome);
+        let (mut result, trace) = self.drive(&mut machine, program, outcome);
         let tables = program.tables.borrow();
         match &result {
             Err(fault) => self.sink.fault(fault, &tables, &script.sources),
             Ok(value) => self.sink.ending(value, machine.lines(), &tables),
         }
-        let exit = exit_code(&result, &tables);
+        let mut exit = exit_code(&result, &tables);
         drop(tables);
-        // A closed stream leaves nothing to report to.
-        let _ = self.flush();
+        if let Err(error) = self.flush() {
+            if result.is_ok() {
+                result = Err(refusal(
+                    program,
+                    &format!("cannot write output: {error}"),
+                ));
+                exit = 1;
+            }
+        }
         let observation = Observation {
             result,
             trace,
@@ -195,10 +226,22 @@ impl Host {
                     let reply = {
                         let tables = program.tables.borrow();
                         self.sink.lines(machine.lines(), &tables);
-                        self.answer(&request, &tables)
+                        if let Err(error) = self.flush() {
+                            Reply::Value(Err(format!(
+                                "cannot write output: {error}"
+                            )))
+                        } else {
+                            let reply = self.answer(&request, &tables);
+                            match (reply, self.flush()) {
+                                (reply @ Reply::Value(Err(_)), _)
+                                | (reply, Ok(())) => reply,
+                                (_, Err(error)) => Reply::Value(Err(format!(
+                                    "cannot write output: {error}"
+                                ))),
+                            }
+                        }
                     };
                     trace.push((request, reply.clone()));
-                    let _ = self.flush();
                     outcome = machine.reply(program, reply);
                 }
             }
@@ -212,7 +255,8 @@ impl Host {
         let fault = refusal(program, reason);
         self.sink
             .fault(&fault, &program.tables.borrow(), &script.sources);
-        let _ = self.flush();
+        // Flush retains a secondary stream failure; the refusal stays primary.
+        let _secondary_output_error = self.flush().err();
         let observation = Observation {
             result: Err(fault),
             trace: Vec::new(),

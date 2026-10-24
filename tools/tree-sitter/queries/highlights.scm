@@ -23,6 +23,9 @@
 
 "pub" @keyword.modifier
 
+(type_item
+  resource: (resource_modifier) @keyword.modifier)
+
 [
   "if"
   "else"

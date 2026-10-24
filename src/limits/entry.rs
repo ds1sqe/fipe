@@ -360,6 +360,7 @@ impl Pass<'_> {
                 self.named_parts(name, arguments, known, place, frequency);
                 self.named_entry(
                     name,
+                    arguments,
                     known,
                     place,
                     frequency,
@@ -664,75 +665,82 @@ impl Pass<'_> {
                     },
                 )
             }
-            Type::Named { name, .. } => {
-                if known.names.contains(name) {
-                    return Known {
-                        boolean: Some(true),
-                        ..Known::default()
-                    };
-                }
-                let Some((module, base, limits)) = self.declaration(name)
-                else {
-                    return Known::default();
-                };
-                let meaning = module.entries.iter().any(|entry| {
-                    matches!(entry,
-                    crate::ast::Entry::Item(item) if matches!(&item.kind,
-                    crate::ast::ItemKind::Type { name: n, members: Some(_), .. }
-                    if n.segments.last() == Some(&name.name)))
-                });
-                let mut result = base.filter(|_| !meaning).map_or_else(
-                    || Known {
-                        boolean: if super::modifier(ty) {
-                            Some(true)
-                        } else {
-                            known
-                                .meaning
-                                .as_ref()
-                                .map(|actual| actual == name)
-                                .or_else(|| {
-                                    if known.boolean.is_some() {
-                                        Some(
-                                            name.origin == Origin::Prelude
-                                                && name.name == "Bool",
-                                        )
-                                    } else if known.range.is_some() {
-                                        Some(
-                                            name.origin == Origin::Prelude
-                                                && name.name == "Integer",
-                                        )
-                                    } else {
-                                        None
-                                    }
-                                })
-                        },
-                        ..Known::default()
-                    },
-                    |base| {
-                        self.evaluate_type(
-                            &self.syntax_type(module, &name.origin, base),
-                            known,
-                            depth + 1,
-                        )
-                    },
-                );
-                for limit in limits {
-                    if let Limit::Test(id) = limit {
-                        result = bool_op(
-                            PipeOp::And,
-                            &result,
-                            &self.test_value(module, &name.origin, *id, known),
-                        );
-                    }
-                }
-                result
-            }
+            Type::Named { .. } => self.evaluate_named_type(ty, known, depth),
             _ => Known {
                 boolean: Some(true),
                 ..Known::default()
             },
         }
     }
+    fn evaluate_named_type(
+        &self,
+        ty: &Type,
+        known: &Known,
+        depth: usize,
+    ) -> Known {
+        let Type::Named { name, arguments } = ty else {
+            unreachable!("named entry type")
+        };
+        if known.names.contains(name) {
+            return Known {
+                boolean: Some(true),
+                ..Known::default()
+            };
+        }
+        let Some((module, base, limits)) = self.declaration(name) else {
+            return Known::default();
+        };
+        let meaning = module.entries.iter().any(|entry| {
+            matches!(entry,
+            crate::ast::Entry::Item(item) if matches!(&item.kind,
+            crate::ast::ItemKind::Type { name: n, members: Some(_), .. }
+            if n.segments.last() == Some(&name.name)))
+        });
+        let mut result = base.filter(|_| !meaning).map_or_else(
+            || Known {
+                boolean: if super::modifier(ty) {
+                    Some(true)
+                } else {
+                    known.meaning.as_ref().map(|actual| actual == name).or_else(
+                        || {
+                            if known.boolean.is_some() {
+                                Some(
+                                    name.origin == Origin::Prelude
+                                        && name.name == "Bool",
+                                )
+                            } else if known.range.is_some() {
+                                Some(
+                                    name.origin == Origin::Prelude
+                                        && name.name == "Integer",
+                                )
+                            } else {
+                                None
+                            }
+                        },
+                    )
+                },
+                ..Known::default()
+            },
+            |base| {
+                self.evaluate_type(
+                    &self.instantiated_base(name, arguments, module, base),
+                    known,
+                    depth + 1,
+                )
+            },
+        );
+        for limit in limits {
+            if let Limit::Test(id) = limit {
+                result = bool_op(
+                    PipeOp::And,
+                    &result,
+                    &self.test_value(module, &name.origin, *id, known),
+                );
+            }
+        }
+        result
+    }
+
     pub(super) fn syntax_type(
         &self,
         module: &Module,
@@ -749,7 +757,7 @@ impl Pass<'_> {
         bindings: &[(String, Type)],
     ) -> Type {
         if let TypeKind::Named { name, arguments } = &module.types[id.0].kind {
-            if arguments.is_empty() {
+            if arguments.is_empty() && name.segments.len() == 1 {
                 if let Some((_, ty)) = bindings
                     .iter()
                     .find(|(n, _)| name.segments.last() == Some(n))
@@ -869,6 +877,8 @@ impl Pass<'_> {
                     return;
                 }
                 self.typed.checks.push(Check {
+                    role: crate::limits::CheckRole::Local,
+                    receiving_call: None,
                     value: None,
                     path: self.path.clone(),
                     target: None,
@@ -906,9 +916,44 @@ impl Pass<'_> {
             }
         }
     }
+    fn instantiated_base(
+        &self,
+        name: &TypeName,
+        arguments: &[Type],
+        module: &Module,
+        base: TypeId,
+    ) -> Type {
+        let parameters = self
+            .declarations_by_name()
+            .get(name)
+            .and_then(|index| module.entries.get(*index))
+            .and_then(|entry| match entry {
+                crate::ast::Entry::Item(item) => match &item.kind {
+                    crate::ast::ItemKind::Type { parameters, .. } => {
+                        Some(parameters.as_slice())
+                    }
+                    _ => None,
+                },
+                crate::ast::Entry::Line(_) => None,
+            })
+            .unwrap_or(&[]);
+        let bindings: Vec<_> = parameters
+            .iter()
+            .zip(arguments)
+            .map(|(parameter, argument)| {
+                (
+                    parameter.name.segments.last().cloned().unwrap_or_default(),
+                    argument.clone(),
+                )
+            })
+            .collect();
+        self.syntax_bound(module, &name.origin, base, &bindings)
+    }
+
     pub(super) fn named_entry(
         &mut self,
         name: &TypeName,
+        arguments: &[Type],
         known: &Known,
         place: Span,
         frequency: Frequency,
@@ -926,7 +971,7 @@ impl Pass<'_> {
         };
         let base = base.map(|base| {
             (
-                self.syntax_type(module, &name.origin, base),
+                self.instantiated_base(name, arguments, module, base),
                 module.types[base.0].span,
             )
         });

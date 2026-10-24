@@ -43,8 +43,8 @@ impl Index {
         else {
             unreachable!("a sequence member takes the array")
         };
-        let value = self.node(&source.home, span, parameter, array);
-        let ty = self.ty(&source.home, parameter);
+        let value = self.source_node(source, span, parameter, array);
+        let ty = self.source_ty(source, parameter);
         let slot = self.store.push_slot(ir::Slot {
             ty,
             parameters: Vec::new(),
@@ -97,19 +97,7 @@ impl Index {
             E::Tuple(parts) => ir::Kind::Tuple(
                 parts.iter().map(|id| scope.expression(*id)).collect(),
             ),
-            E::List(parts) => {
-                let array = ir::Kind::Array(
-                    parts.iter().map(|id| scope.expression(*id)).collect(),
-                );
-                match source.typed.selected.get(&site) {
-                    None
-                    | Some(crate::typed::Selected::Declared {
-                        origin: Origin::Prelude,
-                        ..
-                    }) => array,
-                    Some(_) => self.written_sequence(source, span, array),
-                }
-            }
+            E::List(parts) => self.list_expression(source, scope, span, parts),
             E::Bind { pattern, value, .. } => ir::Kind::Bind {
                 pattern: self.pattern(source, scope, *pattern),
                 value: scope.expression(*value),
@@ -136,6 +124,13 @@ impl Index {
             }
             E::Field { value, .. } => {
                 let receiver = scope.expression(*value);
+                if let Some(steps) = source.typed.accesses.get(&site) {
+                    if let Some(kind) =
+                        self.member_steps(source, scope, span, steps, receiver)
+                    {
+                        return kind;
+                    }
+                }
                 scope.receivers.borrow_mut().insert(span, receiver);
                 if let Some(bound) = source.typed.bound.get(&site) {
                     let callee = self.chosen(source, span, Some(receiver));
@@ -164,6 +159,27 @@ impl Index {
                     None,
                 )
             }
+        }
+    }
+
+    fn list_expression(
+        &mut self,
+        source: &Source<'_>,
+        scope: &Scope,
+        span: crate::token::Span,
+        parts: &[crate::ast::ExprId],
+    ) -> ir::Kind {
+        let site = (span.start, span.end);
+        let array = ir::Kind::Array(
+            parts.iter().map(|id| scope.expression(*id)).collect(),
+        );
+        match source.typed.selected.get(&site) {
+            None
+            | Some(crate::typed::Selected::Declared {
+                origin: Origin::Prelude,
+                ..
+            }) => array,
+            Some(_) => self.written_sequence(source, span, array),
         }
     }
 
@@ -246,7 +262,7 @@ impl Index {
                                 .iter()
                                 .position(|parameter| parameter == hidden)
                                 .expect("hidden parameter");
-                            self.ty(&source.home, &arguments[index])
+                            self.source_ty(source, &arguments[index])
                         })
                         .collect();
                     let kind = if let Some(index) = definition {
@@ -260,8 +276,8 @@ impl Index {
                                 || !bound.supplies.is_empty()
                         })
                     {
-                        let callee = self.node(
-                            &source.home,
+                        let callee = self.source_node(
+                            source,
                             span,
                             &source.typed.callee_types[&site],
                             kind,
@@ -294,68 +310,76 @@ impl Index {
             if let Some(crate::resolve::Target::Members { head, .. }) =
                 source.resolved.expr(id)
             {
-                let mut receiver =
+                let receiver =
                     self.member_root(source, scope, head, &steps[0].head, span);
-                let outer = source
-                    .typed
-                    .bound
-                    .get(&site)
-                    .filter(|bound| !bound.spots.is_empty());
-                for (index, step) in steps.iter().enumerate() {
-                    let last = index + 1 == steps.len();
-                    scope.receivers.borrow_mut().insert(span, receiver);
-                    let ty = if last {
-                        source
-                            .typed
-                            .callee_types
-                            .get(&site)
-                            .unwrap_or(&step.callee)
-                    } else {
-                        &step.callee
-                    };
-                    let kind = self.selected_kind(
-                        source,
-                        &step.selected,
-                        &step.meanings,
-                        ty,
-                        Some(receiver),
-                    );
-                    let (kind, ty) = match &step.bound {
-                        Some(bound) => {
-                            let callee =
-                                self.node(&source.home, span, ty, kind);
-                            let kind = self.call(
-                                source,
-                                scope,
-                                span,
-                                callee,
-                                bound,
-                                Some(receiver),
-                            );
-                            (kind, &step.result)
-                        }
-                        None => (kind, ty),
-                    };
-                    // The last step is the expression's own node; an
-                    // earlier one is the receiver of the next.
-                    if !last {
-                        receiver = self.node(&source.home, span, ty, kind);
-                        continue;
-                    }
-                    let Some(bound) = outer else {
-                        return Some(kind);
-                    };
-                    let callee = self.node(&source.home, span, ty, kind);
-                    return Some(self.call(
+                return self.member_steps(source, scope, span, steps, receiver);
+            }
+        }
+        None
+    }
+
+    fn member_steps(
+        &mut self,
+        source: &Source<'_>,
+        scope: &Scope,
+        span: crate::token::Span,
+        steps: &[crate::typed::Access],
+        mut receiver: usize,
+    ) -> Option<ir::Kind> {
+        let site = (span.start, span.end);
+        let outer = source
+            .typed
+            .bound
+            .get(&site)
+            .filter(|bound| !bound.spots.is_empty());
+        for (index, step) in steps.iter().enumerate() {
+            let last = index + 1 == steps.len();
+            scope.receivers.borrow_mut().insert(span, receiver);
+            let ty = if last {
+                source.typed.callee_types.get(&site).unwrap_or(&step.callee)
+            } else {
+                &step.callee
+            };
+            let kind = self.selected_kind(
+                source,
+                &step.selected,
+                &step.meanings,
+                ty,
+                Some(receiver),
+            );
+            let (kind, ty) = match &step.bound {
+                Some(bound) => {
+                    let callee = self.source_node(source, span, ty, kind);
+                    let kind = self.call(
                         source,
                         scope,
                         span,
                         callee,
                         bound,
-                        scope.receivers.borrow().get(&span).copied(),
-                    ));
+                        Some(receiver),
+                    );
+                    (kind, &step.result)
                 }
+                None => (kind, ty),
+            };
+            // The last step is the expression's own node; an
+            // earlier one is the receiver of the next.
+            if !last {
+                receiver = self.source_node(source, span, ty, kind);
+                continue;
             }
+            let Some(bound) = outer else {
+                return Some(kind);
+            };
+            let callee = self.source_node(source, span, ty, kind);
+            return Some(self.call(
+                source,
+                scope,
+                span,
+                callee,
+                bound,
+                scope.receivers.borrow().get(&span).copied(),
+            ));
         }
         None
     }
@@ -433,7 +457,7 @@ impl Index {
             }
             _ => unreachable!("member root selection"),
         };
-        self.node(&source.home, span, ty, kind)
+        self.source_node(source, span, ty, kind)
     }
 
     pub(super) fn selector(
@@ -452,7 +476,7 @@ impl Index {
                 let Type::Function { parameter, result } = ty else {
                     unreachable!("selector function")
                 };
-                let input = self.ty(&source.home, parameter);
+                let input = self.source_ty(source, parameter);
                 let slot = self.store.push_slot(ir::Slot {
                     ty: input,
                     parameters: Vec::new(),
@@ -460,8 +484,8 @@ impl Index {
                     definition: None,
                     name: None,
                 });
-                let mut receiver = self.node(
-                    &source.home,
+                let mut receiver = self.source_node(
+                    source,
                     span,
                     parameter,
                     ir::Kind::Local {
@@ -503,7 +527,7 @@ impl Index {
                                 bound,
                                 Some(receiver),
                             );
-                            self.node(&source.home, span, result, kind)
+                            self.source_node(source, span, result, kind)
                         });
                 }
                 ir::Kind::Function {
@@ -525,6 +549,61 @@ impl Index {
         }
     }
 
+    fn generic_operator_call(
+        &mut self,
+        source: &Source<'_>,
+        scope: &Scope,
+        operator: crate::token::Span,
+        value: crate::ast::ExprId,
+        kind: &crate::ast::ExprKind,
+    ) -> ir::Kind {
+        use crate::ast::ExprKind as E;
+        let site = (operator.start, operator.end);
+        let receiver = scope.expression(value);
+        let bound = &source.typed.bound[&site];
+        let mut result = &source.typed.callee_types[&site];
+        for _ in &bound.spots {
+            let Type::Function { result: next, .. } = result else {
+                unreachable!("synthetic operator formal")
+            };
+            result = next;
+        }
+        let right = if let E::Binary { right, .. } = *kind {
+            Some(right)
+        } else {
+            None
+        };
+        let read_type = right.map_or_else(
+            || result.clone(),
+            |_| Type::function(bound.spots[0].1.clone(), result.clone()),
+        );
+        let callee = self.selected(
+            source,
+            operator,
+            &source.typed.selected[&site],
+            source
+                .typed
+                .meaning_arguments
+                .get(&site)
+                .map_or(&[], Vec::as_slice),
+            &read_type,
+            Some(receiver),
+        );
+        if let Some(right) = right {
+            let applied = crate::typed::Bound {
+                spots: alloc::vec![bound.spots[0].clone()],
+                supplies: alloc::vec![(
+                    0,
+                    crate::typed::Supply::Expression(right)
+                )],
+                ..crate::typed::Bound::default()
+            };
+            self.call(source, scope, operator, callee, &applied, None)
+        } else {
+            self.store.tables().nodes[callee].kind.clone()
+        }
+    }
+
     pub(super) fn operator(
         &mut self,
         source: &Source<'_>,
@@ -542,19 +621,36 @@ impl Index {
                 left: value,
                 ..
             } => {
-                let callee = self.chosen(
-                    source,
-                    *operator,
-                    Some(scope.expression(*value)),
-                );
-                let call = self.call(
-                    source,
-                    scope,
-                    *operator,
-                    callee,
-                    &source.typed.bound[&(operator.start, operator.end)],
-                    Some(scope.expression(*value)),
-                );
+                let site = (operator.start, operator.end);
+                let generic =
+                    matches!(
+                        source.typed.selected.get(&site),
+                        Some(crate::typed::Selected::Member { .. })
+                    ) && !source.typed.derived_defaults.contains_key(&site)
+                        && !source.typed.conversions.contains_key(&site);
+                let call = if generic {
+                    self.generic_operator_call(
+                        source,
+                        scope,
+                        *operator,
+                        *value,
+                        &expression.kind,
+                    )
+                } else {
+                    let callee = self.chosen(
+                        source,
+                        *operator,
+                        Some(scope.expression(*value)),
+                    );
+                    self.call(
+                        source,
+                        scope,
+                        *operator,
+                        callee,
+                        &source.typed.bound[&(operator.start, operator.end)],
+                        Some(scope.expression(*value)),
+                    )
+                };
                 if let E::Binary { op, .. } = expression.kind {
                     use crate::ast::BinaryOp;
                     let labels: &[&str] = match op {
@@ -571,7 +667,7 @@ impl Index {
                             Vec::new(),
                         );
                         let ir::Type::Meaning { index, .. } =
-                            self.ty(&source.home, &ordering)
+                            self.source_ty(source, &ordering)
                         else {
                             unreachable!()
                         };
@@ -580,11 +676,12 @@ impl Index {
                             .map(|label| self.constructor_index(index, label))
                             .collect();
                         let value =
-                            self.node(&source.home, span, &ordering, call);
+                            self.source_node(source, span, &ordering, call);
                         return ir::Kind::Ordering { value, accepted };
                     }
                     if op == BinaryOp::NotEqual {
-                        let condition = self.node(&source.home, span, ty, call);
+                        let condition =
+                            self.source_node(source, span, ty, call);
                         let then_body = self.boolean(source, span, false);
                         let else_body = self.boolean(source, span, true);
                         return ir::Kind::If {
@@ -670,7 +767,7 @@ impl Index {
         else {
             unreachable!("a stage of a function type")
         };
-        let ty = self.ty(&source.home, parameter);
+        let ty = self.source_ty(source, parameter);
         let slot = self.store.push_slot(ir::Slot {
             ty,
             parameters: Vec::new(),
@@ -703,7 +800,7 @@ impl Index {
         match &expression.kind {
             E::Outcome { good, payload } => {
                 let ir::Type::Meaning { index: meaning, .. } =
-                    self.ty(&source.home, ty)
+                    self.source_ty(source, ty)
                 else {
                     unreachable!("outcome meaning")
                 };
@@ -729,8 +826,8 @@ impl Index {
                 {
                     Vec::new()
                 } else {
-                    alloc::vec![self.node(
-                        &source.home,
+                    alloc::vec![self.source_node(
+                        source,
                         expression.span,
                         &Type::Unit,
                         ir::Kind::Literal {
@@ -795,8 +892,8 @@ impl Index {
             } => {
                 let else_body = else_body.map_or_else(
                     || {
-                        self.node(
-                            &source.home,
+                        self.source_node(
+                            source,
                             span,
                             &Type::Unit,
                             ir::Kind::Literal {
@@ -852,14 +949,14 @@ impl Index {
     ) -> usize {
         let ty = Type::named(Origin::Prelude, "Bool", Vec::new());
         let ir::Type::Meaning { index: meaning, .. } =
-            self.ty(&source.home, &ty)
+            self.source_ty(source, &ty)
         else {
             unreachable!()
         };
         let constructor = self
             .constructor_index(meaning, if value { "True" } else { "False" });
-        self.node(
-            &source.home,
+        self.source_node(
+            source,
             span,
             &ty,
             ir::Kind::Construct {
@@ -941,15 +1038,15 @@ impl Index {
         conversion.map_or_else(
             || callee.expect("ordinary callable"),
             |conversion| {
-                let from = self.ty(&source.home, &conversion.from);
-                let to = self.ty(&source.home, &conversion.to);
-                let parameter = self.predicate(
-                    &source.home,
+                let from = self.source_ty(source, &conversion.from);
+                let to = self.source_ty(source, &conversion.to);
+                let parameter = self.source_predicate(
+                    source,
                     &conversion.parameter,
                     &mut Vec::new(),
                 );
-                let target = self.predicate(
-                    &source.home,
+                let target = self.source_predicate(
+                    source,
                     &conversion.to,
                     &mut Vec::new(),
                 );
@@ -961,8 +1058,8 @@ impl Index {
                     parameter,
                     target,
                 };
-                self.node(
-                    &source.home,
+                self.source_node(
+                    source,
                     span,
                     &Type::function(
                         conversion.from.clone(),

@@ -105,8 +105,15 @@ pub fn immediate(
                 // member.
                 _ => {
                     let member = ctx.natives.members.len;
-                    let call = walk::member_call(ctx, member, &value, vec![]);
-                    calls::invoke(ctx, call.map_err(at)?, node)
+                    let call = walk::member_call(
+                        ctx,
+                        member,
+                        &value,
+                        vec![],
+                        result,
+                        node,
+                    );
+                    calls::invoke(ctx, call?, node)
                 }
             }
         }

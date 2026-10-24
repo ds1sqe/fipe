@@ -64,21 +64,24 @@ fn the_exact_budget_boundary_faults_before_the_first_unaffordable_action() {
             "sum",
         ]
     );
-    assert_eq!(
-        sweep("f = n => n * 2\nf 3"),
-        [
-            "f = n => n * 2",
-            "f",
-            "3",
-            "f 3",
-            "*",
-            "n",
-            "2",
-            "2",
-            "n * 2",
-            "n * 2",
-        ]
-    );
+    let source = "f = n => n * 2\nf 3";
+    // Four top-level nodes, then the receiver read and bound-member node.
+    // The receiver is evaluated before the bound read, which precedes `2`.
+    let mut expected = vec!["f = n => n * 2", "f", "3", "f 3", "n", "*"];
+    // Transport the checked callable and create its receiver-first partial.
+    expected.extend(std::iter::repeat_n("*", 36));
+    expected.extend(["2", "2", "n * 2"]);
+    // Admit inspects this supplied argument's current callable before applying it.
+    expected.push("n * 2");
+    // Copy/admit the full callable and project its actual protocol result.
+    expected.extend(std::iter::repeat_n("n * 2", 18));
+    // The one-limb native multiply pays its size term before arithmetic.
+    expected.push("*");
+    assert_eq!(expected.len(), 65);
+    assert_eq!(sweep(source), expected);
+    let (result, charged) = budgeted(&program(source), 65);
+    assert_eq!(result, Ok(fipe::value::Value::Int(6)));
+    assert_eq!(charged, 65);
 }
 
 #[test]

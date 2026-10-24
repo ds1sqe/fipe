@@ -23,6 +23,8 @@ pub(super) enum Target {
     Dispatch {
         member: usize,
         receiver: ir::Receiver,
+        /// Full checked callable, in source argument order.
+        signature: crate::value::resource::Forest,
     },
     /// A function value.
     Value(Operand),
@@ -143,6 +145,9 @@ impl Builder<'_, '_> {
                 Target::Dispatch {
                     member: *member,
                     receiver: receiver.clone(),
+                    signature: crate::value::resource::Forest(alloc::vec![
+                        tables.nodes[node].ty.clone()
+                    ]),
                 }
             }
             ir::Kind::Convert { .. } => {
@@ -188,7 +193,7 @@ impl Builder<'_, '_> {
     pub(super) fn apply(
         &mut self,
         target: Target,
-        arguments: Arguments,
+        mut arguments: Arguments,
         dest: usize,
         node: usize,
     ) -> Operand {
@@ -222,9 +227,16 @@ impl Builder<'_, '_> {
             Target::Dispatch {
                 member,
                 receiver: by,
+                signature,
             } => {
-                let resolved =
-                    self.dispatched(member, &by, &arguments, dest, node);
+                let resolved = self.dispatched(
+                    member,
+                    &by,
+                    signature,
+                    &mut arguments,
+                    dest,
+                    node,
+                );
                 let Some(resolved) = resolved else {
                     return Operand::Local(dest);
                 };
@@ -253,30 +265,14 @@ impl Builder<'_, '_> {
         Operand::Local(dest)
     }
 
-    /// A call node: supplies in source order into the call's locals, then
-    /// the defaults in recorded order, then the call; open spots make a
-    /// thunk.
-    pub(super) fn call(
+    fn lower_supplies(
         &mut self,
-        site: &Site<'_>,
-        dest: Option<usize>,
-    ) -> Operand {
-        let Site {
-            node,
-            callee,
-            slots,
-            supplies,
-            open,
-            ..
-        } = *site;
-        if slots.is_empty() {
-            self.count(node);
-            return self.lower_to(callee, dest);
-        }
-        let ty = &self.tables().nodes[node].ty;
-        let target = self.callee(callee);
-        // A spot gets a local here when this body fills it: every spot of
-        // a full call, only the supplied ones when the rest go to a thunk.
+        slots: &[usize],
+        supplies: &[ir::Supply],
+        open: &[usize],
+        target: &Target,
+        node: usize,
+    ) -> Vec<Option<usize>> {
         let locals: Vec<Option<usize>> = (0..slots.len())
             .map(|spot| {
                 let filled = open.is_empty()
@@ -302,11 +298,129 @@ impl Builder<'_, '_> {
                 self.lower_to(supply.value, Some(local(supply.spot)));
                 index += 1;
             }
+            if let Target::Value(Operand::Local(private)) = *target {
+                let argument = local(supply.spot);
+                let tuple_ty = ir::Type::Tuple(alloc::vec![
+                    self.locals[private].ty.clone(),
+                    self.locals[argument].ty.clone()
+                ]);
+                let admitted = self.local(tuple_ty, None);
+                self.assign(
+                    admitted,
+                    Rvalue::Admit {
+                        values: [
+                            Operand::Local(private),
+                            Operand::Local(argument),
+                        ],
+                        spot: supply.spot,
+                    },
+                    node,
+                );
+                self.assign(
+                    private,
+                    Rvalue::Field(Operand::Local(admitted), 0),
+                    node,
+                );
+                self.assign(
+                    argument,
+                    Rvalue::Field(Operand::Local(admitted), 1),
+                    node,
+                );
+            }
         }
+        locals
+    }
+
+    /// A call node: supplies in source order into the call's locals, then
+    /// the defaults in recorded order, then the call; open spots make a
+    /// thunk.
+    pub(super) fn call(
+        &mut self,
+        site: &Site<'_>,
+        dest: Option<usize>,
+    ) -> Operand {
+        let Site {
+            node,
+            callee,
+            slots,
+            supplies,
+            open,
+            ..
+        } = *site;
+        if slots.is_empty() {
+            self.count(node);
+            return self.lower_to(callee, dest);
+        }
+        let ty = &self.tables().nodes[node].ty;
+        let bound_member = matches!(
+            &self.tables().nodes[callee].kind,
+            ir::Kind::Dispatch {
+                receiver: ir::Receiver::Value(value),
+                ..
+            } if !supplies.iter().any(|supply| supply.value == *value)
+        );
+        // A member already bound its receiver before this call. Lower that
+        // member value through its capture thunk, rather than expect the
+        // receiver among this call's remaining supplies.
+        let mut target = if bound_member {
+            Target::Value(self.lower(callee))
+        } else {
+            self.callee(callee)
+        };
+        if let Target::Dispatch { signature, .. } = &mut target {
+            // The actual Site, including synthetic operators and applied inner
+            // calls, owns the supplied formal types and residual result.
+            let (_, result) = site.open_signature(ty);
+            *signature = crate::value::resource::Forest(alloc::vec![slots
+                .iter()
+                .rev()
+                .fold(result, |result, slot| {
+                    ir::Type::Function {
+                        parameter: alloc::boxed::Box::new(
+                            self.tables().slots[*slot].ty.clone(),
+                        ),
+                        result: alloc::boxed::Box::new(result),
+                    }
+                })]);
+        }
+        if let Target::Value(value) = target {
+            let private =
+                self.local(self.tables().nodes[callee].ty.clone(), None);
+            self.assign(private, Rvalue::Use(value), node);
+            target = Target::Value(Operand::Local(private));
+        }
+        // A spot gets a local here when this body fills it: every spot of
+        // a full call, only the supplied ones when the rest go to a thunk.
+        let locals = self.lower_supplies(slots, supplies, open, &target, node);
+        let local = |spot: usize| locals[spot].expect("a filled spot");
         let receiver_spot = site.receiver_spot(&target);
         let argument = argument_spot(slots.len(), receiver_spot).map(|spot| {
             self.lowering.fixed(&self.tables().slots[slots[spot]].ty)
         });
+        // A value callee already owns its raw arity. Supplying a complete
+        // prefix must enter those arguments now, even when its result is partial.
+        let prefix = slots.len() - open.len();
+        let prefix_value = prefix > 0
+            && matches!(target, Target::Value(_))
+            && site.defaults.is_empty()
+            && !open.is_empty()
+            && open.iter().copied().eq(prefix..slots.len())
+            && supplies.len() == prefix
+            && supplies.iter().all(|supply| !supply.element)
+            && (0..prefix)
+                .all(|spot| supplies.iter().any(|supply| supply.spot == spot));
+        if prefix_value {
+            self.count(node);
+            let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
+            let arguments = Arguments {
+                args: (0..prefix)
+                    .map(|spot| Operand::Local(local(spot)))
+                    .collect(),
+                receiver: None,
+                argument,
+            };
+            return self.apply(target, arguments, dest, node);
+        }
         if open.is_empty() {
             for (spot, default) in site.defaults {
                 self.lower_to(*default, Some(local(*spot)));

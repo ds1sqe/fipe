@@ -8,6 +8,7 @@ use fipe_dap::{
 };
 use std::{
     io::{self, BufReader},
+    process::ExitCode,
     sync::mpsc::{self, TryRecvError},
     thread,
 };
@@ -15,7 +16,27 @@ use std::{
 /// Stops a running program takes before the loop looks for requests.
 const SLICE: usize = 10_000;
 
-fn main() {
+const USAGE:&str="usage: fipe-dap\n       fipe-dap --version\n       fipe-dap --help\nDebug Adapter Protocol over stdio; configure launches through protocol requests.\n";
+
+fn main() -> ExitCode {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() == 1 && args[0] == "--version" {
+        println!("fipe-dap {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if !args.is_empty() {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    }
+    serve();
+    ExitCode::SUCCESS
+}
+
+fn serve() {
     let (requests, received) = mpsc::channel();
     thread::spawn(move || {
         let mut input = BufReader::new(io::stdin());

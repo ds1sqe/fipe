@@ -36,8 +36,8 @@ impl Index {
                         None,
                     )
                 });
-                let value = self.node(
-                    &source.home,
+                let value = self.source_node(
+                    source,
                     node.span,
                     ty,
                     ir::Kind::Literal {
@@ -134,8 +134,8 @@ impl Index {
                 origin: home_origin(&source.home, origin),
                 name: owner.clone(),
             };
-            let predicate = self.predicate(
-                &source.home,
+            let predicate = self.source_predicate(
+                source,
                 &Type::Named {
                     name: owner,
                     arguments: Vec::new(),
@@ -200,7 +200,7 @@ impl Index {
                 let ty =
                     source.typed.pattern(id).expect("record pattern input");
                 let ir::Type::Meaning { index: meaning, .. } =
-                    self.ty(&source.home, ty)
+                    self.source_ty(source, ty)
                 else {
                     unreachable!("record pattern has a nominal meaning")
                 };

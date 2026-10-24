@@ -59,3 +59,33 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --offline --no-deps
 ```
 
 The tests build the native runtime with `cargo` and link with `cc`.
+
+## Command discovery
+
+```sh
+fipe --version
+fipe --help
+fipe -h
+```
+
+`--version` prints `fipe <package-version>` and exits successfully.
+Help prints usage and exits successfully. These commands take no protocol input
+and run before a session starts. Version accepts no extra operands.
+Invalid usage exits 2. The existing `help`, `--help` and `-h` branches retain
+their acceptance of trailing arguments. Nested command options do not become
+global discovery options.
+
+`fipe fmt FILE...` formats syntax without running or resolving a script;
+`fipe fmt --check FILE...` reports differences without writing. Use `--` before
+paths starting with `-`; stdin `-` is not accepted. Exit0 means success/clean,
+1 means a difference in check mode or refused syntax/content transformation,
+2 means usage or I/O failure; a batch returns the highest code and continues
+independent files. Output goes to stderr, leaving stdout empty.
+
+Changed regular files are replaced through a sibling temporary with their
+original permissions. Symlinks/directories are refused; read-only files can be
+checked or left already clean. Earlier successful writes remain if another file
+fails. Replacement changes the inode (hard-link aliases retain old contents);
+ACLs/extended attributes, crash durability and concurrent-writer exclusion are
+not guaranteed. Paths retain exact OS bytes. Literal/doc token content is kept;
+ordinary comment alignment/content is kept with trailing whitespace trimmed.

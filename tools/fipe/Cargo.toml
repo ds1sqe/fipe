@@ -2,6 +2,7 @@
 name = "fipe-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "The fipe command: run, check, build and talk to Fipe scripts"
 license.workspace = true
 repository.workspace = true
@@ -10,6 +11,7 @@ include = ["/src/**", "/build.rs", "/README.md", "/LICENSE-*", "/Cargo.lock"]
 [[bin]]
 name = "fipe"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 fipe.workspace = true

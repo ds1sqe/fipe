@@ -7,7 +7,7 @@ pub mod known;
 mod phase;
 mod plan;
 pub use holding::Holding;
-pub use plan::{Check, Frequency, Phase, Place, Reason};
+pub use plan::{Check, CheckRole, Frequency, Phase, Place, Reason};
 
 use crate::{
     ast::{
@@ -133,9 +133,25 @@ impl Bindings {
     }
 }
 
+pub(crate) type EntryInput = (ExprId, Type, Span, Place, bool, Option<Span>);
+
+fn annotated_bindings(module: &Module) -> BTreeMap<usize, bool> {
+    // A binding without an annotation takes its value as it is.
+    module
+        .expressions
+        .iter()
+        .filter_map(|e| match e.kind {
+            ExprKind::Bind {
+                value, annotation, ..
+            } => Some((value.0, annotation.is_some())),
+            _ => None,
+        })
+        .collect()
+}
+
 pub(crate) fn check(
     inputs: &Inputs<'_>,
-    entries: &[(ExprId, Type, Span, Place, bool)],
+    entries: &[EntryInput],
     instance: Option<ExprId>,
     typed: &mut Typed,
 ) -> Vec<Error> {
@@ -441,6 +457,124 @@ impl<'a> Pass<'a> {
     }
 }
 impl Pass<'_> {
+    fn marked_payload(
+        &self,
+        id: ExprId,
+        receiving: Option<Span>,
+    ) -> Option<(Type, bool)> {
+        for expression in &self.module.expressions {
+            let ExprKind::Pipe {
+                op: op @ (PipeOp::Good | PipeOp::Bad),
+                left,
+                right,
+                ..
+            } = expression.kind
+            else {
+                continue;
+            };
+            if left != id {
+                continue;
+            }
+            let stage = self.module.expressions[right.0].span;
+            if receiving.is_some_and(|r| r != stage) {
+                continue;
+            }
+            let Some(bound) = self.typed.bound.get(&(stage.start, stage.end))
+            else {
+                continue;
+            };
+            if !bound.supplies.iter().any(|(_,s)| matches!(s,crate::typed::Supply::Pipe(site) if *site == self.module.expressions[id.0].span)) { continue; }
+            let Type::Named { name, arguments } =
+                crate::infer::meaning(self.typed.expr(id)?)
+            else {
+                continue;
+            };
+            if name.origin != Origin::Prelude {
+                continue;
+            }
+            let good = op == PipeOp::Good;
+            let index = match (name.name.as_str(), good) {
+                ("Maybe" | "Result", true) | ("Either", false) => 0,
+                ("Result", false) | ("Either", true) => 1,
+                _ => continue,
+            };
+            return Some((arguments.get(index)?.clone(), good));
+        }
+        None
+    }
+
+    fn receiving_fact(
+        &self,
+        id: ExprId,
+        receiving: Option<Span>,
+    ) -> (Known, Option<Type>) {
+        let whole = self.typed.known[id.0].clone();
+        let Some((ty, good)) =
+            receiving.and_then(|r| self.marked_payload(id, Some(r)))
+        else {
+            return (whole, self.typed.expr(id).cloned());
+        };
+        let selected = whole.constructor.as_deref().is_some_and(|label| {
+            matches!(label, "Just" | "Ok" | "Right") == good
+        });
+        let mut fact = if selected && whole.failure.is_none() {
+            let field =
+                self.typed
+                    .expr(id)
+                    .and_then(|ty| match crate::infer::meaning(ty) {
+                        Type::Named { name, .. } => {
+                            self.owner(&name.origin).and_then(|module| {
+                                construction_fields(
+                                    module,
+                                    &name.name,
+                                    whole.constructor.as_deref()?,
+                                )
+                                .first()
+                                .and_then(|field| field.name.segments.last())
+                                .cloned()
+                            })
+                        }
+                        _ => None,
+                    });
+            whole
+                .parts
+                .iter()
+                .find(|(name, _)| field.as_ref() == Some(name))
+                // Explicit bracket outcomes use the synthetic payload name v.
+                .or_else(|| whole.parts.iter().find(|(name, _)| name == "v"))
+                .map_or_else(Known::default, |(_, part)| part.clone())
+        } else {
+            Known::default()
+        };
+        fact.failure = whole.failure.or(fact.failure);
+        fact.phase = fact.phase.max(whole.phase);
+        fact.pure &= whole.pure;
+        fact.demanded |= selected && whole.demanded;
+        if let Some(cast) = self.typed.casts[id.0]
+            .as_ref()
+            .filter(|c| c.row != crate::typed::CastRow::Pack)
+        {
+            fact = Known {
+                failure: fact.failure,
+                phase: fact.phase,
+                pure: fact.pure,
+                demanded: fact.demanded,
+                ..Known::default()
+            };
+            if let Type::Named { name, .. } = crate::infer::meaning(&cast.to) {
+                fact.meaning = Some(name.clone());
+            }
+            if matches!(
+                cast.row,
+                crate::typed::CastRow::Bytes | crate::typed::CastRow::Show
+            ) && bytes_place(&cast.to)
+            {
+                fact.element = Some(alloc::boxed::Box::new(self.byte_facts()));
+            }
+        }
+        (fact, Some(ty))
+    }
+
     /// What is known of an expression's value before it enters a place.
     fn fact(&mut self, id: ExprId) -> Known {
         // A cast value is known by its target's meaning alone: the
@@ -452,7 +586,10 @@ impl Pass<'_> {
             .casts
             .get(id.0)
             .and_then(Option::as_ref)
-            .filter(|cast| cast.row != crate::typed::CastRow::Pack)
+            .filter(|cast| {
+                cast.row != crate::typed::CastRow::Pack
+                    && self.marked_payload(id, None).is_none()
+            })
             .cloned();
         let mut known = match &cast {
             Some(cast)
@@ -794,7 +931,8 @@ impl Pass<'_> {
                     ..
                 }
         ) {
-            if let Some(Type::Named { name, .. }) = self.typed.expr(id).cloned()
+            if let Some(Type::Named { name, arguments }) =
+                self.typed.expr(id).cloned()
             {
                 if matches!(
                     self.module.expressions[id.0].kind,
@@ -806,6 +944,7 @@ impl Pass<'_> {
                 ) {
                     self.named_entry(
                         &name,
+                        &arguments,
                         known,
                         self.module.expressions[id.0].span,
                         self.frequency(self.module.expressions[id.0].span),
@@ -889,15 +1028,15 @@ impl Pass<'_> {
                     ..
                 } = member
                 {
-                    self.seed_member(*value);
+                    self.seed_arm_parameters(*value);
                 }
             }
         }
     }
 
-    /// An `impl` member's parameters, by the types its signature gives
-    /// their patterns.
-    fn seed_member(&mut self, value: ExprId) {
+    /// An arm's places use their checked body types, not the binding's
+    /// generalized scheme variables.
+    fn seed_arm_parameters(&mut self, value: ExprId) {
         let ExprKind::Arms(arms) = &self.module.expressions[value.0].kind
         else {
             return;
@@ -917,6 +1056,203 @@ impl Pass<'_> {
                 }
             }
         }
+    }
+
+    fn fact_binder_error(&mut self, span: Span, mut fact: Known) -> Known {
+        self.errors.push(Error {
+            span,
+            reason: TypeReason::Limit { message: String::from("generic function facts do not match their checked declaration binders") },
+        });
+        fact.failure = Some(known::Failure::Dependency);
+        fact
+    }
+
+    /// Only this binding's annotation rigids become its unique scheme variables.
+    /// Already-instantiated facts from inner bindings contain canonical Vars.
+    fn canonical_local_fact(&mut self, site: Span, mut fact: Known) -> Known {
+        if fact.failure == Some(known::Failure::Dependency)
+            || !fact.has_generic_type_facts()
+        {
+            return fact;
+        }
+        // Parameter and constructor-pattern names are places, not declarations.
+        if self.bindings_of(self.module).site(site).is_none() {
+            return fact;
+        }
+        let key = (site.start, site.end);
+        let Some(scheme) = self.typed.schemes.get(&key).cloned() else {
+            return self.fact_binder_error(site, fact);
+        };
+        if scheme.variables.is_empty() {
+            return fact;
+        }
+        let Some(parameters) = self.typed.body_parameters.get(&key) else {
+            return self.fact_binder_error(site, fact);
+        };
+        if parameters.len() != scheme.variables.len() {
+            return self.fact_binder_error(site, fact);
+        }
+        let mut rigids = Vec::new();
+        for (parameter, variable) in parameters.iter().zip(&scheme.variables) {
+            match parameter {
+                Type::Var(known) if known == variable => (),
+                Type::Rigid(name) => rigids.push((name.clone(), *variable)),
+                _ => return self.fact_binder_error(site, fact),
+            }
+        }
+        if !rigids.is_empty() {
+            fact.map_types(&mut |ty| {
+                crate::infer::canonical_body_type(ty, &rigids)
+            });
+        }
+        fact
+    }
+
+    /// `None` is unsupported provenance, not missing canonical metadata.
+    /// A supported route obtains fact and scheme from the SAME checked owner.
+    fn reference_fact_source(
+        &self,
+        id: ExprId,
+        origin: &Origin,
+        site: Span,
+    ) -> Option<Result<(Known, Option<crate::types::Scheme>), ()>> {
+        let key = (site.start, site.end);
+        match (origin, self.resolved.expr(id)) {
+            (Origin::This, Some(Target::Local { site: actual }))
+                if *actual == site =>
+            {
+                let mut fact =
+                    self.locals.get(&key).cloned().unwrap_or_default();
+                self.narrow_local_fact(
+                    key,
+                    Some(self.module.expressions[id.0].span),
+                    &mut fact,
+                );
+                Some(Ok((fact, self.typed.schemes.get(&key).cloned())))
+            }
+            (Origin::Line(index), Some(Target::Local { site: actual }))
+                if *actual == site =>
+            {
+                let Some(line) =
+                    self.frame.and_then(|frame| frame.lines.get(*index))
+                else {
+                    return Some(Err(()));
+                };
+                let mut fact = line
+                    .typed
+                    .facts
+                    .iter()
+                    .find(|(at, _)| *at == key)
+                    .map_or_else(Known::default, |(_, fact)| fact.clone());
+                self.narrow_local_fact(
+                    key,
+                    Some(self.module.expressions[id.0].span),
+                    &mut fact,
+                );
+                Some(Ok((fact, line.typed.schemes.get(&key).cloned())))
+            }
+            (
+                Origin::File(stem),
+                Some(Target::Value {
+                    origin: Origin::File(target),
+                    name,
+                }),
+            ) if stem == target => {
+                let Some((_, module)) =
+                    self.files.iter().find(|(name, _)| name == stem)
+                else {
+                    return Some(Err(()));
+                };
+                let cache = self.cache.files.borrow();
+                let Some(checked) = cache.get(stem) else {
+                    return Some(Err(()));
+                };
+                if !checked.resolve_errors.is_empty()
+                    || !checked.type_errors.is_empty()
+                {
+                    return None;
+                }
+                let actual = module.entries.iter().rev().find_map(|entry| {
+                    let Entry::Line(id) = entry else {
+                        return None;
+                    };
+                    let ExprKind::Bind { pattern, .. } =
+                        &module.expressions[id.0].kind
+                    else {
+                        return None;
+                    };
+                    let PatternKind::Name(bound) =
+                        &module.patterns[pattern.0].kind
+                    else {
+                        return None;
+                    };
+                    (bound.segments.last() == Some(name)).then_some(bound.span)
+                });
+                let actual = actual?;
+                if actual != site {
+                    return Some(Err(()));
+                }
+                let mut fact = checked
+                    .typed
+                    .facts
+                    .iter()
+                    .find(|(at, _)| *at == key)
+                    .map_or_else(Known::default, |(_, fact)| fact.clone());
+                fact.rehome(origin);
+                Some(Ok((fact, checked.typed.schemes.get(&key).cloned())))
+            }
+            // Host syntax and composite fields do not prove canonical provenance.
+            _ => None,
+        }
+    }
+
+    /// A proven canonical read instantiates once, before call planning.
+    fn reference_fact(&mut self, id: ExprId, legacy: Known) -> Known {
+        let span = self.module.expressions[id.0].span;
+        let key = (span.start, span.end);
+        let Some(crate::typed::Selected::Value { origin, site }) =
+            self.typed.selected.get(&key).cloned()
+        else {
+            return legacy;
+        };
+        let Some(source) = self.reference_fact_source(id, &origin, site) else {
+            return legacy;
+        };
+        let (mut fact, scheme) = match source {
+            Ok(source) => source,
+            Err(())
+                if legacy.has_generic_type_facts()
+                    && legacy.failure != Some(known::Failure::Dependency) =>
+            {
+                return self.fact_binder_error(span, legacy)
+            }
+            Err(()) => return legacy,
+        };
+        if fact.failure == Some(known::Failure::Dependency)
+            || !fact.has_generic_type_facts()
+        {
+            return fact;
+        }
+        let Some(scheme) = scheme else {
+            return self.fact_binder_error(span, fact);
+        };
+        if scheme.variables.is_empty() {
+            return fact;
+        }
+        let Some(arguments) = self.typed.meaning_arguments.get(&key) else {
+            return self.fact_binder_error(span, fact);
+        };
+        if arguments.len() != scheme.variables.len() {
+            return self.fact_binder_error(span, fact);
+        }
+        let bindings: Vec<_> = scheme
+            .variables
+            .iter()
+            .copied()
+            .zip(arguments.iter().cloned())
+            .collect();
+        fact.map_types(&mut |ty| crate::types::replace(ty, &bindings));
+        fact
     }
 
     fn binding_facts(&mut self, id: ExprId) {
@@ -966,8 +1302,8 @@ impl Pass<'_> {
     fn pattern_facts(&mut self, pattern: crate::ast::PatternId, fact: &Known) {
         match &self.module.patterns[pattern.0].kind {
             PatternKind::Name(name) => {
-                self.locals
-                    .insert((name.span.start, name.span.end), fact.clone());
+                let fact = self.canonical_local_fact(name.span, fact.clone());
+                self.locals.insert((name.span.start, name.span.end), fact);
             }
             PatternKind::Tuple(parts) | PatternKind::List(parts) => {
                 for (index, part) in parts.iter().enumerate() {
@@ -989,9 +1325,16 @@ impl Pass<'_> {
                         origin: origin.clone(),
                         name: name.clone(),
                     };
+                    let arguments = self
+                        .typed
+                        .pattern(pattern)
+                        .and_then(|ty| named_arguments(ty, &name))
+                        .unwrap_or(&[])
+                        .to_vec();
                     let start = self.typed.checks.len();
                     self.named_entry(
                         &name,
+                        &arguments,
                         fact,
                         self.module.patterns[pattern.0].span,
                         Frequency::Once,
@@ -1029,7 +1372,7 @@ impl Pass<'_> {
         }
     }
 
-    fn entries(&mut self, entries: &[(ExprId, Type, Span, Place, bool)]) {
+    fn entries(&mut self, entries: &[EntryInput]) {
         let module = self.module;
         let branches: Vec<_> = entries
             .iter()
@@ -1037,29 +1380,28 @@ impl Pass<'_> {
                 matches!(module.expressions[id.0].kind, ExprKind::If { .. })
             })
             .collect();
-        // A binding without an annotation takes its value as it is.
-        let bound: BTreeMap<_, _> = module
-            .expressions
-            .iter()
-            .filter_map(|e| match e.kind {
-                ExprKind::Bind {
-                    value, annotation, ..
-                } => Some((value.0, annotation.is_some())),
-                _ => None,
-            })
-            .collect();
-        for (id, ty, place, place_kind, variable) in entries {
+        let bound = annotated_bindings(module);
+        for (id, ty, place, place_kind, variable, receiving_call) in entries {
+            let (received, value_ty) =
+                self.receiving_fact(*id, *receiving_call);
+            let payload = receiving_call.is_some()
+                && self.marked_payload(*id, *receiving_call).is_some();
             if !has_limits(ty)
-                && !self.typed.expr(*id).is_some_and(has_limits)
-                && (bound.get(&id.0) == Some(&false)
-                    || !self.typed.known[id.0].carries())
+                && !value_ty.as_ref().is_some_and(has_limits)
+                && (bound.get(&id.0) == Some(&false) || !received.carries())
             {
                 continue;
             }
             // A function value at a type variable is what is known there
             // (07-checks §What is known 8): it meets nothing but itself.
             if *variable && matches!(ty, Type::Function { .. }) {
-                self.variable_function(*id, ty, *place, place_kind);
+                self.variable_function(
+                    *id,
+                    ty,
+                    *place,
+                    place_kind,
+                    *receiving_call,
+                );
                 continue;
             }
             let expr = &module.expressions[id.0];
@@ -1070,6 +1412,7 @@ impl Pass<'_> {
             // cast value enters, known by its meaning alone.
             let cast = self.typed.casts.get(id.0).is_some_and(Option::is_some);
             if !cast
+                && !payload
                 && matches!(
                     expr.kind,
                     ExprKind::Group(_)
@@ -1104,7 +1447,7 @@ impl Pass<'_> {
             {
                 continue;
             }
-            let mut fact = self.typed.known[id.0].clone();
+            let mut fact = received;
             if !cast && matches!(expr.kind, ExprKind::List(_)) {
                 fact.demanded = true;
             }
@@ -1112,7 +1455,7 @@ impl Pass<'_> {
             self.entry_phase =
                 (fact.demanded || fact.is_exact()).then_some(Phase::Compile);
             let start = self.typed.checks.len();
-            self.value_ty = self.typed.expr(*id).cloned();
+            self.value_ty = value_ty;
             let takes = self.takes.get(&id.0).cloned();
             self.enter_value(
                 ty,
@@ -1134,6 +1477,7 @@ impl Pass<'_> {
             }
             for check in &mut self.typed.checks[start..] {
                 check.value = Some(*id);
+                check.receiving_call = *receiving_call;
             }
         }
     }
@@ -1149,9 +1493,10 @@ impl Pass<'_> {
         ty: &Type,
         place: Span,
         place_kind: &Place,
+        receiving_call: Option<Span>,
     ) {
-        let known = self.typed.known[id.0].clone();
-        let opens: Vec<_> = own_limits(&known, self.typed.expr(id))
+        let (known, value_ty) = self.receiving_fact(id, receiving_call);
+        let opens: Vec<_> = own_limits(&known, value_ty.as_ref())
             .into_iter()
             .enumerate()
             .filter_map(|(i, limit)| Some((i, limit?)))
@@ -1165,6 +1510,7 @@ impl Pass<'_> {
         self.open_function(ty, &opens, &known, place, frequency);
         for check in &mut self.typed.checks[start..] {
             check.value = Some(id);
+            check.receiving_call = receiving_call;
         }
     }
     /// Whether a value is an argument of a full call whose result is the
@@ -1332,33 +1678,10 @@ impl Pass<'_> {
         else {
             return;
         };
-        let ExprKind::Arms(arms) = &self.module.expressions[value.0].kind
-        else {
+        if self.typed.binding(id).is_none() {
             return;
-        };
-        let Some(scheme) = self.typed.binding(id) else {
-            return;
-        };
-        let ty = scheme.ty.clone();
-        for arm in arms {
-            let mut ty = &ty;
-            for pattern in &arm.patterns {
-                let Type::Function { parameter, result } = ty else {
-                    break;
-                };
-                if let PatternKind::Name(name) =
-                    &self.module.patterns[pattern.0].kind
-                {
-                    let mut known = Known {
-                        pure: true,
-                        ..Known::default()
-                    };
-                    self.place_facts(parameter, &mut known);
-                    self.locals.insert((name.span.start, name.span.end), known);
-                }
-                ty = result;
-            }
         }
+        self.seed_arm_parameters(value);
     }
     fn value(&mut self, id: ExprId) -> Known {
         let expression = &self.module.expressions[id.0];
@@ -1366,10 +1689,14 @@ impl Pass<'_> {
         match &expression.kind {
             ExprKind::Literal(_) => self.literal_value(id),
             ExprKind::Name(_) => {
-                self.target(self.resolved.expr(id), Some(expression.span))
+                let known =
+                    self.target(self.resolved.expr(id), Some(expression.span));
+                self.reference_fact(id, known)
             }
-            ExprKind::Field { value, field } => get(*value)
-                .part(field.segments.last().map_or("", String::as_str)),
+            ExprKind::Field { value, field } => field
+                .segments
+                .iter()
+                .fold(get(*value), |known, part| known.part(part)),
             ExprKind::Group(lines) | ExprKind::Block(lines) => {
                 lines.last().map_or_else(Known::default, |id| get(*id))
             }
@@ -1636,7 +1963,12 @@ impl Pass<'_> {
                 return declared;
             }
             if let Some(limit) = &function.parameters[0] {
-                self.argument_entry(left, limit, None);
+                self.argument_entry(
+                    left,
+                    limit,
+                    None,
+                    self.module.expressions[right.0].span,
+                );
             }
             return function.result.clone().meet(&declared);
         };
@@ -1648,7 +1980,12 @@ impl Pass<'_> {
                 continue;
             };
             let own = bound.spots.get(*spot).map(|(_, ty)| ty);
-            self.argument_entry(argument, limit, own);
+            self.argument_entry(
+                argument,
+                limit,
+                own,
+                self.binding_stage(id).expect("bound stage"),
+            );
         }
         if !bound.open.is_empty() {
             if !bound.applied.is_empty() {
@@ -1680,7 +2017,12 @@ impl Pass<'_> {
                 break;
             };
             if let Some(Some(limit)) = function.parameters.first() {
-                self.argument_entry(*argument, limit, Some(ty));
+                self.argument_entry(
+                    *argument,
+                    limit,
+                    Some(ty),
+                    self.binding_stage(id).expect("bound stage"),
+                );
             }
             result = function.after(1);
         }
@@ -1694,11 +2036,13 @@ impl Pass<'_> {
         argument: ExprId,
         limit: &Type,
         own: Option<&Type>,
+        receiving_call: Span,
     ) {
         if own == Some(limit) {
             return;
         }
-        let known = self.typed.known[argument.0].clone();
+        let (known, received_ty) =
+            self.receiving_fact(argument, Some(receiving_call));
         let span = self.module.expressions[argument.0].span;
         let place_kind =
             core::mem::replace(&mut self.place_kind, Place::Parameter(None));
@@ -1706,14 +2050,12 @@ impl Pass<'_> {
             &mut self.entry_phase,
             (known.demanded || known.is_exact()).then_some(Phase::Compile),
         );
-        let value_ty = core::mem::replace(
-            &mut self.value_ty,
-            self.typed.expr(argument).cloned(),
-        );
+        let value_ty = core::mem::replace(&mut self.value_ty, received_ty);
         let start = self.typed.checks.len();
         self.enter_value(limit, &known, span, self.frequency(span), None);
         for check in &mut self.typed.checks[start..] {
             check.value = Some(argument);
+            check.receiving_call = Some(receiving_call);
         }
         self.place_kind = place_kind;
         self.entry_phase = entry_phase;
@@ -1951,6 +2293,8 @@ impl Pass<'_> {
                 });
             } else if range.contains_zero() {
                 self.typed.checks.push(Check {
+                    role: crate::limits::CheckRole::Local,
+                    receiving_call: None,
                     value: Some(*right),
                     path: Vec::new(),
                     target: None,
@@ -2139,9 +2483,18 @@ impl Pass<'_> {
                 origin: origin.clone(),
                 name: name.clone(),
             };
+            let span = self.module.expressions[callee.0].span;
+            let arguments = self
+                .typed
+                .conversions
+                .get(&(span.start, span.end))
+                .and_then(|conversion| named_arguments(&conversion.to, &name))
+                .unwrap_or(&[])
+                .to_vec();
             let start = self.typed.checks.len();
             self.named_entry(
                 &name,
+                &arguments,
                 &known,
                 expression.span,
                 self.frequency(expression.span),
@@ -2284,6 +2637,16 @@ impl Pass<'_> {
             .or_else(|| self.frame.and_then(|f| f.facts.get(&site)))
             .cloned()
             .unwrap_or_default();
+        self.narrow_local_fact(site, read, &mut known);
+        known
+    }
+
+    fn narrow_local_fact(
+        &self,
+        site: Site,
+        read: Option<Span>,
+        known: &mut Known,
+    ) {
         // ponytail: linear scan; index by site if a long file slows.
         for narrowed in read.iter().flat_map(|read| {
             self.narrowed.iter().filter(move |n| {
@@ -2297,9 +2660,8 @@ impl Pass<'_> {
             } else {
                 Vec::new()
             };
-            meet_path(&mut known, path, &narrowed.range);
+            meet_path(known, path, &narrowed.range);
         }
-        known
     }
     /// What is known of a target, read at `read`: a local meets each
     /// range it is narrowed to where the read is.
@@ -2690,11 +3052,10 @@ fn test(module: &Module, id: ExprId, value: &Known) -> Known {
             }
             k
         }
-        ExprKind::Field { value: v, field } => test(module, *v, value)
-            .parts
-            .into_iter()
-            .find(|(n, _)| Some(n) == field.segments.last())
-            .map_or_else(Known::default, |(_, k)| k),
+        ExprKind::Field { value: v, field } => field
+            .segments
+            .iter()
+            .fold(test(module, *v, value), |known, part| known.part(part)),
         ExprKind::Binary {
             op, left, right, ..
         } => test_binary(
@@ -2732,11 +3093,12 @@ fn spot_test(module: &Module, id: ExprId, spots: &[(String, Known)]) -> Known {
             .iter()
             .find(|(name, _)| *name == n.segments[0])
             .map_or_else(Known::default, |(_, k)| k.clone()),
-        ExprKind::Field { value, field } => spot_test(module, *value, spots)
-            .parts
-            .into_iter()
-            .find(|(n, _)| Some(n) == field.segments.last())
-            .map_or_else(Known::default, |(_, k)| k),
+        ExprKind::Field { value, field } => field
+            .segments
+            .iter()
+            .fold(spot_test(module, *value, spots), |known, part| {
+                known.part(part)
+            }),
         ExprKind::Binary {
             op, left, right, ..
         } => test_binary(
@@ -3124,9 +3486,8 @@ impl Pass<'_> {
             Some(Target::Local { site }) => Some((site.start, site.end)),
             _ => None,
         };
-        let len = |field: &crate::ast::Name| {
-            field.segments.last().is_some_and(|n| n == "len")
-        };
+        let len =
+            |field: &crate::ast::Name| field.segments.as_slice() == ["len"];
         match (&self.module.expressions[id.0].kind, self.resolved.expr(id)) {
             (ExprKind::Name(_), Some(Target::Local { site })) => {
                 Some(((site.start, site.end), false))
@@ -3662,5 +4023,13 @@ impl Pass<'_> {
                 );
         self.bindings.borrow_mut().insert(key, Rc::clone(&bindings));
         bindings
+    }
+}
+
+fn named_arguments<'a>(ty: &'a Type, target: &TypeName) -> Option<&'a [Type]> {
+    match ty {
+        Type::Named { name, arguments } if name == target => Some(arguments),
+        Type::Limited { name, .. } => named_arguments(name, target),
+        _ => None,
     }
 }

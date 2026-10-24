@@ -25,6 +25,14 @@ never grants authority. Status 0 carries one scalar; status 1 carries a TEXT hos
 Fault; unknown statuses, missing/duplicate emissions and invalid scalar metadata
 are contract errors.
 
+`Provider::call` refuses resource-marked parameter and result types, including
+container types, before invoking the callback. A genuine `Value::Resource` supplied
+to an otherwise valid scalar request is rejected too, directly or inside a
+container. Supported scalar calls remain allowed when the registered provider
+also declares resource types; there is no provider-wide resource gate. The scalar ABI does not
+transport resources or define their ownership. The driver must still
+authorize the call and validate its reply through `Machine::reply`.
+
 ## Native safety contract
 
 The descriptor, its code and metadata buffers remain immutable and valid for the
@@ -48,10 +56,11 @@ state shared by multiple wrappers.
 
 Native providers have process privileges. Fipe budgets cannot bound their time or
 memory, and invalid native pointers or aborts cannot be recovered by validation.
-The header is [include/fipe.h](include/fipe.h). Offline `.fipi` loading, runtime
-artifact discovery/distribution and CPU/GPU build capability selection are separate
-planned work. This crate does not load libraries or define a resource model or
-scheduler.
+The header is [include/fipe.h](include/fipe.h). Explicit selected `.fipi` inputs
+and atomic offline reload are available in the [LSP](../lsp/README.md#offline-interface-inputs);
+they read declarations without loading providers. Runtime artifact discovery and
+CPU/GPU build capability selection remain separate planned work. This crate does
+not load libraries or define a resource model or scheduler.
 
 ## Repository C/Rust proof
 
@@ -74,3 +83,24 @@ wrong-result rejection, ABI mismatch, duplicate registration and driver denial.
 Normal adapter builds do not compile this C fixture; root workspace tests do not
 run the nested proof. These repository fixtures are excluded from the published
 adapter package and do not prove a self-contained installed author example.
+
+See the [support policy](../../Documentation/development.md#compatibility-and-support)
+for the Rust 1.98.1 floor and platform qualification status.
+The three-OS VM/tooling selection does not expand this experimental target-specific
+scalar proof to other targets, resources or native/LLVM execution.
+
+## Linked author example
+
+[examples/linked-provider](examples/linked-provider/README.md) supplies a small C
+object and separately compiled Rust crate, selected explicitly by a custom VM host.
+The host compares a saved `.fipi` module/source snapshot with the descriptor before
+fresh registration, then authorizes each request. It uses the existing public API
+and the actual shipped header. Both manifest templates must be copied/materialized
+outside this package so Cargo does not exclude the author assets as subpackages.
+
+Source qualification passed on Rust 1.98.1/x86_64 GNU Linux: the serial C/Rust
+test, both executable runs, and actual adapter archive contents including the
+Cargo-generated nested lock. Fresh external archive dependency execution remains
+a separate gate. Current exact dev.2 dependencies require explicitly selected
+source or archive patches before publication; registry availability is not assumed.
+No dynamic loader, resource/native ABI support or expanded target promise follows.

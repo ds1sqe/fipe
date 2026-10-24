@@ -25,7 +25,7 @@ native library provider.
 
 ## Proposed provider layer and current scaffold
 
-The proposed path is: a Fipe host declaration produces a call request; the
+The explicit provider path is: a Fipe host declaration produces a call request; the
 driver authorizes it and dispatches to a C or Rust provider; the driver returns
 the result through the ordinary embedding reply boundary. Providers implement
 declared modules without putting a C ABI into Core or requiring a custom host
@@ -64,7 +64,8 @@ type describes a value's shape; it grants no authority. A refused call can
 return `Reply::Value(Err(message))`, which Faults the run.
 
 Library-specific CPU and device allocations must remain provider-owned, with
-their exposure and release governed by the future host lifecycle contract.
+their exposure and release governed by the selected Host lifecycle policy and
+separately qualified resource implementation.
 The scaffold borrows input storage for the call and copies the provider's
 reply during its emission callback. The provider must keep that reply storage
 valid until the callback returns, must not retain borrowed inputs or the
@@ -77,17 +78,15 @@ define a general allocator-transfer or resource-lifetime API.
 
 ## Two separate upstream integrations
 
-**Rebase A: ownership, authority and run boundaries.** The provider layer must
-consume the upstream host contract for opaque host-made resources, per-call
-authorization, and completion, Fault and withdrawal boundaries. The host owns
-and releases handles; the adapter must not invent public integer-to-resource
-construction, a competing resource wire form or a separate lifecycle. Private
-provider allocation tables remain implementation details. Today's
-[`Value`](../../src/value.rs) has no dedicated resource variant, and the
-current host chapter's resource description does not settle the requested
-opaque wire representation or run-lifetime integration. Neither this note nor
-the FFI scaffold changes that contract. Standard's `Rd` constructor is a
-Standard declaration, not authority for every host to expose one.
+**Rebase A: ownership, authority and run boundaries.** Host resource ownership and
+run/session policy are selected separately from this scalar adapter. The Host owns
+payloads, grants and explicit revocation; copied typed references do not transfer
+ownership. Successful-run entries remain session-owned; Fault/abandonment cleanup
+revokes only newly created entries. Resource carrier implementation/qualification
+and resource-native/provider transport are separate gates. This scalar ABI refuses
+resource declarations/values; it does not define a competing wire form or permit
+integer-to-resource construction. Neither the linked scalar proof nor offline
+interface loading settles broader native-resource release support.
 
 **Rebase B: async and parallel execution.** A separate upstream contract must
 define request identity, multiple outstanding calls, reply matching,
@@ -103,26 +102,37 @@ completion and release must respect both future ownership and concurrency
 contracts, including cancellation or a Fault while device work is outstanding.
 The current value-copy scaffold does not implement those guarantees.
 
-## Open packaging and interface decisions
+## Offline interfaces and explicit linked delivery
 
-These questions remain proposals; this chapter selects no format or loader
-behavior:
+Editors can select absolute `.fipi` declaration paths and reload their text
+atomically through the [LSP interface contract](../../tools/lsp/README.md#offline-interface-inputs).
+Invalid updates retain last-good declarations with diagnostics and source-safe
+navigation. These paths never load or invoke a provider. An editor's latest text
+is not automatically associated with a runtime artifact.
 
-- **Native artifact location and discovery:** where separately built libraries
-  live, how a host locates them, and how module identity maps to an artifact.
-  A source-module stem or `use` is not an agreed native-library search path.
-- **Compile-time flags and capabilities:** how a build records enabled native
-  features and how declarations, artifacts and host capabilities are matched.
-  Compatibility must account for the target and ABI as well as the functions
-  a provider actually implements; matching types still does not grant runtime
-  permission. No native-provider flag or negotiation scheme is defined here.
-- **Offline interface declarations:** a proposed `.fipi` interface file, in
-  the role of a Python `.pyi`, would let checking and tooling read a library's
-  declarations without executing its native code. Its syntax, generation,
-  association with an artifact, version/capability matching and integration
-  with existing host declarations remain undecided. The current scaffold
-  reads declaration text from a supplied descriptor; it has no `.fipi` loader.
+The [linked author example](../../tools/ffi/examples/linked-provider/README.md)
+uses a C object or separate Rust provider crate explicitly linked into one custom
+VM host. The host reads one saved `.fipi` snapshot and compares its expected module
+and exact bytes with the descriptor using existing getters before fresh registration
+and checking. This scalar association is driver policy, not a new implicit check in
+all `Provider::call` users. Exact bytes include comments/line endings; they do not
+prove native code trust, resource identity or a live schema contract. Per-call
+permissions and reply validation remain required.
 
-These decisions and both upstream contracts must be resolved before provider
-integration can claim the corresponding behavior. Existing Rust embedding
-remains the reference path for a custom host.
+The example ships manifest templates for materialization outside the adapter
+package and uses the matching shipped header. Its Cargo-generated lock, serial
+C/Rust test, both runs and actual package asset contents passed source qualification
+on Rust 1.98.1/x86_64 GNU Linux. Fresh external archive dependency execution remains
+a separate gate. Current
+exact `0.2.0-dev.2` dependencies use explicit task-only source/archive patches for
+prepublication checks, without assuming registry availability. The linked image
+and immutable static metadata outlive each descriptor/Provider borrow; no unloading
+operation is supplied.
+
+Dynamic discovery/loading, artifact search policy, other provider targets,
+CPU/GPU capabilities, resource-native transport and async execution still need
+explicit owner decisions and separate implementation/qualification. The selected
+linked scalar author route is the minimum proof, not removal of those obligations.
+Source `use`, valid types, artifact hashes and editor completion grant no execution
+authority. Current repository C/Rust qualification remains x86_64 GNU Linux VM;
+no new installed/native/LLVM/resource support claim follows from this chapter.

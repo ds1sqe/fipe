@@ -279,6 +279,109 @@ pub fn field_type(
 }
 
 impl Builder<'_, '_> {
+    fn selected_receiver_adapter(
+        &mut self,
+        member: usize,
+        selected: &Selected,
+        callable: &mut crate::value::resource::Forest,
+        arguments: &mut Arguments,
+        from: usize,
+        node: usize,
+    ) -> Option<Callee> {
+        let row = &self.tables().dispatch[member].rows[selected.row];
+        let body =
+            self.lowering.receiver_adapter(member, selected.row, node)?;
+        let mut witnesses =
+            alloc::vec![substitute(&row.receiver, &selected.bindings)];
+        if let ir::Implementation::Definition { meanings, .. } = &row.target {
+            witnesses.extend(
+                meanings.iter().map(|ty| substitute(ty, &selected.bindings)),
+            );
+        } else {
+            let mut hidden = super::thunks::type_parameters(&row.ty);
+            if let Some(entry) = row.input_contract {
+                for id in super::thunks::input_parameters(
+                    &self.tables().entries[entry].predicate,
+                ) {
+                    if !hidden.contains(&id) {
+                        hidden.push(id);
+                    }
+                }
+            }
+            witnesses.extend(hidden.into_iter().map(|id| {
+                substitute(&Type::Parameter(id), &selected.bindings)
+            }));
+        }
+        let function_type =
+            callable.0.first().expect("checked caller callable").clone();
+        if matches!(row.target, ir::Implementation::Declared(_)) {
+            witnesses.push(
+                callable
+                    .0
+                    .pop()
+                    .expect("a value dispatch has its checked callable"),
+            );
+        }
+        let function = self.local(function_type, None);
+        self.assign(
+            function,
+            Rvalue::Closure {
+                body,
+                captures: Vec::new(),
+                meanings: witnesses,
+            },
+            node,
+        );
+        arguments.args[..=from].rotate_right(1);
+        Some(Callee::Value(Operand::Local(function)))
+    }
+
+    fn selected_target(
+        &mut self,
+        row: &ir::DispatchRow,
+        bindings: &[(usize, Type)],
+        witness: &Type,
+        arguments: &mut Arguments,
+        dest: usize,
+        node: usize,
+    ) -> Option<(Callee, Vec<ir::Type>)> {
+        Some(match &row.target {
+            ir::Implementation::Field(index) => {
+                let value =
+                    arguments.args.remove(row.receiver_spot.unwrap_or(0));
+                if arguments.args.is_empty() {
+                    self.assign(dest, Rvalue::Field(value, *index), node);
+                    return None;
+                }
+                let ir::Type::Meaning { index: meaning, .. } = witness else {
+                    unreachable!("a field dispatch receiver is a record")
+                };
+                let ty =
+                    field_type(self.tables(), witness, *meaning, 0, *index);
+                let local = self.local(ty, None);
+                self.assign(local, Rvalue::Field(value, *index), node);
+                (Callee::Value(Operand::Local(local)), Vec::new())
+            }
+            ir::Implementation::Definition { index, meanings } => {
+                let meanings = meanings
+                    .iter()
+                    .map(|ty| substitute(ty, bindings))
+                    .collect();
+                self.lowering.function_body(*index).map_or_else(
+                    || (Callee::Value(Operand::Global(*index)), Vec::new()),
+                    |body| (Callee::Body(body), meanings),
+                )
+            }
+            ir::Implementation::Declared(index) => {
+                (self.declared(*index), Vec::new())
+            }
+            ir::Implementation::Derived { kind, ty } => {
+                let ty = substitute(ty, bindings);
+                (self.derived(*kind, ty), Vec::new())
+            }
+        })
+    }
+
     /// A dispatch with every spot in hand: its row's target when the
     /// receiver is concrete, else the run-time callee with every row's
     /// body lowered. A field row is read in place.
@@ -286,10 +389,37 @@ impl Builder<'_, '_> {
         &mut self,
         member: usize,
         by: &ir::Receiver,
-        arguments: &Arguments,
+        mut signature: crate::value::resource::Forest,
+        arguments: &mut Arguments,
         dest: usize,
         node: usize,
     ) -> Option<(Callee, Vec<ir::Type>)> {
+        let source_receiver = if matches!(by, ir::Receiver::Value(_)) {
+            arguments.receiver.map(|receiver| {
+                let mut positions =
+                    arguments.args.iter().enumerate().filter_map(
+                        |(spot, operand)| {
+                            (*operand == receiver).then_some(spot)
+                        },
+                    );
+                let spot = positions.next().expect("a receiver is an argument");
+                assert!(
+                    positions.next().is_none(),
+                    "a receiver operand is unique"
+                );
+                spot
+            })
+        } else {
+            None
+        };
+        let mut callable = crate::value::resource::Forest::default();
+        if let Some(from) = source_receiver {
+            callable.0.push(canonical_callable(
+                signature.0.pop().expect("checked signature"),
+                arguments.args.len(),
+                from,
+            ));
+        }
         let tables = self.tables();
         let argument = arguments.argument.as_ref();
         let witness = match by {
@@ -300,9 +430,14 @@ impl Builder<'_, '_> {
         };
         let selected = concrete(&witness)
             .then(|| select(tables, member, &witness, argument))
-            .flatten();
+            .flatten()
+            .filter(|selected| {
+                selected_input_witnesses_bound(tables, member, selected)
+            });
         let Some(selected) = selected else {
-            for row in &tables.dispatch[member].rows {
+            for (index, row) in tables.dispatch[member].rows.iter().enumerate()
+            {
+                self.lowering.receiver_adapter(member, index, node);
                 if let ir::Implementation::Definition { index, .. } = row.target
                 {
                     self.lowering.function_body(index);
@@ -319,32 +454,81 @@ impl Builder<'_, '_> {
                     mir::Witness::Meaning(witness)
                 }
             };
-            return Some((Callee::Dispatch { member, witness }, Vec::new()));
+            return Some((
+                Callee::Dispatch { member, witness },
+                core::mem::take(&mut callable.0),
+            ));
         };
         let row = &tables.dispatch[member].rows[selected.row];
-        Some(match &row.target {
-            ir::Implementation::Field(index) => {
-                let value = arguments.args[row.receiver_spot.unwrap_or(0)];
-                self.assign(dest, Rvalue::Field(value, *index), node);
-                return None;
+        if let Some(from) = source_receiver {
+            if let Some(callee) = self.selected_receiver_adapter(
+                member,
+                &selected,
+                &mut callable,
+                arguments,
+                from,
+                node,
+            ) {
+                return Some((callee, Vec::new()));
             }
-            ir::Implementation::Definition { index, meanings } => {
-                let meanings = meanings
-                    .iter()
-                    .map(|ty| substitute(ty, &selected.bindings))
-                    .collect();
-                self.lowering.function_body(*index).map_or_else(
-                    || (Callee::Value(Operand::Global(*index)), Vec::new()),
-                    |body| (Callee::Body(body), meanings),
-                )
+            let to = row.receiver_spot.expect("a value row has a receiver");
+            if from < to {
+                arguments.args[from..=to].rotate_left(1);
+            } else {
+                arguments.args[to..=from].rotate_right(1);
             }
-            ir::Implementation::Declared(index) => {
-                (self.declared(*index), Vec::new())
-            }
-            ir::Implementation::Derived { kind, ty } => {
-                let ty = substitute(ty, &selected.bindings);
-                (self.derived(*kind, ty), Vec::new())
-            }
-        })
+        }
+        self.selected_target(
+            row,
+            &selected.bindings,
+            &witness,
+            arguments,
+            dest,
+            node,
+        )
     }
+}
+
+fn selected_input_witnesses_bound(
+    tables: &ir::Tables,
+    member: usize,
+    selected: &Selected,
+) -> bool {
+    let row = &tables.dispatch[member].rows[selected.row];
+    row.input_contract.is_none_or(|entry| {
+        super::thunks::input_parameters(&tables.entries[entry].predicate)
+            .iter()
+            .all(|id| selected.bindings.iter().any(|(bound, _)| bound == id))
+    })
+}
+
+/// Canonicalize exactly the actual supplied prefix; excess arrows are results.
+fn canonical_callable(
+    signature: Type,
+    supplied: usize,
+    receiver: usize,
+) -> Type {
+    let mut tail = crate::value::resource::Forest(alloc::vec![signature]);
+    let mut parameters = crate::value::resource::Forest::default();
+    for _ in 0..supplied {
+        match tail.0.pop().expect("callable tail") {
+            Type::Function { parameter, result } => {
+                parameters.0.push(*parameter);
+                tail.0.push(*result);
+            }
+            other => {
+                tail.0.push(other);
+                unreachable!("a checked callable supplies every argument type");
+            }
+        }
+    }
+    parameters.0[..=receiver].rotate_right(1);
+    let mut result = tail.0.pop().expect("actual result");
+    while let Some(parameter) = parameters.0.pop() {
+        result = Type::Function {
+            parameter: alloc::boxed::Box::new(parameter),
+            result: alloc::boxed::Box::new(result),
+        };
+    }
+    result
 }

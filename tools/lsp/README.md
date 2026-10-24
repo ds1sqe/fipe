@@ -178,3 +178,37 @@ so it reads no user configuration or data. It opens
 `05-modules.fipe`, sees a located check error after an edit and its
 clearing, jumps to the definition of a used module's type in
 `geometry.fipe`, and exits 0; any failed step exits 1.
+
+## Command discovery
+
+```sh
+fipe-lsp --version
+fipe-lsp --help
+fipe-lsp -h
+```
+
+`--version` prints `fipe-lsp <package-version>` and exits successfully.
+Help prints usage and exits successfully. These commands take no protocol input
+and run before a session starts. Version accepts no extra operands.
+Help accepts no extra operands. Invalid process arguments write usage to stderr
+and exit 1. Ordinary stdio launches emit no discovery banner; `--host DIR`
+retains its existing option behavior.
+
+An explicitly selected legacy host must be a readable directory of UTF-8
+`.fipe` declarations. An empty directory is valid. Missing `--host` operands
+exit with usage before protocol input. During initialization, omitted `host`
+keeps the command-line selection; a present value must be a nonempty string.
+Relative paths use the server process working directory. Directory, read and
+located declaration errors return `-32602` and leave initialization waiting,
+so a corrected `host` can be retried (and can override a bad command-line path).
+Successful legacy selections remain frozen; existing `.fipi` reload behavior
+is unchanged. No native provider is loaded.
+
+Formatting shares `fipe::format::format` with `fipe fmt`; the existing public
+`fipe_lsp::format::format` import forwards to it. Formatting needs valid syntax,
+not resolved names or successful typechecking. Transformations changing token
+content are refused, including unsafe mixed-newline quoted content. Ordinary
+comment trailing whitespace is trimmed; doc-token trailing spaces are preserved.
+Selected `.fipi` interface buffers remain unavailable for formatting.
+
+Selected offline `.fipi` declarations retain resource classification across valid edits and last-good recovery. Loading metadata does not execute a provider or inspect live resource values.

@@ -12,6 +12,8 @@ pub struct Unit {
     pub(crate) tables: Rc<RefCell<Tables>>,
     pub parameters: Vec<usize>,
     pub main: Vec<usize>,
+    /// Actual executable open entries. Caller diagnostic projections remain
+    /// in `typed::Typed::checks` and do not add duplicate plan entries.
     pub plan: Vec<Entry>,
 }
 
@@ -26,6 +28,9 @@ impl Unit {
 /// Indexed data consumed by a backend without source trees.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tables {
+    pub(crate) resource_cache: crate::value::resource::ResourceCache,
+    /// Any marked Host declaration, including private and unused types.
+    pub has_resources: bool,
     pub namespaces: Vec<String>,
     pub keys: Vec<String>,
     pub meanings: Vec<Meaning>,
@@ -66,9 +71,10 @@ pub enum Constant {
         constructor: usize,
         fields: Vec<Self>,
     },
-    /// A value of a packed type, with the meaning index of its tag.
+    /// Resource-free packed data; no checked membership evidence is retained.
     Packed {
-        tag: usize,
+        source: Rc<crate::value::Meaning>,
+        target: Rc<crate::value::Meaning>,
         value: Box<Self>,
     },
 }
@@ -160,6 +166,7 @@ impl Type {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Meaning {
+    pub resource: bool,
     pub label: String,
     pub namespace: usize,
     pub parameters: Vec<usize>,
@@ -506,6 +513,12 @@ pub struct Dispatch {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DispatchRow {
+    /// Declared input places in receiver-first adapter order; no reply limit.
+    pub input_contract: Option<usize>,
+    /// Exact checked callable prototype (projected value for a field).
+    pub ty: Type,
+    /// Original protocol formal count, only for a declaration.
+    pub declared_arity: Option<usize>,
     pub receiver: Type,
     pub receiver_spot: Option<usize>,
     pub argument: Option<Type>,

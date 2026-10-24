@@ -708,3 +708,81 @@ fn a_recursive_call_arrives_at_its_line_again_in_each_frame() {
         ]
     );
 }
+
+#[test]
+fn a_user_method_and_its_returned_capture_remain_visible_through_an_adapter() {
+    let program = "type M { n: Integer }\nimpl M {\n    op = a b self => {\n        seed = self.n + a * 10 + b\n        x => seed + x\n    },\n}\ninvoke = value => value.op 3 4\nf: Integer -> Integer = invoke (M 2)\nf 1\n";
+    // Prove this source uses an actual adapter for the written user method.
+    let module = fipe::parse::parse(fipe::lex::lex(program)).unwrap();
+    let unit = fipe::check::check(
+        &module,
+        &fipe::decl::Declarations::new(),
+        &[],
+        fipe::check::Options::default(),
+    )
+    .expect("generic written method returning a closure");
+    let lowered = fipe::compile::compile(&unit);
+    let tables = lowered.tables.borrow();
+    let method = tables
+        .definitions
+        .iter()
+        .position(|definition| definition.label == "op")
+        .expect("raw user method");
+    assert!(
+        lowered
+            .receiver_adapters
+            .iter()
+            .any(|adapter| adapter.target
+                == fipe::mir::ReceiverTarget::Definition(method)),
+        "the user body must be reached through a receiver adapter"
+    );
+    let raw = lowered.definitions[method].expect("raw method body is emitted");
+    assert!(
+        lowered.receiver_contexts[raw].is_none(),
+        "user method is not a synthetic adapter"
+    );
+    drop(tables);
+    let (mut client, path) = scratch("method-captures", program, "value ()\n");
+    client.request("setBreakpoints", json!({"source": {"path": path}, "breakpoints": [{"line": 4}, {"line": 5}]}));
+    client.request("configurationDone", json!({}));
+    let mut method_seen = false;
+    let mut capture_seen = false;
+    for _ in 0..12 {
+        if client.sent.last().unwrap()["event"] == "terminated" {
+            break;
+        }
+        let top = client.top();
+        let name = top["name"].as_str().unwrap();
+        if name == "op" {
+            let locals = client.scope(0, "Locals");
+            for (name, value) in [("a", "3"), ("b", "4"), ("self", "M 2")] {
+                assert!(
+                    locals
+                        .iter()
+                        .any(|(actual, shown, _)| actual == name
+                            && shown == value),
+                    "raw method local {name}: {locals:?}"
+                );
+            }
+            method_seen = true;
+        } else if name.starts_with("arm at 5:") {
+            assert_eq!(
+                client.scope(0, "Captures"),
+                [(String::from("seed"), String::from("36"), 0)]
+            );
+            assert!(client
+                .scope(0, "Locals")
+                .iter()
+                .any(|(name, value, _)| name == "x" && value == "1"));
+            capture_seen = true;
+        } else {
+            panic!("unexpected visible frame at the method/closure breakpoint: {top}");
+        }
+        client.request("continue", json!({"threadId": 1}));
+    }
+    assert_eq!(client.sent.last().unwrap()["event"], "terminated");
+    assert!(
+        method_seen && capture_seen,
+        "both real user frames must remain observable"
+    );
+}

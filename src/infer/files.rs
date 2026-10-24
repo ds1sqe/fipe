@@ -9,6 +9,10 @@ use crate::{
 use alloc::{collections::BTreeMap, rc::Rc, string::String, vec::Vec};
 use core::cell::RefCell;
 
+type ConstructorKey = (crate::resolve::Origin, crate::token::Span);
+type ConstructorScope =
+    (ConstructorKey, alloc::collections::BTreeSet<ConstructorKey>);
+
 #[derive(Default)]
 pub struct FileCache {
     pub expressions: RefCell<
@@ -20,6 +24,16 @@ pub struct FileCache {
     pub files: RefCell<BTreeMap<String, CheckedFile>>,
     pub values:
         RefCell<BTreeMap<(crate::resolve::Origin, String), DeclaredValue>>,
+    pub(super) constructors: RefCell<
+        BTreeMap<(crate::resolve::Origin, crate::token::Span), Constructor>,
+    >,
+    constructor_uses: RefCell<
+        alloc::collections::BTreeSet<(
+            crate::resolve::Origin,
+            crate::token::Span,
+        )>,
+    >,
+    pub(super) constructor_scopes: RefCell<Vec<ConstructorScope>>,
     /// The declared expressions this unit read or recorded: what its
     /// typing lists and its lowering emits.
     used:
@@ -33,6 +47,12 @@ impl core::fmt::Debug for FileCache {
             .field("files", &self.files.borrow().len())
             .field("values", &self.values.borrow().len())
             .field("used", &self.used.borrow().len())
+            .field("constructors", &self.constructors.borrow().len())
+            .field(
+                "constructor_scopes",
+                &self.constructor_scopes.borrow().len(),
+            )
+            .field("constructor_uses", &self.constructor_uses.borrow().len())
             .finish()
     }
 }
@@ -42,6 +62,9 @@ impl FileCache {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            constructors: RefCell::new(BTreeMap::new()),
+            constructor_scopes: RefCell::new(Vec::new()),
+            constructor_uses: RefCell::new(alloc::collections::BTreeSet::new()),
             expressions: RefCell::new(BTreeMap::new()),
             files: RefCell::new(BTreeMap::new()),
             values: RefCell::new(BTreeMap::new()),
@@ -81,6 +104,42 @@ impl FileCache {
             .collect()
     }
 
+    pub(super) fn constructor(
+        &self,
+        key: &(crate::resolve::Origin, crate::token::Span),
+    ) -> Option<Constructor> {
+        if let Some((_, dependencies)) =
+            self.constructor_scopes.borrow_mut().last_mut()
+        {
+            dependencies.insert(key.clone());
+        }
+        let found = self.constructors.borrow().get(key).cloned()?;
+        self.constructor_uses.borrow_mut().insert(key.clone());
+        Some(found)
+    }
+
+    pub(super) fn used_constructors(
+        &self,
+    ) -> Vec<crate::typed::DeclaredConstructor> {
+        let constructors = self.constructors.borrow();
+        let mut work: Vec<_> =
+            self.constructor_uses.borrow().iter().cloned().collect();
+        let mut seen = alloc::collections::BTreeSet::new();
+        let mut sources = Vec::new();
+        while let Some(key) = work.pop() {
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            if let Some(Constructor::Checked(_, source)) =
+                constructors.get(&key)
+            {
+                work.extend(source.dependencies.iter().cloned());
+                sources.push(source.clone());
+            }
+        }
+        sources
+    }
+
     /// Forget what one unit owns: its files, checked afresh per unit,
     /// its own declared expressions and the values still being checked.
     /// What the other modules declared stays, typed once per session.
@@ -88,6 +147,11 @@ impl FileCache {
         let keep = |origin: &crate::resolve::Origin| {
             *origin != crate::resolve::Origin::This
         };
+        self.constructors.borrow_mut().retain(|(origin, _), value| {
+            keep(origin) && !matches!(value, Constructor::Checking(_))
+        });
+        self.constructor_uses.borrow_mut().clear();
+        self.constructor_scopes.borrow_mut().clear();
         self.files.borrow_mut().clear();
         self.used.borrow_mut().clear();
         self.expressions
@@ -101,6 +165,12 @@ impl FileCache {
     /// Drop every declared expression and value whose origin is gone:
     /// a withdrawn line's, or a file it loaded.
     pub fn forget(&self, gone: impl Fn(&crate::resolve::Origin) -> bool) {
+        self.constructors
+            .borrow_mut()
+            .retain(|(origin, _), _| !gone(origin));
+        self.constructor_uses
+            .borrow_mut()
+            .retain(|(origin, _)| !gone(origin));
         self.expressions
             .borrow_mut()
             .retain(|(origin, _), _| !gone(origin));
@@ -116,6 +186,19 @@ impl FileCache {
             *origin != crate::resolve::Origin::This
         };
         Self {
+            constructors: RefCell::new(
+                self.constructors
+                    .borrow()
+                    .iter()
+                    .filter(|((origin, _), value)| {
+                        keep(origin)
+                            && !matches!(value, Constructor::Checking(_))
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
+            constructor_uses: RefCell::default(),
+            constructor_scopes: RefCell::default(),
             expressions: RefCell::new(
                 self.expressions
                     .borrow()
@@ -139,6 +222,13 @@ impl FileCache {
             ),
         }
     }
+}
+
+#[derive(Clone)]
+pub(super) enum Constructor {
+    Checking(super::Local),
+    Checked(super::Local, crate::typed::DeclaredConstructor),
+    Failed,
 }
 
 #[derive(Clone)]
@@ -251,7 +341,11 @@ impl Infer<'_> {
                 };
                 Some((
                     (name.span.start, name.span.end),
-                    super::Local { scheme, heads },
+                    super::Local {
+                        scheme,
+                        heads,
+                        owner: None,
+                    },
                 ))
             })
             .collect()

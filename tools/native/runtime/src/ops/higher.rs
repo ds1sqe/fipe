@@ -92,10 +92,10 @@ pub fn sum(
             Some(Of::F64) => Ok(Value::F64(0.0)),
             Some(Of::Integer) | None => Ok(arith::zero()),
             Some(_) => {
-                let Some(ir::Type::Meaning { index, .. }) = result else {
+                let Some(ir::Type::Meaning { .. }) = result else {
                     unreachable!()
                 };
-                zero_of(ctx, *index, node)
+                zero_of(ctx, result.expect("sum result"), node)
             }
         };
     }
@@ -107,8 +107,14 @@ pub fn sum(
             arith::add(&acc, item)
         } else {
             let member = ctx.natives.members.add;
-            let call = walk::member_call(ctx, member, &acc, vec![item.clone()])
-                .map_err(at)?;
+            let call = walk::member_call(
+                ctx,
+                member,
+                &acc,
+                vec![item.clone()],
+                result,
+                node,
+            )?;
             calls::invoke(ctx, call, node)?
         };
     }
@@ -116,21 +122,22 @@ pub fn sum(
 }
 
 /// The written `zero` of a meaning, for an empty sum of its values.
-fn zero_of(ctx: &Ctx, meaning: usize, node: usize) -> Result<Value, Faulted> {
+fn zero_of(ctx: &Ctx, ty: &ir::Type, node: usize) -> Result<Value, Faulted> {
     let missing = || fail(node, Reason::Message(String::from("no zero")));
     let member = ctx.natives.members.zero.ok_or_else(missing)?;
-    let (index, meanings) = {
-        let tables = ctx.tables();
-        let selected = dispatch::select_by_head(&tables, member, meaning)
+    let tables = ctx.tables();
+    let selected =
+        dispatch::select_for(&tables, &ctx.prelude, member, Some(ty), None)
             .ok_or_else(missing)?;
-        match &tables.dispatch[member].rows[selected.row].target {
-            ir::Implementation::Definition { index, meanings } => {
-                (*index, meanings.clone())
-            }
-            _ => return Err(missing()),
-        }
-    };
-    let call = calls::definition_invoke(ctx, index, Vec::new(), meanings);
+    let call = calls::supplied_target(
+        ctx,
+        &tables.dispatch[member].rows[selected.row].target,
+        &selected.bindings,
+        Vec::new(),
+        Some(ty),
+        node,
+    )?
+    .ok_or_else(missing)?;
     calls::invoke(ctx, call, node)
 }
 

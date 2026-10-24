@@ -209,6 +209,34 @@ fn error(id: &Value, code: i64, text: &str) -> Value {
 
 type Answer = Result<Value, (i64, String)>;
 
+fn initialize_interfaces(
+    params: &Value,
+) -> Result<Vec<loader::Interface>, (i64, String)> {
+    let mut interfaces = Vec::new();
+    if let Some(selected) = params["initializationOptions"].get("interfaces") {
+        let selected = selected.as_array().ok_or_else(|| {
+            (-32602, String::from("interfaces must be an array"))
+        })?;
+        for entry in selected {
+            let module = entry.get("module").and_then(Value::as_str);
+            let path = entry.get("path").and_then(Value::as_str);
+            let (Some(module), Some(path)) = (module, path) else {
+                return Err((
+                    -32602,
+                    String::from(
+                        "each interface requires string module and path",
+                    ),
+                ));
+            };
+            interfaces.push(loader::Interface {
+                module: module.to_owned(),
+                path: PathBuf::from(path),
+            });
+        }
+    }
+    Ok(interfaces)
+}
+
 fn invalid(error: &serde_json::Error) -> (i64, String) {
     (-32602, format!("invalid params: {error}"))
 }
@@ -304,41 +332,40 @@ impl Server {
     }
 
     fn initialize(&mut self, params: &Value) -> Answer {
-        let mut interfaces = Vec::new();
-        if let Some(selected) =
-            params["initializationOptions"].get("interfaces")
-        {
-            let selected = selected.as_array().ok_or_else(|| {
-                (-32602, String::from("interfaces must be an array"))
-            })?;
-            for entry in selected {
-                let module = entry.get("module").and_then(Value::as_str);
-                let path = entry.get("path").and_then(Value::as_str);
-                let (Some(module), Some(path)) = (module, path) else {
-                    return Err((
-                        -32602,
-                        String::from(
-                            "each interface requires string module and path",
-                        ),
-                    ));
-                };
-                interfaces.push(loader::Interface {
-                    module: module.to_owned(),
-                    path: PathBuf::from(path),
-                });
+        let interfaces = initialize_interfaces(params)?;
+        let selected_host = params["initializationOptions"].get("host");
+        let host_dir = match selected_host {
+            None => self.host_dir.clone(),
+            Some(Value::String(path)) if !path.is_empty() => {
+                Some(PathBuf::from(path))
             }
-        }
-        let host_dir = params["initializationOptions"]["host"]
-            .as_str()
-            .map_or_else(
-                || self.host_dir.clone(),
-                |dir| Some(PathBuf::from(dir)),
-            );
-        let base = if params["initializationOptions"]["host"].is_string() {
+            Some(_) => {
+                return Err((
+                    -32602,
+                    String::from(
+                        "host must be a nonempty directory path string",
+                    ),
+                ))
+            }
+        };
+        let base = if selected_host.is_some() {
             loader::host(host_dir.as_deref())
         } else {
             self.host.clone()
         };
+        if !base.errors.is_empty() {
+            return Err((
+                -32602,
+                format!(
+                    "host {}: {}",
+                    host_dir.as_deref().map_or_else(
+                        || String::from("<prelude>"),
+                        |path| path.display().to_string()
+                    ),
+                    base.errors.join("; ")
+                ),
+            ));
+        }
         let host = base
             .with_interfaces(&interfaces)
             .map_err(|error| (-32602, error.to_string()))?;
@@ -1246,9 +1273,6 @@ impl Server {
         let analysis = self
             .analyse(document.as_str())
             .ok_or_else(|| failed("the document is not open"))?;
-        if !analysis.diagnostics.is_empty() {
-            return Err(failed("a file with errors is not formatted"));
-        }
         let text = &analysis.text;
         let formatted = format::format(text).map_err(failed)?;
         if formatted == *text {

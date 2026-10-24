@@ -21,6 +21,7 @@ pub fn derived(
     ty: ir::Type,
     node: usize,
 ) -> Result<Value, Faulted> {
+    let mut ty = dispatch::Types(vec![ty]);
     let mut arg =
         |index: usize| std::mem::replace(&mut args[index], Value::Unit);
     match kind {
@@ -33,7 +34,9 @@ pub fn derived(
             cmp(ctx, this, other, node)
         }
         ir::Derived::Show => show(ctx, arg(0), node),
-        ir::Derived::Default => default(ctx, ty, node),
+        ir::Derived::Default => {
+            default(ctx, ty.0.pop().expect("default type"), node)
+        }
     }
 }
 
@@ -45,47 +48,82 @@ pub fn member_call(
     member: Option<usize>,
     receiver: &Value,
     others: Vec<Value>,
-) -> Result<calls::Invoke, Reason> {
-    let Some((index, meanings, spot)) = written_row(ctx, member, receiver)
-    else {
-        return Err(Reason::Message(String::from(
-            "no written member for the value",
-        )));
+    result: Option<&ir::Type>,
+    node: usize,
+) -> Result<calls::Invoke, Faulted> {
+    let missing = || {
+        fail(
+            node,
+            Reason::Message("no written member for the value".into()),
+        )
     };
+    let selected = written_row(ctx, member, receiver).ok_or_else(missing)?;
+    let tables = ctx.tables();
+    let member = member.expect("selected member");
+    let row = &tables.dispatch[member].rows[selected.row];
     let mut args = others;
-    let spot = spot.min(args.len());
+    let spot = row.receiver_spot.unwrap_or(0).min(args.len());
     args.insert(spot, receiver.clone());
-    // The row is the receiver's tag's, by `written_row`.
-    if let Value::Packed(packed) = receiver {
-        let tag = ir::Type::Meaning {
-            index: packed.meaning,
-            arguments: Vec::new(),
-        };
-        let eq = member.is_some() && member == ctx.natives.members.eq;
-        if let Err(equal) = dispatch::unpack(&mut args, spot, &tag, eq) {
-            return Ok(calls::Invoke::Value(ctx.prelude.bool(equal)));
-        }
+    let eq = ctx.natives.members.eq == Some(member);
+    let cmp = ctx.natives.members.cmp == Some(member);
+    if !dispatch::unpack(&mut args, spot, row, &selected.bindings, eq, cmp, ctx)
+        .map_err(|reason| fail(node, reason))?
+    {
+        return Ok(calls::Invoke::Value(ctx.prelude.bool(false)));
     }
-    Ok(calls::definition_invoke(ctx, index, args, meanings))
+    let scalar = if eq {
+        Some(ctx.prelude.bool)
+    } else if cmp {
+        Some(ctx.prelude.ordering)
+    } else if ctx.natives.members.show == Some(member) {
+        Some(ctx.prelude.string)
+    } else if ctx.natives.members.len == Some(member) && result.is_none() {
+        Some(ctx.prelude.integer)
+    } else {
+        None
+    };
+    let scalar = scalar
+        .map(|identity| {
+            identity.ok_or_else(|| {
+                fail(
+                    node,
+                    Reason::Message(
+                        "missing supplied member result meaning".into(),
+                    ),
+                )
+            })
+        })
+        .transpose()?;
+    let fixed = ir::Type::Meaning {
+        index: scalar.unwrap_or(0),
+        arguments: Vec::new(),
+    };
+    let result = if scalar.is_some() {
+        Some(&fixed)
+    } else {
+        result
+    };
+    calls::supplied_target(
+        ctx,
+        &row.target,
+        &selected.bindings,
+        args,
+        result,
+        node,
+    )?
+    .ok_or_else(missing)
 }
 
-/// The written row of a member for a value's tag: the definition, its
-/// meanings and the receiver's spot.
 pub fn written_row(
     ctx: &Ctx,
     member: Option<usize>,
     receiver: &Value,
-) -> Option<(usize, Vec<ir::Type>, usize)> {
+) -> Option<dispatch::Selected> {
     let member = member?;
     let tables = ctx.tables();
     let selected = dispatch::by_tag(&tables, &ctx.prelude, member, receiver)?;
-    let row = &tables.dispatch[member].rows[selected.row];
-    match &row.target {
-        ir::Implementation::Definition { index, meanings } => {
-            Some((*index, meanings.clone(), row.receiver_spot.unwrap_or(0)))
-        }
-        _ => None,
-    }
+    calls::supplied(ctx, &tables.dispatch[member].rows[selected.row].target)
+        .then_some(selected)
 }
 
 /// A written member's answer for a receiver at `node`.
@@ -96,8 +134,7 @@ fn written(
     others: Vec<Value>,
     node: usize,
 ) -> Result<Value, Faulted> {
-    let call = member_call(ctx, member, receiver, others)
-        .map_err(|reason| fail(node, reason))?;
+    let call = member_call(ctx, member, receiver, others, None, node)?;
     calls::invoke(ctx, call, node)
 }
 
@@ -116,8 +153,10 @@ fn children(a: &Value, b: &Value) -> Option<Vec<(Value, Value)>> {
             && a.constructor == b.constructor)
             .then(|| zip(&a.fields, &b.fields))
             .flatten(),
-        (Value::Packed(a), Value::Packed(b)) => (a.meaning == b.meaning)
-            .then(|| vec![(a.value.clone(), b.value.clone())]),
+        (Value::Packed(a), Value::Packed(b)) => {
+            dispatch::equal(a.source_type(), b.source_type())
+                .then(|| vec![(a.value().clone(), b.value().clone())])
+        }
         _ => structural::eq(a, b).then(Vec::new),
     }
 }
@@ -132,14 +171,17 @@ pub fn eq(
     let member = ctx.natives.members.eq;
     let mut work = vec![(a, b)];
     while let Some((a, b)) = work.pop() {
-        if let (Value::Record(_), Value::Record(_)) = (&a, &b) {
-            if written_row(ctx, member, &a).is_some() {
-                let answer = written(ctx, member, &a, vec![b], node)?;
-                if !ctx.prelude.is_true(&answer) {
-                    return Ok(ctx.prelude.bool(false));
-                }
-                continue;
+        if matches!(
+            (&a, &b),
+            (Value::Record(_), Value::Record(_))
+                | (Value::Packed(_), Value::Packed(_))
+        ) && written_row(ctx, member, &a).is_some()
+        {
+            let answer = written(ctx, member, &a, vec![b], node)?;
+            if !ctx.prelude.is_true(&answer) {
+                return Ok(ctx.prelude.bool(false));
             }
+            continue;
         }
         match children(&a, &b) {
             None => return Ok(ctx.prelude.bool(false)),
@@ -226,16 +268,38 @@ pub fn cmp(
                 children(x, y, x.len().cmp(&y.len()), &mut work);
             }
             (Value::Packed(x), Value::Packed(y)) => {
-                match x.meaning.cmp(&y.meaning) {
-                    Ordering::Equal => {
-                        work.push(Order::Pair(
-                            x.value.clone(),
-                            y.value.clone(),
-                        ));
+                if written_row(ctx, member, &a).is_some() {
+                    let answer = written(ctx, member, &a, vec![b], node)?;
+                    let ordering = ordering_of(&answer);
+                    if ordering != Ordering::Equal {
+                        return decided(ordering);
                     }
+                    continue;
+                }
+                let ordering = match (x.source_type(), y.source_type()) {
+                    (
+                        ir::Type::Meaning { index: a, .. },
+                        ir::Type::Meaning { index: b, .. },
+                    ) => a.cmp(b),
+                    (a, b) if dispatch::equal(a, b) => Ordering::Equal,
+                    _ => {
+                        return Err(fail(
+                            node,
+                            Reason::Message(
+                                "incompatible packed ordering types".into(),
+                            ),
+                        ))
+                    }
+                };
+                match ordering {
+                    Ordering::Equal => work.push(Order::Pair(
+                        x.value().clone(),
+                        y.value().clone(),
+                    )),
                     ordering => return decided(ordering),
                 }
             }
+
             _ => {
                 let ordering = structural::cmp(&a, &b);
                 if ordering != Ordering::Equal {
@@ -265,22 +329,33 @@ pub fn show(ctx: &Ctx, value: Value, node: usize) -> Result<Value, Faulted> {
             }
             Piece::Value(value, is_argument) => (value, is_argument),
         };
+        if matches!(value, Value::Record(_) | Value::Packed(_))
+            && written_row(ctx, member, &value).is_some()
+        {
+            let answer = written(ctx, member, &value, vec![], node)?;
+            let Value::Text(shown) = answer else {
+                unreachable!("show gives text")
+            };
+            if is_argument && shown.contains(' ') {
+                out.push('(');
+                out.push_str(&shown);
+                out.push(')');
+            } else {
+                out.push_str(&shown);
+            }
+            continue;
+        }
         match &value {
+            Value::Resource(_) => {
+                return Err(fail(
+                    node,
+                    Reason::Message(
+                        "native execution does not support resource values"
+                            .into(),
+                    ),
+                ))
+            }
             Value::Record(record) => {
-                if written_row(ctx, member, &value).is_some() {
-                    let answer = written(ctx, member, &value, vec![], node)?;
-                    let Value::Text(shown) = answer else {
-                        unreachable!("show gives text")
-                    };
-                    if is_argument && shown.contains(' ') {
-                        out.push('(');
-                        out.push_str(&shown);
-                        out.push(')');
-                    } else {
-                        out.push_str(&shown);
-                    }
-                    continue;
-                }
                 let parenthesize = is_argument && !record.fields.is_empty();
                 if parenthesize {
                     work.push(Piece::Text(String::from(")")));
@@ -316,7 +391,7 @@ pub fn show(ctx: &Ctx, value: Value, node: usize) -> Result<Value, Faulted> {
                 work.push(Piece::Text(String::from(open)));
             }
             Value::Packed(packed) => {
-                work.push(Piece::Value(packed.value.clone(), is_argument));
+                work.push(Piece::Value(packed.value().clone(), is_argument));
             }
             Value::Int(_) | Value::Big(_) => out.push_str(&arith::show(&value)),
             Value::F32(_) | Value::F64(_) => out.push_str(&float::show(&value)),
@@ -336,6 +411,12 @@ struct Build {
     built: Vec<Value>,
 }
 
+impl Drop for Build {
+    fn drop(&mut self) {
+        drop(dispatch::Types(std::mem::take(&mut self.parts)));
+    }
+}
+
 enum Shape {
     Tuple,
     Array(usize),
@@ -348,13 +429,14 @@ enum Shape {
 }
 
 /// A finished build's value from its built parts.
-fn assemble(build: Build) -> Value {
-    let Build { shape, built, .. } = build;
+fn assemble(mut build: Build) -> Value {
+    let shape = std::mem::replace(&mut build.shape, Shape::Top);
+    let values = std::mem::take(&mut build.built);
     match shape {
-        Shape::Top => built.into_iter().next().expect("one"),
-        Shape::Tuple => Value::Tuple(Rc::new(built)),
+        Shape::Top => values.into_iter().next().expect("one"),
+        Shape::Tuple => Value::Tuple(Rc::new(values)),
         Shape::Array(length) => {
-            let element = built.into_iter().next().expect("the element");
+            let element = values.into_iter().next().expect("the element");
             Value::seq(vec![element; length])
         }
         Shape::Record {
@@ -363,7 +445,7 @@ fn assemble(build: Build) -> Value {
         } => Value::Record(Rc::new(Record {
             meaning,
             constructor,
-            fields: built,
+            fields: values,
         })),
     }
 }
@@ -371,17 +453,59 @@ fn assemble(build: Build) -> Value {
 /// The written `default` row of a meaning: its definition and meanings.
 fn written_default(
     ctx: &Ctx,
-    meaning: usize,
-) -> Option<(usize, Vec<ir::Type>)> {
-    let member = ctx.natives.members.default?;
+    ty: &ir::Type,
+    node: usize,
+) -> Result<Option<calls::Invoke>, Faulted> {
+    let Some(member) = ctx.natives.members.default else {
+        return Ok(None);
+    };
     let tables = ctx.tables();
-    let selected = dispatch::select_by_head(&tables, member, meaning)?;
-    match &tables.dispatch[member].rows[selected.row].target {
-        ir::Implementation::Definition { index, meanings } => {
-            Some((*index, meanings.clone()))
+    let Some(selected) =
+        dispatch::select_for(&tables, &ctx.prelude, member, Some(ty), None)
+    else {
+        return Ok(None);
+    };
+    calls::supplied_target(
+        ctx,
+        &tables.dispatch[member].rows[selected.row].target,
+        &selected.bindings,
+        Vec::new(),
+        Some(ty),
+        node,
+    )
+}
+
+/// Build a tuple or array before continuing the existing default walk.
+fn compound_default(
+    ty: &ir::Type,
+    node: usize,
+) -> Result<Option<Build>, Faulted> {
+    let build = match ty {
+        ir::Type::Tuple(parts) => Build {
+            shape: Shape::Tuple,
+            parts: parts.iter().map(dispatch::copy).collect(),
+            built: Vec::new(),
+        },
+        ir::Type::Array { element, length } => {
+            let ir::Type::Number(length) = &**length else {
+                return Err(fail(
+                    node,
+                    Reason::Message(String::from(
+                        "an array length is a number",
+                    )),
+                ));
+            };
+            let length =
+                usize::try_from(length.to_u64().unwrap_or(0)).unwrap_or(0);
+            Build {
+                shape: Shape::Array(length),
+                parts: vec![dispatch::copy(element)],
+                built: Vec::new(),
+            }
         }
-        _ => None,
-    }
+        _ => return Ok(None),
+    };
+    Ok(Some(build))
 }
 
 /// The default of a type, built part by part; a meaning with a written
@@ -407,84 +531,71 @@ fn default(ctx: &Ctx, ty: ir::Type, node: usize) -> Result<Value, Faulted> {
             }
             continue;
         }
-        let ty = build.parts[build.built.len()].clone();
-        match &ty {
-            ir::Type::Tuple(parts) => work.push(Build {
-                shape: Shape::Tuple,
-                parts: parts.clone(),
-                built: Vec::new(),
-            }),
-            ir::Type::Array { element, length } => {
-                let ir::Type::Number(length) = &**length else {
-                    return Err(at(Reason::Message(String::from(
-                        "an array length is a number",
-                    ))));
-                };
-                let length =
-                    usize::try_from(length.to_u64().unwrap_or(0)).unwrap_or(0);
-                work.push(Build {
-                    shape: Shape::Array(length),
-                    parts: vec![(**element).clone()],
-                    built: Vec::new(),
-                });
-            }
-            ir::Type::Meaning { index, arguments } => {
-                if let Some((definition, meanings)) =
-                    written_default(ctx, *index)
-                {
-                    let call = calls::definition_invoke(
-                        ctx,
-                        definition,
-                        Vec::new(),
-                        meanings,
-                    );
-                    let value = calls::invoke(ctx, call, node)?;
-                    build.built.push(value);
-                    continue;
-                }
-                let prelude = &*ctx.prelude;
-                let known = [
-                    prelude.integer,
-                    prelude.f32,
-                    prelude.f64,
-                    prelude.string,
-                    prelude.vec,
-                    prelude.deque,
-                    prelude.maybe,
-                    prelude.bool,
-                ]
-                .contains(&Some(*index));
-                let tables = ctx.tables();
-                let meaning = &tables.meanings[*index];
-                if known || meaning.constructors.len() != 1 {
-                    let value = structural::default(&ty, &tables, prelude)
-                        .map_err(at)?;
-                    build.built.push(value);
-                    continue;
-                }
-                let parts = meaning.constructors[0]
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        field.ty.substituted(&meaning.parameters, arguments)
-                    })
-                    .collect();
-                drop(tables);
-                work.push(Build {
-                    shape: Shape::Record {
-                        meaning: *index,
-                        constructor: 0,
-                    },
-                    parts,
-                    built: Vec::new(),
-                });
-            }
-            _ => {
-                let value =
-                    structural::default(&ty, &ctx.tables(), &ctx.prelude)
-                        .map_err(at)?;
+        let ty = dispatch::Types(vec![dispatch::copy(
+            &build.parts[build.built.len()],
+        )]);
+        if let Some(compound) = compound_default(&ty.0[0], node)? {
+            work.push(compound);
+            continue;
+        }
+        if let ir::Type::Meaning { index, arguments } = &ty.0[0] {
+            if let Some(call) = written_default(ctx, &ty.0[0], node)? {
+                let value = calls::invoke(ctx, call, node)?;
                 build.built.push(value);
+                continue;
             }
+            let prelude = &*ctx.prelude;
+            let known = [
+                prelude.integer,
+                prelude.f32,
+                prelude.f64,
+                prelude.string,
+                prelude.vec,
+                prelude.deque,
+                prelude.maybe,
+                prelude.bool,
+            ]
+            .contains(&Some(*index));
+            let tables = ctx.tables();
+            let meaning = tables.meanings.get(*index).ok_or_else(|| {
+                at(Reason::Message("invalid witness meaning".into()))
+            })?;
+            if meaning.resource {
+                return Err(at(Reason::Message(
+                    "native execution does not support resource values".into(),
+                )));
+            }
+            if known || meaning.constructors.len() != 1 {
+                let value = structural::default(&ty.0[0], &tables, prelude)
+                    .map_err(at)?;
+                build.built.push(value);
+                continue;
+            }
+            let parts = meaning.constructors[0]
+                .fields
+                .iter()
+                .map(|field| {
+                    dispatch::arguments(
+                        &field.ty,
+                        &meaning.parameters,
+                        arguments,
+                    )
+                })
+                .collect();
+            drop(tables);
+            work.push(Build {
+                shape: Shape::Record {
+                    meaning: *index,
+                    constructor: 0,
+                },
+                parts,
+                built: Vec::new(),
+            });
+        } else {
+            let value =
+                structural::default(&ty.0[0], &ctx.tables(), &ctx.prelude)
+                    .map_err(at)?;
+            build.built.push(value);
         }
     }
 }

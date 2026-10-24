@@ -16,21 +16,9 @@ impl Index {
             .defaults
             .iter()
             .map(|(spot, value)| {
-                let earlier: Vec<_> = bound
-                    .spots
-                    .iter()
-                    .zip(slots)
-                    .enumerate()
-                    .filter(|(index, _)| {
-                        source
-                            .typed
-                            .constructor_fields
-                            .get(&(span.start, span.end))
-                            .map_or(*index < *spot, |fields| {
-                                fields[*index] < fields[*spot]
-                            })
-                    })
-                    .map(|(_, ((site, _), slot))| (*site, *slot))
+                let earlier: Vec<_> = earlier_spots(source, bound, span, *spot)
+                    .into_iter()
+                    .map(|(index, site)| (site, slots[index]))
                     .collect();
                 let node =
                     self.default_node(source, span, value, &earlier, *spot);
@@ -68,19 +56,19 @@ impl Index {
                 let Type::Array { length, .. } = ty else {
                     unreachable!("array default")
                 };
-                let length = self.ty(&source.home, length);
+                let length = self.source_ty(source, length);
                 let value = self.default_node(source, span, element, &[], 0);
-                self.node(
-                    &source.home,
+                self.source_node(
+                    source,
                     span,
                     ty,
                     ir::Kind::Repeat { value, length },
                 )
             }
             DefaultValue::Type(ty) => {
-                let meaning = self.ty(&source.home, ty);
-                self.node(
-                    &source.home,
+                let meaning = self.source_ty(source, ty);
+                self.source_node(
+                    source,
                     span,
                     ty,
                     ir::Kind::Derived {
@@ -101,7 +89,7 @@ impl Index {
     ) -> usize {
         let mut slots = Vec::new();
         for (_, ty, _) in fields {
-            let ty = self.ty(&source.home, ty);
+            let ty = self.source_ty(source, ty);
             let slot = self.store.push_slot(ir::Slot {
                 ty,
                 parameters: Vec::new(),
@@ -112,7 +100,7 @@ impl Index {
             slots.push(slot);
         }
         let ir::Type::Meaning { index: meaning, .. } =
-            self.ty(&source.home, ty)
+            self.source_ty(source, ty)
         else {
             unreachable!("record default")
         };
@@ -133,8 +121,8 @@ impl Index {
             .fold(ty.clone(), |result, (_, field, _)| {
                 Type::function(field.clone(), result)
             });
-        let callee = self.node(
-            &source.home,
+        let callee = self.source_node(
+            source,
             span,
             &signature,
             ir::Kind::Constructor {
@@ -143,8 +131,8 @@ impl Index {
                 fields: (0..fields.len()).collect(),
             },
         );
-        self.node(
-            &source.home,
+        self.source_node(
+            source,
             span,
             ty,
             ir::Kind::Call {
@@ -179,21 +167,56 @@ impl Index {
                 })
         };
         let instance = Source {
+            initializes_file: false,
             module,
             declarations: source.declarations,
             files: source.files,
             home: home_origin(&source.home, origin),
+            parameters_home: source.parameters_home.clone(),
             resolved: recorded.resolved.clone(),
             typed: recorded.typed.clone(),
             roots: alloc::vec![recorded.value],
         };
-        let mut scope = self.reserve(&instance);
+        let (inputs, contribution) = self.replay_plan(&instance);
+        let mut scope = self.reserve(
+            &instance,
+            &contribution,
+            &alloc::collections::BTreeMap::default(),
+        );
         scope.slots.extend(earlier.iter().copied());
-        let bodies = self.definitions(&instance, &scope);
+        self.resolve_aliases(
+            &instance,
+            &mut scope,
+            &contribution,
+            &alloc::collections::BTreeMap::default(),
+        );
+        let bodies = self.emit_definitions(&instance, &scope, inputs);
         self.fill(&instance, &scope, &bodies);
         self.local_functions(&scope);
         self.captures(&scope);
         self.entries(&instance, &scope, &mut Vec::new());
         scope.expression(recorded.value)
     }
+}
+
+/// Earlier declaration sites available to this default, in physical field order.
+pub(super) fn earlier_spots(
+    source: &Source<'_>,
+    bound: &Bound,
+    span: Span,
+    spot: usize,
+) -> Vec<(usize, Span)> {
+    bound
+        .spots
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            source
+                .typed
+                .constructor_fields
+                .get(&(span.start, span.end))
+                .map_or(*index < spot, |fields| fields[*index] < fields[spot])
+        })
+        .map(|(index, (site, _))| (index, *site))
+        .collect()
 }

@@ -66,6 +66,7 @@ impl Infer<'_> {
             Meaning::Show => self.has_claim(ty, &prelude("Show")),
             Meaning::Host => {
                 matches!(ty, Type::Named { name, .. } if matches!(name.origin, Origin::Host(_) | Origin::Commands))
+                    && !self.resource(ty)
             }
             Meaning::Packed => self.packed(ty),
         }
@@ -314,6 +315,7 @@ impl Infer<'_> {
                     expected.span,
                     expected.place_kind.clone(),
                     false,
+                    None,
                 ));
             }
             return target;
@@ -358,6 +360,7 @@ impl Infer<'_> {
                 expected.span,
                 expected.place_kind.clone(),
                 false,
+                None,
             ));
             self.keep(second);
             return target;

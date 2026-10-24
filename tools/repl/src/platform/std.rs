@@ -12,10 +12,18 @@ pub fn read(buffer: &mut [u8]) -> Result<usize, ()> {
     }
 }
 
-pub fn write(bytes: &[u8]) {
-    let mut stdout = std::io::stdout().lock();
-    // A closed stdout leaves nothing to report to.
-    let _ = stdout.write_all(bytes).and_then(|()| stdout.flush());
+pub fn write(bytes: &[u8]) -> Result<(), ()> {
+    write_to(&mut std::io::stdout().lock(), bytes).map_err(|_| ())
+}
+
+fn write_to(writer: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
+    writer.write_all(bytes)?;
+    writer.flush()
+}
+
+#[cfg(test)]
+pub(super) fn saved() -> bool {
+    SAVED.lock().expect("saved terminal").is_some()
 }
 
 pub fn read_file(path: &str) -> Option<String> {
@@ -96,5 +104,56 @@ pub fn cooked() {
         .take();
     if let Some(saved) = saved {
         let _ = std::process::Command::new("stty").arg(saved).status();
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+    struct Writer {
+        bytes: Vec<u8>,
+        left: usize,
+        flush_error: bool,
+        calls: usize,
+    }
+    impl Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            if self.left == 0 {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            let n = bytes.len().min(self.left);
+            self.bytes.extend_from_slice(&bytes[..n]);
+            self.left -= n;
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            if self.flush_error {
+                Err(std::io::ErrorKind::Other.into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    #[test]
+    fn output_writer_errors_preserve_exact_prefix() {
+        for left in [0, 2, 4] {
+            let mut writer = Writer {
+                bytes: Vec::new(),
+                left,
+                flush_error: true,
+                calls: 0,
+            };
+            assert!(write_to(&mut writer, b"abcd").is_err());
+            assert_eq!(writer.bytes, &b"abcd"[..left]);
+            assert_eq!(writer.calls, if left == 2 { 2 } else { 1 });
+        }
+        let mut bytes = Vec::new();
+        write_to(&mut bytes, b"abcd").unwrap();
+        assert_eq!(bytes, b"abcd");
+        assert_eq!(
+            write_to(&mut &mut [0u8; 0][..], b"x").unwrap_err().kind(),
+            std::io::ErrorKind::WriteZero
+        );
     }
 }

@@ -4,8 +4,8 @@ Fipe's LLVM backend: a checked program's MIR as textual LLVM IR,
 compiled to an object by `clang` and linked against the native
 backend's runtime ([`tools/native`](../native/README.md)). It is the
 optional second backend the [documentation](../../Documentation/README.md)
-names: a separate package, depending on `fipe` alone, with no unsafe
-code.
+names: a separate package, depending on `fipe` and `fipe-native-core`, with
+no unsafe code.
 
 ```sh
 fipe build FILE -o EXE --runtime libfipe_native_rt.a --llvm
@@ -58,3 +58,19 @@ objects: the first milestone and its budget cuts, each example against
 its trace fixture, every drift fixture, gates and a recursion without
 end, each equal to the VM in value or Fault, host calls, output and
 units charged.
+
+See the [support policy](../../Documentation/development.md#compatibility-and-support)
+for the Rust 1.98.1 floor and platform qualification status.
+Executable support is x86_64-unknown-linux-gnu only. Match compiler, generated
+artifacts and runtime to the exact Fipe version; this policy does not imply a
+mechanical mismatched-version rejection guard.
+
+
+Checked programs with resource declarations are refused by native execution,
+including private or unused declarations. Native `lower`, `object`, `listing`
+and LLVM `module` return `Result<_, String>`; callers must propagate refusal.
+`Unit::new` and `Unit::compile` also refuse. Raw `Unit` source metadata still
+encodes/decodes unchanged; transporting sources does not certify executable
+support. Startup refuses reconstructed marked sources before opening the Host,
+reading input or calling generated code. Raw assembler/ELF and LLVM text APIs
+remain low-level interfaces without a checked-program support guarantee.

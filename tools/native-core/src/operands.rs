@@ -8,6 +8,7 @@ use fipe::mir::{Callee, Operand, Rvalue, Witness};
 #[must_use]
 pub fn rvalue(rvalue: &Rvalue) -> Option<&[Operand]> {
     match rvalue {
+        Rvalue::Admit { values, .. } => Some(values),
         Rvalue::Construct { fields: parts, .. }
         | Rvalue::Native { args: parts, .. }
         | Rvalue::Closure {

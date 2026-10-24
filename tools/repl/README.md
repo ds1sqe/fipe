@@ -1,7 +1,7 @@
 # fipe-repl
 
-The Fipe REPL: one pump over `fipe-repl-core`, built for any OS `std`
-supports (default) or for x86_64 Linux with no `std`
+The Fipe REPL: one pump over `fipe-repl-core`, built with the `std`
+platform (default) or for x86_64 Linux with no `std`
 (`--no-default-features --features linux`). The package is a library,
 `fipe_repl::run` with its `Options` and an optional `Host` answering
 the session's calls, and the `fipe-repl` binary over it; `fipe repl`
@@ -30,3 +30,39 @@ escape sequence: the editor reads with no timeout.
 
 `python3 tools/repl/tests/pty.py BIN...`, from the repository root,
 drives a binary through a terminal.
+
+The driver drains trailing input at EOF, explicitly closes the REPL through its
+Exit Reset, and restores terminal settings. Input errors discard partial input and
+perform the closing protocol before exit code2. Ctrl-C abandons an unfinished
+Start/Call, preserving an already computed terminal or Reset.
+
+The optional `Host` adapter answers synchronous scalar/data calls and immediately
+acknowledges lifecycle boundaries; it has no owner cleanup hook. A Host requiring
+run/session resource cleanup must use a lifecycle-aware
+[`fipe-repl-core`](../repl-core/README.md) driver and perform its owner actions before
+acknowledging Start/End/Reset. No automatic payload cleanup or rollback is promised.
+
+See the [support policy](../../Documentation/development.md#compatibility-and-support)
+for the Rust 1.98.1 floor and platform qualification status.
+The std platform is selected for Linux, Windows and both macOS architectures;
+real Windows/macOS terminal qualification is pending. The exclusive linux feature
+remains x86-64 Linux only and requires panic abort.
+
+The `Host.answer` callback returns `Result<Reply, String>`: `Ok` includes ordinary
+recoverable language faults; `Err` reports a fatal driver/transport failure. The
+CLI adapter checks its Host output before and after effects. A rendering error or
+fatal callback stops later input/effects, preserves already computed End/Reset
+outcomes, closes before acknowledging another Start, restores cooked mode and
+exits with code 2. Output stops after its first error; partial bytes and discarded tails are
+not retried or recoverable. This is explicit disposal, not payload cleanup or
+rollback. Raw mode requires both stdin and stdout to be terminals. Cleanup applies
+to observed errors; external process termination, including an inherited fatal
+SIGPIPE disposition, has no restoration guarantee.
+
+Private output tests use a direct `rustc --test` harness with std dependency
+artifacts built using a task-local `profile.dev.panic="unwind"` override; Cargo's
+library test=false stays unchanged. The linux private worker remains panic abort
+and links the actual main against a cfg(test) rlib with `-nostartfiles`. Test-only
+workers inject failure through `run_driver`, not a separate cleanup implementation.
+`pty.py --worker-std TEST_BINARY --worker-linux WORKER --cli FIPE BIN...` adds
+live-terminal restoration and piped failure controls to the healthy sessions.

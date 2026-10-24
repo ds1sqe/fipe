@@ -19,6 +19,9 @@
 
 "pub" @keyword.storage.modifier
 
+(type_item
+  resource: (resource_modifier) @keyword.storage.modifier)
+
 [
   "if"
   "else"

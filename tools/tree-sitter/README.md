@@ -3,7 +3,9 @@
 A [tree-sitter](https://tree-sitter.github.io/) grammar for Fipe, with
 highlight, fold, indent, locals and injection queries. It mirrors
 `Documentation/spec/01-lexical.ebnf` and `02-syntax.ebnf` in this
-repository; those chapters are normative, and the language's own parser
+repository; contextual `type resource Table` keeps `resource` available
+as an ordinary name elsewhere. Those chapters are normative, and the
+language's own parser
 (the `fipe` crate) is the oracle the tests compare against.
 
 The crate does not depend on this package. The package uses the crate

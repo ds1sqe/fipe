@@ -23,6 +23,7 @@ pub(super) struct Builder<'l, 'a> {
     pub(super) lowering: &'l mut Lowering<'a>,
     node: usize,
     arity: usize,
+    pub(super) binding: Option<mir::OpenBinding>,
     /// The hidden meaning parameters this body's frame carries.
     pub(super) hidden: Vec<usize>,
     /// The IR slots a closure of this body captures, by position.
@@ -53,6 +54,7 @@ impl<'l, 'a> Builder<'l, 'a> {
             lowering,
             node,
             arity: 0,
+            binding: None,
             hidden,
             captures: captured.len(),
             captured,
@@ -215,6 +217,7 @@ impl<'l, 'a> Builder<'l, 'a> {
             lowering,
             node,
             arity,
+            binding,
             hidden,
             captures,
             locals,
@@ -247,6 +250,7 @@ impl<'l, 'a> Builder<'l, 'a> {
             node,
             arity,
             captures,
+            binding,
             hidden,
             locals,
             blocks,

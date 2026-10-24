@@ -52,6 +52,37 @@ impl Machine {
                 frame.statement = statement;
                 Ok(Flow::Continue)
             }
+            Return::Arguments { body, arity, node } => {
+                let invalid = || {
+                    Self::fault(
+                        program,
+                        node,
+                        crate::value::Reason::Host(
+                            "invalid guarded arguments".into(),
+                        ),
+                    )
+                };
+                let Value::Tuple(values) = value else {
+                    return Err(invalid());
+                };
+                let values =
+                    alloc::rc::Rc::try_unwrap(values).map_err(|_| invalid())?;
+                let end = arity.checked_add(1).ok_or_else(invalid)?;
+                let shape = program.bodies.get(body).ok_or_else(invalid)?;
+                if shape.arity != arity || values.len() != arity {
+                    return Err(invalid());
+                }
+                let Some(Frame::Body(frame)) = self.frames.last_mut() else {
+                    return Err(invalid());
+                };
+                if frame.body != body || end > frame.locals.len() {
+                    return Err(invalid());
+                }
+                for (spot, value) in values.into_iter().enumerate() {
+                    frame.locals[spot + 1] = value;
+                }
+                Ok(Flow::Continue)
+            }
             Return::Branch { pass, fail } => {
                 let passed = self.prelude().is_true(&value);
                 let frame = self.top();
@@ -75,7 +106,8 @@ impl Machine {
         program: &mir::Program,
         returned: Option<Value>,
     ) -> Result<Flow, Fault> {
-        let (node, step, owed) = {
+        let work = self.resource_work();
+        let (node, step) = {
             let natives = self.natives();
             let prelude = self.prelude();
             let tables = program.tables.borrow();
@@ -88,12 +120,18 @@ impl Machine {
                 prelude: &prelude,
                 natives: &natives,
                 globals: &self.globals,
-                result: frame.result.clone(),
+                result: frame.result.as_ref(),
+                work: &work,
             };
             let step = frame.pending.step(&ctx, returned);
-            (frame.node, step, frame.pending.take_owed())
+            (frame.node, step)
         };
-        if let Err(reason) = self.pay(owed) {
+        if let Err(reason) = self.pay(work.spent()) {
+            if let Step::Call(super::calls::Invoke::Body { meanings, .. }) =
+                step
+            {
+                drop(crate::value::resource::Forest(meanings));
+            }
             return Err(Self::fault(program, node, reason));
         }
         match step {
@@ -101,6 +139,9 @@ impl Machine {
                 self.invoke(program, invoke, Return::Resume, node)
             }
             Step::Start(_) => unreachable!("a frame starts once"),
+            Step::AdmitArgument { value, guard } => self
+                .admit_argument(program, guard, value, node)
+                .map_err(|reason| Self::fault(program, node, reason)),
             Step::Done(value) => {
                 let Some(Frame::Native(frame)) = self.frames.pop() else {
                     unreachable!()
@@ -155,6 +196,18 @@ impl Machine {
                 self.frames.push(Frame::Body(frame));
                 Ok(Flow::Continue)
             }
+            Invoke::Declared {
+                declaration,
+                args,
+                mut result,
+            } => self.native(
+                program,
+                declaration,
+                args,
+                Some(result.0.pop().expect("supplied result")),
+                back,
+                node,
+            ),
             Invoke::Value(value) => self.deliver(program, value, back),
             Invoke::Native(pending) => {
                 self.start(program, *pending, Start::new(back, node, None))

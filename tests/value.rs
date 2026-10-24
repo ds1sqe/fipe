@@ -129,3 +129,29 @@ mod float;
 mod structural;
 #[path = "value/text.rs"]
 mod text;
+
+#[test]
+fn hidden_meaning_preserves_borrowed_type_debug_and_single_rc_alias() {
+    let ty = ir::Type::Tuple(vec![ir::Type::Unit, ir::Type::Unit]);
+    let expected_debug = format!("{ty:?}");
+    let witness = Rc::new(fipe::value::Meaning::new(ty.clone()));
+    assert_eq!(witness.as_type(), &ty);
+    assert_eq!(format!("{witness:?}"), expected_debug);
+    let value = Value::Meaning(Rc::clone(&witness));
+    let alias = value.clone();
+    let Value::Meaning(shared) = &alias else {
+        unreachable!()
+    };
+    assert!(Rc::ptr_eq(&witness, shared));
+    assert_eq!(Rc::strong_count(&witness), 3);
+    assert_eq!(
+        value,
+        Value::Meaning(Rc::new(fipe::value::Meaning::new(ty)))
+    );
+    drop(value);
+    assert_eq!(Rc::strong_count(&witness), 2);
+    drop(alias);
+    assert_eq!(Rc::strong_count(&witness), 1);
+    assert_eq!(core::mem::size_of::<Value>(), 16);
+    assert_eq!(core::mem::align_of::<Value>(), 8);
+}

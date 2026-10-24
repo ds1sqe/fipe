@@ -20,6 +20,10 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../../../../src/compile/dispatch.rs"),
     ),
     (
+        "src/value/resource.rs",
+        include_str!("../../../../src/value/resource.rs"),
+    ),
+    (
         "src/vm/assign.rs",
         include_str!("../../../../src/vm/assign.rs"),
     ),
@@ -79,6 +83,10 @@ const SOURCES: &[(&str, &str)] = &[
     (
         "src/vm/predicates.rs",
         include_str!("../../../../src/vm/predicates.rs"),
+    ),
+    (
+        "src/vm/resource.rs",
+        include_str!("../../../../src/vm/resource.rs"),
     ),
     ("src/vm/step.rs", include_str!("../../../../src/vm/step.rs")),
     ("src/vm/walk.rs", include_str!("../../../../src/vm/walk.rs")),

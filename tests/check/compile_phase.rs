@@ -584,3 +584,158 @@ fn a_refused_line_leaves_earlier_units_unchanged() {
     assert_eq!(*earlier.tables(), before);
     assert_eq!(before.session_meanings, [None]);
 }
+
+#[test]
+fn grouped_record_chains_keep_each_known_part_and_remain_compile_pure() {
+    use fipe::{ast::Entry, limits::Phase};
+    let declarations = Declarations::new();
+    for (outer, inner) in [(9, 7), (7, 300)] {
+        let prefix = format!("type Inner {{ n: Integer }}\ntype Outer {{ n: Integer, inner: Inner }}\nitem = Outer {outer} (Inner {inner})\n");
+        let mut facts = Vec::new();
+        for ending in [
+            "item.inner.n".to_string(),
+            "(item).inner.n".to_string(),
+            format!("{inner}"),
+        ] {
+            let source = format!("{prefix}{ending}");
+            let module = parse(lex(&source)).expect("record chain");
+            let resolved = fipe::resolve::resolve(&module, &declarations, &[])
+                .expect("resolved");
+            let (typed, errors) = fipe::infer::infer_partial(
+                &module,
+                &resolved,
+                &declarations,
+                &[],
+            );
+            assert!(errors.is_empty(), "{errors:?}");
+            let Entry::Line(value) = module.entries.last().expect("last line")
+            else {
+                panic!("expression")
+            };
+            let known = typed.known(*value).expect("checked value");
+            assert_eq!(
+                known.phase,
+                Phase::Compile,
+                "pure record projection stays compile phase"
+            );
+            facts.push((known.range.clone(), known.exact.clone()));
+        }
+        assert_eq!(facts[0], facts[2], "named chain retains inner value");
+        assert_eq!(
+            facts[1], facts[2],
+            "grouped chain must not use the outer same-named field"
+        );
+        assert!(
+            facts[2].0.is_some() || facts[2].1.is_some(),
+            "comparison has actual exact numeric facts"
+        );
+    }
+}
+
+#[test]
+fn grouped_intermediate_default_effect_is_not_compile_pure() {
+    use fipe::{ast::Entry, limits::Phase};
+    let mut declarations = Declarations::new();
+    declarations.module("probe", "pub echo: Integer -> Integer\npub type B { pub n: Integer }\npub type A { pub seed: Integer }\nimpl A { pub step: (self: Self) -> (n: Integer = (echo 7)) -> B = self n => B n }").expect("Host member/default");
+    for source in [
+        "use probe\n(probe.A 0).step.n",
+        "use probe\n(probe.A 0).step",
+    ] {
+        let module = parse(lex(source)).expect("grouped member");
+        let resolved = fipe::resolve::resolve(&module, &declarations, &[])
+            .expect("resolved");
+        let (typed, errors) =
+            fipe::infer::infer_partial(&module, &resolved, &declarations, &[]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let Entry::Line(value) = module.entries.last().expect("last line")
+        else {
+            panic!("expression")
+        };
+        let span = module.expr(*value).expect("actual Field").span;
+        let steps = &typed.accesses[&(span.start, span.end)];
+        if source.ends_with(".step.n") {
+            assert!(
+                steps.iter().enumerate().any(|(index, step)| index + 1
+                    < steps.len()
+                    && step.bound.as_ref().is_some_and(|bound| bound
+                        .defaults
+                        .iter()
+                        .any(|(_, default)| matches!(
+                            default,
+                            fipe::typed::DefaultValue::Expression(_)
+                        )))),
+                "actual intermediate default"
+            );
+        } else {
+            let bound = &typed.bound[&(span.start, span.end)];
+            assert!(!bound.spots.is_empty(), "actual final call Bound");
+            let [(spot, fipe::typed::DefaultValue::Declared { origin, value })] =
+                bound.defaults.as_slice()
+            else {
+                panic!(
+                    "final method retains the ordinary Declared default policy"
+                )
+            };
+            let instance =
+                &typed.default_instances[&(span.start, span.end, *spot)];
+            assert_eq!(
+                &instance.origin, origin,
+                "exact receiving-call default owner"
+            );
+            assert_eq!(
+                &instance.value, value,
+                "exact receiving-call default expression"
+            );
+            assert_ne!(
+                instance
+                    .typed
+                    .known(instance.value)
+                    .expect("actual default facts")
+                    .phase,
+                Phase::Compile,
+                "the retained default itself requests Host work"
+            );
+        }
+        assert_ne!(
+            typed.known(*value).expect("checked chain").phase,
+            Phase::Compile,
+            "Host default must remain runtime work"
+        );
+    }
+}
+
+#[test]
+fn declared_written_signature_labels_keep_qualified_types_and_lazy_defaults() {
+    let mut declarations = Declarations::new();
+    declarations.module("probe", "pub keep: Eq a => (seed: a) -> (copy: a = seed) -> a = seed copy => copy\npub unused: (value: Integer = missing) -> Integer = value => value").expect("labeled written declarations");
+    let module =
+        parse(lex("use probe\nprobe.keep 7")).expect("qualified default use");
+    check::check(&module, &declarations, &[], Options::default())
+        .expect("earlier parameter default and untouched invalid default");
+    let module =
+        parse(lex("use probe\nprobe.unused")).expect("reach invalid default");
+    let errors = check::check(&module, &declarations, &[], Options::default())
+        .expect_err("invalid default is checked when needed");
+    assert!(errors.iter().any(|error| matches!(error, check::Error::Type(error) if matches!(&error.reason, fipe::infer::Reason::Default { name, .. } if name == "value"))), "{errors:?}");
+}
+
+#[test]
+fn declared_signature_overlay_keeps_refined_spots_and_body_arity_errors() {
+    let mut declarations = Declarations::new();
+    declarations.module("probe", "pub narrow: (seed: U8) -> (copy: U8 = seed) -> U8 = x y => y\npub bad: (value: Integer) -> Integer = x y => x").expect("declaration signatures");
+    let module =
+        parse(lex("use probe\nprobe.narrow 7")).expect("healthy refined use");
+    check::check(&module, &declarations, &[], Options::default())
+        .expect("checked refined spot and lazy unrelated bad body");
+    let module =
+        parse(lex("use probe\nprobe.narrow 300")).expect("bad refined use");
+    assert!(
+        check::check(&module, &declarations, &[], Options::default()).is_err(),
+        "overlay must retain the actual U8 checked type"
+    );
+    let module = parse(lex("use probe\nprobe.bad 7"))
+        .expect("reach mismatched written arity");
+    let errors = check::check(&module, &declarations, &[], Options::default())
+        .expect_err("body arity mismatch remains a diagnostic");
+    assert!(errors.iter().any(|error| matches!(error, check::Error::Type(error) if matches!(error.reason, fipe::infer::Reason::DeclarationValue { .. }))), "{errors:?}");
+}

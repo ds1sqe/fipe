@@ -237,6 +237,22 @@
           "value": "type"
         },
         {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "resource",
+              "content": {
+                "type": "SYMBOL",
+                "name": "resource_modifier"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
           "type": "FIELD",
           "name": "name",
           "content": {
@@ -4776,6 +4792,10 @@
     {
       "type": "SYMBOL",
       "name": "field_name"
+    },
+    {
+      "type": "SYMBOL",
+      "name": "resource_modifier"
     }
   ],
   "inline": [],

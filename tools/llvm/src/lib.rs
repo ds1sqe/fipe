@@ -39,18 +39,21 @@ declare i32 @rt_call(ptr, ptr, ptr, i64, i64)
 declare void @rt_index(ptr, ptr, i64)
 declare i32 @rt_global(ptr, i64)
 declare void @rt_store(ptr, i64, i64, i64)
-declare i32 @rt_enter(ptr, i64, i64, i64)
+declare i32 @rt_enter(ptr, ptr, i64, i64, i64)
 declare i32 @rt_unreachable(i64, i64)
 declare void @rt_push(ptr, i64, i64, i64)
 declare void @rt_pop()
-declare i64 @rt_test(ptr, i64, i64)
+declare i64 @rt_test(ptr, ptr, i64, i64)
 declare i32 @rt_init(i64)
 ";
 
 /// The LLVM IR module of a program and the unit its executable
 /// carries, which the runtime compiles again at startup.
-#[must_use]
-pub fn module(program: &Program, unit: &[u8]) -> String {
+///
+/// # Errors
+/// When the program declares resources, including unused declarations.
+pub fn module(program: &Program, unit: &[u8]) -> Result<String, String> {
+    fipe_native_core::codec::ensure_resource_free(program)?;
     let mut out = String::from("; Fipe program, LLVM backend\n");
     out.push_str(DECLARATIONS);
     for index in 0..program.bodies.len() {
@@ -77,7 +80,7 @@ pub fn module(program: &Program, unit: &[u8]) -> String {
         "@fipe_unit = constant <{{ i64, [{n} x i8] }}> <{{ i64 {n}, [{n} x i8] c\"{bytes}\" }}>, align 8",
         n = unit.len()
     );
-    out
+    Ok(out)
 }
 
 /// `i32 fipe_main(ptr out)`: each module's init body in file order, a
@@ -250,7 +253,9 @@ impl<'a> Body<'a> {
             }
             Statement::Enter { value, .. } => {
                 let from = self.pointer(*value);
-                self.checked(&format!("@rt_enter(ptr {from}, {site})"));
+                self.checked(&format!(
+                    "@rt_enter(ptr {from}, ptr %hidden, {site})"
+                ));
             }
             Statement::Push { value, .. } => {
                 let from = self.pointer(*value);
@@ -281,7 +286,8 @@ impl<'a> Body<'a> {
                 return;
             }
             // The runtime computes every other rvalue from its operands.
-            Rvalue::Construct { .. }
+            Rvalue::Admit { .. }
+            | Rvalue::Construct { .. }
             | Rvalue::Native { .. }
             | Rvalue::Closure { .. }
             | Rvalue::Tuple(_)
@@ -372,7 +378,7 @@ impl<'a> Body<'a> {
                 let from = self.pointer(*value);
                 let n = self.fresh();
                 self.line(&format!(
-                    "%t{n} = call i64 @rt_test(ptr {from}, i64 {}, i64 {block})",
+                    "%t{n} = call i64 @rt_test(ptr {from}, ptr %hidden, i64 {}, i64 {block})",
                     self.index
                 ));
                 self.line(&format!(

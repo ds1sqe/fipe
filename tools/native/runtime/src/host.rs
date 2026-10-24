@@ -91,12 +91,18 @@ impl Host {
         match self {
             Self::Std(host) => {
                 host.sink.lines(lines, tables);
+                if let Err(error) = host.flush() {
+                    return Ok(Err(format!("cannot write output: {error}")));
+                }
                 let reply = host.answer(request, tables);
-                // A closed stream leaves nothing to report to.
-                let _ = host.flush();
-                match reply {
-                    Reply::Value(value) => Ok(value),
-                    Reply::File(_) => {
+                let flushed = host.flush();
+                match (reply, flushed) {
+                    (Reply::Value(Err(reason)), _) => Ok(Err(reason)),
+                    (_, Err(error)) => {
+                        Ok(Err(format!("cannot write output: {error}")))
+                    }
+                    (Reply::Value(value), Ok(())) => Ok(value),
+                    (Reply::File(_), Ok(())) => {
                         unreachable!("a run asks only for host calls")
                     }
                 }

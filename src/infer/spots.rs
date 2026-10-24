@@ -59,6 +59,13 @@ impl Infer<'_> {
                     self.unify(parameter, &ty, span, span);
                 }
                 callee.ty = crate::types::replace(&callee.ty, &written);
+                callee.owner = callee
+                    .owner
+                    .as_ref()
+                    .map(|owner| crate::types::replace(owner, &written));
+                for meaning in &mut callee.meanings {
+                    *meaning = crate::types::replace(meaning, &written);
+                }
                 for slot in callee.spots.iter_mut().flatten() {
                     slot.ty = crate::types::replace(&slot.ty, &written);
                 }
@@ -69,7 +76,7 @@ impl Infer<'_> {
             }
             ExprKind::Field { value, field } => {
                 let head = self.expr(*value, None);
-                self.members(head, &[super::last(field)], span)
+                self.members(head, &field.segments, span)
             }
             _ => return Callee::plain(self.expr(id, None)),
         };
@@ -117,9 +124,13 @@ impl Infer<'_> {
                     self.insert(
                         |s| &mut s.roots,
                         (span.start, span.end),
-                        crate::typed::Root {
-                            selected: selected.clone(),
-                            meanings: head.meanings.clone(),
+                        super::SavedRoot {
+                            root: crate::typed::Root {
+                                selected: selected.clone(),
+                                meanings: head.meanings.clone(),
+                            },
+                            callee: head.whole(),
+                            owner: head.owner.clone(),
                         },
                     );
                 }
@@ -186,6 +197,119 @@ impl Infer<'_> {
         callee
     }
 
+    pub(super) fn overlay_declared_signature(
+        &mut self,
+        callee: &mut Callee,
+        module: &crate::ast::Module,
+        annotation: crate::ast::TypeId,
+        home: &Origin,
+        definition: (&str, Span),
+        span: Span,
+    ) {
+        use crate::ast::TypeKind;
+        let mut current = annotation;
+        if let TypeKind::Qualified { ty, .. } = &module.types[current.0].kind {
+            current = *ty;
+        }
+        let mut parameters = Vec::new();
+        while let TypeKind::Function { parameter, result } =
+            &module.types[current.0].kind
+        {
+            parameters.push(*parameter);
+            current = *result;
+        }
+        if parameters.is_empty() {
+            return;
+        }
+        // Checked written heads own the raw body boundary. Remaining arrows
+        // describe its returned value, not additional arguments to this body.
+        if let Some(spots) = &callee.spots {
+            parameters.truncate(spots.len());
+        }
+        let prior = callee.spots.as_deref().unwrap_or(&[]);
+        let mut actual = callee.whole();
+        let mut slots = Vec::new();
+        for (index, parameter) in parameters.iter().enumerate() {
+            let Type::Function {
+                parameter: ty,
+                result,
+            } = self.apply(&actual)
+            else {
+                self.error(
+                    span,
+                    Reason::DeclarationValue {
+                        name: definition.0.into(),
+                        origin: home.clone(),
+                        declaration: definition.1,
+                    },
+                );
+                return;
+            };
+            let mut slot = prior.get(index).cloned().unwrap_or_else(|| Slot {
+                place_kind: crate::typed::Place::Parameter(None),
+                name: None,
+                ty: (*ty).clone(),
+                default: false,
+                value: None,
+                site: module.types[parameter.0].span,
+            });
+            slot.ty = *ty;
+            if let TypeKind::Labeled { name, default, .. } =
+                &module.types[parameter.0].kind
+            {
+                slot.name = Some(super::last(name));
+                slot.place_kind =
+                    crate::typed::Place::Parameter(slot.name.clone());
+                slot.default = default.is_some();
+                slot.value = *default;
+                slot.site = name.span;
+            }
+            slots.push(slot);
+            actual = *result;
+        }
+        callee.self_slot = callee.self_slot.or_else(|| {
+            slots
+                .iter()
+                .position(|slot| slot.name.as_deref() == Some("self"))
+        });
+        callee.ty = actual;
+        callee.spots = Some(slots);
+        callee.home = Some(home.clone());
+    }
+
+    pub(super) fn declared_item_annotation(
+        &self,
+        site: Span,
+    ) -> Option<crate::ast::TypeId> {
+        self.module.entries.iter().find_map(|entry| match entry {
+            crate::ast::Entry::Line(id) => {
+                let crate::ast::ExprKind::Bind {
+                    pattern,
+                    annotation,
+                    ..
+                } = &self.module.expressions[id.0].kind
+                else {
+                    return None;
+                };
+                (self.module.patterns[pattern.0].span == site)
+                    .then_some(*annotation)
+                    .flatten()
+            }
+            crate::ast::Entry::Item(item) => {
+                let crate::ast::ItemKind::Impl { members, .. } = &item.kind
+                else {
+                    return None;
+                };
+                members.iter().find_map(|member| match member {
+                    crate::ast::ImplMember::Named {
+                        name, annotation, ..
+                    } if name.span == site => *annotation,
+                    _ => None,
+                })
+            }
+        })
+    }
+
     /// The first `count` parameter types of a function type.
     pub(super) fn peel(
         &mut self,
@@ -215,6 +339,8 @@ impl Infer<'_> {
     }
 
     pub(super) fn record_callee(&mut self, callee: &Callee, stage: Span) {
+        let key = (stage.start, stage.end);
+        self.set_contract_stage(key, callee.contract_binding.clone());
         self.insert(
             |s| &mut s.callee_types,
             (stage.start, stage.end),
@@ -393,6 +519,7 @@ impl Infer<'_> {
         expected: Option<&Type>,
     ) -> Type {
         let mark = self.state.obligations.len();
+        let contract_binding = callee.contract_binding.clone();
         let mut slots = callee.spots.unwrap_or_default();
         let result = callee.ty;
         let mut filled: Vec<Option<Supply>> = vec![None; slots.len()];
@@ -437,12 +564,14 @@ impl Infer<'_> {
             );
         }
         let home = callee.home.as_ref().unwrap_or(&Origin::This);
-        for (index, supply) in filled.iter().enumerate() {
-            if supply.is_none() && slots[index].value.is_some() {
-                self.declared_default(home, &slots, index, stage);
-            }
-        }
+        self.supply_declared_defaults(home, &slots, &filled, stage);
         self.dots();
+        self.refine_member_arguments(
+            contract_binding.as_ref(),
+            &slots,
+            &filled,
+            stage,
+        );
         for (slot, supply) in slots.iter_mut().zip(&mut filled) {
             if supply.is_none()
                 && slot.value.is_none()
@@ -493,6 +622,20 @@ impl Infer<'_> {
         self.apply_extra(result, extra, (open, open_bool), stage)
     }
 
+    fn supply_declared_defaults(
+        &mut self,
+        home: &Origin,
+        slots: &[super::Slot],
+        filled: &[Option<Supply>],
+        stage: Span,
+    ) {
+        for (index, supply) in filled.iter().enumerate() {
+            if supply.is_none() && slots[index].value.is_some() {
+                self.declared_default(home, slots, index, stage);
+            }
+        }
+    }
+
     /// A conversion's source spot: a supplied value is converted to the
     /// target, with a literal read at the meaning it reaches; an unsupplied
     /// member conversion owes the member on the target.
@@ -512,7 +655,7 @@ impl Infer<'_> {
             let converted = self.convert(target, kind, &source, stage);
             self.unify(result, &converted, stage, stage);
         } else if !conversion_word(kind) {
-            self.state.obligations.push(super::Owed::new(
+            self.push_owed(super::Owed::new(
                 crate::types::Obligation::Member {
                     head: target.clone(),
                     name: kind.into(),
@@ -1062,6 +1205,7 @@ impl Infer<'_> {
                     span,
                     place_kind,
                     variable,
+                    Some(other),
                 ));
             }
         }
@@ -1346,6 +1490,28 @@ impl Infer<'_> {
         index: usize,
         stage: Span,
     ) {
+        if self.declared_home.as_ref() == Some(home) {
+            match self.source_default(
+                home,
+                &slots[index],
+                &slots[..index],
+                stage,
+            ) {
+                Ok(Some(instance)) => self.set_default_instance(
+                    (stage.start, stage.end, index),
+                    instance,
+                ),
+                Ok(None) => {}
+                Err(cause) => self.error(
+                    stage,
+                    Reason::Default {
+                        name: slots[index].name.clone().unwrap_or_default(),
+                        cause,
+                    },
+                ),
+            }
+            return;
+        }
         let (_, valid) = self.declared_expression(
             home,
             &slots[index],
@@ -1457,8 +1623,10 @@ impl Infer<'_> {
         // A file's default is typed as the file types it, naming the
         // file's own declarations as the file does; what the outside
         // supplies is renamed in, what it solves and owes renamed out.
-        let foreign = (owner.is_none() && matches!(home, Origin::File(_)))
-            .then(|| self.state.subst.solved());
+        let same_file = matches!(home, Origin::File(stem) if self.checked_file_scope.as_ref() == Some(stem));
+        let foreign =
+            (owner.is_none() && matches!(home, Origin::File(_)) && !same_file)
+                .then(|| self.state.subst.solved());
         let supplied = |ty: &Type| {
             if foreign.is_some() {
                 ty.unhome(home)
@@ -1492,7 +1660,14 @@ impl Infer<'_> {
             typed
                 .schemes
                 .insert((slot.site.start, slot.site.end), scheme.clone());
-            typed.hidden = inner.record_hidden(&typed.schemes);
+            if resolve_errors.is_empty()
+                && inner.state.errors.is_empty()
+                && errors.is_empty()
+            {
+                inner.complete_owned_references(&mut typed);
+                typed.complete_references(&inner.state.subst);
+            }
+            typed.hidden = inner.record_hidden(&typed.schemes, &typed);
         }
         let valid =
             if resolve_errors.is_empty() {
@@ -1506,8 +1681,8 @@ impl Infer<'_> {
                 Err(None)
             };
         let recorded = valid.is_ok().then(|| typed.clone());
-        if owner.is_none() {
-            self.adopt_checks(typed.checks, home, stage);
+        if owner.is_none() && is_default {
+            self.adopt_checks(typed.checks, home, stage, !same_file);
         }
         let owed = inner
             .state
@@ -1550,7 +1725,7 @@ impl Infer<'_> {
             if foreign.is_some() {
                 owed.obligation = owed.obligation.map(|ty| ty.rehome(home));
             }
-            self.state.obligations.push(owed);
+            self.push_owed(owed);
         }
     }
 
@@ -1565,9 +1740,15 @@ impl Infer<'_> {
                 inner.items.clone_from(&self.items);
                 inner.groups.clone_from(&self.groups);
                 inner.self_type.clone_from(&self.self_type);
+                inner
+                    .checked_file_scope
+                    .clone_from(&self.checked_file_scope);
             }
             Origin::File(stem) => {
                 inner.state.locals.extend(self.file_locals(stem));
+                if self.checked_file(stem).is_some() {
+                    inner.checked_file_scope = Some(stem.clone());
+                }
             }
             _ => {}
         }
@@ -1606,12 +1787,15 @@ impl<'a> Infer<'a> {
             items: Vec::new(),
             groups: Vec::new(),
             self_type: None,
+            declared_home: None,
+            checked_file_scope: None,
         };
         self.scope_inner(&mut inner, home);
         inner.state.defaults.clone_from(&self.state.defaults);
         inner.state.defaults.push(key);
         for (_, site, ty) in earlier {
             let local = Local {
+                owner: None,
                 scheme: Scheme::mono(ty),
                 heads: None,
             };
@@ -1627,16 +1811,21 @@ impl<'a> Infer<'a> {
         checks: Vec<crate::limits::Check>,
         home: &Origin,
         stage: Span,
+        rehome_types: bool,
     ) {
         for mut check in checks {
+            check.role = crate::limits::CheckRole::CallerReport;
             check.place = stage;
+            check.receiving_call = None;
             check.frequency = crate::limits::frequency(self.module, stage);
             check.place_origin = Origin::This;
             if check.limit_origin == Origin::This {
                 check.limit_origin = home.clone();
             }
-            check.target = check.target.map(|ty| ty.rehome(home));
-            check.known.rehome(home);
+            if rehome_types {
+                check.target = check.target.map(|ty| ty.rehome(home));
+                check.known.rehome(home);
+            }
             self.state.checks.push(check);
         }
     }
@@ -1708,21 +1897,790 @@ impl<'a> Infer<'a> {
             }
             Scheme::mono(self.apply(&slot.ty))
         } else {
+            let annotated = self.module.entries.iter().any(|entry| {
+                let crate::ast::Entry::Line(id) = entry else { return false };
+                let crate::ast::ExprKind::Bind {
+                    pattern, annotation: Some(_), value: bound, ..
+                } = &self.module.expressions[id.0].kind else { return false };
+                let pattern = &self.module.patterns[pattern.0];
+                if *bound != value { return false; }
+                pattern.span == slot.site
+                    && matches!(&pattern.kind, crate::ast::PatternKind::Name(name)
+                        if name.segments.last().map(String::as_str) == slot.name.as_deref())
+            });
             self.generalize(
                 &[super::bind::Part {
+                    owner: None,
                     ty: slot.ty.clone(),
                     site: slot.site,
-                    annotated: false,
+                    annotated,
                 }],
                 mark,
                 &[],
             )
             .remove(0)
+            .scheme
         };
         self.finish_dots();
         self.settle();
-        let (typed, errors) = self.default_checks(value);
+        self.record_supplied_tests();
+        let (typed, errors) = self.default_checks(Some(value));
         (scheme, typed, errors)
+    }
+
+    pub(super) fn constructor_error(
+        &mut self,
+        home: &Origin,
+        name: &str,
+        site: Span,
+    ) -> Option<Local> {
+        self.error(
+            self.module.span,
+            Reason::DeclarationValue {
+                name: name.into(),
+                origin: home.clone(),
+                declaration: site,
+            },
+        );
+        None
+    }
+
+    pub(super) fn supplied_constructor(
+        &mut self,
+        home: &Origin,
+        name: &str,
+        module: &crate::ast::Module,
+        site: Span,
+    ) -> Option<Local> {
+        use super::files::Constructor;
+        let key = (home.clone(), site);
+        if let Some(cached) = self.file_cache.constructor(&key) {
+            return match cached {
+                Constructor::Checking(local)
+                | Constructor::Checked(local, _) => Some(local),
+                Constructor::Failed => self.constructor_error(home, name, site),
+            };
+        }
+        self.file_cache
+            .constructor_scopes
+            .borrow_mut()
+            .push((key.clone(), alloc::collections::BTreeSet::new()));
+        let mut state = self.check_constructor_group(home, name, module, site);
+        let (_, dependencies) = self
+            .file_cache
+            .constructor_scopes
+            .borrow_mut()
+            .pop()
+            .expect("constructor check scope");
+        if let Constructor::Checked(_, source) = &mut state {
+            source.dependencies = dependencies.into_iter().collect();
+            for cached in self.file_cache.constructors.borrow_mut().values_mut()
+            {
+                if let Constructor::Checked(_, sibling) = cached {
+                    if Rc::ptr_eq(&sibling.typed, &source.typed) {
+                        sibling.dependencies.clone_from(&source.dependencies);
+                    }
+                }
+            }
+        }
+        self.file_cache
+            .constructors
+            .borrow_mut()
+            .insert(key.clone(), state);
+        if let Some(Constructor::Checked(local, _)) =
+            self.file_cache.constructor(&key)
+        {
+            Some(local)
+        } else {
+            self.constructor_error(home, name, site)
+        }
+    }
+
+    fn pending_constructor(&mut self, index: usize, site: Span) -> Local {
+        // A recursive caller already knows a constructor returns its owning Self.
+        let mut result = self.items[index].ty.clone();
+        while let Type::Function { result: next, .. } = result {
+            result = *next;
+        }
+        let owner = self.groups[self.items[index].group].self_type.clone();
+        if matches!(self.items[index].body, Some(super::Body::Arms(_))) {
+            if let Some(owner) = &owner {
+                self.unify(owner, &result, site, site);
+            }
+        }
+        Local {
+            owner: matches!(
+                self.items[index].body,
+                Some(super::Body::Value(_))
+            )
+            .then_some(owner)
+            .flatten(),
+            scheme: Scheme::mono(self.apply(&self.items[index].ty)),
+            heads: self.items[index].heads.clone(),
+        }
+    }
+
+    fn check_constructor_group(
+        &mut self,
+        home: &Origin,
+        name: &str,
+        module: &crate::ast::Module,
+        site: Span,
+    ) -> super::files::Constructor {
+        use super::files::Constructor;
+        let key = (home.clone(), site);
+        let (resolved, resolver_groups) =
+            crate::resolve::resolve_declared_source(
+                module,
+                self.declarations,
+                home,
+            );
+        let resolved = Rc::new(resolved);
+        let mut inner =
+            self.inner(module, &resolved, home, key.clone(), Vec::new());
+        inner.declared_home = Some(home.clone());
+        inner.declare();
+        inner.declare_source_bindings();
+        let Some(index) = inner.items.iter().position(|item| item.site == site).or_else(|| {
+            module.entries.iter().any(|entry| matches!(entry, crate::ast::Entry::Item(crate::ast::Item { kind: crate::ast::ItemKind::Impl { members, .. }, .. }) if members.iter().any(|m| matches!(m, crate::ast::ImplMember::Constructor { arm, .. } if arm.span == site))))
+                .then(|| inner.item_index(&Key::Constructor(name.into()))).flatten()
+        }) else { self.state.subst = inner.state.subst; return Constructor::Failed; };
+        let pending = inner.pending_constructor(index, site);
+        inner
+            .file_cache
+            .constructors
+            .borrow_mut()
+            .insert(key, Constructor::Checking(pending));
+        let _callee = inner.item_callee(index, site);
+        inner.finish_dots();
+        inner.settle();
+        let reached: Vec<_> = inner
+            .items
+            .iter()
+            .zip(&inner.state.status)
+            .filter(|(_, status)| matches!(status, super::Status::Done(_)))
+            .map(|(item, _)| item.site)
+            .collect();
+        let resolve_valid = resolver_groups.iter().all(|(span, errors)| {
+            errors.is_empty()
+                || !reached.iter().any(|site| {
+                    span.start <= site.start && site.end <= span.end
+                })
+        });
+        if resolve_valid && inner.state.errors.is_empty() {
+            inner.finish_source_defaults();
+            inner.record_supplied_tests();
+        }
+        let (frozen, _, _) = inner.frozen();
+        let local = frozen
+            .iter()
+            .find(|(at, _)| *at == (site.start, site.end))
+            .map(|(_, local)| local.clone());
+        let (mut typed, limits) =
+            if resolve_valid && inner.state.errors.is_empty() {
+                inner.default_checks(None)
+            } else {
+                (crate::typed::Typed::default(), Vec::new())
+            };
+        typed.frozen.clone_from(&frozen);
+        let valid =
+            resolve_valid && inner.state.errors.is_empty() && limits.is_empty();
+        if valid {
+            inner.finish_source_default_masks(&mut typed);
+        }
+        let roots = inner.reached_source_roots();
+        let subst = inner.state.subst;
+        let owed = inner.state.obligations;
+        self.adopt_solutions(subst, owed, None, home, self.module.span);
+        if !valid {
+            return Constructor::Failed;
+        }
+        for plan in &inner.state.pending_defaults {
+            self.file_cache.record(
+                (home.clone(), plan.instance.value.0),
+                plan.instance.clone(),
+            );
+        }
+        let source = crate::typed::DeclaredConstructor {
+            home: home.clone(),
+            dependencies: Vec::new(),
+            roots,
+            resolved,
+            typed: Rc::new(typed),
+        };
+        // Publish only finalized reached locals; every entry shares the same source transaction.
+        for (at, local) in frozen {
+            if reached.iter().any(|site| at == (site.start, site.end)) {
+                self.file_cache.constructors.borrow_mut().insert(
+                    (
+                        home.clone(),
+                        Span {
+                            start: at.0,
+                            end: at.1,
+                        },
+                    ),
+                    Constructor::Checked(local, source.clone()),
+                );
+            }
+        }
+        local.map_or(Constructor::Failed, |local| {
+            Constructor::Checked(local, source)
+        })
+    }
+
+    fn reached_source_roots(&self) -> Vec<ExprId> {
+        self.items
+            .iter()
+            .zip(&self.state.status)
+            .filter(|(_, status)| matches!(status, super::Status::Done(_)))
+            .flat_map(|(item, _)| match &item.body {
+                Some(super::Body::Value(value)) => vec![*value],
+                Some(super::Body::Arms(arms)) => arms
+                    .iter()
+                    .flat_map(|arm| {
+                        arm.guard.into_iter().chain(core::iter::once(arm.body))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            })
+            .collect()
+    }
+
+    fn scope_source_default(
+        &self,
+        typed: &mut crate::typed::Typed,
+        value: ExprId,
+        earlier: &[Slot],
+    ) -> SourceNodes {
+        let roots = core::iter::once(value).chain(
+            typed
+                .tests
+                .iter()
+                .filter(|test| test.expression.is_none())
+                .map(|test| test.value),
+        );
+        let nodes = SourceNodes::collect(self.module, roots);
+        for (index, ty) in typed.expressions.iter_mut().enumerate() {
+            if !nodes.expressions.contains(&index) {
+                *ty = None;
+            }
+        }
+        for (index, cast) in typed.casts.iter_mut().enumerate() {
+            if !nodes.expressions.contains(&index) {
+                *cast = None;
+            }
+        }
+        for (index, scheme) in typed.bindings.iter_mut().enumerate() {
+            if !nodes.expressions.contains(&index) {
+                *scheme = None;
+            }
+        }
+        for (index, known) in typed.known.iter_mut().enumerate() {
+            if !nodes.expressions.contains(&index) {
+                *known = crate::limits::known::Known::default();
+            }
+        }
+        typed
+            .pattern_types
+            .retain(|id, _| nodes.patterns.contains(id));
+        typed
+            .pattern_equals
+            .retain(|id, _| nodes.patterns.contains(id));
+        macro_rules! scoped { ($($field:ident),*) => { $(typed.$field.retain(|site,_|nodes.sites.contains(site));)* }; }
+        scoped!(
+            selected,
+            meaning_arguments,
+            callee_types,
+            accesses,
+            roots,
+            bound,
+            conversions,
+            rebuilds,
+            rebuild_types,
+            modes,
+            supplied,
+            constructor_fields,
+            derived_defaults
+        );
+        typed
+            .default_instances
+            .retain(|(start, end, _), _| nodes.sites.contains(&(*start, *end)));
+        typed.checks.retain(|check| match check.value {
+            Some(id) => nodes.expressions.contains(&id.0),
+            None => {
+                nodes.sites.contains(&(check.place.start, check.place.end))
+                    || check.receiving_call.is_some_and(|call| {
+                        nodes.sites.contains(&(call.start, call.end))
+                    })
+            }
+        });
+        typed.facts.retain(|(site, _)| nodes.sites.contains(site));
+        typed
+            .warnings
+            .retain(|w| nodes.sites.contains(&(w.span.start, w.span.end)));
+        let mut locals = nodes.sites.clone();
+        locals.extend(
+            earlier.iter().map(|slot| (slot.site.start, slot.site.end)),
+        );
+        for id in &nodes.expressions {
+            if let Some(crate::resolve::Target::Local { site }) =
+                self.resolved.expr(ExprId(*id))
+            {
+                locals.insert((site.start, site.end));
+            }
+        }
+        locals.extend(
+            self.items
+                .iter()
+                .zip(&self.state.status)
+                .filter(|(_, status)| matches!(status, super::Status::Done(_)))
+                .map(|(item, _)| (item.site.start, item.site.end)),
+        );
+        locals.extend(
+            typed
+                .tests
+                .iter()
+                .map(|test| (test.self_site.start, test.self_site.end)),
+        );
+        typed.schemes.retain(|site, _| locals.contains(site));
+        typed.frozen.retain(|(site, _)| locals.contains(site));
+        typed
+            .body_parameters
+            .retain(|site, _| locals.contains(site));
+        typed.hidden.retain(|site, _| locals.contains(site));
+        nodes
+    }
+
+    fn source_default_context(
+        &self,
+        owner: &super::LexicalOwner,
+        home: &Origin,
+        resolved: &Rc<crate::resolve::Resolved>,
+        earlier: &[Slot],
+    ) -> Rc<super::LexicalContext> {
+        let mut lexical = State::new(
+            crate::types::Subst::default(),
+            self.module.expressions.len(),
+        );
+        lexical.env.clone_from(&self.state.env);
+        lexical.claims.clone_from(&self.state.claims);
+        let globals = if self.state.lexical_owner.is_none() {
+            &self.state.locals
+        } else {
+            &self
+                .state
+                .lexical_frames
+                .iter()
+                .rev()
+                .find(|frame| frame.owner.is_none())
+                .expect("unit lexical frame")
+                .facts
+                .locals
+        };
+        for (item, status) in self.items.iter().zip(&self.state.status) {
+            if matches!(status, super::Status::Done(_)) {
+                let site = (item.site.start, item.site.end);
+                if let Some(local) = globals.get(&site) {
+                    lexical.locals.insert(site, local.clone());
+                }
+            }
+        }
+        for prior in earlier.iter().filter(|s| s.name.is_some()) {
+            lexical.locals.insert(
+                (prior.site.start, prior.site.end),
+                Local {
+                    owner: None,
+                    scheme: Scheme::mono(prior.ty.clone()),
+                    heads: None,
+                },
+            );
+        }
+        Rc::new(super::LexicalContext {
+            owner: owner.clone(),
+            resolved: Rc::clone(resolved),
+            self_type: self.self_type.clone(),
+            home: Some(home.clone()),
+            facts: super::LexicalFacts::capture(&lexical),
+        })
+    }
+
+    fn resolve_source_default(
+        &self,
+        home: &Origin,
+        value: ExprId,
+        earlier: &[Slot],
+    ) -> Option<Rc<crate::resolve::Resolved>> {
+        let names: Vec<_> = earlier
+            .iter()
+            .filter_map(|s| Some((s.name.clone()?, s.site)))
+            .collect();
+        let (extra, errors) = crate::resolve::resolve_declared_expression(
+            self.module,
+            self.declarations,
+            home,
+            value,
+            &names,
+            None,
+        );
+        if !errors.is_empty() {
+            return None;
+        }
+        Some(Rc::new(crate::resolve::declared_overlay(
+            self.resolved,
+            &extra,
+        )))
+    }
+
+    fn source_default(
+        &mut self,
+        home: &Origin,
+        slot: &Slot,
+        earlier: &[Slot],
+        stage: Span,
+    ) -> Result<
+        Option<crate::typed::DeclaredExpression>,
+        Option<alloc::boxed::Box<Reason>>,
+    > {
+        let key = (home.clone(), slot.site);
+        if self.state.defaults.contains(&key) {
+            return Ok(None);
+        }
+        let Some(value) = slot.value else {
+            return Err(None);
+        };
+        let Some(resolved) = self.resolve_source_default(home, value, earlier)
+        else {
+            return Err(None);
+        };
+        let token = Rc::new(super::DefaultOwner { key });
+        let owner = Some(Rc::clone(&token));
+        let context =
+            self.source_default_context(&owner, home, &resolved, earlier);
+        let provisional = crate::typed::DeclaredExpression {
+            origin: home.clone(),
+            value,
+            resolved: Rc::clone(&resolved),
+            typed: Rc::new(crate::typed::Typed::default()),
+        };
+        let use_start = self.state.uses.len();
+        self.journal_list(|state| &mut state.pending_defaults);
+        self.state.pending_defaults.push(super::PendingDefault {
+            context: Rc::clone(&context),
+            earlier: earlier.to_vec(),
+            instance: provisional,
+            uses: Vec::new(),
+            invocation: use_start..use_start,
+            roots: alloc::collections::BTreeMap::new(),
+        });
+        // Selective rollback preserves the token but clears its temporary lookup maps.
+        self.state.journal(super::trial::Undo::Capsule(context));
+        let (instance, failure, uses, end, roots) =
+            self.with_lexical_owner(&owner, |inner| {
+                let error_start = inner.state.errors.len();
+                let expected = Expected {
+                    place_kind: slot.place_kind.clone(),
+                    ty: slot.ty.clone(),
+                    span: stage,
+                    spot: true,
+                    cast: true,
+                };
+                inner.expr(value, Some(&expected));
+                inner.dots();
+                // The common group's ordinary marks own literal/rebuild finishing.
+                // Never drain its obligations at a lexical default return.
+                let (mut typed, limits) = inner.default_checks(Some(value));
+                let nodes =
+                    inner.scope_source_default(&mut typed, value, earlier);
+                let failure = inner.state.errors[error_start..]
+                    .iter()
+                    .chain(&limits)
+                    .next()
+                    .map(|error| alloc::boxed::Box::new(error.reason.clone()));
+                inner.state.errors.truncate(error_start);
+                let uses = inner
+                    .state
+                    .uses
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .skip(use_start)
+                    .filter(|(_, used)| {
+                        super::same_owner(&used.lexical_owner, &owner)
+                    })
+                    .collect();
+                let roots = typed
+                    .roots
+                    .keys()
+                    .map(|site| (*site, inner.state.roots[site].clone()))
+                    .collect();
+                let _ = nodes;
+                (
+                    crate::typed::DeclaredExpression {
+                        origin: home.clone(),
+                        value,
+                        resolved: Rc::clone(&resolved),
+                        typed: Rc::new(typed),
+                    },
+                    failure,
+                    uses,
+                    inner.state.uses.len(),
+                    roots,
+                )
+            });
+        self.journal_list(|state| &mut state.pending_defaults);
+        let pending = self
+            .state
+            .pending_defaults
+            .iter_mut()
+            .find(|pending| super::same_owner(&pending.context.owner, &owner))
+            .expect("registered default invocation");
+        pending.instance = instance.clone();
+        pending.uses = uses;
+        pending.invocation = use_start..end;
+        pending.roots = roots;
+        failure.map_or_else(|| Ok(Some(instance)), |failure| Err(Some(failure)))
+    }
+
+    fn finish_source_defaults(&mut self) {
+        let plans = self.state.pending_defaults.clone();
+        let mut replacements = Vec::new();
+        for plan in plans.iter().rev() {
+            let (mut refreshed, limits, saved_roots) =
+                self.with_lexical_owner(&plan.context.owner, |inner| {
+                    let (mut typed, limits) =
+                        inner.default_checks(Some(plan.instance.value));
+                    inner.scope_source_default(
+                        &mut typed,
+                        plan.instance.value,
+                        &plan.earlier,
+                    );
+                    let roots = typed
+                        .roots
+                        .keys()
+                        .map(|site| (*site, inner.state.roots[site].clone()))
+                        .collect::<alloc::collections::BTreeMap<_, _>>();
+                    (typed, limits, roots)
+                });
+            if !limits.is_empty() {
+                self.state.errors.extend(limits);
+                return;
+            }
+            // Keep provisional Rc identities until the exact child replacements below.
+            let mut instance = plan.instance.clone();
+            instance.typed = Rc::new(core::mem::take(&mut refreshed));
+            instance =
+                super::record::replace_recorded(&instance, &replacements);
+            let typed = Rc::make_mut(&mut instance.typed);
+            typed.schemes.extend(
+                self.items.iter().zip(&self.state.status).filter_map(
+                    |(item, status)| {
+                        let super::Status::Done(member) = status else {
+                            return None;
+                        };
+                        Some((
+                            (item.site.start, item.site.end),
+                            super::bind::applied(
+                                &member.scheme,
+                                &self.state.subst,
+                            ),
+                        ))
+                    },
+                ),
+            );
+            let Some(uses) = self.finalized_default_uses(
+                plan,
+                &instance.origin,
+                instance.value,
+            ) else {
+                return;
+            };
+            self.complete_saved_references(typed, &uses, &saved_roots);
+            typed.complete_references(&self.state.subst);
+            let pending: Vec<_> = replacements
+                .iter()
+                .map(
+                    |(_, instance): &(
+                        Rc<crate::typed::Typed>,
+                        crate::typed::DeclaredExpression,
+                    )| Rc::clone(&instance.typed),
+                )
+                .collect();
+            instance = super::record::apply_recorded_preserving(
+                &instance,
+                &self.state.subst,
+                &pending,
+            );
+            replacements.push((Rc::clone(&plan.instance.typed), instance));
+        }
+        self.replace_source_defaults(&replacements);
+        self.journal_list(|s| &mut s.pending_defaults);
+        for plan in &mut self.state.pending_defaults {
+            if let Some((_, instance)) = replacements
+                .iter()
+                .find(|(old, _)| Rc::ptr_eq(old, &plan.instance.typed))
+            {
+                plan.instance = instance.clone();
+            }
+        }
+    }
+
+    fn finalized_default_uses(
+        &mut self,
+        plan: &super::PendingDefault,
+        origin: &Origin,
+        value: ExprId,
+    ) -> Option<Vec<super::Use>> {
+        let mut uses = Vec::new();
+        for (index, captured) in &plan.uses {
+            let Some(current) = self.state.uses.get(*index).filter(|current| {
+                current.item == captured.item
+                    && super::same_owner(
+                        &current.lexical_owner,
+                        &captured.lexical_owner,
+                    )
+                    && current.span == captured.span
+                    && current.ty == captured.ty
+                    && current.owner == captured.owner
+            }) else {
+                self.error(
+                    self.module.span,
+                    Reason::DeclarationValue {
+                        name: "default".into(),
+                        origin: origin.clone(),
+                        declaration: self.module.expressions[value.0].span,
+                    },
+                );
+                return None;
+            };
+            let _ = current;
+        }
+        let owned_uses: Vec<_> = self
+            .state
+            .uses
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, used)| {
+                super::same_owner(&used.lexical_owner, &plan.context.owner)
+            })
+            .collect();
+        uses.extend(owned_uses.iter().map(|(_, used)| used.clone()));
+        self.journal_list(|state| &mut state.pending_defaults);
+        let current_plan = self
+            .state
+            .pending_defaults
+            .iter_mut()
+            .find(|pending| {
+                super::same_owner(&pending.context.owner, &plan.context.owner)
+            })
+            .expect("final default owner");
+        current_plan.uses = owned_uses;
+        current_plan.invocation.end = self.state.uses.len();
+        debug_assert!(plan
+            .uses
+            .iter()
+            .all(|(index, _)| plan.invocation.contains(index)));
+        Some(uses)
+    }
+
+    /// Seed retained lexical snapshots from the completed owner's actual checks.
+    fn finish_source_default_masks(&mut self, typed: &mut crate::typed::Typed) {
+        // The complete source, not a pruned default body, owns helper masks.
+        let authoritative = &typed.hidden;
+        let seed: alloc::collections::BTreeMap<_, _> = self
+            .items
+            .iter()
+            .zip(&self.state.status)
+            .filter(|(_, status)| matches!(status, super::Status::Done(_)))
+            .filter_map(|(item, _)| {
+                let site = (item.site.start, item.site.end);
+                authoritative.get(&site).map(|mask| (site, mask.clone()))
+            })
+            .collect();
+        let phase1 = self.state.pending_defaults.clone();
+        let mut finished = Vec::new();
+        for plan in phase1.iter().rev() {
+            let mut instance =
+                super::record::replace_recorded(&plan.instance, &finished);
+            let typed = Rc::make_mut(&mut instance.typed);
+            typed.hidden =
+                self.record_hidden_seed(&typed.schemes, typed, &seed);
+            finished.push((Rc::clone(&plan.instance.typed), instance));
+        }
+        self.replace_source_defaults(&finished);
+        self.journal_list(|s| &mut s.pending_defaults);
+        for plan in &mut self.state.pending_defaults {
+            if let Some((_, instance)) = finished
+                .iter()
+                .find(|(old, _)| Rc::ptr_eq(old, &plan.instance.typed))
+            {
+                plan.instance = instance.clone();
+            }
+        }
+        super::record::replace_typed(typed, &finished);
+    }
+
+    fn replace_source_defaults(
+        &mut self,
+        replacements: &[(
+            Rc<crate::typed::Typed>,
+            crate::typed::DeclaredExpression,
+        )],
+    ) {
+        let defaults: Vec<_> = self
+            .state
+            .default_instances
+            .iter()
+            .map(|(at, instance)| {
+                (*at, super::record::replace_recorded(instance, replacements))
+            })
+            .collect();
+        for (at, instance) in defaults {
+            self.set_default_instance(at, instance);
+        }
+        let bounds: Vec<_> = self
+            .state
+            .bound
+            .iter()
+            .map(|(at, bound)| {
+                let mut bound = bound.clone();
+                super::record::replace_bound(&mut bound, replacements);
+                (*at, bound)
+            })
+            .collect();
+        for (at, bound) in bounds {
+            self.insert(|s| &mut s.bound, at, bound);
+        }
+        let defaults: Vec<_> = self
+            .state
+            .derived_defaults
+            .iter()
+            .map(|(at, default)| {
+                let mut default = default.clone();
+                super::record::replace_default(&mut default, replacements);
+                (*at, default)
+            })
+            .collect();
+        for (at, default) in defaults {
+            self.insert(|s| &mut s.derived_defaults, at, default);
+        }
+        let accesses: Vec<_> = self
+            .state
+            .accesses
+            .iter()
+            .map(|(at, steps)| {
+                let mut steps = steps.clone();
+                for step in &mut steps {
+                    if let Some(bound) = &mut step.bound {
+                        super::record::replace_bound(bound, replacements);
+                    }
+                }
+                (*at, steps)
+            })
+            .collect();
+        for (at, steps) in accesses {
+            self.insert(|s| &mut s.accesses, at, steps);
+        }
     }
 
     fn record_declared(
@@ -1746,7 +2704,7 @@ impl<'a> Infer<'a> {
     }
     fn default_checks(
         &mut self,
-        value: ExprId,
+        value: Option<ExprId>,
     ) -> (crate::typed::Typed, Vec<super::Error>) {
         self.record_operations();
         let shapes = self.record_shapes();
@@ -1756,7 +2714,6 @@ impl<'a> Infer<'a> {
             shapes,
             rebuilds: self.state.rebuilds.clone(),
             modes: self.state.modes.clone(),
-            casts: self.state.casts.clone(),
             expressions: self
                 .state
                 .types
@@ -1786,16 +2743,24 @@ impl<'a> Infer<'a> {
             .state
             .entries
             .iter()
-            .map(|(id, ty, span, kind, variable)| {
-                (*id, self.apply(ty), *span, kind.clone(), *variable)
+            .map(|(id, ty, span, kind, variable, receiving_call)| {
+                (
+                    *id,
+                    self.apply(ty),
+                    *span,
+                    kind.clone(),
+                    *variable,
+                    *receiving_call,
+                )
             })
             .collect();
         let errors = crate::limits::check(
             &self.limit_inputs(),
             &entries,
-            Some(value),
+            value,
             &mut typed,
         );
+        typed.hidden = self.record_hidden(&typed.schemes, &typed);
         (typed, errors)
     }
 }
@@ -1896,4 +2861,701 @@ impl Infer<'_> {
 /// Whether a conversion is one of the words rather than a member.
 fn conversion_word(kind: &str) -> bool {
     matches!(kind, "from" | "try_from" | "to" | "try")
+}
+
+#[derive(Default)]
+pub struct SourceNodes {
+    pub(crate) expressions: alloc::collections::BTreeSet<usize>,
+    pub(crate) patterns: alloc::collections::BTreeSet<usize>,
+    pub(crate) types: alloc::collections::BTreeSet<usize>,
+    pub(crate) sites: alloc::collections::BTreeSet<(usize, usize)>,
+}
+enum DefaultNode {
+    Expr(ExprId),
+    Pattern(crate::ast::PatternId),
+    Type(crate::ast::TypeId),
+}
+impl SourceNodes {
+    fn site(&mut self, span: Span) {
+        self.sites.insert((span.start, span.end));
+    }
+    fn collect(
+        module: &crate::ast::Module,
+        roots: impl IntoIterator<Item = ExprId>,
+    ) -> Self {
+        Self::from_roots(module, roots, core::iter::empty())
+    }
+
+    pub(crate) fn from_roots(
+        module: &crate::ast::Module,
+        expressions: impl IntoIterator<Item = ExprId>,
+        patterns: impl IntoIterator<Item = crate::ast::PatternId>,
+    ) -> Self {
+        let mut found = Self::default();
+        let mut pending: Vec<_> = expressions
+            .into_iter()
+            .map(DefaultNode::Expr)
+            .chain(patterns.into_iter().map(DefaultNode::Pattern))
+            .collect();
+        while let Some(next) = pending.pop() {
+            match next {
+                DefaultNode::Expr(id) => {
+                    if !found.expressions.insert(id.0) {
+                        continue;
+                    }
+                    found.collect_expression(module, id, &mut pending);
+                }
+                DefaultNode::Pattern(id) => {
+                    if !found.patterns.insert(id.0) {
+                        continue;
+                    }
+                    found.collect_pattern(module, id, &mut pending);
+                }
+                DefaultNode::Type(id) => {
+                    if !found.types.insert(id.0) {
+                        continue;
+                    }
+                    found.collect_type(module, id, &mut pending);
+                }
+            }
+        }
+        found
+    }
+
+    fn collect_expression(
+        &mut self,
+        module: &crate::ast::Module,
+        id: ExprId,
+        pending: &mut Vec<DefaultNode>,
+    ) {
+        use crate::ast::ExprKind;
+        let expr = &module.expressions[id.0];
+        self.site(expr.span);
+        match &expr.kind {
+            ExprKind::Group(parts)
+            | ExprKind::Tuple(parts)
+            | ExprKind::List(parts)
+            | ExprKind::Block(parts) => {
+                pending.extend(parts.iter().copied().map(DefaultNode::Expr));
+            }
+            ExprKind::Outcome { payload, .. } => {
+                pending.extend(payload.iter().copied().map(DefaultNode::Expr));
+            }
+            ExprKind::Instance { name, arguments } => {
+                self.site(name.span);
+                pending
+                    .extend(arguments.iter().copied().map(DefaultNode::Type));
+            }
+            ExprKind::Record { name, fields } => {
+                self.site(name.span);
+                for field in fields {
+                    self.site(field.span);
+                    self.site(field.name.span);
+                    pending.push(DefaultNode::Expr(field.value));
+                }
+            }
+            ExprKind::Call {
+                callee, arguments, ..
+            } => self.collect_call(*callee, arguments, pending),
+            ExprKind::Field { value, field } => {
+                self.site(field.span);
+                pending.push(DefaultNode::Expr(*value));
+            }
+            ExprKind::Not { operator, value } => {
+                self.site(*operator);
+                pending.push(DefaultNode::Expr(*value));
+            }
+            ExprKind::Binary {
+                operator,
+                left,
+                right,
+                ..
+            }
+            | ExprKind::Pipe {
+                operator,
+                left,
+                right,
+                ..
+            } => {
+                self.site(*operator);
+                pending.push(DefaultNode::Expr(*left));
+                pending.push(DefaultNode::Expr(*right));
+            }
+            ExprKind::Bind {
+                pattern,
+                annotation,
+                value,
+                ..
+            } => {
+                pending.push(DefaultNode::Pattern(*pattern));
+                pending
+                    .extend(annotation.iter().copied().map(DefaultNode::Type));
+                pending.push(DefaultNode::Expr(*value));
+            }
+            ExprKind::With { key, value, body } => {
+                self.site(key.span);
+                pending.push(DefaultNode::Expr(*value));
+                pending.push(DefaultNode::Expr(*body));
+            }
+            ExprKind::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                pending.push(DefaultNode::Expr(*condition));
+                pending.push(DefaultNode::Expr(*then_body));
+                pending
+                    .extend(else_body.iter().copied().map(DefaultNode::Expr));
+            }
+            ExprKind::Arms(arms) => self.collect_arms(arms, pending),
+            ExprKind::Name(name) | ExprKind::Selector(name) => {
+                self.site(name.span);
+            }
+            ExprKind::Literal(_) | ExprKind::Word(_) | ExprKind::Path(_) => {}
+        }
+    }
+
+    fn collect_pattern(
+        &mut self,
+        module: &crate::ast::Module,
+        id: crate::ast::PatternId,
+        pending: &mut Vec<DefaultNode>,
+    ) {
+        use crate::ast::PatternKind;
+        let pattern = &module.patterns[id.0];
+        self.site(pattern.span);
+        match &pattern.kind {
+            PatternKind::Constructor { name, payload } => {
+                self.site(name.span);
+                pending.push(DefaultNode::Pattern(*payload));
+            }
+            PatternKind::Group(part) => {
+                pending.push(DefaultNode::Pattern(*part));
+            }
+            PatternKind::Tuple(parts) | PatternKind::List(parts) => {
+                pending.extend(parts.iter().copied().map(DefaultNode::Pattern));
+            }
+            PatternKind::Outcome { payload, .. } => pending
+                .extend(payload.iter().copied().map(DefaultNode::Pattern)),
+            PatternKind::Default { name, value } => {
+                self.site(name.span);
+                pending.push(DefaultNode::Expr(*value));
+            }
+            PatternKind::Record { name, fields, rest } => {
+                self.site(name.span);
+                if let Some(span) = rest {
+                    self.site(*span);
+                }
+                for field in fields {
+                    self.site(field.span);
+                    self.site(field.name.span);
+                    pending.extend(
+                        field.pattern.iter().copied().map(DefaultNode::Pattern),
+                    );
+                }
+            }
+            PatternKind::Name(name) => self.site(name.span),
+            PatternKind::Wildcard | PatternKind::Literal(_) => {}
+        }
+    }
+
+    fn collect_type(
+        &mut self,
+        module: &crate::ast::Module,
+        id: crate::ast::TypeId,
+        pending: &mut Vec<DefaultNode>,
+    ) {
+        use crate::ast::{ConstraintKind, TypeKind};
+        let ty = &module.types[id.0];
+        self.site(ty.span);
+        match &ty.kind {
+            TypeKind::Named { name, arguments } => {
+                self.site(name.span);
+                pending
+                    .extend(arguments.iter().copied().map(DefaultNode::Type));
+            }
+            TypeKind::Array { element, length } => {
+                pending.push(DefaultNode::Type(*element));
+                pending.push(DefaultNode::Type(*length));
+            }
+            TypeKind::Sum(parts)
+            | TypeKind::Tuple(parts)
+            | TypeKind::Both(parts)
+            | TypeKind::Either(parts) => {
+                pending.extend(parts.iter().copied().map(DefaultNode::Type));
+            }
+            TypeKind::Not(part) => {
+                pending.push(DefaultNode::Type(*part));
+            }
+            TypeKind::Function { parameter, result } => {
+                pending.push(DefaultNode::Type(*parameter));
+                pending.push(DefaultNode::Type(*result));
+            }
+            TypeKind::Qualified { constraints, ty } => {
+                pending.push(DefaultNode::Type(*ty));
+                for constraint in constraints {
+                    self.site(constraint.span);
+                    match &constraint.kind {
+                        ConstraintKind::Named { class, variable } => {
+                            self.site(variable.span);
+                            pending.push(DefaultNode::Type(*class));
+                        }
+                        ConstraintKind::Member { member, ty } => {
+                            self.site(member.span);
+                            pending.push(DefaultNode::Type(*ty));
+                        }
+                    }
+                }
+            }
+            TypeKind::Labeled { name, ty, default } => {
+                self.site(name.span);
+                pending.push(DefaultNode::Type(*ty));
+                pending.extend(default.iter().copied().map(DefaultNode::Expr));
+            }
+            TypeKind::Unit | TypeKind::Number(_) => {}
+        }
+    }
+
+    fn collect_call(
+        &mut self,
+        callee: ExprId,
+        arguments: &[Argument],
+        pending: &mut Vec<DefaultNode>,
+    ) {
+        pending.push(DefaultNode::Expr(callee));
+        for argument in arguments {
+            self.site(argument.span);
+            match &argument.kind {
+                ArgumentKind::Positional(value) => {
+                    pending.push(DefaultNode::Expr(*value));
+                }
+                ArgumentKind::Flag { value, .. } => {
+                    pending
+                        .extend(value.iter().copied().map(DefaultNode::Expr));
+                }
+            }
+        }
+    }
+
+    fn collect_arms(
+        &mut self,
+        arms: &[crate::ast::Arm],
+        pending: &mut Vec<DefaultNode>,
+    ) {
+        for arm in arms {
+            self.site(arm.span);
+            pending
+                .extend(arm.patterns.iter().copied().map(DefaultNode::Pattern));
+            pending.extend(arm.guard.iter().copied().map(DefaultNode::Expr));
+            pending.push(DefaultNode::Expr(arm.body));
+        }
+    }
+}
+
+impl Infer<'_> {
+    pub(super) fn attach_contract_binding(
+        &mut self,
+        mark: usize,
+        binding: &super::ContractBindingUse,
+    ) {
+        let reads = match &binding.origin {
+            Origin::This => self
+                .state
+                .member_contract_reads
+                .get(&(binding.site.start, binding.site.end))
+                .cloned(),
+            Origin::Line(index) => self
+                .frame
+                .and_then(|frame| frame.lines.get(*index))
+                .and_then(|line| {
+                    line.typed
+                        .member_contract_reads
+                        .get(&(binding.site.start, binding.site.end))
+                })
+                .cloned(),
+            _ => None,
+        };
+        let Some(reads) = reads else {
+            return;
+        };
+        self.journal_list(|s| &mut s.obligations);
+        for owed in &mut self.state.obligations[mark..] {
+            let Some(ordinal) = owed.contract_ordinal else {
+                continue;
+            };
+            if !matches!(
+                owed.obligation,
+                crate::types::Obligation::Member { .. }
+            ) {
+                continue;
+            }
+            owed.contract_use = Some(crate::typed::MemberContractUse {
+                origin: binding.origin.clone(),
+                binding: binding.site,
+                at: binding.at,
+                obligation: ordinal,
+            });
+            owed.contract_reads =
+                reads.get(ordinal).cloned().unwrap_or_default();
+        }
+    }
+
+    pub(super) fn local_contract_view(&self, site: Span, callee: &mut Callee) {
+        if callee.spots.is_some() || crate::limits::has_limits(&callee.whole())
+        {
+            return;
+        }
+        let Some(value) = crate::limits::Bindings::of(self.module).site(site)
+        else {
+            return;
+        };
+        if let Some(ty) = self.contract_of_value(value, &mut Vec::new()) {
+            callee.ty = ty;
+        }
+    }
+
+    fn contract_of_value(
+        &self,
+        value: ExprId,
+        visited: &mut Vec<ExprId>,
+    ) -> Option<Type> {
+        if visited.contains(&value) {
+            // A recursive source supplies no declaration-contract evidence.
+            return None;
+        }
+        visited.push(value);
+        let result = match &self.module.expressions[value.0].kind {
+            ExprKind::Name(_) => match self.resolved.expr(value) {
+                Some(Target::Local { site }) => {
+                    crate::limits::Bindings::of(self.module)
+                        .site(*site)
+                        .and_then(|value| {
+                            self.contract_of_value(value, visited)
+                        })
+                }
+                _ => None,
+            },
+            ExprKind::Group(parts) => parts
+                .last()
+                .and_then(|value| self.contract_of_value(*value, visited)),
+            ExprKind::Block(lines) => lines
+                .last()
+                .and_then(|value| self.contract_of_value(*value, visited)),
+            ExprKind::Call { .. } => {
+                let span = self.span(value);
+                self.state
+                    .contract_stages
+                    .get(&(span.start, span.end))
+                    .and_then(|binding| {
+                        self.contract_of_result(binding, span, visited)
+                    })
+            }
+            _ => None,
+        };
+        visited.pop();
+        result
+    }
+
+    fn contract_of_result(
+        &self,
+        binding: &super::ContractBindingUse,
+        stage: Span,
+        visited: &mut Vec<ExprId>,
+    ) -> Option<Type> {
+        if binding.origin != Origin::This {
+            return None;
+        }
+        let bound = self.state.bound.get(&(stage.start, stage.end))?;
+        if !bound.open.is_empty() || !bound.applied.is_empty() {
+            return None;
+        }
+        let source =
+            crate::limits::Bindings::of(self.module).site(binding.site)?;
+        let ExprKind::Arms(arms) = &self.module.expressions[source.0].kind
+        else {
+            return None;
+        };
+        let [arm] = arms.as_slice() else {
+            return None;
+        };
+        if bound.spots.len() != arm.patterns.len() {
+            return None;
+        }
+        self.contract_of_returned_read(binding, arm.body, visited)
+    }
+
+    fn contract_of_returned_read(
+        &self,
+        binding: &super::ContractBindingUse,
+        value: ExprId,
+        visited: &mut Vec<ExprId>,
+    ) -> Option<Type> {
+        if visited.contains(&value) {
+            return None;
+        }
+        visited.push(value);
+        let result = match &self.module.expressions[value.0].kind {
+            ExprKind::Group(parts) => parts.last().and_then(|value| {
+                self.contract_of_returned_read(binding, *value, visited)
+            }),
+            ExprKind::Block(lines) => lines.last().and_then(|value| {
+                self.contract_of_returned_read(binding, *value, visited)
+            }),
+            ExprKind::Name(_) => match self.resolved.expr(value) {
+                Some(Target::Local { site }) => {
+                    crate::limits::Bindings::of(self.module)
+                        .site(*site)
+                        .and_then(|value| {
+                            self.contract_of_returned_read(
+                                binding, value, visited,
+                            )
+                        })
+                }
+                Some(Target::Members { .. }) => self
+                    .final_member_read(value, &mut Vec::new())
+                    .and_then(|read| self.contract_at_read(binding, &read)),
+                _ => None,
+            },
+            ExprKind::Field { .. } => self
+                .final_member_read(value, &mut Vec::new())
+                .and_then(|read| self.contract_at_read(binding, &read)),
+            _ => None,
+        };
+        visited.pop();
+        result
+    }
+
+    fn contract_at_read(
+        &self,
+        binding: &super::ContractBindingUse,
+        read: &crate::typed::MemberContractRead,
+    ) -> Option<Type> {
+        let mut contracts = self
+            .state
+            .member_contracts
+            .iter()
+            .filter(|(key, contract)| {
+                (&key.origin, key.binding, key.at)
+                    == (&binding.origin, binding.site, binding.at)
+                    && contract.reads.contains(read)
+            })
+            .map(|(_, contract)| self.apply(&contract.callable));
+        let first = contracts.next();
+        first.filter(|first| {
+            matches!(first, Type::Function { .. })
+                && contracts.all(|other| other == *first)
+        })
+    }
+
+    fn final_member_read(
+        &self,
+        value: ExprId,
+        visited: &mut Vec<ExprId>,
+    ) -> Option<crate::typed::MemberContractRead> {
+        if visited.contains(&value) {
+            return None;
+        }
+        visited.push(value);
+        let result = (|| {
+            let step = match &self.module.expressions[value.0].kind {
+                ExprKind::Group(parts) | ExprKind::Block(parts) => {
+                    return parts.last().and_then(|value| {
+                        self.final_member_read(*value, visited)
+                    });
+                }
+                ExprKind::Field { field, .. } => {
+                    field.segments.len().checked_sub(1)?
+                }
+                ExprKind::Name(_) => match self.resolved.expr(value) {
+                    Some(Target::Members { members, .. }) => {
+                        members.len().checked_sub(1)?
+                    }
+                    Some(Target::Local { site }) => {
+                        let value = crate::limits::Bindings::of(self.module)
+                            .site(*site)?;
+                        return self.final_member_read(value, visited);
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            Some(crate::typed::MemberContractRead {
+                span: self.span(value),
+                step,
+            })
+        })();
+        visited.pop();
+        result
+    }
+
+    fn contract_formal(
+        &self,
+        binding: Span,
+        argument: ExprId,
+        visited: &mut Vec<ExprId>,
+    ) -> Option<usize> {
+        if visited.contains(&argument) {
+            return None;
+        }
+        visited.push(argument);
+        let result = (|| {
+            let value =
+                crate::limits::Bindings::of(self.module).site(binding)?;
+            let ExprKind::Arms(arms) = &self.module.expressions[value.0].kind
+            else {
+                return None;
+            };
+            let [arm] = arms.as_slice() else {
+                return None;
+            };
+            match &self.module.expressions[argument.0].kind {
+                ExprKind::Group(parts) => parts.last().and_then(|value| self.contract_formal(binding, *value, visited)),
+                ExprKind::Name(_) => match self.resolved.expr(argument) {
+                    Some(Target::Local { site }) => {
+                        arm.patterns.iter().position(|pattern| {
+                            matches!(&self.module.patterns[pattern.0].kind,
+                                crate::ast::PatternKind::Name(name) if name.span == *site)
+                        }).or_else(|| {
+                            crate::limits::Bindings::of(self.module).site(*site)
+                                .and_then(|value| self.contract_formal(binding, value, visited))
+                        })
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        })();
+        visited.pop();
+        result
+    }
+
+    fn refine_member_arguments(
+        &mut self,
+        binding: Option<&super::ContractBindingUse>,
+        slots: &[super::Slot],
+        filled: &[Option<Supply>],
+        stage: Span,
+    ) {
+        if self.state.solving_dots {
+            return;
+        }
+        let Some(binding) =
+            binding.filter(|binding| binding.origin == Origin::This)
+        else {
+            return;
+        };
+        let contracts: Vec<_> = self
+            .state
+            .member_contracts
+            .iter()
+            .filter(|(key, _)| {
+                (&key.origin, key.binding, key.at)
+                    == (&binding.origin, binding.site, binding.at)
+            })
+            .map(|(key, contract)| (key.clone(), contract.clone()))
+            .collect();
+        for (key, contract) in contracts {
+            self.refine_contract_arguments(
+                binding, &key, &contract, slots, filled, stage,
+            );
+        }
+    }
+    fn refine_contract_arguments(
+        &mut self,
+        binding: &super::ContractBindingUse,
+        key: &crate::typed::MemberContractUse,
+        contract: &crate::typed::MemberContract,
+        slots: &[super::Slot],
+        filled: &[Option<Supply>],
+        stage: Span,
+    ) {
+        for read in &contract.reads {
+            let calls: Vec<_> = self
+                .module
+                .expressions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, expression)| {
+                    let ExprKind::Call { callee, .. } = &expression.kind else {
+                        return None;
+                    };
+                    (self.final_member_read(*callee, &mut Vec::new()).as_ref()
+                        == Some(read))
+                    .then_some(ExprId(index))
+                })
+                .collect();
+            for call in calls {
+                let body_stage = self.span(call);
+                let Some(bound) = self
+                    .state
+                    .bound
+                    .get(&(body_stage.start, body_stage.end))
+                    .cloned()
+                else {
+                    continue;
+                };
+                for (spot, supply) in &bound.supplies {
+                    let crate::typed::Supply::Expression(argument) = supply
+                    else {
+                        continue;
+                    };
+                    let Some(formal) = self.contract_formal(
+                        binding.site,
+                        *argument,
+                        &mut Vec::new(),
+                    ) else {
+                        continue;
+                    };
+                    let mut expected = self.apply(&contract.callable);
+                    for _ in 0..*spot {
+                        let Type::Function { result, .. } = expected else {
+                            break;
+                        };
+                        expected = *result;
+                    }
+                    let Type::Function { parameter, .. } = expected else {
+                        continue;
+                    };
+                    let target = *parameter;
+                    if !crate::limits::has_limits(&target) {
+                        continue;
+                    }
+                    let Some(Some(Supply::Expr(value))) = filled.get(formal)
+                    else {
+                        continue;
+                    };
+                    let value = *value;
+                    let refinement =
+                        (key.clone(), stage, body_stage, read.step, *spot);
+                    if self
+                        .state
+                        .contract_refinements
+                        .get(&refinement)
+                        .is_some_and(|saved| {
+                            self.apply(saved) == self.apply(&target)
+                        })
+                    {
+                        continue;
+                    }
+                    // Mark before existing expected-type retyping can revisit a source stage.
+                    self.set_contract_refinement(refinement, target.clone());
+                    let actual = self.state.types[value.0]
+                        .as_ref()
+                        .map(|ty| self.apply(ty));
+                    if let (Some(actual), Some(slot)) =
+                        (actual, slots.get(formal))
+                    {
+                        // Each use adds its own entry; the meaning Bound never chooses one contract over another.
+                        self.enter(
+                            &target,
+                            &actual,
+                            self.span(value),
+                            stage,
+                            slot.place_kind.clone(),
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

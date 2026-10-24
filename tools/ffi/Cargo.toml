@@ -2,6 +2,7 @@
 name = "fipe-ffi"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Native C ABI providers for Fipe hosts"
 license.workspace = true
 repository.workspace = true

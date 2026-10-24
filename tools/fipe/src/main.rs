@@ -17,6 +17,8 @@
 //!   when it cannot be built, 2 when the script does not check.
 #![forbid(unsafe_code)]
 
+mod format;
+
 use fipe_host::{load, Host, LoadError, Policy};
 use fipe_native::{codec::Unit, elf, link, lower};
 use std::{
@@ -28,10 +30,12 @@ use std::{
 const USAGE: &str = "\
 usage: fipe run FILE [--budget N] [--allow-write DIR]... [-- ARG...]
        fipe check FILE...
+       fipe fmt [--check] FILE...
        fipe repl [--strict] [--budget N] [--compile-budget N] \
 [--allow-write DIR]...
        fipe build FILE -o EXE [--runtime LIB] [--llvm]
        fipe help
+       fipe --version
 ";
 
 /// The options a command line carries.
@@ -91,11 +95,19 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<Options, String> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args_os()
-        .skip(1)
+    let raw: Vec<_> = std::env::args_os().skip(1).collect();
+    if raw.first().is_some_and(|command| command == "fmt") {
+        return ExitCode::from(format::run(&raw[1..]));
+    }
+    let args: Vec<String> = raw
+        .into_iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
     let ran = match args.first().map(String::as_str) {
+        Some("--version") if args.len() == 1 => {
+            println!("fipe {}", env!("CARGO_PKG_VERSION"));
+            Ok(0)
+        }
         Some("run") => run(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("repl") => repl(&args[1..]),
@@ -179,6 +191,27 @@ fn check(args: &[String]) -> Ran {
     Ok(code)
 }
 
+fn repl_answer(
+    host: &mut Host,
+    request: &fipe::embed::Request,
+    tables: &fipe::ir::Tables,
+) -> Result<fipe::embed::Reply, String> {
+    host.flush()
+        .map_err(|error| format!("cannot write output: {error}"))?;
+    let reply = host.answer(request, tables);
+    repl_reply(reply, host.flush())
+}
+fn repl_reply(
+    reply: fipe::embed::Reply,
+    flushed: io::Result<()>,
+) -> Result<fipe::embed::Reply, String> {
+    match (reply, flushed) {
+        (fipe::embed::Reply::Value(Err(primary)), Err(_)) => Err(primary),
+        (_, Err(error)) => Err(format!("cannot write output: {error}")),
+        (reply, Ok(())) => Ok(reply),
+    }
+}
+
 fn repl(args: &[String]) -> Ran {
     let options = parse(
         args,
@@ -190,12 +223,8 @@ fn repl(args: &[String]) -> Ran {
     }
     let mut host = Host::new(policy(&options.allow)?)
         .streaming(io::stdout(), io::stderr());
-    let mut answer = |request: &_, tables: &_| {
-        let reply = host.answer(request, tables);
-        // A closed stream leaves nothing to report to.
-        let _ = host.flush();
-        reply
-    };
+    let mut answer =
+        |request: &_, tables: &_| repl_answer(&mut host, request, tables);
     let defaults = fipe_repl::Options::default();
     fipe_repl::run(
         &fipe_repl::Options {
@@ -245,11 +274,11 @@ fn build(args: &[String]) -> Ran {
         })?;
     let path = output.with_extension("o");
     if options.llvm {
-        let ir = fipe_llvm::module(&program, &unit.encode());
+        let ir = fipe_llvm::module(&program, &unit.encode()).map_err(failed)?;
         fipe_llvm::compile(&ir, &path)
             .map_err(|error| failed(error.to_string()))?;
     } else {
-        let object = lower::object(&program, &unit.encode());
+        let object = lower::object(&program, &unit.encode()).map_err(failed)?;
         let bytes =
             elf::write(&object).map_err(|error| failed(error.to_string()))?;
         std::fs::write(&path, &bytes)
@@ -259,4 +288,109 @@ fn build(args: &[String]) -> Ran {
     let _ = std::fs::remove_file(&path);
     linked.map_err(|error| failed(error.to_string()))?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod repl_output_tests {
+    use super::*;
+    use fipe::embed::{Outcome, Reply, Request};
+    use std::io::Write;
+    struct Broken;
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    fn checked(source: &str) -> fipe::mir::Program {
+        let ast = fipe::parse::parse(fipe::lex::lex(source)).unwrap();
+        fipe::compile::compile(
+            &fipe::check::check(
+                &ast,
+                &fipe_host::declarations(),
+                &[],
+                fipe::check::Options::default(),
+            )
+            .unwrap(),
+        )
+    }
+    fn request(
+        program: &fipe::mir::Program,
+        directory: &std::path::Path,
+    ) -> Request {
+        let mut machine = fipe::vm::Machine::new(None);
+        let mut host = Host::new(Policy::new(directory, &[]).unwrap());
+        let mut outcome = machine.run(program);
+        loop {
+            let Outcome::Request(request) = outcome else {
+                panic!("real put request")
+            };
+            if matches!(&request,Request::Call{declaration,..} if program.tables.borrow().declarations[*declaration].label=="put")
+            {
+                return request;
+            }
+            outcome = machine.reply(
+                program,
+                host.answer(&request, &program.tables.borrow()),
+            );
+        }
+    }
+    #[test]
+    fn output_repl_adapter_preflush_refuses_effect_and_postflush_is_fatal() {
+        let directory = std::env::temp_dir()
+            .join(format!("fipe-repl-adapter-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let program = checked("put ./sentinel \"no\"");
+        let mut host = Host::new(Policy::new(&directory, &[]).unwrap())
+            .streaming(Broken, io::sink());
+        host.sink.success.extend_from_slice(b"before");
+        assert!(repl_answer(
+            &mut host,
+            &request(&program, &directory),
+            &program.tables.borrow()
+        )
+        .unwrap_err()
+        .contains("cannot write output"));
+        assert!(!directory.join("sentinel").exists());
+        let mut healthy = Host::new(Policy::new(&directory, &[]).unwrap())
+            .streaming(io::sink(), io::sink());
+        assert!(repl_answer(
+            &mut healthy,
+            &request(&program, &directory),
+            &program.tables.borrow()
+        )
+        .is_ok());
+        assert_eq!(std::fs::read(directory.join("sentinel")).unwrap(), b"no");
+        std::fs::remove_file(directory.join("sentinel")).unwrap();
+        let program = checked("put out \"payload\"");
+        let mut host = Host::new(Policy::new(&directory, &[]).unwrap())
+            .streaming(Broken, io::sink());
+        assert!(repl_answer(
+            &mut host,
+            &request(&program, &directory),
+            &program.tables.borrow()
+        )
+        .unwrap_err()
+        .contains("cannot write output"));
+        let mut host = Host::new(Policy::new(&directory, &[]).unwrap())
+            .streaming(io::sink(), io::sink());
+        assert!(repl_answer(
+            &mut host,
+            &request(&program, &directory),
+            &program.tables.borrow()
+        )
+        .is_ok());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn output_repl_adapter_keeps_primary_fault_and_recoverable_reply() {
+        let reply = || Reply::Value(Err(String::from("primary")));
+        assert_eq!(
+            repl_reply(reply(), Err(io::ErrorKind::BrokenPipe.into())),
+            Err(String::from("primary"))
+        );
+        assert_eq!(repl_reply(reply(), Ok(())), Ok(reply()));
+    }
 }

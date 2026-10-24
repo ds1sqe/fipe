@@ -11,8 +11,9 @@ use alloc::{rc::Rc, string::String, vec::Vec};
 /// Build the default of a type part by part; a meaning with a written
 /// `default` row is called for its value.
 /// A finished build's value from its built parts.
-fn assemble(build: Build) -> Value {
-    let Build { shape, built, .. } = build;
+fn assemble(mut completed: Build) -> Value {
+    let shape = core::mem::replace(&mut completed.shape, Shape::Top);
+    let built = core::mem::take(&mut completed.built);
     match shape {
         Shape::Top => built.into_iter().next().expect("one"),
         Shape::Tuple => Value::Tuple(Rc::new(built)),
@@ -32,16 +33,116 @@ fn assemble(build: Build) -> Value {
 }
 
 /// The written `default` row of a meaning: its definition and meanings.
-fn written(ctx: &Ctx<'_>, meaning: usize) -> Option<(usize, Vec<ir::Type>)> {
-    let member = ctx.natives.members.default?;
-    let selected =
-        crate::compile::dispatch::select_by_head(ctx.tables, member, meaning)?;
-    match &ctx.tables.dispatch[member].rows[selected.row].target {
-        ir::Implementation::Definition { index, meanings } => {
-            Some((*index, meanings.clone()))
-        }
-        _ => None,
+fn written(
+    ctx: &Ctx<'_>,
+    ty: &ir::Type,
+) -> Result<Option<super::calls::Invoke>, Reason> {
+    let Some(member) = ctx.natives.members.default else {
+        return Ok(None);
+    };
+    let Some(selected) = super::dispatch::select_for(
+        ctx.tables,
+        ctx.prelude,
+        member,
+        Some(ty),
+        None,
+        ctx.work,
+    )?
+    else {
+        return Ok(None);
+    };
+    super::pending::supplied_target(
+        ctx,
+        &ctx.tables.dispatch[member].rows[selected.row].target,
+        &selected.bindings,
+        Vec::new(),
+        Some(ty),
+    )
+}
+
+fn copy_parts<'a>(
+    parts: impl Iterator<Item = &'a ir::Type>,
+    parameters: &[usize],
+    arguments: &[ir::Type],
+    ctx: &Ctx<'_>,
+) -> Result<Vec<ir::Type>, Reason> {
+    let mut copied = crate::value::resource::Forest::default();
+    for ty in parts {
+        let ordinary = super::resource::Work::new(None);
+        let paid = if ctx.tables.has_resources {
+            ctx.work
+        } else {
+            &ordinary
+        };
+        let mut result = super::resource::materialize(
+            ty, parameters, arguments, ctx.tables, paid, &mut Ok,
+        )?;
+        let ty = result.0.pop().expect("default type");
+        copied.0.push(ty);
     }
+    Ok(core::mem::take(&mut copied.0))
+}
+
+fn meaning_default(
+    work: &mut Vec<Build>,
+    ctx: &Ctx<'_>,
+    ty: &ir::Type,
+) -> Option<Step> {
+    let ir::Type::Meaning { index, arguments } = ty else {
+        unreachable!("nominal default")
+    };
+    let meaning = &ctx.tables.meanings[*index];
+    let written = match written(ctx, ty) {
+        Ok(written) => written,
+        Err(reason) => return Some(Step::Fault(reason)),
+    };
+    if let Some(invoke) = written {
+        return Some(Step::Call(invoke));
+    }
+    let prelude = ctx.prelude;
+    let known = [
+        prelude.integer,
+        prelude.f32,
+        prelude.f64,
+        prelude.string,
+        prelude.vec,
+        prelude.deque,
+        prelude.maybe,
+        prelude.bool,
+    ]
+    .contains(&Some(*index));
+    if known || meaning.constructors.len() != 1 {
+        match structural::default(ty, ctx.tables, prelude) {
+            Ok(value) => {
+                work.last_mut().expect("current build").built.push(value);
+            }
+            Err(reason) => return Some(Step::Fault(reason)),
+        }
+        return None;
+    }
+    if meaning.resource {
+        return Some(Step::Fault(Reason::Message(
+            "resource has no intrinsic default".into(),
+        )));
+    }
+    let parts = match copy_parts(
+        meaning.constructors[0].fields.iter().map(|field| &field.ty),
+        &meaning.parameters,
+        arguments,
+        ctx,
+    ) {
+        Ok(parts) => parts,
+        Err(reason) => return Some(Step::Fault(reason)),
+    };
+    work.push(Build {
+        shape: Shape::Record {
+            meaning: *index,
+            constructor: 0,
+        },
+        parts,
+        built: Vec::new(),
+    });
+    None
 }
 
 pub(super) fn default_step(
@@ -69,11 +170,31 @@ pub(super) fn default_step(
             }
             continue;
         }
-        let ty = build.parts[build.built.len()].clone();
-        match &ty {
+        let ordinary = super::resource::Work::new(None);
+        let paid = if ctx.tables.has_resources {
+            ctx.work
+        } else {
+            &ordinary
+        };
+        let copied = match super::resource::materialize(
+            &build.parts[build.built.len()],
+            &[],
+            &[],
+            ctx.tables,
+            paid,
+            &mut Ok,
+        ) {
+            Ok(copied) => copied,
+            Err(reason) => return Step::Fault(reason),
+        };
+        let ty = &copied.0[0];
+        match ty {
             ir::Type::Tuple(parts) => work.push(Build {
                 shape: Shape::Tuple,
-                parts: parts.clone(),
+                parts: match copy_parts(parts.iter(), &[], &[], ctx) {
+                    Ok(parts) => parts,
+                    Err(reason) => return Step::Fault(reason),
+                },
                 built: Vec::new(),
             }),
             ir::Type::Array { element, length } => {
@@ -86,57 +207,24 @@ pub(super) fn default_step(
                     usize::try_from(length.to_u64().unwrap_or(0)).unwrap_or(0);
                 work.push(Build {
                     shape: Shape::Array(length),
-                    parts: alloc::vec![(**element).clone()],
-                    built: Vec::new(),
-                });
-            }
-            ir::Type::Meaning { index, arguments } => {
-                let meaning = &ctx.tables.meanings[*index];
-                if let Some((definition, meanings)) = written(ctx, *index) {
-                    return Step::Call(super::calls::definition_invoke(
-                        ctx.program,
-                        ctx.globals,
-                        definition,
-                        Vec::new(),
-                        meanings,
-                    ));
-                }
-                let prelude = ctx.prelude;
-                let known = [
-                    prelude.integer,
-                    prelude.f32,
-                    prelude.f64,
-                    prelude.string,
-                    prelude.vec,
-                    prelude.deque,
-                    prelude.maybe,
-                    prelude.bool,
-                ]
-                .contains(&Some(*index));
-                if known || meaning.constructors.len() != 1 {
-                    match structural::default(&ty, ctx.tables, prelude) {
-                        Ok(value) => build.built.push(value),
+                    parts: match copy_parts(
+                        core::iter::once(element.as_ref()),
+                        &[],
+                        &[],
+                        ctx,
+                    ) {
+                        Ok(parts) => parts,
                         Err(reason) => return Step::Fault(reason),
-                    }
-                    continue;
-                }
-                let parts = meaning.constructors[0]
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        field.ty.substituted(&meaning.parameters, arguments)
-                    })
-                    .collect();
-                work.push(Build {
-                    shape: Shape::Record {
-                        meaning: *index,
-                        constructor: 0,
                     },
-                    parts,
                     built: Vec::new(),
                 });
             }
-            _ => match structural::default(&ty, ctx.tables, ctx.prelude) {
+            ir::Type::Meaning { .. } => {
+                if let Some(step) = meaning_default(work, ctx, ty) {
+                    return step;
+                }
+            }
+            _ => match structural::default(ty, ctx.tables, ctx.prelude) {
                 Ok(value) => build.built.push(value),
                 Err(reason) => return Step::Fault(reason),
             },

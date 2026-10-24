@@ -269,3 +269,268 @@ fn writes_outside_the_roots_are_refused_in_each_runner_unless_allowed() {
     assert_eq!(shown(&ran), (String::new(), String::new(), 0));
     assert_eq!(fs::read_to_string(other.join("esc.txt")).unwrap(), "x");
 }
+
+#[test]
+fn repl_eof_drains_trailing_input_and_effects_without_quit() {
+    let dir = scratch("repl-eof");
+    let input = b"\"written\" | put ./out.txt\n\n40 + 2";
+    let (stdout, stderr, code) = shown(&fipe(&dir, &["repl"], input));
+    assert_eq!(code, 0);
+    assert_eq!(stderr, "");
+    assert!(stdout.ends_with("42\n"), "{stdout}");
+    assert_eq!(fs::read_to_string(dir.join("out.txt")).unwrap(), "written");
+}
+
+#[cfg(unix)]
+#[test]
+fn repl_read_error_closes_before_retaining_exit_two() {
+    let dir = scratch("repl-read-error");
+    let output = Command::new(env!("CARGO_BIN_EXE_fipe"))
+        .arg("repl")
+        .current_dir(&dir)
+        .stdin(Stdio::from(fs::File::open(&dir).unwrap()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    let (stdout, stderr, code) = shown(&output);
+    assert_eq!(code, 2);
+    assert_eq!(stderr, "");
+    assert!(stdout.ends_with("cannot read standard input\n"), "{stdout}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn output_failure_stops_direct_native_and_llvm_before_the_next_effect() {
+    let dir = scratch("output-failure");
+    let script = "output.fipe";
+    fs::write(dir.join(script), "\"before\"\nput ./after \"no\"\n").unwrap();
+    let native = built(&dir, script);
+    let llvm = built_with(&dir, script, &["--llvm"]);
+    for (exe, args) in [
+        (Path::new(env!("CARGO_BIN_EXE_fipe")), vec!["run", script]),
+        (native.as_path(), vec![]),
+        (llvm.as_path(), vec![]),
+    ] {
+        let failed = Command::new(exe)
+            .args(&args)
+            .current_dir(&dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/full")
+                    .unwrap(),
+            ))
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(1), "{failed:?}");
+        assert!(!dir.join("after").exists());
+        let healthy = run_exe(&dir, exe, &args, b"", &[]);
+        assert_eq!(healthy.status.code(), Some(0), "{healthy:?}");
+        assert_eq!(healthy.stdout, b"before\n");
+        assert_eq!(fs::read(dir.join("after")).unwrap(), b"no");
+        fs::remove_file(dir.join("after")).unwrap();
+    }
+    let terminal = "terminal.fipe";
+    fs::write(dir.join(terminal), "42\n").unwrap();
+    let native = built(&dir, terminal);
+    let llvm = built_with(&dir, terminal, &["--llvm"]);
+    for (exe, args) in [
+        (Path::new(env!("CARGO_BIN_EXE_fipe")), vec!["run", terminal]),
+        (native.as_path(), vec![]),
+        (llvm.as_path(), vec![]),
+    ] {
+        let failed = Command::new(exe)
+            .args(args)
+            .current_dir(&dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/full")
+                    .unwrap(),
+            ))
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(1), "{failed:?}");
+    }
+}
+
+#[test]
+fn command_discovery_reports_version_help_and_usage_without_running() {
+    let dir = scratch("command-discovery");
+    let version = fipe(&dir, &["--version"], b"");
+    assert_eq!(version.status.code(), Some(0));
+    assert_eq!(
+        version.stdout,
+        format!("fipe {}\n", env!("CARGO_PKG_VERSION")).as_bytes()
+    );
+    assert!(version.stderr.is_empty());
+    for args in [
+        &["--help"][..],
+        &["-h"],
+        &["help"],
+        &["help", "ignored"],
+        &["--help", "ignored"],
+    ] {
+        let output = fipe(&dir, args, b"");
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stderr.is_empty());
+        assert!(output.stdout.starts_with(b"usage: fipe run FILE"));
+    }
+    for args in [
+        &["--version", "extra"][..],
+        &["--unknown"],
+        &["run", "--version"],
+    ] {
+        let output = fipe(&dir, args, b"");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.is_empty());
+    }
+}
+
+fn fmt_command(args: &[&std::ffi::OsStr]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_fipe"))
+        .arg("fmt")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn fmt_formats_checks_and_keeps_failed_inputs_unchanged() {
+    let dir = scratch("fmt-files");
+    let good = dir.join("good.fipe");
+    let bad = dir.join("bad.fipe");
+    fs::write(&good, "x  =   missing\n").unwrap();
+    fs::write(&bad, "x = = 1\n").unwrap();
+    let output = fmt_command(&["--check".as_ref(), good.as_os_str()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(fs::read_to_string(&good).unwrap(), "x  =   missing\n");
+    assert_eq!(
+        fmt_command(&[good.as_os_str(), bad.as_os_str()])
+            .status
+            .code(),
+        Some(1)
+    );
+    assert_eq!(fs::read_to_string(&good).unwrap(), "x = missing\n");
+    assert_eq!(fs::read_to_string(&bad).unwrap(), "x = = 1\n");
+    assert_eq!(
+        fmt_command(&["--check".as_ref(), good.as_os_str()])
+            .status
+            .code(),
+        Some(0)
+    );
+    fs::write(dir.join("bytes.fipe"), [255]).unwrap();
+    assert_eq!(
+        fmt_command(&[bad.as_os_str(), dir.join("bytes.fipe").as_os_str()])
+            .status
+            .code(),
+        Some(2)
+    );
+    for args in [
+        vec![],
+        vec!["--unknown".as_ref()],
+        vec!["-".as_ref()],
+        vec!["--check".as_ref(), "--check".as_ref(), good.as_os_str()],
+    ] {
+        assert_eq!(fmt_command(&args).status.code(), Some(2));
+    }
+}
+
+#[test]
+fn fmt_readonly_clean_and_check_do_not_require_writing() {
+    let dir = scratch("fmt-readonly");
+    let path = dir.join("a.fipe");
+    fs::write(&path, "x = 1\n").unwrap();
+    let permissions = fs::metadata(&path).unwrap().permissions();
+    let mut readonly = permissions.clone();
+    readonly.set_readonly(true);
+    fs::set_permissions(&path, readonly).unwrap();
+    assert_eq!(fmt_command(&[path.as_os_str()]).status.code(), Some(0));
+    assert_eq!(
+        fmt_command(&["--check".as_ref(), path.as_os_str()])
+            .status
+            .code(),
+        Some(0)
+    );
+    fs::set_permissions(&path, permissions.clone()).unwrap();
+    fs::write(&path, "x  =  1\n").unwrap();
+    let mut readonly = fs::metadata(&path).unwrap().permissions();
+    readonly.set_readonly(true);
+    fs::set_permissions(&path, readonly).unwrap();
+    assert_eq!(
+        fmt_command(&["--check".as_ref(), path.as_os_str()])
+            .status
+            .code(),
+        Some(1)
+    );
+    assert_eq!(fmt_command(&[path.as_os_str()]).status.code(), Some(2));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "x  =  1\n");
+    fs::set_permissions(&path, permissions).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn fmt_exact_os_paths_permissions_and_symlinks() {
+    use std::os::unix::{
+        ffi::OsStringExt,
+        fs::{symlink, PermissionsExt},
+    };
+    let dir = scratch("fmt-os-paths");
+    let name = std::ffi::OsString::from_vec(b"bad-\xff.fipe".to_vec());
+    let path = dir.join(&name);
+    let neighbor = dir.join(name.to_string_lossy().as_ref());
+    fs::write(&path, "x  =  1\n").unwrap();
+    fs::write(&neighbor, "neighbor bytes").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+    assert_eq!(fmt_command(&[path.as_os_str()]).status.code(), Some(0));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "x = 1\n");
+    assert_eq!(fs::read_to_string(&neighbor).unwrap(), "neighbor bytes");
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    let link = dir.join("link");
+    symlink(&path, &link).unwrap();
+    assert_eq!(fmt_command(&[link.as_os_str()]).status.code(), Some(2));
+    assert_eq!(fmt_command(&[dir.as_os_str()]).status.code(), Some(2));
+    let dash = dir.join("-dash.fipe");
+    fs::write(&dash, "x  =  1\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_fipe"))
+        .current_dir(&dir)
+        .args(["fmt", "--", "-dash.fipe"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(fs::read_dir(&dir).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".fipe-fmt-")));
+}
+
+#[test]
+fn fmt_refuses_unsafe_mixed_literal_without_writing() {
+    let path = scratch("fmt-mixed-literal").join("mixed.fipe");
+    let original = "x = 1\r\ns = re'one\ntwo'\r\n";
+    fs::write(&path, original).unwrap();
+    assert_eq!(fmt_command(&[path.as_os_str()]).status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn fmt_unsupported_option_keeps_quotes_and_escaped_control_characters() {
+    let output = fmt_command(&[std::ffi::OsStr::new("--bad\n\"")]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        output.stderr,
+        b"fipe fmt: unsupported option \"--bad\\n\\\"\"\n"
+    );
+}

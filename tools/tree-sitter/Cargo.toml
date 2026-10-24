@@ -8,6 +8,7 @@ keywords = ["incremental", "parsing", "tree-sitter", "fipe"]
 categories = ["parser-implementations", "parsing", "text-editors"]
 repository.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 autoexamples = false
 
 build = "bindings/rust/build.rs"

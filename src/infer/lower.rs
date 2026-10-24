@@ -20,6 +20,28 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 
+/// Expand the existing declaration import spelling, without resolving a new type.
+fn declared_path(module: &Module, name: &Name) -> Vec<String> {
+    let first = name.segments[0].as_str();
+    let mut path = name.segments.clone();
+    for entry in &module.entries {
+        if let Entry::Item(crate::ast::Item {
+            kind: ItemKind::Use { names, .. },
+            ..
+        }) = entry
+        {
+            if let Some(imported) = names.iter().find(|imported| {
+                imported.segments.last().is_some_and(|last| last == first)
+            }) {
+                path.clone_from(&imported.segments);
+                path.extend_from_slice(&name.segments[1..]);
+                break;
+            }
+        }
+    }
+    path
+}
+
 /// Where a type's names are looked up.
 #[derive(Clone)]
 pub(super) enum Scope<'m> {
@@ -174,7 +196,7 @@ impl<'a> Infer<'a> {
             );
             owed.solved = assumed;
             owed.assumed = assumed;
-            self.state.obligations.push(owed);
+            self.push_owed(owed);
         }
         ty
     }
@@ -299,6 +321,7 @@ impl<'a> Infer<'a> {
             .find_map(|e| match e {
                 Entry::Item(item) => match &item.kind {
                     ItemKind::Type {
+                        resource: _,
                         name: n,
                         parameters,
                         base: Some(base),
@@ -436,6 +459,7 @@ impl<'a> Infer<'a> {
             .find_map(|entry| match entry {
                 Entry::Item(item) => match &item.kind {
                     ItemKind::Type {
+                        resource: _,
                         name: n,
                         parameters,
                         base,
@@ -547,21 +571,23 @@ impl<'a> Infer<'a> {
         }
     }
 
-    /// A type name through a module's resolved targets; an accepted
-    /// line's own declarations are named by its `index`.
+    /// A type name through its declaration's resolved targets. Only the
+    /// resolved nominal head belongs to `home`; actual arguments and
+    /// substituted variables already carry their own checked origins.
     fn name_resolved(
         &mut self,
         resolved: &Resolved,
-        index: Option<usize>,
+        home: &Origin,
         id: TypeId,
         arguments: Vec<Type>,
         vars: &Vars,
     ) -> Type {
         match resolved.ty(id) {
             Some(Target::Type { origin, name }) => {
-                let origin = match (origin, index) {
-                    (Origin::This, Some(index)) => Origin::Line(index),
-                    _ => origin.clone(),
+                let origin = if *origin == Origin::This {
+                    home.clone()
+                } else {
+                    origin.clone()
                 };
                 Type::named(origin, name, arguments)
             }
@@ -597,22 +623,7 @@ impl<'a> Infer<'a> {
                 return Type::named(origin.clone(), first, arguments);
             }
         }
-        let mut path = name.segments.clone();
-        for entry in &module.entries {
-            if let Entry::Item(crate::ast::Item {
-                kind: ItemKind::Use { names, .. },
-                ..
-            }) = entry
-            {
-                if let Some(imported) = names.iter().find(|imported| {
-                    imported.segments.last().is_some_and(|last| last == first)
-                }) {
-                    path.clone_from(&imported.segments);
-                    path.extend_from_slice(&name.segments[1..]);
-                    break;
-                }
-            }
-        }
+        let path = declared_path(module, name);
         let full = path.join(".");
         if self.declarations.get_module(&full).is_some() {
             return module_marker(&Origin::Host(full));
@@ -744,6 +755,34 @@ impl<'a> Infer<'a> {
         }
     }
 
+    /// Use the current checked group before consulting a raw declared cache.
+    fn local_declared_binding(
+        &mut self,
+        home: &Origin,
+        name: &str,
+        span: Span,
+    ) -> Option<Callee> {
+        if self.declared_home.as_ref() == Some(home) {
+            if let Some(index) =
+                self.item_index(&super::Key::Binding(name.into()))
+            {
+                if matches!(self.state.status[index], super::Status::Typing) {
+                    self.error(
+                        span,
+                        super::Reason::DeclarationValue {
+                            name: name.into(),
+                            origin: home.clone(),
+                            declaration: self.items[index].site,
+                        },
+                    );
+                    return Some(Callee::plain(self.fresh()));
+                }
+                return Some(self.item_callee(index, span));
+            }
+        }
+        None
+    }
+
     fn declared_binding(
         &mut self,
         home: &Origin,
@@ -752,6 +791,9 @@ impl<'a> Infer<'a> {
         span: Span,
     ) -> Callee {
         use super::files::DeclaredValue;
+        if let Some(callee) = self.local_declared_binding(home, name, span) {
+            return callee;
+        }
         let key = (home.clone(), String::from(name));
         let Some(module) = self.owner(home) else {
             return Callee::plain(self.fresh());
@@ -767,7 +809,12 @@ impl<'a> Infer<'a> {
         let cached = self.file_cache.values.borrow().get(&key).cloned();
         match cached {
             Some(DeclaredValue::Typed(scheme)) => {
-                return self.declared_reference(home, site, &scheme, span)
+                return self.declared_reference(
+                    home,
+                    (name, site, value, annotation),
+                    &scheme,
+                    span,
+                )
             }
             Some(DeclaredValue::Failed) => return Callee::plain(self.fresh()),
             Some(DeclaredValue::Checking) => {
@@ -825,18 +872,41 @@ impl<'a> Infer<'a> {
                 },
             );
         }
-        self.declared_reference(home, site, &scheme, span)
+        self.declared_reference(
+            home,
+            (name, site, value, annotation),
+            &scheme,
+            span,
+        )
     }
 
     fn declared_reference(
         &mut self,
         home: &Origin,
-        site: Span,
+        binding: (&str, Span, crate::ast::ExprId, Option<TypeId>),
         scheme: &crate::types::Scheme,
         span: Span,
     ) -> Callee {
+        let (name, site, value, annotation) = binding;
         let (ty, meanings) = self.instantiate_with_meanings(scheme, span);
         let mut callee = Callee::plain(ty);
+        if let (Some(annotation), Some(module)) = (annotation, self.owner(home))
+        {
+            if let crate::ast::ExprKind::Arms(arms) =
+                &module.expressions[value.0].kind
+            {
+                let heads = super::arms::heads_in(module, arms);
+                callee = self.with_heads(callee.whole(), Some(&heads));
+            }
+            self.overlay_declared_signature(
+                &mut callee,
+                module,
+                annotation,
+                home,
+                (name, site),
+                span,
+            );
+        }
         callee.meanings = meanings;
         callee.selected = Some(crate::typed::Selected::Value {
             origin: home.clone(),
@@ -857,9 +927,7 @@ impl<'a> Infer<'a> {
             let (Obligation::Member { dot, .. }
             | Obligation::Claim { dot, .. }) = &mut obligation;
             *dot = span;
-            self.state
-                .obligations
-                .push(super::Owed::new(obligation, span));
+            self.push_owed(super::Owed::new(obligation, span));
         }
 
         let mut callee = Callee::plain(result);
@@ -931,8 +999,7 @@ impl<'a> Infer<'a> {
             fields.iter().collect()
         } else {
             if !raw {
-                if let Some(callee) = self.written(origin, ty, module, &result)
-                {
+                if let Some(callee) = self.written(origin, ty, module) {
                     return callee;
                 }
             }
@@ -977,9 +1044,7 @@ impl<'a> Infer<'a> {
         }
         self.parameter_claims(&result, &mut vars, Span::default());
         for obligation in vars.obligations {
-            self.state
-                .obligations
-                .push(super::Owed::new(obligation, Span::default()));
+            self.push_owed(super::Owed::new(obligation, Span::default()));
         }
         let mut callee = Callee::plain(result.clone());
         callee.selected = Some(crate::typed::Selected::Constructor {
@@ -993,14 +1058,12 @@ impl<'a> Infer<'a> {
         callee
     }
 
-    /// A record's written constructor: its inferred type in this module,
-    /// its head's names with fresh types elsewhere.
+    /// A written constructor's checked definition in its owning source.
     fn written(
         &mut self,
         origin: &Origin,
         ty: &str,
         module: &'a Module,
-        result: &Type,
     ) -> Option<Callee> {
         let key = super::Key::Constructor(String::from(ty));
         if *origin == Origin::This {
@@ -1026,20 +1089,52 @@ impl<'a> Infer<'a> {
         if arms.is_empty() {
             return None;
         }
-        let slots = super::arms::heads_in(module, &arms)
-            .into_iter()
-            .map(|head| Slot {
-                place_kind: crate::typed::Place::Parameter(head.name.clone()),
-                name: head.name,
-                ty: Type::Var(self.state.subst.fresh()),
-                default: head.default,
-                value: head.value,
-                site: head.site,
-            })
-            .collect();
-        let mut callee = Callee::plain(result.clone());
-        callee.spots = Some(slots);
+        let site = arms[0].span;
+        if core::ptr::eq(module, self.module) {
+            if let Some(index) = self.item_index(&key) {
+                return Some(self.item_callee(index, site));
+            }
+        }
+        let local = if let Origin::File(stem) = origin {
+            let Some(checked) = self.checked_file(stem) else {
+                self.constructor_error(origin, ty, site);
+                return Some(Callee::plain(self.fresh()));
+            };
+            if !checked.resolve_errors.is_empty()
+                || !checked.type_errors.is_empty()
+            {
+                self.constructor_error(origin, ty, site);
+                return Some(Callee::plain(self.fresh()));
+            }
+            let Some((_, local)) = checked
+                .typed
+                .frozen
+                .iter()
+                .find(|(at, _)| *at == (site.start, site.end))
+            else {
+                self.constructor_error(origin, ty, site);
+                return Some(Callee::plain(self.fresh()));
+            };
+            let mut local = local.clone();
+            local.scheme = local.scheme.rehome(origin);
+            local
+        } else {
+            let Some(local) =
+                self.supplied_constructor(origin, ty, module, site)
+            else {
+                return Some(Callee::plain(self.fresh()));
+            };
+            local
+        };
+        let (ty, meanings) =
+            self.instantiate_with_meanings(&local.scheme, self.module.span);
+        let mut callee = self.with_heads(ty, local.heads.as_deref());
+        callee.meanings = meanings;
         callee.home = Some(origin.clone());
+        callee.selected = Some(crate::typed::Selected::Value {
+            origin: origin.clone(),
+            site,
+        });
         Some(callee)
     }
 
@@ -1316,6 +1411,42 @@ impl<'a> Infer<'a> {
         self.parameter_claims(&ty, vars, node.span);
         self.limited(ty)
     }
+    /// Locate the checked dependency use, never report a foreign AST byte offset
+    /// as though it belonged to this source. A synthetic dependency uses the unit.
+    fn resource_reference_span(
+        &self,
+        origin: &Origin,
+        module: &Module,
+        written: Span,
+    ) -> Span {
+        if core::ptr::eq(module, self.module) {
+            return written;
+        }
+        let owns = |target: &Target| match target {
+            Target::Type { origin: known, .. }
+            | Target::Value { origin: known, .. }
+            | Target::Constructor { origin: known, .. }
+            | Target::Module(known) => known == origin,
+            _ => false,
+        };
+        self.module
+            .types
+            .iter()
+            .enumerate()
+            .find_map(|(id, ty)| {
+                self.resolved
+                    .ty(TypeId(id))
+                    .filter(|target| owns(target))
+                    .map(|_| ty.span)
+            })
+            .or_else(|| {
+                self.resolved.expressions().find_map(|(id, target)| {
+                    owns(target).then(|| self.module.expressions[id.0].span)
+                })
+            })
+            .unwrap_or(self.module.span)
+    }
+
     fn check_arity(&mut self, ty: &Type, span: Span) {
         if let Type::Named { name, arguments } = ty {
             if self
@@ -1347,16 +1478,57 @@ impl<'a> Infer<'a> {
         let TypeKind::Named { name, .. } = &module.types[id.0].kind else {
             unreachable!()
         };
+        if let Scope::Declared { module, origin } = scope {
+            let own = match origin {
+                Origin::File(stem) if module.resource_declarations() => {
+                    Some(stem.clone())
+                }
+                _ => None,
+            };
+            let first = name.segments[0].as_str();
+            let local = name.segments.len() == 1
+                && (first == "Self"
+                    || vars.names.iter().any(|(known, _)| known == first)
+                    || self.type_item(module, first).is_some());
+            let forbidden = own.or_else(|| {
+                if local {
+                    return None;
+                }
+                let path = declared_path(module, name);
+                // Match name_declared: a full Host module is an API marker first.
+                if self.declarations.get_module(&path.join(".")).is_some() {
+                    return None;
+                }
+                let (_, parents) = path.split_last()?;
+                let stem = parents.join(".");
+                self.files
+                    .iter()
+                    .find(|(file, module)| {
+                        *file == stem && module.resource_declarations()
+                    })
+                    .map(|_| stem)
+            });
+            if let Some(stem) = forbidden {
+                let at =
+                    self.resource_reference_span(origin, module, name.span);
+                self.error(at, super::Reason::ResourceInFile { module: stem });
+                return self.fresh();
+            }
+        }
         match scope {
             Scope::This => {
                 let resolved = self.resolved;
-                self.name_resolved(resolved, None, id, arguments, vars)
+                self.name_resolved(resolved, &Origin::This, id, arguments, vars)
             }
             Scope::Line {
                 resolved, index, ..
-            } => {
-                self.name_resolved(resolved, Some(*index), id, arguments, vars)
-            }
+            } => self.name_resolved(
+                resolved,
+                &Origin::Line(*index),
+                id,
+                arguments,
+                vars,
+            ),
             Scope::Declared { module, origin } => {
                 let cached = if let Origin::File(stem) = origin {
                     self.cached_file(stem)
@@ -1366,12 +1538,11 @@ impl<'a> Infer<'a> {
                 if let Some(checked) = cached {
                     self.name_resolved(
                         &checked.resolved,
-                        None,
+                        origin,
                         id,
                         arguments,
                         vars,
                     )
-                    .rehome(origin)
                 } else {
                     self.name_declared(module, origin, name, arguments, vars)
                 }

@@ -445,17 +445,12 @@ impl Resolver<'_> {
     }
 }
 
-/// Resolve one declared spot default of a declaration module, with the
-/// spots before it in scope by name and site. Its other names are the
-/// prelude's and the commands'; what does not resolve stays unresolved.
-pub(crate) fn resolve_declared_expression(
-    module: &Module,
-    declarations: &Declarations,
+fn declared_resolver<'a>(
+    module: &'a Module,
+    declarations: &'a Declarations,
     home: &Origin,
-    value: ExprId,
-    spots: &[(String, Span)],
     owner: Option<&str>,
-) -> (Resolved, Vec<Error>) {
+) -> Resolver<'a> {
     let mut resolver = Resolver::new(module, declarations, &[]);
     resolver.self_type = owner.map(String::from);
     if let Some(owner) = owner {
@@ -536,11 +531,114 @@ pub(crate) fn resolve_declared_expression(
         }
     }
 
+    resolver
+}
+
+/// Resolve a declaration source once, retaining each lazy group's errors.
+pub(crate) fn resolve_declared_source(
+    module: &Module,
+    declarations: &Declarations,
+    home: &Origin,
+) -> (Resolved, Vec<(Span, Vec<Error>)>) {
+    let mut resolver = declared_resolver(module, declarations, home, None);
+    let mut errors = Vec::new();
+    for entry in &module.entries {
+        let before = resolver.errors.len();
+        let span = match entry {
+            Entry::Item(item) => {
+                let ItemKind::Impl {
+                    target,
+                    claim,
+                    members,
+                } = &item.kind
+                else {
+                    continue;
+                };
+                let bodies: Vec<_> = members
+                    .iter()
+                    .filter(|m| {
+                        !matches!(m, ImplMember::Named { value: None, .. })
+                    })
+                    .cloned()
+                    .collect();
+                resolver.walk_impl(*target, *claim, &bodies, true);
+                item.span
+            }
+            Entry::Line(id) => {
+                let crate::ast::ExprKind::Bind {
+                    annotation, value, ..
+                } = module.expressions[id.0].kind
+                else {
+                    continue;
+                };
+                if let Some(annotation) = annotation {
+                    resolver.declared_signature(annotation);
+                }
+                resolver.expr(value, Position::Other);
+                module.expressions[id.0].span
+            }
+        };
+        errors.push((span, resolver.errors.split_off(before)));
+    }
+    (resolver.resolved, errors)
+}
+
+/// Overlay one actual default's earlier-spot scope onto the same source AST.
+pub(crate) fn declared_overlay(base: &Resolved, extra: &Resolved) -> Resolved {
+    let mut result = base.clone();
+    for (target, added) in result.expressions.iter_mut().zip(&extra.expressions)
+    {
+        if added.is_some() {
+            target.clone_from(added);
+        }
+    }
+    for (target, added) in result.patterns.iter_mut().zip(&extra.patterns) {
+        if added.is_some() {
+            target.clone_from(added);
+        }
+    }
+    for (target, added) in result.types.iter_mut().zip(&extra.types) {
+        if added.is_some() {
+            target.clone_from(added);
+        }
+    }
+    result
+}
+
+/// Resolve one declared spot default of a declaration module, with the
+/// spots before it in scope by name and site. Its other names are the
+/// prelude's and the commands'; what does not resolve stays unresolved.
+pub(crate) fn resolve_declared_expression(
+    module: &Module,
+    declarations: &Declarations,
+    home: &Origin,
+    value: ExprId,
+    spots: &[(String, Span)],
+    owner: Option<&str>,
+) -> (Resolved, Vec<Error>) {
+    let mut resolver = declared_resolver(module, declarations, home, owner);
     let scope = spots
         .iter()
         .map(|(name, site)| (name.clone(), Target::Local { site: *site }))
         .collect();
     resolver.scopes.push(scope);
+    // A written binding owns its annotation; other declared expressions
+    // (including signature defaults) do not reach unrelated bindings.
+    let annotation = module.entries.iter().find_map(|entry| {
+        let Entry::Line(id) = entry else { return None };
+        let ExprKind::Bind {
+            annotation,
+            value: body,
+            ..
+        } = module.expressions[id.0].kind
+        else {
+            return None;
+        };
+        (body == value).then_some(annotation).flatten()
+    });
+    if let Some(annotation) = annotation {
+        resolver.declared_signature(annotation);
+    }
     resolver.expr(value, Position::Other);
     (resolver.resolved, resolver.errors)
 }
@@ -688,6 +786,13 @@ impl<'a> Resolver<'a> {
                         limits,
                         ..
                     } => {
+                        if matches!(
+                            &item.kind,
+                            ItemKind::Type { resource: true, .. }
+                        ) {
+                            self.error(name.span, Reason::DeclarationForm);
+                            continue;
+                        }
                         self.case(name, true);
                         let limited = base.is_some() || !limits.is_empty();
                         if !limited && members.is_none() {
@@ -1372,6 +1477,7 @@ impl<'a> Resolver<'a> {
                     }
                     ItemKind::Declare { .. } => {}
                     ItemKind::Type {
+                        resource: _,
                         name,
                         parameters,
                         members,
@@ -1446,7 +1552,7 @@ impl<'a> Resolver<'a> {
                         claim,
                         members,
                     } => {
-                        self.walk_impl(*target, *claim, members);
+                        self.walk_impl(*target, *claim, members, false);
                     }
                 },
                 Entry::Line(id) => self.line(*id),
@@ -1460,6 +1566,7 @@ impl<'a> Resolver<'a> {
         target: TypeId,
         claim: Option<TypeId>,
         members: &[ImplMember],
+        declared_signatures: bool,
     ) {
         if let TypeKind::Named { arguments, .. } =
             &self.module.types[target.0].kind
@@ -1490,7 +1597,11 @@ impl<'a> Resolver<'a> {
                     ..
                 } => {
                     if let Some(annotation) = annotation {
-                        self.ty(*annotation);
+                        if declared_signatures {
+                            self.declared_signature(*annotation);
+                        } else {
+                            self.ty(*annotation);
+                        }
                     }
                     match value {
                         Some(value) => {
@@ -2187,6 +2298,41 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    fn declared_signature(&mut self, id: TypeId) {
+        let mut current = id;
+        if let TypeKind::Qualified { constraints, ty } =
+            &self.module.types[current.0].kind
+        {
+            self.signature_constraints(constraints);
+            current = *ty;
+        }
+        while let TypeKind::Function { parameter, result } =
+            &self.module.types[current.0].kind
+        {
+            let parameter = match &self.module.types[parameter.0].kind {
+                TypeKind::Labeled { ty, .. } => *ty,
+                _ => *parameter,
+            };
+            self.ty(parameter);
+            current = *result;
+        }
+        self.ty(current);
+    }
+
+    fn signature_constraints(
+        &mut self,
+        constraints: &[crate::ast::Constraint],
+    ) {
+        for constraint in constraints {
+            match &constraint.kind {
+                crate::ast::ConstraintKind::Named { class, .. } => {
+                    self.ty(*class);
+                }
+                crate::ast::ConstraintKind::Member { ty, .. } => self.ty(*ty),
+            }
+        }
+    }
+
     fn ty(&mut self, id: TypeId) {
         let ty = &self.module.types[id.0];
         match &ty.kind {
@@ -2219,16 +2365,7 @@ impl<'a> Resolver<'a> {
                 self.ty(*inner);
             }
             TypeKind::Qualified { constraints, ty } => {
-                for constraint in constraints {
-                    match &constraint.kind {
-                        crate::ast::ConstraintKind::Named { class, .. } => {
-                            self.ty(*class);
-                        }
-                        crate::ast::ConstraintKind::Member { ty, .. } => {
-                            self.ty(*ty);
-                        }
-                    }
-                }
+                self.signature_constraints(constraints);
                 self.ty(*ty);
             }
             TypeKind::Labeled { .. } => {
@@ -2263,6 +2400,11 @@ fn file_export(
     name: &str,
     space: Space,
 ) -> Option<Target> {
+    // Marked types belong only to trusted Host registration. This invalid source
+    // module cannot export indirect signatures, constructors or containing types.
+    if module.resource_declarations() {
+        return None;
+    }
     let origin = origin.clone();
     for entry in &module.entries {
         match entry {
@@ -2550,5 +2692,322 @@ impl Resolver<'_> {
             };
             self.error(span, reason);
         }
+    }
+}
+
+#[cfg(test)]
+mod declared_binding_annotation_tests {
+    use super::*;
+
+    #[test]
+    fn declared_binding_annotations_resolve_class_variable_and_qualified_nominal_identity(
+    ) {
+        let mut declarations = Declarations::new();
+        declarations
+            .module("types", "pub type Box { pub n: Integer }")
+            .expect("types header");
+        let text = "pub keep: Eq a => a -> a = x => x\npub typed: types.Box -> types.Box = x => x";
+        declarations.module("probe", text).expect("probe header");
+        let module = &declarations.get_module("probe").expect("probe").module;
+        let (resolved, groups) = resolve_declared_source(
+            module,
+            &declarations,
+            &Origin::Host("probe".into()),
+        );
+        assert!(
+            groups.iter().all(|(_, errors)| errors.is_empty()),
+            "{groups:?}"
+        );
+        let mut eq = 0;
+        let mut boxes = 0;
+        let mut variables = 0;
+        for (index, ty) in module.types.iter().enumerate() {
+            let crate::ast::TypeKind::Named { name, .. } = &ty.kind else {
+                continue;
+            };
+            match name.segments.as_slice() {
+                [name] if name == "Eq" => {
+                    assert_eq!(
+                        resolved.ty(TypeId(index)),
+                        Some(&Target::Type {
+                            origin: Origin::Prelude,
+                            name: "Eq".into()
+                        })
+                    );
+                    eq += 1;
+                }
+                [name] if name == "a" => {
+                    assert_eq!(
+                        resolved.ty(TypeId(index)),
+                        Some(&Target::Variable("a".into()))
+                    );
+                    variables += 1;
+                }
+                [owner, name] if owner == "types" && name == "Box" => {
+                    assert_eq!(
+                        resolved.ty(TypeId(index)),
+                        Some(&Target::Type {
+                            origin: Origin::Host("types".into()),
+                            name: "Box".into()
+                        })
+                    );
+                    boxes += 1;
+                }
+                _ => (),
+            }
+        }
+        assert_eq!((eq, boxes, variables), (1, 2, 2));
+    }
+
+    #[test]
+    fn declared_binding_annotations_keep_missing_type_error_in_its_own_group() {
+        let text = "pub good: Integer -> Integer = x => x\npub bad: Missing -> Integer = x => 0";
+        let module = crate::parse::parse(crate::lex::lex(text))
+            .expect("raw declared source");
+        let declarations = Declarations::new();
+        let (_, groups) = resolve_declared_source(
+            &module,
+            &declarations,
+            &Origin::Host("probe".into()),
+        );
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].1.is_empty());
+        assert_eq!(groups[1].1.len(), 1);
+        let error = &groups[1].1[0];
+        assert_eq!(error.reason, Reason::UnknownType);
+        assert_eq!(
+            crate::token::Source::new(text).slice(error.span),
+            Some("Missing")
+        );
+        assert!(
+            groups[1].0.start <= error.span.start
+                && error.span.end <= groups[1].0.end
+        );
+    }
+}
+
+#[cfg(test)]
+mod declared_binding_direct_annotation_tests {
+    use super::*;
+
+    fn source() -> (&'static str, Declarations) {
+        let text = "pub keep: Eq a => a -> a = x => x\npub bad: Missing -> Integer = x => 0\npub entry: (n: Integer = 7) -> Integer";
+        let mut declarations = Declarations::new();
+        declarations
+            .module("probe", text)
+            .expect("declaration source");
+        (text, declarations)
+    }
+
+    #[test]
+    fn declared_binding_annotation_direct_expression_resolves_exact_owner() {
+        let (text, declarations) = source();
+        let module = &declarations.get_module("probe").expect("probe").module;
+        let bindings: Vec<_> = module
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let Entry::Line(id) = entry else { return None };
+                let ExprKind::Bind { value, .. } =
+                    module.expressions[id.0].kind
+                else {
+                    return None;
+                };
+                Some(value)
+            })
+            .collect();
+        assert_eq!(bindings.len(), 2);
+        let (resolved, errors) = resolve_declared_expression(
+            module,
+            &declarations,
+            &Origin::Host("probe".into()),
+            bindings[0],
+            &[],
+            None,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let eq = module.types.iter().position(|ty| matches!(&ty.kind, TypeKind::Named { name, .. } if name.segments.as_slice() == ["Eq"])).expect("Eq type node");
+        assert_eq!(
+            resolved.ty(TypeId(eq)),
+            Some(&Target::Type {
+                origin: Origin::Prelude,
+                name: "Eq".into()
+            })
+        );
+        let (_, errors) = resolve_declared_expression(
+            module,
+            &declarations,
+            &Origin::Host("probe".into()),
+            bindings[1],
+            &[],
+            None,
+        );
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].reason, Reason::UnknownType);
+        assert_eq!(
+            crate::token::Source::new(text).slice(errors[0].span),
+            Some("Missing")
+        );
+    }
+
+    #[test]
+    fn declared_binding_annotation_non_binding_default_does_not_resolve_unrelated_annotations(
+    ) {
+        let (_, declarations) = source();
+        let module = &declarations.get_module("probe").expect("probe").module;
+        let value = module
+            .types
+            .iter()
+            .find_map(|ty| {
+                let TypeKind::Labeled { default, .. } = ty.kind else {
+                    return None;
+                };
+                default
+            })
+            .expect("actual signature default");
+        assert!(!module.entries.iter().any(|entry| matches!(entry, Entry::Line(id) if matches!(module.expressions[id.0].kind, ExprKind::Bind { value: body, .. } if body == value))));
+        let (_, errors) = resolve_declared_expression(
+            module,
+            &declarations,
+            &Origin::Host("probe".into()),
+            value,
+            &[],
+            None,
+        );
+        assert!(
+            errors.is_empty(),
+            "unrelated Missing annotation is not reached: {errors:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod declared_signature_label_tests {
+    use super::*;
+
+    #[test]
+    fn declared_signature_labels_resolve_underlying_types_and_leave_defaults_lazy(
+    ) {
+        let mut declarations = Declarations::new();
+        declarations
+            .module("types", "pub type Box { pub n: Integer }")
+            .expect("qualified type");
+        let text = "pub keep: Eq a => (seed: a) -> (copy: a = seed) -> a = seed copy => copy\npub boxed: (value: types.Box) -> types.Box = value => value\npub unused: (value: Integer = missing) -> Integer = value => value\npub type A { pub n: Integer }\nimpl A { pub own: (self: Self) -> Integer = self => self.n }";
+        declarations
+            .module("probe", text)
+            .expect("declaration grammar");
+        let module = &declarations.get_module("probe").expect("probe").module;
+        let home = Origin::Host("probe".into());
+        let (resolved, groups) =
+            resolve_declared_source(module, &declarations, &home);
+        assert!(
+            groups.iter().all(|(_, errors)| errors.is_empty()),
+            "{groups:?}"
+        );
+        let mut counts = (0, 0, 0);
+        let mut prior = None;
+        let mut copy = None;
+        for (index, node) in module.types.iter().enumerate() {
+            match &node.kind {
+                TypeKind::Named { name, .. }
+                    if name.segments.as_slice() == ["a"] =>
+                {
+                    assert_eq!(
+                        resolved.ty(TypeId(index)),
+                        Some(&Target::Variable("a".into()))
+                    );
+                    counts.0 += 1;
+                }
+                TypeKind::Named { name, .. }
+                    if name.segments.as_slice() == ["types", "Box"] =>
+                {
+                    assert!(
+                        matches!(resolved.ty(TypeId(index)), Some(Target::Type { origin: Origin::Host(owner), name }) if owner == "types" && name == "Box")
+                    );
+                    counts.1 += 1;
+                }
+                TypeKind::Named { name, .. }
+                    if name.segments.as_slice() == ["Self"] =>
+                {
+                    assert_eq!(
+                        resolved.ty(TypeId(index)),
+                        Some(&Target::SelfType)
+                    );
+                    counts.2 += 1;
+                }
+                TypeKind::Labeled { name, .. } if last(name) == "seed" => {
+                    prior = Some(name.span);
+                }
+                TypeKind::Labeled {
+                    name,
+                    default: Some(value),
+                    ..
+                } if last(name) == "copy" => copy = Some(*value),
+                _ => (),
+            }
+        }
+        assert!(counts.0 >= 3 && counts.1 == 2 && counts.2 == 1);
+        let value = copy.expect("actual copy default");
+        assert_eq!(
+            resolved.expr(value),
+            None,
+            "signature walk does not eagerly resolve defaults"
+        );
+        let prior = prior.expect("earlier seed label");
+        let (extra, errors) = resolve_declared_expression(
+            module,
+            &declarations,
+            &home,
+            value,
+            &[("seed".into(), prior)],
+            None,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(extra.expr(value), Some(&Target::Local { site: prior }));
+        let Entry::Line(body) = module.entries[0] else {
+            panic!("binding")
+        };
+        let ExprKind::Bind { value, .. } = module.expressions[body.0].kind
+        else {
+            panic!("body")
+        };
+        let (direct, errors) = resolve_declared_expression(
+            module,
+            &declarations,
+            &home,
+            value,
+            &[],
+            None,
+        );
+        assert!(errors.is_empty(), "direct owning annotation: {errors:?}");
+        assert!(module.types.iter().enumerate().filter(|(_, node)| matches!(&node.kind, TypeKind::Named { name, .. } if name.segments.as_slice() == ["a"])).any(|(index, _)| direct.ty(TypeId(index)) == Some(&Target::Variable("a".into()))));
+    }
+
+    #[test]
+    fn declared_unknown_labeled_type_stays_in_its_group_and_ordinary_labels_stay_illegal(
+    ) {
+        let text = "pub good: (n: Integer) -> Integer = n => n\npub bad: (n: Missing) -> Integer = n => 0";
+        let module = crate::parse::parse(crate::lex::lex(text))
+            .expect("raw declaration");
+        let declarations = Declarations::new();
+        let (_, groups) = resolve_declared_source(
+            &module,
+            &declarations,
+            &Origin::Host("probe".into()),
+        );
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].1.is_empty());
+        assert_eq!(groups[1].1.len(), 1);
+        assert_eq!(groups[1].1[0].reason, Reason::UnknownType);
+        assert_eq!(
+            crate::token::Source::new(text).slice(groups[1].1[0].span),
+            Some("Missing")
+        );
+        let module = crate::parse::parse(crate::lex::lex(
+            "f: (n: Integer) -> Integer = n => n",
+        ))
+        .expect("ordinary annotation");
+        let (_, errors) = resolve_partial(&module, &declarations, &[]);
+        assert!(errors.iter().any(|error| error.reason == Reason::DeclarationForm), "ordinary annotations do not acquire declaration labels: {errors:?}");
     }
 }

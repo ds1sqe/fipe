@@ -28,8 +28,15 @@ const HEADER: i32 = 32;
 const SLOT: i32 = 16;
 
 /// The functions of a program: each body, then `fipe_main`.
-#[must_use]
-pub fn lower(program: &Program) -> Vec<Function> {
+///
+/// # Errors
+/// When the program declares resources, including unused declarations.
+pub fn lower(program: &Program) -> Result<Vec<Function>, String> {
+    fipe_native_core::codec::ensure_resource_free(program)?;
+    Ok(lower_unchecked(program))
+}
+
+fn lower_unchecked(program: &Program) -> Vec<Function> {
     let mut functions: Vec<_> = (0..program.bodies.len())
         .map(|index| Lowering::new(program, index).body())
         .collect();
@@ -83,13 +90,17 @@ fn main(program: &Program) -> Function {
 /// address, by index) and `fipe_unit` (the unit's length, then its
 /// bytes).
 ///
+/// # Errors
+/// When the program declares resources, including unused declarations.
+///
 /// # Panics
 ///
 /// When a generated function does not assemble, a defect of the
 /// lowering.
-#[must_use]
-pub fn object(program: &Program, unit: &[u8]) -> Object {
-    let text = x64::assemble(&lower(program)).expect("labels bound once");
+pub fn object(program: &Program, unit: &[u8]) -> Result<Object, String> {
+    fipe_native_core::codec::ensure_resource_free(program)?;
+    let text =
+        x64::assemble(&lower_unchecked(program)).expect("labels bound once");
     let mut symbols = text.symbols;
     let mut rodata = (unit.len() as u64).to_le_bytes().to_vec();
     rodata.extend(unit);
@@ -108,7 +119,7 @@ pub fn object(program: &Program, unit: &[u8]) -> Object {
         size: 8 * bodies as u64,
         global: true,
     });
-    Object {
+    Ok(Object {
         text: text.bytes,
         text_relocations: text.relocations,
         rodata,
@@ -122,13 +133,16 @@ pub fn object(program: &Program, unit: &[u8]) -> Object {
             })
             .collect(),
         symbols,
-    }
+    })
 }
 
 /// The listing of a program's object: its functions, then its data.
-#[must_use]
-pub fn listing(program: &Program) -> String {
-    let mut out = x64::listing(&lower(program));
+///
+/// # Errors
+/// When the program declares resources, including unused declarations.
+pub fn listing(program: &Program) -> Result<String, String> {
+    fipe_native_core::codec::ensure_resource_free(program)?;
+    let mut out = x64::listing(&lower_unchecked(program));
     out.push_str("fipe_bodies:  ; global, .data.rel.ro\n");
     for index in 0..program.bodies.len() {
         let name = symbol(index);
@@ -137,7 +151,7 @@ pub fn listing(program: &Program) -> String {
     out.push_str(
         "fipe_unit:  ; global, .rodata: the unit's length and bytes\n",
     );
-    out
+    Ok(out)
 }
 
 fn symbol(body: usize) -> String {
@@ -328,7 +342,8 @@ impl<'a> Lowering<'a> {
                 // A local's own slot, which may take the guarded closure.
                 let from = self.pointer(*value);
                 self.code.push(Inst::Lea(Reg::Rdi, from));
-                self.site(&[Reg::Rsi, Reg::Rdx, Reg::Rcx], block, Some(at));
+                self.code.push(Inst::Load(Reg::Rsi, -24));
+                self.site(&[Reg::Rdx, Reg::Rcx, Reg::R8], block, Some(at));
                 self.checked("rt_enter");
             }
             Statement::Push { value, .. } => {
@@ -365,7 +380,8 @@ impl<'a> Lowering<'a> {
                 return;
             }
             // The runtime computes every other rvalue from its operands.
-            Rvalue::Construct { .. }
+            Rvalue::Admit { .. }
+            | Rvalue::Construct { .. }
             | Rvalue::Native { .. }
             | Rvalue::Closure { .. }
             | Rvalue::Tuple(_)
@@ -444,7 +460,8 @@ impl<'a> Lowering<'a> {
                 // 1 passes, 0 fails, 2 is a Fault.
                 let from = self.pointer(*value);
                 self.code.push(Inst::Lea(Reg::Rdi, from));
-                self.site(&[Reg::Rsi, Reg::Rdx], block, None);
+                self.code.push(Inst::Load(Reg::Rsi, -24));
+                self.site(&[Reg::Rdx, Reg::Rcx], block, None);
                 self.call("rt_test");
                 let fault = self.fault();
                 self.emit([

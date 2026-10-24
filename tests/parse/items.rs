@@ -232,6 +232,7 @@ fn types_traits_and_impls_have_member_lists() {
     };
     assert!(point.public);
     let ItemKind::Type {
+        resource: false,
         name: type_name,
         parameters,
         base: None,
@@ -564,4 +565,96 @@ fn impl_claim_keeps_its_type_and_span() {
         panic!()
     };
     assert!(matches!(item.kind, ItemKind::Impl { claim: None, .. }));
+}
+
+#[test]
+fn resource_modifier_is_contextual_and_keeps_original_byte_spans() {
+    for input in [
+        "pub type resource Table",
+        "type resource Rd<Api>",
+        "# café\r\npub type resource Table\r\ntype Next",
+    ] {
+        let parsed = module(input);
+        let item = parsed
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Item(item) => Some(item),
+                Entry::Line(_) => None,
+            })
+            .unwrap();
+        let ItemKind::Type {
+            resource: true,
+            name,
+            parameters,
+            ..
+        } = &item.kind
+        else {
+            panic!("{item:?}")
+        };
+        assert_eq!(&input[name.span.start..name.span.end], name.segments[0]);
+        assert_eq!(parameters.len(), usize::from(input.contains("Api")));
+    }
+    for input in [
+        "resource = 1",
+        "f = resource => resource",
+        "type Data { resource: Integer }",
+        "type resource",
+        "type resource<A>",
+        "type resource: Integer",
+        "type resource { value: Integer }",
+        "type resource where self > 0",
+        "type resource\ntype Next",
+        "type resource # comment\nTable",
+    ] {
+        let parsed = module(input);
+        for entry in &parsed.entries {
+            if let Entry::Item(item) = entry {
+                let ItemKind::Type {
+                    resource: false, ..
+                } = &item.kind
+                else {
+                    panic!("{input}: {item:?}")
+                };
+            }
+        }
+    }
+    assert!(fipe::parse::parse(fipe::lex::lex("type\nresource Table")).is_err());
+    assert!(
+        fipe::parse::parse(fipe::lex::lex("type resource api.Table")).is_err()
+    );
+}
+
+#[test]
+fn resource_header_parts_stay_visible_to_contextual_admission() {
+    for (input, expected) in [
+        ("type resource Data: Integer", (true, false, false)),
+        (
+            "type resource Data { value: Integer }",
+            (false, true, false),
+        ),
+        (
+            "type resource Data: Integer where self > 0",
+            (true, false, true),
+        ),
+    ] {
+        let parsed = module(input);
+        let [Entry::Item(item)] = parsed.entries.as_slice() else {
+            panic!()
+        };
+        let ItemKind::Type {
+            resource: true,
+            base,
+            members,
+            limits,
+            ..
+        } = &item.kind
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (base.is_some(), members.is_some(), !limits.is_empty()),
+            expected
+        );
+    }
 }

@@ -113,6 +113,11 @@ impl Builder<'_, '_> {
         let mut builder =
             Builder::new(self.lowering, node, result, hidden, Vec::new());
         builder.captures = captures.len();
+        builder.binding =
+            callee_capture.map(|callee_capture| crate::mir::OpenBinding {
+                callee_capture,
+                open: open.to_vec(),
+            });
         builder.count(node);
         for (spot, ty) in open.iter().zip(parameters) {
             builder.spot(Some(slots[*spot]), ty);
@@ -162,52 +167,27 @@ impl Builder<'_, '_> {
         self.count(node);
         let tables = self.tables();
         let ty = &tables.nodes[node].ty;
-        let receiver_spot = tables.dispatch[member]
-            .rows
-            .first()
-            .and_then(|row| row.receiver_spot)
-            .unwrap_or(0);
+        // Binding supplies only the receiver; the adapter's actual body
+        // arity decides whether this is a value or a partial function.
         let target = || Target::Dispatch {
             member,
             receiver: ir::Receiver::Value(value),
+            signature: crate::value::resource::Forest(alloc::vec![
+                ir::Type::Function {
+                    parameter: alloc::boxed::Box::new(
+                        tables.nodes[value].ty.clone()
+                    ),
+                    result: alloc::boxed::Box::new(ty.clone()),
+                }
+            ]),
         };
-        let remaining = super::Lowering::arity(ty);
-        if remaining == 0 {
-            let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
-            let arguments = Arguments {
-                args: alloc::vec![receiver],
-                receiver: Some(receiver),
-                argument: None,
-            };
-            return self.apply(target(), arguments, dest, node);
-        }
-        let (parameters, result) = parameters(ty, remaining);
-        let argument = parameters.first().cloned();
-        let hidden = self.hidden.clone();
-        let mut builder =
-            Builder::new(self.lowering, node, result, hidden, Vec::new());
-        builder.captures = 1;
-        builder.count(node);
-        for ty in parameters {
-            builder.spot(None, ty);
-        }
-        let mut args: Vec<Operand> =
-            (1..=remaining).map(Operand::Local).collect();
-        args.insert(receiver_spot.min(remaining), Operand::Capture(0));
+        let dest = dest.unwrap_or_else(|| self.local(ty.clone(), None));
         let arguments = Arguments {
-            args,
-            receiver: Some(Operand::Capture(0)),
-            argument,
+            args: alloc::vec![receiver],
+            receiver: Some(receiver),
+            argument: None,
         };
-        builder.apply(target(), arguments, 0, node);
-        builder.terminate(Terminator::Return, node);
-        let body = builder.finish(None);
-        let closure = Rvalue::Closure {
-            body,
-            captures: alloc::vec![receiver],
-            meanings: self.inherited(),
-        };
-        self.materialize(closure, dest, ty, node)
+        self.apply(target(), arguments, dest, node)
     }
 
     /// A declaration, constructor, member or derived operation as a
@@ -232,6 +212,9 @@ impl Builder<'_, '_> {
                 Target::Dispatch {
                     member: *member,
                     receiver: receiver.clone(),
+                    signature: crate::value::resource::Forest(alloc::vec![
+                        ty.clone()
+                    ]),
                 },
             ),
             ir::Kind::Constructor {
@@ -252,6 +235,7 @@ impl Builder<'_, '_> {
             Target::Dispatch {
                 member,
                 receiver: ir::Receiver::Value(_),
+                ..
             } => tables.dispatch[*member]
                 .rows
                 .first()
@@ -282,4 +266,325 @@ impl Builder<'_, '_> {
             meanings: self.inherited(),
         }
     }
+}
+
+impl super::Lowering<'_> {
+    /// Reserve a receiver-first body without exposing an unfinished raw body.
+    pub(super) fn receiver_adapter(
+        &mut self,
+        member: usize,
+        row: usize,
+        node: usize,
+    ) -> Option<usize> {
+        if let Some(adapter) = self
+            .receiver_adapters
+            .iter()
+            .find(|a| a.member == member && a.row == row)
+        {
+            return Some(adapter.body);
+        }
+        let selected = &self.tables.dispatch[member].rows[row];
+        let receiver_spot = selected.receiver_spot?;
+        let target = match selected.target {
+            ir::Implementation::Definition { index, .. } => {
+                self.function_body(index)?;
+                crate::mir::ReceiverTarget::Definition(index)
+            }
+            ir::Implementation::Declared(index) => {
+                crate::mir::ReceiverTarget::Declared(index)
+            }
+            ir::Implementation::Derived { kind, .. } => {
+                crate::mir::ReceiverTarget::Derived(kind)
+            }
+            ir::Implementation::Field(_) => return None,
+        };
+        match &target {
+            crate::mir::ReceiverTarget::Declared(index)
+                if self.native(*index) =>
+            {
+                let walked = Self::walked_members(
+                    &self.tables.declarations[*index].label,
+                );
+                self.reach_members(walked);
+            }
+            crate::mir::ReceiverTarget::Derived(kind) => {
+                self.reach_members(&[match kind {
+                    ir::Derived::Eq => "eq",
+                    ir::Derived::Cmp => "cmp",
+                    ir::Derived::Show => "show",
+                    ir::Derived::Default => "default",
+                }]);
+            }
+            _ => (),
+        }
+        let body = self.reserve(node);
+        self.receiver_adapters.push(crate::mir::ReceiverAdapter {
+            member,
+            row,
+            target,
+            receiver_spot,
+            body,
+        });
+        Some(body)
+    }
+
+    fn receiver_adapter_prototype(
+        &self,
+        target: ir::Implementation,
+        signature: &ir::Type,
+        declared_arity: Option<usize>,
+    ) -> (Vec<ir::Type>, ir::Type, Vec<usize>, Target) {
+        match target {
+            ir::Implementation::Definition { index, .. } => {
+                let body = self.definitions[index].expect("reached raw body");
+                let raw = &self.bodies[body];
+                (
+                    raw.locals[1..=raw.arity]
+                        .iter()
+                        .map(|local| local.ty.clone())
+                        .collect::<Vec<_>>(),
+                    raw.locals[0].ty.clone(),
+                    raw.hidden.clone(),
+                    super::calls::Target::Static(
+                        crate::mir::Callee::Body(body),
+                        raw.hidden
+                            .iter()
+                            .copied()
+                            .map(ir::Type::Parameter)
+                            .collect(),
+                    ),
+                )
+            }
+            ir::Implementation::Declared(index) => {
+                let (parameters, result) = parameters(
+                    signature,
+                    declared_arity.expect("declared formal count"),
+                );
+                let hidden = type_parameters(signature);
+                let callee = if self.native(index) {
+                    crate::mir::Callee::Native(index)
+                } else {
+                    crate::mir::Callee::Host(index)
+                };
+                (
+                    parameters,
+                    result,
+                    hidden,
+                    super::calls::Target::Static(callee, Vec::new()),
+                )
+            }
+            ir::Implementation::Derived { kind, ty } => {
+                let arity = match kind {
+                    ir::Derived::Eq | ir::Derived::Cmp => 2,
+                    ir::Derived::Show => 1,
+                    ir::Derived::Default => 0,
+                };
+                let (parameters, result) = parameters(signature, arity);
+                let hidden = type_parameters(signature);
+                (
+                    parameters,
+                    result,
+                    hidden,
+                    super::calls::Target::Static(
+                        crate::mir::Callee::Derived { kind, ty },
+                        Vec::new(),
+                    ),
+                )
+            }
+            ir::Implementation::Field(_) => {
+                unreachable!("fields have no method adapter")
+            }
+        }
+    }
+
+    fn receiver_comparison(
+        &self,
+        member: usize,
+    ) -> crate::mir::ReceiverComparison {
+        if self
+            .tables
+            .dispatch
+            .iter()
+            .position(|member| member.label == "eq")
+            == Some(member)
+        {
+            crate::mir::ReceiverComparison::Eq
+        } else if self
+            .tables
+            .dispatch
+            .iter()
+            .position(|member| member.label == "cmp")
+            == Some(member)
+        {
+            crate::mir::ReceiverComparison::Cmp
+        } else {
+            crate::mir::ReceiverComparison::Other
+        }
+    }
+
+    pub(super) fn complete_receiver_adapters(&mut self) {
+        let adapters: Vec<_> = self
+            .receiver_adapters
+            .iter()
+            .filter(|adapter| self.bodies[adapter.body].blocks.is_empty())
+            .cloned()
+            .collect();
+        for adapter in adapters {
+            let row =
+                self.tables.dispatch[adapter.member].rows[adapter.row].clone();
+            let node = self.bodies[adapter.body].node;
+            let declared =
+                matches!(&row.target, ir::Implementation::Declared(_));
+            let (parameters, mut result, mut hidden, target) = self
+                .receiver_adapter_prototype(
+                    row.target,
+                    &row.ty,
+                    row.declared_arity,
+                );
+            let input_parameters =
+                row.input_contract.map_or_else(Vec::new, |entry| {
+                    let predicate =
+                        self.tables.entries[entry].predicate.clone();
+                    self.reach_predicate(&predicate);
+                    input_parameters(&predicate)
+                });
+            for parameter in &input_parameters {
+                if !hidden.contains(parameter) {
+                    hidden.push(*parameter);
+                }
+            }
+            let mut used = type_parameters(&row.ty);
+            used.extend(hidden.iter().copied());
+            for parameter in &parameters {
+                used.extend(type_parameters(parameter));
+            }
+            used.extend(type_parameters(&result));
+            let fresh = (0..=used.len())
+                .find(|id| !used.contains(id))
+                .expect("a fresh parameter");
+            let mut witnesses = alloc::vec![fresh];
+            witnesses.extend(hidden);
+            let protocol_result = if declared {
+                used.push(fresh);
+                let result_id = (0..=used.len())
+                    .find(|id| !used.contains(id))
+                    .expect("a fresh result parameter");
+                result = ir::Type::Parameter(result_id);
+                let position = witnesses.len();
+                witnesses.push(result_id);
+                Some(crate::mir::ReceiverResult {
+                    meaning: position,
+                    arity: parameters.len(),
+                })
+            } else {
+                None
+            };
+            let mut builder =
+                Builder::new(self, node, result, witnesses, Vec::new());
+            builder.spot(None, ir::Type::Parameter(fresh));
+            for (spot, ty) in parameters.iter().enumerate() {
+                if spot != adapter.receiver_spot {
+                    builder.spot(None, ty.clone());
+                }
+            }
+            let mut args: Vec<_> =
+                (2..=parameters.len()).map(Operand::Local).collect();
+            args.insert(adapter.receiver_spot, Operand::Local(1));
+            builder.apply(
+                target,
+                Arguments {
+                    args,
+                    receiver: None,
+                    argument: None,
+                },
+                0,
+                node,
+            );
+            builder.terminate(Terminator::Return, node);
+            builder.finish(Some(adapter.body));
+            self.receiver_contexts.resize(self.bodies.len(), None);
+            self.receiver_contexts[adapter.body] =
+                Some(crate::mir::ReceiverContext {
+                    input_contract: row.input_contract,
+                    input_parameters,
+                    receiver_meaning: 0,
+                    protocol_result,
+                    comparison: self.receiver_comparison(adapter.member),
+                });
+        }
+        self.receiver_contexts.resize(self.bodies.len(), None);
+    }
+}
+
+/// Deterministic parameter order, without expanding generic templates.
+pub(super) fn type_parameters(ty: &ir::Type) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut pending = alloc::vec![ty];
+    while let Some(ty) = pending.pop() {
+        match ty {
+            ir::Type::Parameter(id) => {
+                if !found.contains(id) {
+                    found.push(*id);
+                }
+            }
+            ir::Type::Meaning { arguments, .. }
+            | ir::Type::Tuple(arguments)
+            | ir::Type::Packed(arguments)
+            | ir::Type::All(arguments)
+            | ir::Type::Sum(arguments) => {
+                pending.extend(arguments.iter().rev());
+            }
+            ir::Type::Array { element, length } => {
+                pending.push(length);
+                pending.push(element);
+            }
+            ir::Type::Function { parameter, result } => {
+                pending.push(result);
+                pending.push(parameter);
+            }
+            ir::Type::Not(inner) => pending.push(inner),
+            ir::Type::Unit | ir::Type::Number(_) | ir::Type::Session(_) => (),
+        }
+    }
+    found
+}
+
+/// Exactly the meaning variables an input Function entry will execute.
+pub(super) fn input_parameters(predicate: &ir::Predicate) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut pending = alloc::vec![(predicate, true)];
+    while let Some((part, entry)) = pending.pop() {
+        if entry {
+            if let ir::Predicate::Function { parameter, result } = part {
+                pending.extend([
+                    (result.as_ref(), true),
+                    (
+                        parameter.as_ref(),
+                        matches!(
+                            parameter.as_ref(),
+                            ir::Predicate::Function { .. }
+                        ),
+                    ),
+                ]);
+            }
+            continue;
+        }
+        match part {
+            ir::Predicate::All(parts) | ir::Predicate::Any(parts) => {
+                pending.extend(parts.iter().rev().map(|part| (part, false)));
+            }
+            ir::Predicate::Not(inner) => pending.push((inner, false)),
+            ir::Predicate::Test { meanings, .. } => {
+                for ty in meanings {
+                    for id in type_parameters(ty) {
+                        if !found.contains(&id) {
+                            found.push(id);
+                        }
+                    }
+                }
+            }
+            ir::Predicate::Function { .. } | ir::Predicate::Nonzero { .. } => {}
+        }
+    }
+    found
 }

@@ -106,21 +106,18 @@ fn read_fd(fd: usize, buffer: &mut [u8]) -> Result<usize, ()> {
     }
 }
 
-pub fn write(bytes: &[u8]) {
-    write_fd(1, bytes);
+pub fn write(bytes: &[u8]) -> Result<(), ()> {
+    write_fd(1, bytes)
 }
 
-fn write_fd(fd: usize, mut bytes: &[u8]) {
+fn write_fd(fd: usize, mut bytes: &[u8]) -> Result<(), ()> {
     while !bytes.is_empty() {
         let (at, len) = (bytes.as_ptr() as usize, bytes.len());
         // SAFETY: the kernel reads at most `len` bytes from `bytes`.
         let written = unsafe { syscall(WRITE, fd, at, len) };
-        match usize::try_from(written) {
-            Ok(written) => bytes = &bytes[written..],
-            Err(_) if written == -4 => {}
-            Err(_) => return,
-        }
+        crate::advance_write(&mut bytes, written)?;
     }
+    Ok(())
 }
 
 pub fn read_file(path: &str) -> Option<String> {
@@ -310,6 +307,9 @@ extern "C" fn _start() -> ! {
 
 extern "C" fn start(stack: *const usize) -> ! {
     STACK.store(stack as usize, Ordering::Relaxed);
+    #[cfg(test)]
+    crate::output_worker();
+    #[cfg(not(test))]
     crate::program();
     exit(0)
 }
@@ -319,8 +319,7 @@ fn panic(info: &PanicInfo) -> ! {
     struct Stderr;
     impl fmt::Write for Stderr {
         fn write_str(&mut self, text: &str) -> fmt::Result {
-            write_fd(2, text.as_bytes());
-            Ok(())
+            write_fd(2, text.as_bytes()).map_err(|()| fmt::Error)
         }
     }
     cooked();
@@ -345,7 +344,7 @@ struct State {
 
 /// No memory is left: say so and exit, never panic.
 fn exhausted() -> ! {
-    write_fd(2, b"fipe-repl: out of memory\n");
+    let _ = write_fd(2, b"fipe-repl: out of memory\n");
     exit(3)
 }
 
@@ -623,4 +622,9 @@ const extern "C" fn rust_eh_personality() {}
 #[unsafe(no_mangle)]
 extern "C" fn _Unwind_Resume() -> ! {
     exit(134)
+}
+
+#[cfg(test)]
+pub(super) fn saved() -> bool {
+    unsafe { (*SAVED.0.get()).is_some() }
 }

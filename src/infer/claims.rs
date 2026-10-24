@@ -223,7 +223,7 @@ impl Infer<'_> {
                     Span::default(),
                     &mut Vec::new(),
                 );
-                if !required.is_empty() && required.iter().all(|r| matches!(r, Obligation::Member { name, ty, .. } if derived(&part) == Some("eq") || (self.claim_receiver(&part, head, name) && !super::dot::contains_type(ty, head)))) {
+                if !required.is_empty() && required.iter().all(|r| matches!(r, Obligation::Member { name, ty, .. } if derived(&part) == Some("eq") || (self.claim_receiver(&part, head, name) && !super::dot::contains_type(ty, head)))) && !blocks.contains(&part) {
                     blocks.push(part);
                 }
             }
@@ -375,7 +375,7 @@ impl Infer<'_> {
             }
             return;
         }
-        self.state.obligations.push(super::Owed::new(
+        self.push_owed(super::Owed::new(
             Obligation::Claim { head, class, dot },
             dot,
         ));
@@ -791,23 +791,79 @@ impl Infer<'_> {
             };
             if let Some(index) = self.items.iter().position(|i| i.site == site)
             {
-                let callee = self.item_callee(index, site);
-                let slot = callee.self_slot;
-                let actual = if let Some(slot) = callee.self_slot {
-                    let mut callee = callee;
-                    callee.supplied = Some((slot, head.clone(), site));
-                    self.apply_callee(callee, &[], None, site, None)
-                } else {
-                    callee.whole()
-                };
-                let ty = self.universal_member(&class, &head, &ty, &actual);
-                let value = match &self.items[index].body {
-                    Some(super::Body::Value(value)) => Some(*value),
-                    _ => None,
-                }
-                .map(|value| (value, self.receiving(&ty, slot, &head)));
-                self.check_member_type(&ty, &actual, (site, span), value);
+                self.check_claim_member(
+                    index,
+                    &head,
+                    &class,
+                    (&name, &ty),
+                    members,
+                    span,
+                );
             }
+        }
+    }
+
+    fn check_claim_member(
+        &mut self,
+        index: usize,
+        head: &Type,
+        class: &Type,
+        required: (&str, &Type),
+        members: &[crate::ast::ImplMember],
+        span: Span,
+    ) {
+        let (name, ty) = required;
+        let site = self.items[index].site;
+        let callee = self.item_callee(index, site);
+        let slot = callee.self_slot;
+        let actual = if let Some(slot) = callee.self_slot {
+            let mut callee = callee;
+            callee.supplied = Some((slot, head.clone(), site));
+            self.apply_callee(callee, &[], None, site, None)
+        } else {
+            callee.whole()
+        };
+        let ty = self.universal_member(class, head, ty, &actual);
+        let value = match &self.items[index].body {
+            Some(super::Body::Value(value)) => Some(*value),
+            _ => None,
+        }
+        .map(|value| (value, self.receiving(&ty, slot, head)));
+        self.check_member_type(&ty, &actual, (site, span), value);
+        if let Some(annotation) = members.iter().find_map(|member| match member
+        {
+            crate::ast::ImplMember::Named {
+                name, annotation, ..
+            } if name.span == site => *annotation,
+            _ => None,
+        }) {
+            let scheme = self.supplied_claim_type(
+                self.module,
+                &Scope::This,
+                head,
+                annotation,
+                site,
+                slot.is_some(),
+            );
+            self.check_claim_qualifiers(
+                head,
+                class,
+                name,
+                (&ty, &ty),
+                &scheme,
+                site,
+            );
+        }
+        if let super::Status::Done(scheme) = self.state.status[index].clone() {
+            let expected = self.receiving(&ty, slot, head);
+            self.check_claim_qualifiers(
+                head,
+                class,
+                name,
+                (&expected, &ty),
+                &scheme.scheme,
+                site,
+            );
         }
     }
 
@@ -1161,11 +1217,19 @@ impl Infer<'_> {
                     let actual = self.supplied_claim_type(
                         module, &scope, head, *ty, name.span, receiver,
                     );
-                    let expected =
-                        self.universal_member(class, head, expected, &actual);
+                    let expected = self
+                        .universal_member(class, head, expected, &actual.ty);
+                    self.check_claim_qualifiers(
+                        head,
+                        class,
+                        &text,
+                        (&expected, &expected),
+                        &actual,
+                        name.span,
+                    );
                     self.check_member_type(
                         &expected,
-                        &actual,
+                        &actual.ty,
                         (span, span),
                         None,
                     );
@@ -1184,13 +1248,13 @@ impl<'a> Infer<'a> {
         ty: crate::ast::TypeId,
         span: Span,
         receiver: bool,
-    ) -> Type {
+    ) -> Scheme {
         let Type::Named {
             name: owner,
             arguments,
         } = head
         else {
-            return self.fresh();
+            return Scheme::mono(self.fresh());
         };
         let mut vars = Vars::new(SelfKind::Type(head.clone()));
         if let Some((parameters, _)) = self.type_item(module, &owner.name) {
@@ -1200,6 +1264,34 @@ impl<'a> Infer<'a> {
                     .zip(arguments)
                     .map(|(p, a)| (super::last(&p.name), a.clone())),
             );
+        }
+        // signature() reads the outer qualifiers before lowering a type node,
+        // so seed the impl's renamed formals before constraints() sees them.
+        for entry in &module.entries {
+            let Entry::Item(item) = entry else { continue };
+            let ItemKind::Impl { target, .. } = &item.kind else {
+                continue;
+            };
+            if item.span.start <= span.start && span.end <= item.span.end {
+                if let TypeKind::Named {
+                    arguments: formals, ..
+                } = &module.types[target.0].kind
+                {
+                    for (formal, actual) in formals.iter().zip(arguments) {
+                        if let TypeKind::Named { name, arguments } =
+                            &module.types[formal.0].kind
+                        {
+                            let name = super::last(name);
+                            if arguments.is_empty()
+                                && !vars.names.iter().any(|(n, _)| *n == name)
+                            {
+                                vars.names.push((name, actual.clone()));
+                            }
+                        }
+                    }
+                }
+                break;
+            }
         }
         let (slots, result, self_slot) = self.signature(scope, ty, &mut vars);
         let self_slot = receiver
@@ -1213,10 +1305,15 @@ impl<'a> Infer<'a> {
             let receiver = parameters.remove(slot);
             self.unify(head, &receiver, span, span);
         }
-        parameters
+        let ty = parameters
             .into_iter()
             .rev()
-            .fold(result, |r, p| Type::function(p, r))
+            .fold(result, |r, p| Type::function(p, r));
+        Scheme {
+            ty,
+            obligations: vars.obligations,
+            ..Scheme::mono(Type::Unit)
+        }
     }
 }
 
@@ -1329,6 +1426,7 @@ impl Infer<'_> {
                 span,
                 crate::typed::Place::Result,
                 false,
+                None,
             ));
             return;
         }
@@ -1394,6 +1492,7 @@ impl Infer<'_> {
             module.entries.iter().find_map(|e| match e {
                 Entry::Item(item) => match &item.kind {
                     ItemKind::Type {
+                        resource: _,
                         name: n,
                         parameters,
                         base: Some(base),
@@ -1617,5 +1716,179 @@ impl Infer<'_> {
             }
         }
         false
+    }
+}
+
+impl Infer<'_> {
+    /// Check a member's prerequisites independently of callers and body checks.
+    /// The inner journal is restored before putting the original queues back:
+    /// obligation flag indices in each journal then always name their own queue.
+    fn check_claim_qualifiers(
+        &mut self,
+        head: &Type,
+        class: &Type,
+        name: &str,
+        expected: (&Type, &Type),
+        actual: &Scheme,
+        span: Span,
+    ) {
+        if actual.obligations.is_empty() && actual.literals.is_empty() {
+            return;
+        }
+        assert!(
+            !self.state.solving_dots,
+            "claim conformance inside a solver"
+        );
+        let obligations = core::mem::take(&mut self.state.obligations);
+        let families = core::mem::take(&mut self.state.families);
+        let rebuilding = core::mem::take(&mut self.state.rebuilding);
+        let claims = core::mem::take(&mut self.state.claims);
+        let dots_start = core::mem::replace(&mut self.state.dots_start, 0);
+        let snapshot = self.snapshot();
+        let errors = self.state.errors.len();
+        let mut variables = Vec::new();
+        let head = self.apply(head);
+        let class = self.apply(class);
+        head.variables(&mut variables);
+        class.variables(&mut variables);
+        let rigid: Vec<_> = variables
+            .into_iter()
+            .map(|v| (v, Type::Rigid(alloc::format!("claim{}", v.0))))
+            .collect();
+        let head = crate::types::replace(&head, &rigid);
+        let class = crate::types::replace(&class, &rigid);
+        let contract = crate::types::replace(&self.apply(expected.1), &rigid);
+        let expected = crate::types::replace(&self.apply(expected.0), &rigid);
+        // Built-in sequence derivation is conditional on its elements, unlike
+        // an explicit universal user claim. Reuse that existing contract.
+        if matches!(&head, Type::Named { name, .. } if name.origin == crate::resolve::Origin::Prelude && matches!(name.name.as_str(), "Vec" | "Deque"))
+            && derived(&class).is_some()
+        {
+            self.derive_claim(&head, &class, name, span);
+            for owed in &mut self.state.obligations {
+                owed.solved = true;
+                owed.assumed = true;
+            }
+        }
+        let mut premises = Vars::new(SelfKind::Type(head.clone()));
+        self.parameter_claims(&head, &mut premises, span);
+        self.parameter_claims(&class, &mut premises, span);
+        let mut parts = Vec::new();
+        self.claim_parts(&class, &head, &mut parts);
+        premises.obligations.extend(parts.into_iter().map(|class| {
+            Obligation::Claim {
+                head: head.clone(),
+                class,
+                dot: span,
+            }
+        }));
+        self.contract_qualifiers(
+            &class,
+            &head,
+            name,
+            &contract,
+            &mut premises.obligations,
+            &mut Vec::new(),
+        );
+        for obligation in premises.obligations {
+            let mut owed = super::Owed::new(obligation, span);
+            owed.assumed = true;
+            owed.solved = true;
+            self.push_owed(owed);
+        }
+        let mut scheme = actual.clone();
+        scheme.ty = crate::types::replace(&self.apply(&scheme.ty), &rigid);
+        scheme.obligations = scheme
+            .obligations
+            .into_iter()
+            .map(|o| o.map(|t| crate::types::replace(&self.apply(t), &rigid)))
+            .collect();
+        for (head, _, _) in &mut scheme.literals {
+            *head = crate::types::replace(&self.apply(head), &rigid);
+        }
+        let (actual, _) = self.instantiate_with_meanings(&scheme, span);
+        self.unify(&expected, &actual, span, span);
+        self.dots();
+        let unresolved = self.state.obligations.iter().any(|o| !o.solved);
+        let failed = unresolved || self.state.errors.len() != errors;
+        self.restore(snapshot);
+        self.state.obligations = obligations;
+        self.state.families = families;
+        self.state.rebuilding = rebuilding;
+        self.state.claims = claims;
+        self.state.dots_start = dots_start;
+        if failed {
+            self.block_error(span, &class, "has stronger member prerequisites");
+        }
+    }
+
+    /// The selected required member's qualifiers, including inherited contracts.
+    fn contract_qualifiers(
+        &mut self,
+        class: &Type,
+        head: &Type,
+        member: &str,
+        expected: &Type,
+        found: &mut Vec<Obligation>,
+        visiting: &mut Vec<crate::types::TypeName>,
+    ) {
+        let Type::Named { name, arguments } = class else {
+            return;
+        };
+        if visiting.contains(name) {
+            return;
+        }
+        let (Some(module), Some(scope)) =
+            (self.owner(&name.origin), self.scope(&name.origin))
+        else {
+            return;
+        };
+        visiting.push(name.clone());
+        for entry in self.type_entries(module, &name.name) {
+            let Entry::Item(item) = entry else { continue };
+            let ItemKind::Type {
+                parameters,
+                base,
+                limits,
+                members: None,
+                ..
+            } = &item.kind
+            else {
+                continue;
+            };
+            let mut vars = Vars::new(SelfKind::Type(head.clone()));
+            for (index, p) in parameters.iter().enumerate() {
+                let argument =
+                    arguments.get(index).cloned().unwrap_or_else(|| {
+                        match p.default {
+                            Some(id) => self.lower(&scope, id, &mut vars),
+                            None => self.fresh(),
+                        }
+                    });
+                vars.names.push((super::last(&p.name), argument));
+            }
+            if let Some(base) = base {
+                let bases = match &module.types[base.0].kind {
+                    TypeKind::Both(xs) => xs.clone(),
+                    _ => alloc::vec![*base],
+                };
+                for base in bases {
+                    let base = self.lower(&scope, base, &mut vars);
+                    self.contract_qualifiers(
+                        &base, head, member, expected, found, visiting,
+                    );
+                }
+            }
+            for limit in limits {
+                if let crate::ast::Limit::Member { name, ty, .. } = limit {
+                    if super::last(name) == member {
+                        let ty = self.lower(&scope, *ty, &mut vars);
+                        self.unify(expected, &ty, name.span, name.span);
+                    }
+                }
+            }
+            found.extend(vars.obligations);
+        }
+        visiting.pop();
     }
 }

@@ -49,10 +49,10 @@ pub fn executable(name: &str, unit: &Unit, program: &Program) -> PathBuf {
     let dir = scratch(name);
     let path = dir.join(format!("{name}.o"));
     if std::env::var("FIPE_BACKEND").as_deref() == Ok("llvm") {
-        let ir = fipe_llvm::module(program, &unit.encode());
+        let ir = fipe_llvm::module(program, &unit.encode()).unwrap();
         fipe_llvm::compile(&ir, &path).unwrap();
     } else {
-        let object = lower::object(program, &unit.encode());
+        let object = lower::object(program, &unit.encode()).unwrap();
         std::fs::write(&path, elf::write(&object).unwrap()).unwrap();
     }
     let executable = dir.join(name);

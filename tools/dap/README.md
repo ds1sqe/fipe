@@ -124,3 +124,20 @@ cargo clippy --locked --offline --all-targets -- -D warnings \
   -D clippy::all -D clippy::pedantic -D clippy::nursery
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --offline --no-deps
 ```
+
+## Command discovery
+
+```sh
+fipe-dap --version
+fipe-dap --help
+fipe-dap -h
+```
+
+`--version` prints `fipe-dap <package-version>` and exits successfully.
+Help prints usage and exits successfully. These commands take no protocol input
+and run before a session starts. Version accepts no extra operands.
+Other process arguments are rejected with usage on stderr and exit 1; older
+prerelease builds ignored them. Launch settings belong in DAP requests. With no
+arguments, stdio remains protocol-only and EOF retains its successful exit.
+
+Resource values display as `<resource>` without expandable payloads. Recorded text cannot reconstruct a resource; ordinary data replay remains available.

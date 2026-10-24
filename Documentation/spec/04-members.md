@@ -19,7 +19,8 @@ is an `Add` when its type line says so and `impl T: Add { … }` writes `add`
 of that type, or the member is derived. A member of that name on a meaning
 that does not claim is its own, not the limit's. "Of that type" is the proof
 of [checks](07-checks.md) §What is known for a function, so a member whose
-parameter is narrower does not meet it. A limit claimed twice, `Mul<F64> &
+parameter is narrower does not meet it. An explicit member may not require
+stronger qualifiers than its owner bounds and the required member contract provide. A limit claimed twice, `Mul<F64> &
 Mul<Vec2>`, has a block each; the argument's meaning chooses.
 
 An operation is a member of the meaning of its subject. An operator is a

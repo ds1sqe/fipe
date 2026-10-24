@@ -178,7 +178,7 @@ fn the_cli_builds_an_object_and_an_executable_of_a_file() {
     let main = std::fs::read_to_string(&source).unwrap();
     let declarations = fipe_native::host_declarations(&host).unwrap();
     let (unit, program) = Unit::new(&main, declarations, vec![]).unwrap();
-    let expected = lower::object(&program, &unit.encode());
+    let expected = lower::object(&program, &unit.encode()).unwrap();
     assert_eq!(
         std::fs::read(&object).unwrap(),
         elf::write(&expected).unwrap()
@@ -206,7 +206,7 @@ fn the_cli_builds_an_object_and_an_executable_of_a_file() {
         )],
     )
     .unwrap();
-    let expected = lower::object(&program, &unit.encode());
+    let expected = lower::object(&program, &unit.encode()).unwrap();
     assert_eq!(
         std::fs::read(&modules).unwrap(),
         elf::write(&expected).unwrap()
@@ -235,4 +235,30 @@ fn the_cli_builds_an_object_and_an_executable_of_a_file() {
         .unwrap();
     assert_eq!(refused.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&refused.stderr).contains("usage"));
+}
+
+#[test]
+fn resource_cli_refuses_before_overwriting_an_object() {
+    let dir = common::scratch("resource_refusal");
+    let source = dir.join("main.fipe");
+    let host = dir.join("host");
+    let output = dir.join("sentinel.o");
+    std::fs::create_dir(&host).unwrap();
+    std::fs::write(&source, "1").unwrap();
+    std::fs::write(host.join("private.fipe"), "type resource Table").unwrap();
+    std::fs::write(&output, b"preserved").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_fipe-native"))
+        .arg("build")
+        .arg(&source)
+        .arg("--object")
+        .arg("--host")
+        .arg(&host)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&result.stderr)
+        .contains("native execution does not support resource declarations"));
+    assert_eq!(std::fs::read(&output).unwrap(), b"preserved");
 }

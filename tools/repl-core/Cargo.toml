@@ -2,6 +2,7 @@
 name = "fipe-repl-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "The Fipe REPL without I/O: bytes in, bytes and file requests out"
 license.workspace = true
 repository.workspace = true

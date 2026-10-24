@@ -70,10 +70,57 @@ fn supplies_then_defaults_then_the_call() {
         })
         .expect("16 is evaluated into the spot");
     let tables = program.tables.borrow();
-    let default = call_block(body, |callee| {
-        matches!(callee, Callee::Native(index) if tables.declarations[*index].label == "div")
-    })
-    .expect("the default divides by the prelude's row");
+    let adapter = program.receiver_adapters.iter().find(|adapter| {
+        matches!(adapter.target, fipe::mir::ReceiverTarget::Declared(index)
+            if tables.declarations[index].label == "div"
+                && tables.namespaces[tables.declarations[index].namespace] == "prelude")
+    }).expect("the default's exact prelude div receiver adapter");
+    let row = &tables.dispatch[adapter.member].rows[adapter.row];
+    assert_eq!(row.receiver_spot, Some(adapter.receiver_spot));
+    let raw = &program.bodies[adapter.body];
+    let raw_call = call_block(raw, |callee| {
+        matches!((callee, &adapter.target), (Callee::Native(actual), fipe::mir::ReceiverTarget::Declared(expected)) if actual == expected)
+    }).expect("the adapter calls that exact native declaration");
+    let Terminator::Call { args, .. } = &raw.blocks[raw_call].terminator else {
+        unreachable!()
+    };
+    assert_eq!(
+        args[adapter.receiver_spot],
+        Operand::Local(1),
+        "the canonical receiver reaches the raw self spot"
+    );
+    let function = statements(body)
+        .into_iter()
+        .find_map(|statement| match statement {
+            Statement::Assign(local, Rvalue::Closure { body, .. })
+                if *body == adapter.body =>
+            {
+                Some(*local)
+            }
+            _ => None,
+        })
+        .expect("the default constructs its selected div adapter");
+    let default = call_block(body, |callee| matches!(callee, Callee::Value(Operand::Local(local)) if *local == function))
+        .expect("the default invokes that exact adapter");
+    let supplied = statements(body)
+        .into_iter()
+        .find_map(|statement| match statement {
+            Statement::Assign(local, Rvalue::Use(Operand::Const(index)))
+                if *index == sixteen =>
+            {
+                Some(*local)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let Terminator::Call { args, .. } = &body.blocks[default].terminator else {
+        unreachable!()
+    };
+    assert_eq!(
+        args[0],
+        Operand::Local(supplied),
+        "the supplied width is the canonical div receiver"
+    );
     drop(tables);
     let call = call_block(body, |callee| matches!(callee, Callee::Body(_)))
         .expect("the body is called");
@@ -85,6 +132,8 @@ fn supplies_then_defaults_then_the_call() {
         assert_eq!(args.len(), 2);
         assert_eq!(meanings.len(), 1, "the body's meaning witness");
     }
+    let mut machine = fipe::vm::Machine::new(Some(100_000));
+    assert_eq!(machine.run(&program), Outcome::Done(Ok(Value::Int(2))));
 }
 
 #[test]
@@ -311,11 +360,46 @@ fn a_declaration_alone_is_a_thunk_of_its_arity() {
         .expect("a thunk calling the native");
     assert_eq!(thunk.arity, 1);
     let body = main_body(&program);
-    assert!(call_block(body, |callee| matches!(
-        callee,
-        Callee::Value(Operand::Global(0))
-    ))
-    .is_some());
+    let [block, _return] = body.blocks.as_slice() else {
+        panic!("one staged call and its continuation")
+    };
+    let staged: Vec<_> = block
+        .statements
+        .iter()
+        .filter(|statement| !matches!(statement, Statement::Charge(_)))
+        .collect();
+    let [Statement::Assign(
+        stored,
+        Rvalue::Closure {
+            body: stored_body, ..
+        },
+    ), Statement::Store {
+        definition: 0,
+        value: Operand::Local(stored_value),
+    }, Statement::Assign(private, Rvalue::Use(Operand::Global(0))), Statement::Assign(argument, Rvalue::Array(parts)), Statement::Assign(tuple, Rvalue::Admit { values, spot: 0 }), Statement::Assign(
+        callee_out,
+        Rvalue::Field(Operand::Local(callee_tuple), 0),
+    ), Statement::Assign(
+        argument_out,
+        Rvalue::Field(Operand::Local(argument_tuple), 1),
+    )] = staged.as_slice()
+    else {
+        panic!("the exact global thunk and private admission chain")
+    };
+    assert!(std::ptr::eq(&raw const program.bodies[*stored_body], thunk));
+    assert_eq!(stored, stored_value);
+    assert_eq!(parts.len(), 1);
+    assert_eq!(
+        *values,
+        [Operand::Local(*private), Operand::Local(*argument)]
+    );
+    assert_eq!((callee_out, callee_tuple), (private, tuple));
+    assert_eq!((argument_out, argument_tuple), (argument, tuple));
+    let Terminator::Call { callee, args, .. } = &block.terminator else {
+        panic!("the staged thunk is invoked")
+    };
+    assert_eq!(*callee, Callee::Value(Operand::Local(*private)));
+    assert_eq!(args, &[Operand::Local(*argument)]);
 }
 
 #[test]

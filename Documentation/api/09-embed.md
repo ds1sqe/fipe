@@ -88,6 +88,110 @@ the run's value and the line's in `lines`. Another open arity is `InputError`,
 before any effect; input without the spot's shape Faults `Host` "the input is
 not a T" at the line before the run starts, and its limits are the host's.
 
+## Opaque resource references
+
+This subsection describes the working checkout's pending 0.2.0 API, not the
+published `0.2.0-dev.2` package above. The VM boundary is being qualified;
+native, LLVM, Codec and scalar FFI integration have separate acceptance gates.
+
+A trusted Host/commands interface may declare `pub type resource Table` and
+operations returning or accepting `Table`. A loaded script file cannot declare
+a resource type. Scripts can copy references, put them in typed containers and
+capture them in functions, but cannot manufacture them from records, integers,
+bytes, literals, `default` or ordinary Codec data. `Packet` remains ordinary data.
+Metadata or schema is ordinary typed data supplied alongside a reference; a
+reference is not its payload or a memory address.
+
+~~~text
+value::resource::{ResourceDomain, ResourceType, ResourceRef, ResourceError}
+Value::Resource(Rc<ResourceRef>)
+ResourceDomain::new() -> ResourceDomain
+ResourceDomain::issue(&self, ty: &ResourceType, key: Rc<[u8]>) -> Value
+ResourceType::registered(tables, namespace, name) -> Result<ResourceType, ResourceError>
+Machine::pending_resource_type(&self) -> Result<ResourceType, ResourceError>
+ResourceRef::{domain, resource_type, key}
+~~~
+
+At a `Request::Call`, `pending_resource_type` returns the exact frozen direct
+resource result, including its generic arguments. The Host validates or acquires
+its own entry, then wraps its opaque entry key with `domain.issue(&ty, key)` and
+returns the value through the usual reply. Unit arguments, full module markers
+and ordinary generic arguments retain their checked identities. A composite
+result returns `NotResourceResult`: this accessor does not guess a nested
+resource position. Already issued references may be returned inside compatible
+typed tuples, sequences, records and packed values. A typed function may capture
+references; an opaque or wildcard data position cannot hide one, including in
+captures or partially applied arguments. This shape check does not validate an
+arbitrary supplied function body's behavior.
+
+`registered` finds an already materialized marked zero-parameter meaning by
+exact namespace and name. An unused declaration may return `NotFound`; a generic
+type returns `NotMonomorphic`. It does not register a type, lower source eagerly
+or accept an arbitrary `ir::Type`. Both witness routes describe language type
+identity only. Ordinary nominal arguments carry identity too; matching labels or
+reused numeric slots are insufficient.
+
+The call's resource-relevant expected fields, arguments and diagnostic site are
+frozen before its request. Nonconcrete resource identity refuses before that
+request. Host input uses the same admission rules before module initialization
+or the main body; invalid input arity still leaves a previous run untouched.
+New resource type expansion and matching use the Machine budget. Budget refusal
+before a request prevents that request; refusal while admitting a reply follows
+an effect the Host has already performed and does not roll it back. An unbudgeted
+Machine remains unbounded. Trusted Rust registration and entry-key work are
+outside Machine accounting. Existing predicate metadata copying is also outside
+this new-resource-work bound; it is not a bound on every historical VM or Host
+traversal.
+
+A Tables context keeps identity across runs, including a new Machine using the
+same tables. A Session fork or fresh Tables context gets fresh identity even
+when its stamp cache was empty; withdrawal retires removed identities while
+preserving surviving ones. To reuse a still-live Host entry in another checked
+context, the Host explicitly wraps it with that context's validated witness.
+This is not another acquisition and cannot revive a disposed entry.
+
+The Host owns payloads, grants, liveness, entry generations and cleanup. Domain
+identity and key access let it reject an old owner's alias before payload lookup,
+even when a new run uses the same language Session and recycles a numeric slot.
+Core type fit deliberately does not prove owner liveness. Cloning a wrapper
+preserves aliases; dropping the last wrapper closes nothing. On Fault or
+abandonment, the driver revokes that run's new entries without invalidating live
+entries retained from earlier successful runs. See [abandonment](#abandon-unfinished-execution)
+for the execution boundary; physical cleanup remains the Host's action.
+
+Rust equality compares domain, exact checked type and key; it is not a liveness
+or authority check. Structural output is `<resource>` and Debug redacts entry
+keys, domains, addresses and payloads. There is no intrinsic language equality,
+ordering or construction for resources; supplied Host members remain the route
+for meaningful operations.
+
+This prerelease adds a `Value` variant, so exhaustive Rust matches need updating.
+`BodyFrame` and `value::Closure` now drop materialized type witnesses iteratively.
+Because they implement `Drop`, moving fields directly out of an owned frame or
+closure no longer compiles; use `core::mem::take(&mut owner.field)` when transferring
+an owned field. Native frames also drop their private result witness iteratively.
+
+`value::Guard` also implements `Drop` to dispose of its predicate tree iteratively.
+Its public fields and value/wire representation are unchanged, but moving its
+non-`Copy` fields out of an owned guard, including by destructuring or struct
+update (`Guard { spot, ..guard }`), may now fail with Rust E0509. Borrow fields
+(for example, `let predicate = &guard.predicate;`), or clone individual fields
+when a separate owned value is needed. To change a field, mutate the guard in
+place instead of using struct update. The public derived `Guard::clone` still
+recursively copies predicate/type trees outside VM budget accounting. It is not
+a substitute for runtime metered copying; iterative destruction does not promise
+stack safety for arbitrary deep cloning or predicate execution.
+
+The hidden `Value::Meaning` payload is now `Rc<value::Meaning>`: wrap an existing
+`ir::Type` with `value::Meaning::new(ty)` and borrow it with `as_type()`. It keeps one
+`Rc` ownership layer and drops the type tree iteratively on the last alias. This
+hidden witness is not a checked resource identity or Host authorization. Structural
+equality and underlying type Debug remain; arbitrary deep Type equality and cloning
+are not made iterative by this destructor change.
+`Tables` also has a private runtime identity cache: external struct literals are
+no longer source-compatible. Read checked tables through `Unit::tables` instead
+of constructing a checked resource witness from a hand-built table.
+
 ## Stepping
 
 ~~~text
@@ -110,6 +214,54 @@ definition's value), `lines()`, `charged()` and `budget()`; the trace so far is
 the requests it answered. Stops are not observations: a stepped run makes the
 same requests and charges as `run`, and an unstepped run pays nothing for the
 boundary. `next_stop` without a stepped run, or with a reply owed, panics.
+
+A compiled `mir::Program` also retains receiver-first adapter locators and
+body-indexed invocation contexts. These are trusted compiler output, like its
+bodies; hosts constructing Program literals must supply both collections.
+Partial methods keep the original receiver in the ordinary prefix-filled
+closure. On full application the captured receiver expectation is checked
+before guards or body effects. Operation witnesses retain their original order
+following the adapter's additional receiver witness. This does not transfer
+ownership or replace Host access and liveness checks.
+
+Programs sharing the same `Tables` `Rc` share one Machine runtime context:
+globals, captured function bodies and initialized modules persist across those
+session lines. Opening a program with a different `Tables` `Rc` starts a fresh
+runtime context, clearing old indexed globals, initialization flags and caches;
+returning to an earlier independent program is fresh again. Runtime closures are
+not migrated between contexts. This does not change canonical file-module nominal
+identity, undo effects or close Host resources. The driver still handles an active
+or undelivered terminal run before switching programs.
+
+## Abandon unfinished execution
+
+A direct driver establishes its own fresh run identity before `Machine::run` or
+`Machine::begin`. `Outcome::Done` and `Stop::Done` are execution terminals;
+`Session` returning `Done(Report)` only completes checking. A successful VM result
+includes a language `Err` value; it is distinct from a VM Fault.
+
+`Machine::abandon() -> bool` stops an unfinished run, clearing transient frames,
+environment, pending reply and stepping stops without calling the Host. First
+invalidate the driver's pending-call association. On `true`, the driver can revoke
+that run's newly created resources, then pair `Session::withdraw(accepted)` with
+`Machine::withdraw(&withdrawn)` before accepting a replacement line. Earlier
+committed globals and module initialization remain. Abandonment alone does not
+roll back partial bindings, output, writes, explicit closes or any other effect;
+line values and charges remain available for inspection, not as a resource ledger.
+
+`false` changes nothing. If a stepped terminal is still pending, drain its
+remaining stops to `Stop::Done` and handle the actual success/Fault;
+a completed run must not be mislabeled abandoned. Calling `next_stop` again after
+its terminal violates the stepping precondition. Repeated abandonment and an idle
+machine also return false.
+
+Reply matching remains the direct driver's responsibility. A reply with no owed
+call panics; after a replacement run suspends, the VM cannot distinguish old reply
+data from a current answer. Reject old-generation answers before `reply`/`answer`.
+`Accepted` serials and cloning a Session do not supply run or authority identities.
+Use explicit abandonment/withdrawal rather than treating `run`, `begin` or
+`withdraw` as a cancellation protocol. No automatic Host cleanup or async token
+API is implied; REPL lifecycle delivery is a separate contract.
 
 ## Session
 
@@ -194,7 +346,11 @@ before the line clamped to its start. The three `File` forms carry a span
 of the replied file; a reason's span stays in the text it was found in.
 Resolve and type diagnostics within a file follow source order.
 
-`unit` is present only when all checking stages succeed without any diagnostic.
+`unit` is present only when all checking stages succeed without any diagnostic
+and the code it depends on has an emitted definition or checked source. Recovery
+typing may accept a line without a unit; acceptance alone does not make that
+binding executable. Later lines that depend on its unavailable code also have no
+unit, without repeating the file's diagnostics.
 `accepted` is present when `line` accepted the line, its token for `withdraw`.
 It holds this line and indexes the tables retained by the session; values belong
 to evaluation. [Checking](07-check.md) defines the intermediate form.
@@ -293,7 +449,30 @@ distinguish the outcome errors; the latter recommends `||` or `|:`.
 
 ## REPL driver
 
-`fipe-repl-core::Repl::host_directory(&str) -> Vec<Out>` starts loading host
-files directly from a directory, without interpreting the path as source or
-commands. Drivers call it before feeding session input and service its
-`Out::File` requests with `Repl::file`. Interior NUL is rejected.
+`fipe-repl-core::Repl::host_directory(&str) -> Result<Vec<Out>, DriveError>`
+starts loading host files directly from a directory, without interpreting the
+path as source or commands. Drivers call it before feeding session input and
+service each `Out::File { id, path }` with `Repl::file(&id, &path, text)`.
+`Out::Call { id }` is answered with `Repl::answer(&id, callback)`. These methods
+return a `Result`; a stale or wrong-kind identity, or wrong file path, returns
+`DriveError::WrongRequest` without changing the request or invoking the callback.
+Ordinary executable units yield `Out::Start { run, resume }` before runtime execution
+and `Out::End { run, result, resume }` before presentation, failed-line withdrawal or
+next buffered acceptance. Handle each boundary and process `Repl::resume(&resume)`
+outputs in order; stale/foreign continuations return `WrongContinuation` unchanged.
+`RunEnd::Success` includes language `Err` data; Fault carries the actual VM fault;
+Abandoned reports an unfinished run stopped by interrupt/close. Interrupt preserves
+an existing terminal or Reset. File/Call IDs and boundary continuations are distinct.
+Valid host replacement yields `Out::Reset` before old language state is discarded;
+acknowledge after owner disposal, then replay proceeds through Start/End using cached
+sources and refusing Host calls. Invalid declarations preserve the old session.
+`close()` yields Exit Reset, possibly after an Abandoned End; computed End/Reset
+returns Busy unchanged. `flush()` only drains input: at EOF drain it, then close and
+drain Reset through Out::Exit. Built-in EOF/error paths perform explicit closing;
+read errors retain exit2 after terminal restoration. After Exit, Vec APIs are inert,
+close is idempotent and host replacement returns Closed. Start excludes bounded
+pure checking/compile evaluation. The built-in Host adapter auto-acknowledges and
+has no cleanup hook; actual resource owners need a lifecycle-aware repl-core driver.
+No GC callback, physical cleanup, native preemption, rollback or owner authorization
+is implied; Standard owner-adapter qualification and real-resource proof remain
+separate gates. Interior NUL in a host-directory path is rejected.

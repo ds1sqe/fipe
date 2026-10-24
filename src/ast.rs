@@ -36,6 +36,19 @@ pub struct Module {
 }
 
 impl Module {
+    /// Syntax classification only: a file containing this header is not a Host.
+    pub(crate) fn resource_declarations(&self) -> bool {
+        self.entries.iter().any(|entry| {
+            matches!(
+                entry,
+                Entry::Item(Item {
+                    kind: ItemKind::Type { resource: true, .. },
+                    ..
+                })
+            )
+        })
+    }
+
     pub(crate) fn claim_member(&self, site: Span) -> bool {
         self.entries.iter().any(|e| matches!(e, Entry::Item(item) if matches!(item.kind, ItemKind::Impl { claim: Some(_), .. }) && item.span.start <= site.start && site.end <= item.span.end))
     }
@@ -425,6 +438,8 @@ pub enum ItemKind {
     /// `type Name<params>: base { members } where limits`, each part
     /// optional; with none, an opaque type, which is a declaration form.
     Type {
+        /// A Host-only opaque resource declaration, distinct from serializable data.
+        resource: bool,
         name: Name,
         parameters: Vec<TypeParameter>,
         base: Option<TypeId>,

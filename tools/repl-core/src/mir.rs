@@ -248,6 +248,12 @@ fn rvalue(rvalue: &Rvalue, tables: &Tables) -> String {
                 fipe::ir::CastRow::Bytes => "bytes",
             }
         ),
+        Rvalue::Admit { values, spot } => format!(
+            "admit {} spot {} with {}",
+            operand(&values[0], tables),
+            spot,
+            operand(&values[1], tables)
+        ),
         Rvalue::Convert {
             mode,
             predicate,

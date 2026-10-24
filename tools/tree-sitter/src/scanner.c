@@ -75,6 +75,7 @@ enum TokenType {
   UPPER_NAME,
   KW_WHERE,
   FIELD_NAME,
+  RESOURCE_MODIFIER,
 };
 
 // What the last token scanned here leaves pending, valid only for a
@@ -410,6 +411,34 @@ static bool join_after(TSLexer *lexer) {
   return false;
 }
 
+// A resource header needs the next raw token to be one unqualified name.
+// Look past joins, but never a retained newline; the modifier's end is marked.
+static bool resource_name_ahead(Scanner *s, TSLexer *lexer) {
+  for (;;) {
+    while (spacing(lexer->lookahead)) advance(lexer);
+    if (lexer->lookahead != '\\') break;
+    advance(lexer);
+    if (!join_after(lexer)) return false;
+  }
+  if (!name_start(lexer->lookahead)) return false;
+  s->length = 0;
+  do {
+    push(s, lexer->lookahead);
+    advance(lexer);
+  } while (!lexer->eof(lexer) && name_continue(lexer->lookahead));
+  if (keyword(s->run, s->length) >= 0 || same(s->run, s->length, "where")) {
+    return false;
+  }
+  // A lowercase name touching a quote is a literal prefix, not a Name.
+  if ((lexer->lookahead == '"' || lexer->lookahead == '\'') &&
+      prefix(s->run, s->length)) return false;
+  if (lexer->lookahead == '\\') {
+    advance(lexer);
+    return join_after(lexer);
+  }
+  return lexer->eof(lexer) || boundary(lexer->lookahead);
+}
+
 // A run's token, as the crate's lexer classifies it whatever the
 // parser takes: a token the parser cannot take is its error, never a
 // word. `where` is a word of the `type` item only; a selector touching
@@ -417,6 +446,10 @@ static bool join_after(TSLexer *lexer) {
 static bool classified(Scanner *s, TSLexer *lexer, const bool *valid,
                        bool touching) {
   int kind = classify(s->run, s->length);
+  if (kind == NAME && valid[RESOURCE_MODIFIER] &&
+      same(s->run, s->length, "resource") && resource_name_ahead(s, lexer)) {
+    return accept(s, lexer, RESOURCE_MODIFIER);
+  }
   if (kind == KW_WHERE && !valid[KW_WHERE]) kind = NAME;
   if (kind == SELECTOR && touching && valid[FIELD_NAME]) kind = FIELD_NAME;
   if (kind >= KW_IF && kind <= KW_PUB) {

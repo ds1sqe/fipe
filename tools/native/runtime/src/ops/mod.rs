@@ -225,7 +225,7 @@ impl Ctx {
 /// witnesses, read from the `hidden` slots it was entered with.
 struct Frame {
     body: usize,
-    meanings: Vec<ir::Type>,
+    meanings: Vec<Rc<fipe::value::Meaning>>,
 }
 
 impl Frame {
@@ -233,7 +233,7 @@ impl Frame {
         let meanings = hidden
             .iter()
             .map(|witness| match witness {
-                Value::Meaning(ty) => (**ty).clone(),
+                Value::Meaning(ty) => Rc::clone(ty),
                 other => unreachable!("a witness, not {other:?}"),
             })
             .collect();
@@ -244,8 +244,7 @@ impl Frame {
     /// (`Machine::substitute`).
     fn substitute(&self, ctx: &Ctx, ty: &ir::Type) -> ir::Type {
         let body = &ctx.program.bodies[self.body];
-        let fixed = ty.substituted(&body.hidden, &self.meanings);
-        dispatch::fixed(&ctx.tables(), &fixed)
+        dispatch::frame_type(&ctx.tables(), ty, &body.hidden, &self.meanings)
     }
 
     /// The type of a local, witnesses in place (`Machine::local_type`).
@@ -266,11 +265,13 @@ pub fn apply(
 }
 
 /// The name of `ty` when `value` has not its shape.
-pub fn misfit(value: &Value, ty: &ir::Type) -> Option<String> {
+pub fn misfit(value: &Value, ty: &ir::Type) -> Result<Option<String>, Reason> {
     let ctx = Ctx::get();
     let tables = ctx.tables();
-    (!fits::fits(value, ty, &tables, &ctx.prelude))
-        .then(|| fits::named(ty, &tables))
+    let matched = fits::fits(value, ty, &tables, &ctx.prelude, &mut |units| {
+        start::with(|state| state.pay(units))
+    })?;
+    Ok((!matched).then(|| fits::named(ty, &tables)))
 }
 
 /// Keep the Fault of `reason` at `node`; the status 1 the generated
@@ -288,7 +289,7 @@ fn pay(units: u64, node: usize) -> Result<(), Faulted> {
 }
 
 /// A Fault at a node, located in the node's source (`vm.rs`).
-fn fault(program: &Program, node: usize, reason: Reason) -> Fault {
+pub fn fault(program: &Program, node: usize, reason: Reason) -> Fault {
     let tables = program.tables.borrow();
     let node = &tables.nodes[node];
     Fault {

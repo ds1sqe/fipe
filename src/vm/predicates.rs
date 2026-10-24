@@ -31,13 +31,25 @@ pub(super) struct Run {
     after: After,
     /// Set once the verdict is known and nothing waits on a call.
     verdict: Option<bool>,
-    /// Units the run's own leaves cost since the machine last paid.
-    owed: u64,
     /// The values still to test after this one, the next last.
     rest: Vec<Value>,
-    predicate: Predicate,
+    root: RunRoot,
+    witnesses: Option<super::resource::Witnesses>,
 }
 
+#[derive(Debug)]
+enum RunRoot {
+    Owned(crate::value::resource::Predicates),
+    Guard(super::pending::GuardJob),
+}
+impl RunRoot {
+    fn predicate(&self) -> &Predicate {
+        match self {
+            Self::Owned(forest) => &forest.0[0],
+            Self::Guard(job) => &job.guard().predicate,
+        }
+    }
+}
 #[derive(Debug)]
 struct Node {
     kind: Kind,
@@ -53,60 +65,98 @@ enum Kind {
 }
 
 impl Run {
-    pub(super) fn new(
-        predicate: Predicate,
-        value: Value,
+    pub(super) fn owned(
+        predicate: crate::value::resource::Predicates,
+        values: Vec<Value>,
         after: After,
-    ) -> Self {
-        Self::over(predicate, alloc::vec![value], after)
+        witnesses: super::resource::Witnesses,
+        tables: &ir::Tables,
+        work: &super::resource::Work,
+    ) -> Result<Self, Reason> {
+        Self::prepare(
+            RunRoot::Owned(predicate),
+            values,
+            after,
+            Some(witnesses),
+            tables,
+            work,
+        )
     }
 
-    /// A run testing each value in order, stopping at the first that
-    /// fails; `values` is not empty.
-    pub(super) fn over(
-        predicate: Predicate,
+    pub(super) fn guarded(
+        job: super::pending::GuardJob,
+        value: Value,
+        tables: &ir::Tables,
+        work: &super::resource::Work,
+    ) -> Result<Self, Reason> {
+        let entry = job.guard().entry;
+        Self::prepare(
+            RunRoot::Guard(job),
+            alloc::vec![value],
+            After::Enter(entry),
+            None,
+            tables,
+            work,
+        )
+    }
+
+    fn prepare(
+        root: RunRoot,
         mut values: Vec<Value>,
         after: After,
-    ) -> Self {
+        witnesses: Option<super::resource::Witnesses>,
+        tables: &ir::Tables,
+        work: &super::resource::Work,
+    ) -> Result<Self, Reason> {
+        let mut copied =
+            super::resource::copy_predicate(root.predicate(), tables, work)?;
         values.reverse();
         let value = values.pop().expect("a value to test");
-        Self {
+        Ok(Self {
             stack: alloc::vec![Node {
                 kind: Kind::All,
-                parts: alloc::vec![predicate.clone()],
-                next: 0,
+                parts: core::mem::take(&mut copied.0),
+                next: 0
             }],
             value,
             after,
             verdict: None,
-            owed: 0,
             rest: values,
-            predicate,
+            root,
+            witnesses,
+        })
+    }
+
+    fn witnesses(&self) -> &super::resource::Witnesses {
+        match &self.root {
+            RunRoot::Guard(job) => &job.guard().witnesses,
+            RunRoot::Owned(_) => {
+                self.witnesses.as_ref().expect("captured witnesses")
+            }
         }
     }
 
     /// The verdict on one value: the next value's run begins when it
     /// passed and more remain, else the run ends.
     fn conclude(&mut self, verdict: bool, ctx: &Ctx<'_>) -> Option<Step> {
-        if verdict {
-            if let Some(next) = self.rest.pop() {
-                self.value = next;
-                self.stack = alloc::vec![Node {
-                    kind: Kind::All,
-                    parts: alloc::vec![self.predicate.clone()],
-                    next: 0,
-                }];
-                return None;
-            }
+        if verdict && !self.rest.is_empty() {
+            let mut copied = match super::resource::copy_predicate(
+                self.root.predicate(),
+                ctx.tables,
+                ctx.work,
+            ) {
+                Ok(copied) => copied,
+                Err(reason) => return Some(Step::Fault(reason)),
+            };
+            self.value = self.rest.pop().expect("next component");
+            self.stack = alloc::vec![Node {
+                kind: Kind::All,
+                parts: core::mem::take(&mut copied.0),
+                next: 0
+            }];
+            return None;
         }
         Some(self.finish(verdict, ctx))
-    }
-
-    /// The units owed since the last call, now paid by the machine.
-    pub(super) const fn take_owed(&mut self) -> u64 {
-        let owed = self.owed;
-        self.owed = 0;
-        owed
     }
 
     /// One move: fold a returned Bool into the combinators, then descend
@@ -147,22 +197,30 @@ impl Run {
                 result = Some(exhausted);
                 continue;
             }
-            let part = node.parts[node.next].clone();
+            let part = core::mem::replace(
+                &mut node.parts[node.next],
+                Predicate::All(Vec::new()),
+            );
+            let mut owned =
+                crate::value::resource::Predicates(alloc::vec![part]);
             node.next += 1;
-            match part {
+            match &mut owned.0[0] {
                 Predicate::All(parts) => self.stack.push(Node {
                     kind: Kind::All,
-                    parts,
+                    parts: core::mem::take(parts),
                     next: 0,
                 }),
                 Predicate::Any(parts) => self.stack.push(Node {
                     kind: Kind::Any,
-                    parts,
+                    parts: core::mem::take(parts),
                     next: 0,
                 }),
                 Predicate::Not(inner) => self.stack.push(Node {
                     kind: Kind::Not,
-                    parts: alloc::vec![*inner],
+                    parts: alloc::vec![*core::mem::replace(
+                        inner,
+                        alloc::boxed::Box::new(Predicate::All(Vec::new()))
+                    )],
                     next: 0,
                 }),
                 // The division test is charged as one comparison. A
@@ -170,25 +228,40 @@ impl Run {
                 // instance is an integer; a float divisor of zero Faults
                 // `NotFinite` in the division itself.
                 Predicate::Nonzero { when_integer } => {
-                    self.owed += 1;
+                    if let Err(reason) = ctx.work.pay(1) {
+                        return Step::Fault(reason);
+                    }
                     let integer =
                         matches!(self.value, Value::Int(_) | Value::Big(_));
                     result = Some(
-                        (when_integer && !integer) || nonzero(&self.value),
+                        (*when_integer && !integer) || nonzero(&self.value),
                     );
                 }
                 // A function value is not tested; its calls are.
                 Predicate::Function { .. } => result = Some(true),
                 Predicate::Test { index, meanings } => {
+                    let index = *index;
                     let Some(body) = ctx.program.tests[index] else {
                         return Step::Fault(Reason::Message(alloc::format!(
                             "limit test {index} has no body"
                         )));
                     };
+                    let raw_meanings = crate::value::resource::Forest(
+                        core::mem::take(meanings),
+                    );
+                    let mut meanings = match super::resource::predicate_meanings(
+                        &raw_meanings.0,
+                        self.witnesses(),
+                        ctx.tables,
+                        ctx.work,
+                    ) {
+                        Ok(meanings) => meanings,
+                        Err(reason) => return Step::Fault(reason),
+                    };
                     return Step::Call(Invoke::Body {
                         body,
                         args: alloc::vec![self.value.clone()],
-                        meanings,
+                        meanings: core::mem::take(&mut meanings.0),
                     });
                 }
             }
@@ -250,5 +323,18 @@ fn nonzero(value: &Value) -> bool {
         Value::F32(float) => *float != 0.0,
         Value::F64(float) => *float != 0.0,
         other => unreachable!("a number, not {other:?}"),
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        drop(crate::value::resource::Predicates(core::mem::take(
+            &mut self.parts,
+        )));
+    }
+}
+impl Drop for Run {
+    fn drop(&mut self) {
+        self.stack.clear();
     }
 }

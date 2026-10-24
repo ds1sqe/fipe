@@ -9,6 +9,7 @@ pub mod check;
 pub mod compile;
 pub mod decl;
 pub mod embed;
+pub mod format;
 mod frame;
 pub mod infer;
 pub mod ir;

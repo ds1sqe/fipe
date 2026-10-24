@@ -408,6 +408,7 @@ impl Crate<'_> {
                 self.names(names);
             }
             ItemKind::Type {
+                resource: _,
                 name,
                 parameters,
                 base,
@@ -1000,6 +1001,74 @@ fn the_rows_parse_as_the_crate_does() {
         .collect();
     let (equal, rejected, nodes) = run(&sources);
     eprintln!("rows: {equal} equal ({nodes} nodes), {rejected} rejected with an error node");
+}
+
+/// The modifier is contextual, including its raw-token boundaries.
+#[test]
+fn resource_headers_match_core_flags_and_name_spans() {
+    let rows = [
+        "pub type resource Table",
+        "type resource Rd<Api>",
+        "type resource data",
+        "# café\r\npub type resource Table\r\ntype Next",
+        "type resource\tTable",
+        "type resource\u{2003}Table",
+        "type resource \\\nTable",
+        "type \\\nresource Table",
+        "type resource Table: Integer",
+        "type resource Table { value: Integer }",
+        "type resource Table where self > 0",
+        "resource = 1",
+        "f = resource => resource",
+        "type Data { resource: Integer }",
+        "type resource",
+        "type resource<A>",
+        "type resource: Integer",
+        "type resource { value: Integer }",
+        "type resource where self > 0",
+        "type resource\nTable",
+        "type resource # comment\nTable",
+        "type resource; Table",
+        "type resource\nwhere self > 0",
+        "type\nresource Table",
+        "type resource api.Table",
+        "type resource ## doc\nTable",
+    ];
+    for text in rows {
+        compare(text, text).unwrap();
+        let Ok(module) = parse(lex(text)) else {
+            continue;
+        };
+        let expected: Vec<_> = module
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item(fipe::ast::Item {
+                    kind: ItemKind::Type { resource, name, .. },
+                    ..
+                }) => Some((*resource, name.span.start, name.span.end)),
+                _ => None,
+            })
+            .collect();
+        let parsed = tree(text);
+        let mut actual = Vec::new();
+        walk(&parsed, |node| {
+            if node.kind() == "type_item" {
+                let name = node.child_by_field_name("name").unwrap();
+                let modifier = node.child_by_field_name("resource");
+                if let Some(modifier) = modifier {
+                    assert_eq!(modifier.kind(), "resource_modifier");
+                    assert_eq!(&text[modifier.byte_range()], "resource");
+                }
+                actual.push((
+                    modifier.is_some(),
+                    name.start_byte(),
+                    name.end_byte(),
+                ));
+            }
+        });
+        assert_eq!(expected, actual, "{text}");
+    }
 }
 
 /// The inputs of `test/corpus`, each with whether it is marked `:error`.

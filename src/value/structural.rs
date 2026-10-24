@@ -31,7 +31,8 @@ fn pairs<'a>(
             && a.fields.len() == b.fields.len())
         .then(|| a.fields.iter().zip(b.fields.iter()).collect()),
         (Value::Packed(a), Value::Packed(b)) => {
-            (a.meaning == b.meaning).then(|| alloc::vec![(&a.value, &b.value)])
+            super::resource::type_equal(a.source_type(), b.source_type())
+                .then(|| alloc::vec![(a.value(), b.value())])
         }
         (Value::Function(a), Value::Function(b)) => {
             Rc::ptr_eq(a, b).then(Vec::new)
@@ -93,10 +94,11 @@ fn order<'a>(a: &'a Value, b: &'a Value, work: &mut Vec<Work<'a>>) -> Ordering {
                 decided => decided,
             }
         }
-        (Value::Packed(a), Value::Packed(b)) => match a.meaning.cmp(&b.meaning)
+        (Value::Packed(a), Value::Packed(b)) => match packed_order(a, b)
+            .expect("packed cmp requires homogeneous ordered sources")
         {
             Ordering::Equal => {
-                work.push(Work::Pair(&a.value, &b.value));
+                work.push(Work::Pair(a.value(), b.value()));
                 Ordering::Equal
             }
             decided => decided,
@@ -149,6 +151,7 @@ pub fn show<'a>(value: &'a Value, tables: &'a ir::Tables) -> String {
         };
         match value {
             Value::Unit => out.push_str("()"),
+            Value::Resource(_) => out.push_str("<resource>"),
             Value::Int(_) | Value::Big(_) => {
                 out.push_str(&super::arith::show(value));
             }
@@ -159,7 +162,7 @@ pub fn show<'a>(value: &'a Value, tables: &'a ir::Tables) -> String {
             Value::Function(_) => out.push_str("<function>"),
             Value::Meaning(_) => out.push_str("<meaning>"),
             Value::Packed(packed) => {
-                work.push(Piece::Value(&packed.value, argument));
+                work.push(Piece::Value(packed.value(), argument));
             }
             Value::Seq(parts) | Value::Tuple(parts) => {
                 let (open, close) = if matches!(value, Value::Seq(_)) {
@@ -279,5 +282,20 @@ pub fn default(
         other => {
             Err(Reason::Message(alloc::format!("no default for {other:?}")))
         }
+    }
+}
+
+/// Legacy nominal ordering, or payload ordering for one structural source.
+pub(crate) fn packed_order(
+    a: &super::Packed,
+    b: &super::Packed,
+) -> Option<Ordering> {
+    match (a.source_type(), b.source_type()) {
+        (
+            ir::Type::Meaning { index: a, .. },
+            ir::Type::Meaning { index: b, .. },
+        ) => Some(a.cmp(b)),
+        (a, b) if super::resource::type_equal(a, b) => Some(Ordering::Equal),
+        _ => None,
     }
 }

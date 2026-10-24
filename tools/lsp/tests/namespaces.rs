@@ -39,3 +39,42 @@ fn dotted_host_files_check_navigate_and_complete() {
         );
     }
 }
+
+#[test]
+fn selected_host_failures_are_reported() {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lsp-host-missing");
+    let _ = fs::remove_dir_all(&path);
+    let host = loader::host(Some(&path));
+    assert!(
+        !host.errors.is_empty(),
+        "missing selected directory was ignored"
+    );
+}
+
+#[test]
+fn host_loading_keeps_read_and_located_declaration_errors() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lsp-host-errors");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    assert!(loader::host(None).errors.is_empty());
+    assert!(loader::host(Some(&dir)).errors.is_empty());
+    fs::write(dir.join("bytes.fipe"), [255]).unwrap();
+    fs::write(dir.join("bad.fipe"), "pub ???").unwrap();
+    let host = loader::host(Some(&dir));
+    assert!(
+        host.errors
+            .iter()
+            .any(|error| error.contains("bytes.fipe: cannot read:")),
+        "{:?}",
+        host.errors
+    );
+    assert!(
+        host.errors
+            .iter()
+            .any(|error| error.contains("bad.fipe:1:")),
+        "{:?}",
+        host.errors
+    );
+    let host = loader::host(Some(&dir.join("bytes.fipe")));
+    assert!(host.errors[0].contains("cannot enumerate:"));
+}

@@ -12,6 +12,8 @@ import select
 import subprocess
 import sys
 import termios
+import tempfile
+from pathlib import Path
 
 LEFT, UP = b"\x1b[D", b"\x1b[A"
 
@@ -101,6 +103,86 @@ def completing(binary):
     print(f"{binary}: completion and colour session passed")
 
 
-for binary in sys.argv[1:]:
-    editing(binary)
-    completing(binary)
+
+
+def output_failure_worker(command, env=None):
+    """Observe raw mode before injected run_driver failure restores the live PTY."""
+    master, slave = os.openpty()
+    before = termios.tcgetattr(slave)
+    child = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave,
+                             start_new_session=True, env=env)
+    try:
+        seen = b""
+        while b"RAW-READY" not in seen:
+            assert select.select([master], [], [], 10)[0], seen
+            seen += os.read(master, 4096)
+        raw = termios.tcgetattr(slave)
+        assert not raw[3] & termios.ICANON and not raw[3] & termios.ECHO
+        assert raw != before
+        os.write(master, b"x")
+        assert child.wait(timeout=10) == 2
+        assert termios.tcgetattr(slave) == before
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        os.close(master)
+        os.close(slave)
+
+
+def pipe_failures(binary, cli=False):
+    """Observed write/read errors are fatal; failed output prevents later effects."""
+    with tempfile.TemporaryDirectory(prefix="fipe-repl-output-") as directory:
+        command = [binary, "repl", "--allow-write", directory] if cli else [binary]
+        text = b'put out "before"\n\nput ./sentinel "no"\n\n' if cli else b'1\n\n2\n\n'
+        with open("/dev/full", "wb") as sink:
+            failed = subprocess.run(command, input=text, stdout=sink, stderr=subprocess.PIPE,
+                                    cwd=directory, timeout=10)
+        assert failed.returncode == 2, failed
+        assert not Path(directory, "sentinel").exists()
+        healthy = subprocess.run(command, input=text, capture_output=True, cwd=directory, timeout=10)
+        assert healthy.returncode == 0, healthy
+        if cli:
+            assert Path(directory, "sentinel").read_text() == "no"
+        else:
+            assert b"1\n" in healthy.stdout and b"2\n" in healthy.stdout
+        # An observed read error: stdin is a directory, not an EOF-producing pipe.
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            bad_read = subprocess.run(command, stdin=fd, capture_output=True, cwd=directory, timeout=10)
+            assert bad_read.returncode == 2, bad_read
+            assert b"cannot read standard input" in bad_read.stdout
+        finally:
+            os.close(fd)
+        for restore_signals in [True, False]:
+            Path(directory, "sentinel").unlink(missing_ok=True)
+            read_fd, write_fd = os.pipe()
+            os.close(read_fd)
+            try:
+                broken = subprocess.run(command, input=text, stdout=write_fd, stderr=subprocess.PIPE,
+                                        cwd=directory, timeout=10, restore_signals=restore_signals)
+                if restore_signals:
+                    assert broken.returncode in [2, -13], broken
+                else:
+                    assert broken.returncode == 2, broken
+                assert not Path(directory, "sentinel").exists()
+                print(f"{binary}: closed pipe restore_signals={restore_signals}: {broken.returncode}")
+            finally:
+                os.close(write_fd)
+    print(f"{binary}: pipe failure controls passed")
+
+
+if __name__ == "__main__":
+    args = iter(sys.argv[1:])
+    for binary in args:
+        if binary == "--worker-std":
+            env = dict(os.environ, FIPE_OUTPUT_WORKER="1")
+            output_failure_worker([next(args), "--exact", "output_tests::output_pty_worker", "--ignored", "--nocapture"], env)
+        elif binary == "--worker-linux":
+            output_failure_worker([next(args)])
+        elif binary == "--cli":
+            pipe_failures(next(args), True)
+        else:
+            editing(binary)
+            completing(binary)
+            pipe_failures(binary)

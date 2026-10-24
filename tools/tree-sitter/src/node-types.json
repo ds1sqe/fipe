@@ -4972,6 +4972,16 @@
             "named": true
           }
         ]
+      },
+      "resource": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "resource_modifier",
+            "named": true
+          }
+        ]
       }
     },
     "children": {
@@ -5389,6 +5399,10 @@
   },
   {
     "type": "raw_string",
+    "named": true
+  },
+  {
+    "type": "resource_modifier",
     "named": true
   },
   {

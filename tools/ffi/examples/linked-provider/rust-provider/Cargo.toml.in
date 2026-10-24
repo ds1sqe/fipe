@@ -1,0 +1,9 @@
+[package]
+name = "fipe-linked-rust-provider"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.98.1"
+publish = false
+
+[dependencies]
+fipe-ffi = "=0.2.0-dev.2"

@@ -720,7 +720,7 @@ fn type_layouts_keep_parameters_distinct_from_fixed_fields() {
 }
 
 #[test]
-fn hidden_meanings_are_only_for_receiverless_members() {
+fn hidden_meanings_follow_actual_runtime_callable_reads() {
     let source = "id = x => x\ninc = x => x + 1\nshow = x => x.show";
     let (module, typed, errors) = super::check(source, &Declarations::new());
     assert_eq!(errors, []);
@@ -740,7 +740,85 @@ fn hidden_meanings_are_only_for_receiverless_members() {
             Some(typed.hidden[&(span.start, span.end)].len())
         })
         .collect();
-    assert_eq!(hidden, [0, 1, 0]);
+    assert_eq!(hidden, [0, 1, 2]);
+    let show = source.rfind("show =").unwrap();
+    let site = (show, show + "show".len());
+    let parameters = &typed.body_parameters[&site];
+    assert_eq!(parameters.len(), 2);
+    assert_ne!(
+        parameters[0], parameters[1],
+        "receiver and result are independent type variables"
+    );
+    assert_eq!(typed.hidden[&site], [0, 1]);
+    let access = typed.accesses.values().flatten().find(|access| matches!(&access.selected, fipe::typed::Selected::Member { name, .. } if name == "show")).expect("actual generic member read");
+    assert_eq!(&access.head, &parameters[0]);
+    assert_eq!(&access.result, &parameters[1]);
+    let unit = fipe::check::check(
+        &module,
+        &Declarations::new(),
+        &[],
+        fipe::check::Options::default(),
+    )
+    .expect("same original source fullchecks");
+    let program = fipe::compile::compile(&unit);
+    let tables = program.tables.borrow();
+    let main = callable_main_namespace(&tables);
+    let (definition, value) = tables
+        .definitions
+        .iter()
+        .enumerate()
+        .find(|(_, value)| value.namespace == main && value.label == "show")
+        .expect("actual show wrapper");
+    let [receiver, result] = value.parameters.as_slice() else {
+        panic!("two independent lowered binder IDs")
+    };
+    assert_ne!(receiver, result);
+    assert_eq!(
+        value.hidden, value.parameters,
+        "both actual callable type reads need witnesses"
+    );
+    let body = &program.bodies
+        [program.definitions[definition].expect("show body is emitted")];
+    assert_eq!(body.hidden, value.parameters);
+    let expected = fipe::ir::Type::Function {
+        parameter: Box::new(fipe::ir::Type::Parameter(*receiver)),
+        result: Box::new(fipe::ir::Type::Parameter(*result)),
+    };
+    let mut found = 0;
+    for block in &body.blocks {
+        if let fipe::mir::Terminator::Call {
+            callee:
+                fipe::mir::Callee::Dispatch {
+                    witness: fipe::mir::Witness::Value(value),
+                    ..
+                },
+            args,
+            meanings,
+            dest,
+            ..
+        } = &block.terminator
+        {
+            assert_eq!(
+                args.as_slice(),
+                [*value],
+                "bound member read supplies only its receiver"
+            );
+            assert_eq!(
+                meanings,
+                std::slice::from_ref(&expected),
+                "actual dispatch transports the full receiver/result callable"
+            );
+            assert_eq!(
+                body.locals[*dest].ty,
+                fipe::ir::Type::Parameter(*result)
+            );
+            found += 1;
+        }
+    }
+    assert_eq!(
+        found, 1,
+        "one actual dynamic show read, not an inferred mask-only assertion"
+    );
 }
 
 #[test]
@@ -808,6 +886,11 @@ fn generic_members_record_field_and_member_dispatch_rows() {
         r.selected,
         fipe::typed::Selected::Field { index: 0, .. }
     )));
+    for row in field.rows.iter().filter(|row| {
+        matches!(row.selected, fipe::typed::Selected::Field { .. })
+    }) {
+        assert_eq!(row.receiver_spot, Some(0));
+    }
     let add = typed.dispatch.iter().find(|d| d.name == "add").unwrap();
     let integer = add
         .rows
@@ -1026,4 +1109,50 @@ fn dispatch_rows_keep_one_receiver_up_to_its_variable_names() {
         .filter(|receiver| receiver.starts_with("Maybe<"))
         .collect();
     assert_eq!(maybe.len(), 1, "{maybe:?}");
+}
+
+#[test]
+fn owner_parameters_follow_body_use_without_forcing_phantom_hidden() {
+    let mut declarations = Declarations::new();
+    declarations.module("csv", "pub get: () -> a").unwrap();
+    for (source,witnesses) in [
+        ("use csv\ntype W<T> { value: T }\nimpl W<a> { probe: () -> Integer = _ => { x: a = csv.get ()\n1 }, call: Self -> Integer = self => Self.probe () }\nx: W<Integer> = W 1\nx.call",1),
+        ("type Phantom<T> { value: Integer }\nimpl Phantom<a> { probe: () -> Integer = _ => 1, call: Self -> Integer = self => Self.probe () }\nx: Phantom<String> = Phantom 1\nx.call",0),
+    ] {
+        let (_,typed,errors)=super::check(source,&declarations);
+        assert_eq!(errors,[],"{source}");
+        for name in ["probe","call"] {
+            let start=source.find(name).unwrap();let site=(start,start+name.len());
+            assert_eq!(typed.schemes[&site].variables.len(),1,"owner quantified once: {name}");
+            assert_eq!(typed.body_parameters[&site].len(),1);
+            assert_eq!(typed.hidden[&site].len(),witnesses,"actual use: {name}");
+        }
+    }
+}
+
+#[test]
+fn owner_deferred_member_keeps_the_later_owner_and_literal_context() {
+    let mut declarations = Declarations::new();
+    declarations.module("csv", "pub get: () -> a").unwrap();
+    let source="use csv\ntype W<T> { value: T }\nearly: W<Integer> -> Integer = self => self.call\nlate=1\nimpl W<a> { probe: () -> Integer = _ => { x: a = csv.get ()\nlate }, call: Self -> Integer = self => Self.probe () }\nx: W<Integer> = W 1\nearly x";
+    let (_, typed, errors) = super::check(source, &declarations);
+    assert_eq!(errors, []);
+    let probe = source.find("probe").unwrap();
+    assert_eq!(typed.hidden[&(probe, probe + 5)].len(), 1);
+}
+
+#[test]
+fn owner_invalid_declared_body_reports_diagnostics_without_completion_panic() {
+    let mut declarations = Declarations::new();
+    declarations.module("config","pub type W<T> { pub value: T }\nimpl W<a> { bad: () -> Integer = _ => (1, 2), call: Self -> Integer = self => Self.bad () }\npub bad = (W 1).call").unwrap();
+    let (_, _, errors) = super::check("use config\nconfig.bad", &declarations);
+    assert!(errors.iter().any(|e|matches!(&e.reason,fipe::infer::Reason::DeclarationValue{name,..}if name=="bad")),"{errors:?}");
+}
+
+fn callable_main_namespace(tables: &fipe::ir::Tables) -> usize {
+    tables
+        .namespaces
+        .iter()
+        .position(|name| name == "main")
+        .unwrap()
 }

@@ -233,6 +233,17 @@ a structural `eq`, `cmp`, `show` or `default` one per value below the receiver.
 A test costs the nodes of its limit's body, the division test one unit; a proved
 entry has no `Enter` and costs nothing. A host call's bytes are not charged.
 
+Receiver adapters also charge the traversal and copying of their checked
+callable type, including partial and full invocation, and projection of the
+actual protocol result before the member executes. Resource admission charges
+its type/layout walks, identity lookup scans and captured identity snapshots
+before the pending call or input proceeds. These costs depend on the actual
+type trees and the current table identity-cache contents; repeating the same
+source after another call materializes identities need not cost the same.
+Calibrate a finite control against the same table state, rather than treating
+an earlier run's charge as a fixed source cost. These are logical work units,
+not a bound on elapsed time or external Host effects.
+
 An `Enter` tests every component its entry's path reaches from the value, in
 order; the first failure is `Reason::Failed { entry, value }`, which
 `Reason::describe(tables)` words with the entry's limit. `Observation` is what

@@ -351,6 +351,10 @@ fn rebase_weak(weak: &Subst, index: usize) -> Subst {
 
 fn rebase_local(local: &Local, index: usize) -> Local {
     Local {
+        owner: local
+            .owner
+            .as_ref()
+            .map(|owner| owner.rehome(&Origin::Line(index))),
         scheme: local.scheme.rehome(&Origin::Line(index)),
         heads: local.heads.clone(),
     }

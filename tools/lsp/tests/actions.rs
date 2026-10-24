@@ -389,3 +389,12 @@ fn the_examples_are_at_a_fixed_point_and_come_back_to_it() {
         );
     }
 }
+
+#[test]
+fn formatting_is_syntax_based_even_with_unknown_names() {
+    let uri = uri(&root().join("scratch/format-semantic.fipe"));
+    let text = "unknown  =   missing\n";
+    let replies = exchange(&[open(&uri, text), formatting(1, &uri)]);
+    let edits = message(&replies, 1)["result"].as_array().unwrap();
+    assert_eq!(edits[0]["newText"], fipe::format::format(text).unwrap());
+}

@@ -208,3 +208,195 @@ fn a_stepped_run_checks_its_replies_alike() {
     };
     assert_eq!(misfit(result).0, "the reply is not an Integer * Integer");
 }
+
+const WRITTEN_HOST: &str = "pub type Table\npub get: Table\npub type Wrap { pub value: Table }\nimpl Wrap { () => Self { value: get } }";
+
+fn written_program(
+    declarations: &Declarations,
+    source: &str,
+    files: &[(String, fipe::ast::Module)],
+) -> Program {
+    let module = parse(lex(source)).unwrap();
+    let unit =
+        check::check(&module, declarations, files, check::Options::default())
+            .unwrap();
+    compile::compile(&unit)
+}
+
+#[test]
+fn supplied_written_constructor_keeps_host_effects_inside_the_call() {
+    let mut declarations = Declarations::new();
+    declarations.commands(WRITTEN_HOST).unwrap();
+    let unused = written_program(&declarations, "f = _ => Wrap ()", &[]);
+    let mut machine = Machine::new(Some(BUDGET));
+    assert!(matches!(machine.run(&unused), Outcome::Done(Ok(_))));
+    let program = written_program(&declarations, "Wrap ()", &[]);
+    for denied in [false, true] {
+        let mut machine = Machine::new(Some(BUDGET));
+        let Outcome::Request(fipe::embed::Request::Call {
+            declaration,
+            arguments,
+            ..
+        }) = machine.run(&program)
+        else {
+            panic!("get request")
+        };
+        let tables = program.tables.borrow();
+        assert_eq!(tables.declarations[declaration].label, "get");
+        assert_eq!(
+            tables.namespaces[tables.declarations[declaration].namespace],
+            "commands"
+        );
+        assert!(arguments.is_empty());
+        drop(tables);
+        let reply = if denied {
+            Err("denied".to_owned())
+        } else {
+            Ok(Value::Int(42))
+        };
+        match machine.reply(&program, Reply::Value(reply)) {
+            Outcome::Done(Ok(Value::Record(record))) if !denied => {
+                assert_eq!(record.fields, [Value::Int(42)]);
+            }
+            Outcome::Done(Err(fault)) if denied => {
+                assert_eq!(fault.reason, Reason::Host("denied".into()));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn imported_written_constructor_executes_body_instead_of_raw_fields() {
+    let file = "pub type Point { pub x: Integer }\nimpl Point { x => Self { x: x + 1 } }\npub make: Integer -> Point = x => Point x";
+    let files = [("point".to_owned(), parse(lex(file)).unwrap())];
+    for source in ["use point\npoint.Point 1", "use point\npoint.make 1"] {
+        let program = written_program(&Declarations::new(), source, &files);
+        let mut machine = Machine::new(Some(BUDGET));
+        let Outcome::Done(Ok(Value::Record(record))) = machine.run(&program)
+        else {
+            panic!("Point result")
+        };
+        assert_eq!(record.fields, [Value::Int(2)]);
+    }
+}
+
+#[test]
+fn supplied_constructor_cache_survives_session_boundaries_and_forks() {
+    let mut declarations = Declarations::new();
+    declarations.commands("pub type Wrap { pub value: Integer }\nimpl Wrap { x => Self { value: x + 1 } }").unwrap();
+    let mut session = fipe::session::Session::new(declarations);
+    for source in ["f = x => Wrap x", "f 2", "Wrap 3"] {
+        let Outcome::Done(report) = session.line(source) else {
+            panic!("checked line")
+        };
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.unit.is_some());
+    }
+    let mut fork = session.clone();
+    for session in [&mut session, &mut fork] {
+        let Outcome::Done(report) = session.line("Wrap 4") else {
+            panic!("checked line")
+        };
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let program = compile::compile(report.unit.as_ref().unwrap());
+        let mut machine = Machine::new(Some(BUDGET));
+        let Outcome::Done(Ok(Value::Record(record))) = machine.run(&program)
+        else {
+            panic!("Wrap result")
+        };
+        assert_eq!(record.fields, [Value::Int(5)]);
+    }
+}
+
+#[test]
+fn supplied_constructor_identity_includes_namespace_and_generics() {
+    let mut declarations = Declarations::new();
+    for (name, offset) in [("left", 1), ("right", 10)] {
+        declarations.module(name, &format!("pub type Wrap {{ pub value: Integer }}\nimpl Wrap {{ x => Self {{ value: x + {offset} }} }}")).unwrap();
+    }
+    let program =
+        written_program(&declarations, "(left.Wrap 2, right.Wrap 2)", &[]);
+    let mut machine = Machine::new(Some(BUDGET));
+    let Outcome::Done(Ok(Value::Tuple(values))) = machine.run(&program) else {
+        panic!("two wrappers")
+    };
+    let [Value::Record(left), Value::Record(right)] = values.as_slice() else {
+        panic!("records")
+    };
+    assert_ne!(left.meaning, right.meaning);
+    assert_eq!(left.fields, [Value::Int(3)]);
+    assert_eq!(right.fields, [Value::Int(12)]);
+    declarations.commands("pub type Box<T> { pub value: T }\nimpl Box<T> { x => Self { value: x } }").unwrap();
+    let program = written_program(&declarations, "(Box 2, Box \"text\")", &[]);
+    let mut machine = Machine::new(Some(BUDGET));
+    let Outcome::Done(Ok(Value::Tuple(values))) = machine.run(&program) else {
+        panic!("generic boxes")
+    };
+    let [Value::Record(integer), Value::Record(text)] = values.as_slice()
+    else {
+        panic!("records")
+    };
+    assert_eq!(integer.fields, [Value::Int(2)]);
+    assert_eq!(text.fields, [Value::text("text")]);
+}
+
+#[test]
+fn withdrawn_file_constructor_is_rechecked_when_its_source_returns() {
+    let mut session = fipe::session::Session::new(Declarations::new());
+    for offset in [1, 10] {
+        let Outcome::Request(fipe::embed::Request::File { stem }) =
+            session.line("use point\npoint.Point 2")
+        else {
+            panic!("file request")
+        };
+        assert_eq!(stem, "point");
+        let text = format!(
+            "pub type Point {{ pub x: Integer }}\nimpl Point {{ x => Self {{ x: x + {offset} }} }}"
+        );
+        let Outcome::Done(report) = session.reply(Reply::File(Some(text)))
+        else {
+            panic!("checked line")
+        };
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let program = compile::compile(report.unit.as_ref().unwrap());
+        let mut machine = Machine::new(Some(BUDGET));
+        let Outcome::Done(Ok(Value::Record(record))) = machine.run(&program)
+        else {
+            panic!("Point result")
+        };
+        assert_eq!(record.fields, [Value::Int(2 + offset)]);
+        assert!(session.withdraw(report.accepted.unwrap()).is_some());
+    }
+}
+
+#[test]
+fn recursive_supplied_constructor_dependency_survives_withdrawal() {
+    for (declarations, first, later) in [
+        (
+            "pub type A { pub value: Integer }\npub type B { pub value: Integer }\nimpl A { x => Self { value: (B x).value } }\nimpl B { x => Self { value: (A x).value } }",
+            "f = _ => A 1",
+            "g = _ => B 1",
+        ),
+        (
+            "pub type A<T> { pub value: T }\npub type B<T> { pub value: T }\nimpl A<T> { x => Self { value: (B x).value } }\nimpl B<T> { x => Self { value: (A x).value } }",
+            "f = x => A x",
+            "g = _ => (B 1, B \"text\")",
+        ),
+    ] {
+        let mut declarations_host = Declarations::new();
+        declarations_host.commands(declarations).unwrap();
+        let mut session = fipe::session::Session::new(declarations_host);
+        let Outcome::Done(first) = session.line(first) else {
+            panic!("first line")
+        };
+        assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+        assert!(first.unit.is_some());
+        assert!(session.withdraw(first.accepted.unwrap()).is_some());
+        let Outcome::Done(second) = session.line(later) else {
+            panic!("second line")
+        };
+        assert!(second.diagnostics.is_empty(), "{:?}", second.diagnostics);
+        assert!(second.unit.is_some());
+    }
+}

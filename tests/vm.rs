@@ -14,6 +14,8 @@ use fipe::{
 #[path = "vm/run.rs"]
 mod run;
 
+#[path = "vm/abandon.rs"]
+mod abandon;
 #[path = "vm/arith.rs"]
 mod arith;
 #[path = "vm/budget.rs"]
@@ -60,3 +62,6 @@ mod suspend;
 mod text;
 #[path = "vm/withdraw.rs"]
 mod withdraw;
+
+#[path = "vm/resources.rs"]
+mod resources;

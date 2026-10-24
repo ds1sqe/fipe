@@ -139,6 +139,16 @@ impl Declarations {
         Ok(())
     }
 
+    /// Complete classification, independent of which meanings a unit reaches.
+    pub(crate) fn has_resources(&self) -> bool {
+        self.commands.iter().chain(&self.modules).any(|namespace| {
+            namespace
+                .types
+                .iter()
+                .any(|ty| matches!(ty.kind, Kind::Type { resource: true, .. }))
+        })
+    }
+
     /// The immediate host submodules of a namespace.
     pub fn submodules<'a>(
         &'a self,
@@ -222,6 +232,7 @@ impl Namespace {
             reason: Reason::NotYetChecked { form },
         })
         .collect();
+        errors.extend(resource_errors(&namespace));
         errors.extend(spots::check(&namespace.module));
         docs::check(&namespace.module, &mut errors);
         claims::check(&namespace.module, others, &mut errors);
@@ -230,6 +241,7 @@ impl Namespace {
                 errors.push(error);
             }
         }
+        errors.extend(constructor_collisions(&namespace.module));
         if errors.is_empty() {
             let mut supplied: Vec<Self> = others
                 .iter()
@@ -351,6 +363,7 @@ pub enum Kind {
     /// `type Name<params> { … }`; a record's constructor is its own name,
     /// a sum's are its uppercase members, an opaque type has none.
     Type {
+        resource: bool,
         parameters: usize,
         opaque: bool,
         constructors: Vec<String>,
@@ -406,14 +419,114 @@ pub enum Reason {
     Syntax(parse::Reason),
     /// A line that is neither an item nor a `name = value` binding.
     NotDeclaration,
+    /// A marked resource must be an opaque Host/commands declaration.
+    ResourceForm,
     /// A second declaration of a name in the same namespace.
     Duplicate {
+        first: Span,
+    },
+    /// Two types in one declaration namespace declare the same value constructor.
+    ConstructorCollision {
+        name: String,
+        first_type: String,
+        second_type: String,
         first: Span,
     },
     /// A form the parser accepts that the checker does not check yet.
     NotYetChecked {
         form: Unchecked,
     },
+}
+
+/// Resource headers stay opaque and belong only to Host registration.
+fn resource_errors(namespace: &Namespace) -> Vec<Error> {
+    let mut errors = Vec::new();
+    for entry in &namespace.module.entries {
+        if let Entry::Item(Item {
+            kind:
+                ItemKind::Type {
+                    resource: true,
+                    name: declared,
+                    base,
+                    members,
+                    limits,
+                    ..
+                },
+            ..
+        }) = entry
+        {
+            if namespace.name == "prelude"
+                || base.is_some()
+                || members.is_some()
+                || !limits.is_empty()
+            {
+                errors.push(Error {
+                    span: declared.span,
+                    reason: Reason::ResourceForm,
+                });
+            }
+        }
+    }
+    errors
+}
+
+/// Constructors share a local value namespace, even when their owners are private.
+/// Keep this separate from explicit values and from declarations in other sources.
+fn constructor_collisions(module: &Module) -> Vec<Error> {
+    let mut errors = Vec::new();
+    let mut owners = Vec::new();
+    let mut seen: Vec<(&Name, &Name)> = Vec::new();
+    for entry in &module.entries {
+        let Entry::Item(Item {
+            kind:
+                ItemKind::Type {
+                    name: owner,
+                    members,
+                    ..
+                },
+            ..
+        }) = entry
+        else {
+            continue;
+        };
+        let owner_name = last(owner);
+        // Existing type-name validation owns duplicate headers.
+        if owners.contains(&owner_name) {
+            continue;
+        }
+        owners.push(owner_name);
+        let Some(members) = members else { continue };
+        let mut names: Vec<_> = members
+            .iter()
+            .filter_map(|member| match member {
+                Member::Constructor { name, .. } => Some(name),
+                Member::Field(_) => None,
+            })
+            .collect();
+        if names.is_empty() {
+            names.push(owner);
+        }
+        for name in names {
+            if let Some((first_owner, first)) =
+                seen.iter().find(|(_, prior)| last(prior) == last(name))
+            {
+                if last(first_owner) != last(owner) {
+                    errors.push(Error {
+                        span: name.span,
+                        reason: Reason::ConstructorCollision {
+                            name: last(name),
+                            first_type: last(first_owner),
+                            second_type: last(owner),
+                            first: first.span,
+                        },
+                    });
+                }
+            } else {
+                seen.push((owner, name));
+            }
+        }
+    }
+    errors
 }
 
 /// The types and the values one item declares.
@@ -423,6 +536,7 @@ fn item_names(module: &Module, item: &Item) -> (Vec<Declared>, Vec<Declared>) {
     match &item.kind {
         ItemKind::Use { .. } | ItemKind::Impl { .. } => {}
         ItemKind::Type {
+            resource,
             name,
             parameters,
             base,
@@ -432,6 +546,7 @@ fn item_names(module: &Module, item: &Item) -> (Vec<Declared>, Vec<Declared>) {
             name: last(name),
             public: item.public,
             kind: Kind::Type {
+                resource: *resource,
                 parameters: parameters.len(),
                 opaque: members.is_none()
                     && base.is_none()

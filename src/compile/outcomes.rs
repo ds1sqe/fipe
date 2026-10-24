@@ -117,11 +117,7 @@ impl<'a> Builder<'_, 'a> {
         );
         let payload = self.local(payload_ty, None);
         self.assign(payload, Rvalue::Field(value, 0), stage);
-        let supplied = matches!(
-            &tables.nodes[stage].kind,
-            ir::Kind::Call { supplies, .. }
-                if supplies.iter().any(|supply| supply.value == left)
-        );
+        let supplied = supplied_stage(tables, stage, left);
         if supplied {
             self.substituted.insert(left, Operand::Local(payload));
             let result = self.lower(stage);
@@ -444,6 +440,198 @@ impl<'a> Builder<'_, 'a> {
             self.assign(dest, rvalue, node);
             self.terminate(Terminator::Goto(join), node);
         }
+        self.switch_to(join);
+        Operand::Local(dest)
+    }
+}
+
+// A checked payload conversion belongs to the selected branch, not the outcome.
+fn supplied_payload(tables: &ir::Tables, mut node: usize, left: usize) -> bool {
+    loop {
+        if node == left {
+            return true;
+        }
+        node = match &tables.nodes[node].kind {
+            ir::Kind::Cast { value, .. }
+            | ir::Kind::Pack { value, .. }
+            | ir::Kind::Enter { value, .. } => *value,
+            ir::Kind::Block(parts) if parts.len() == 1 => parts[0],
+            _ => return false,
+        };
+    }
+}
+
+fn supplied_stage(tables: &ir::Tables, mut stage: usize, left: usize) -> bool {
+    loop {
+        stage = match &tables.nodes[stage].kind {
+            ir::Kind::Call {
+                callee, supplies, ..
+            } => {
+                if supplies
+                    .iter()
+                    .any(|s| supplied_payload(tables, s.value, left))
+                {
+                    return true;
+                }
+                *callee
+            }
+            ir::Kind::Cast { value, .. }
+            | ir::Kind::Pack { value, .. }
+            | ir::Kind::Enter { value, .. } => *value,
+            _ => return false,
+        };
+    }
+}
+
+pub(super) fn supplied_target(
+    tables: &ir::Tables,
+    mut stage: usize,
+    target: usize,
+    left: usize,
+) -> bool {
+    loop {
+        stage = match &tables.nodes[stage].kind {
+            ir::Kind::Call {
+                callee, supplies, ..
+            } => {
+                for supply in supplies {
+                    let mut value = supply.value;
+                    let mut found = false;
+                    loop {
+                        if value == left {
+                            if found {
+                                return true;
+                            }
+                            break;
+                        }
+                        found |= value == target;
+                        value = match &tables.nodes[value].kind {
+                            ir::Kind::Cast { value, .. }
+                            | ir::Kind::Pack { value, .. }
+                            | ir::Kind::Enter { value, .. } => *value,
+                            ir::Kind::Block(parts) if parts.len() == 1 => {
+                                parts[0]
+                            }
+                            _ => break,
+                        };
+                    }
+                }
+                *callee
+            }
+            ir::Kind::Cast { value, .. }
+            | ir::Kind::Pack { value, .. }
+            | ir::Kind::Enter { value, .. } => *value,
+            ir::Kind::Block(parts) if parts.len() == 1 => parts[0],
+            _ => return false,
+        };
+    }
+}
+
+pub(super) fn context_type(
+    tables: &ir::Tables,
+    node: usize,
+    contexts: &[usize],
+) -> ir::Type {
+    let mut target = tables.nodes[node].ty.clone();
+    for context in contexts.iter().rev() {
+        let ir::Kind::Marked { left, good, .. } = tables.nodes[*context].kind
+        else {
+            unreachable!("marked context")
+        };
+        if left != node {
+            continue;
+        }
+        if let Some(ty) = context_payload(tables, left, good) {
+            target = ty;
+        }
+        break;
+    }
+    ir::Type::Sum(vec![
+        ir::Type::Tuple(Vec::new()),
+        ir::Type::Tuple(vec![target]),
+    ])
+}
+
+fn context_payload(
+    tables: &ir::Tables,
+    left: usize,
+    good: bool,
+) -> Option<ir::Type> {
+    let mut outcome = &tables.nodes[left].ty;
+    while let ir::Type::Session(slot) = outcome {
+        outcome = tables.session_meanings[*slot]
+            .as_ref()
+            .expect("fixed outcome");
+    }
+    let meaning = meaning_of(tables, outcome);
+    let (yes, no) = sides(tables, outcome);
+    let field = tables.meanings[meaning].constructors
+        [if good { yes } else { no }]
+    .fields
+    .first()?;
+    Some(instantiate(
+        &field.ty,
+        &tables.meanings[meaning].parameters,
+        outcome,
+    ))
+}
+
+impl Builder<'_, '_> {
+    pub(super) fn contextual_target(
+        &mut self,
+        node: usize,
+        contexts: &[usize],
+        result_type: &ir::Type,
+    ) -> Operand {
+        let dest = self.local(result_type.clone(), None);
+        let Some((&context, nested)) = contexts.split_first() else {
+            let value = self.lower(node);
+            self.assign(dest, Rvalue::Tuple(vec![value]), node);
+            return Operand::Local(dest);
+        };
+        let ir::Kind::Marked { left, good, .. } =
+            self.tables().nodes[context].kind
+        else {
+            unreachable!("marked context")
+        };
+        let value = self.lower(left);
+        let (yes, no) = sides(self.tables(), &self.tables().nodes[left].ty);
+        let (side, other) = if good { (yes, no) } else { (no, yes) };
+        let active = self.open(context);
+        let inactive = self.open(context);
+        let join = self.open(context);
+        self.terminate(
+            Terminator::Switch {
+                value,
+                cases: vec![(side, active), (other, inactive)],
+                otherwise: None,
+            },
+            context,
+        );
+        self.switch_to(inactive);
+        self.count(context);
+        self.assign(dest, Rvalue::Tuple(Vec::new()), context);
+        self.terminate(Terminator::Goto(join), context);
+        self.switch_to(active);
+        let mut substituted = false;
+        let previous =
+            context_payload(self.tables(), left, good).and_then(|ty| {
+                let payload = self.local(ty, None);
+                self.assign(payload, Rvalue::Field(value, 0), context);
+                substituted = true;
+                self.substituted.insert(left, Operand::Local(payload))
+            });
+        let result = self.contextual_target(node, nested, result_type);
+        if substituted {
+            if let Some(previous) = previous {
+                self.substituted.insert(left, previous);
+            } else {
+                self.substituted.remove(&left);
+            }
+        }
+        self.count(context);
+        self.assign(dest, Rvalue::Use(result), context);
+        self.terminate(Terminator::Goto(join), context);
         self.switch_to(join);
         Operand::Local(dest)
     }

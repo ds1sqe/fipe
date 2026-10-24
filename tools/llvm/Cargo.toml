@@ -2,6 +2,7 @@
 name = "fipe-llvm"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Fipe's LLVM backend: textual LLVM IR compiled by clang"
 license.workspace = true
 repository.workspace = true

@@ -538,3 +538,151 @@ fn nonfinite_float_arguments_are_rejected_before_invocation() {
         assert_eq!(CALLS.get(), 0);
     }
 }
+
+fn genuine_resource(program: &Program) -> Value {
+    use fipe::value::resource::{ResourceDomain, ResourceType};
+    use std::rc::Rc;
+
+    let ty =
+        ResourceType::registered(&program.tables.borrow(), "probe", "Handle")
+            .expect("live checked resource declaration");
+    let domain = ResourceDomain::new();
+    let value = domain.issue(&ty, Rc::from(&b"private-entry"[..]));
+    let Value::Resource(reference) = &value else {
+        panic!("genuine resource")
+    };
+    assert_eq!(reference.resource_type(), &ty);
+    assert_eq!(reference.domain(), &domain);
+    value
+}
+
+const RESOURCE_DECLARATIONS: &str = "pub type resource Handle\npub input: Handle\npub marked: Handle -> Integer\npub composite: Vec<Handle> -> Integer\npub make: Integer -> Handle\npub echo: Integer -> Integer";
+
+#[test]
+fn genuine_resource_arguments_never_reach_a_scalar_callback() {
+    use std::rc::Rc;
+
+    let descriptor = descriptor(RESOURCE_DECLARATIONS);
+    let mut provider = provider(&descriptor);
+    let program = program(&provider, "r = probe.input\nprobe.echo 7");
+    assert!(program.tables.borrow().has_resources);
+    let resource = genuine_resource(&program);
+    // This must execute input and reach echo through the actual checked VM path.
+    let original = request(&program, std::slice::from_ref(&resource));
+    let Request::Call {
+        declaration,
+        arguments,
+        ..
+    } = &original
+    else {
+        panic!("echo call")
+    };
+    let tables = program.tables.borrow();
+    let declared = &tables.declarations[*declaration];
+    assert_eq!(tables.namespaces[declared.namespace], "probe");
+    assert_eq!(declared.label, "echo");
+    assert_eq!(arguments, &[Value::Int(7)]);
+    for invalid in [
+        resource.clone(),
+        Value::Seq(Rc::new(vec![resource.clone()])),
+        Value::Tuple(Rc::new(vec![resource])),
+    ] {
+        let mut changed = original.clone();
+        let Request::Call { arguments, .. } = &mut changed else {
+            panic!("echo call")
+        };
+        arguments[0] = invalid;
+        CALLS.set(0);
+        assert_eq!(
+            contract(provider.call(&changed, &tables)),
+            "invalid native scalar argument"
+        );
+        assert_eq!(CALLS.get(), 0);
+    }
+    // Mandatory positive: the checked marker is present, yet scalar echo works.
+    CALLS.set(0);
+    assert_eq!(provider.call(&original, &tables).unwrap(), Value::Int(7));
+    assert_eq!(CALLS.get(), 1);
+}
+
+#[test]
+fn genuine_resource_parameter_signatures_refuse_before_callbacks() {
+    let descriptor = descriptor(RESOURCE_DECLARATIONS);
+    let mut provider = provider(&descriptor);
+    for (source, label, container) in [
+        ("probe.marked probe.input", "marked", false),
+        ("probe.composite [probe.input]", "composite", true),
+    ] {
+        let program = program(&provider, source);
+        let resource = genuine_resource(&program);
+        let request = request(&program, std::slice::from_ref(&resource));
+        let Request::Call {
+            declaration,
+            arguments,
+            ..
+        } = &request
+        else {
+            panic!("resource parameter call")
+        };
+        let tables = program.tables.borrow();
+        let declared = &tables.declarations[*declaration];
+        assert_eq!(tables.namespaces[declared.namespace], "probe");
+        assert_eq!(declared.label, label);
+        assert_eq!(arguments.len(), 1);
+        if container {
+            assert!(
+                matches!(&arguments[0], Value::Seq(parts) if parts.as_slice() == [resource])
+            );
+        } else {
+            assert_eq!(arguments[0], resource);
+        }
+        CALLS.set(0);
+        assert_eq!(
+            contract(provider.call(&request, &tables)),
+            "unsupported native declaration type",
+            "{label}"
+        );
+        assert_eq!(CALLS.get(), 0, "{label}");
+    }
+}
+
+#[test]
+fn resource_results_refuse_but_unused_markers_allow_scalar_callbacks() {
+    let descriptor = descriptor(RESOURCE_DECLARATIONS);
+    let mut provider = provider(&descriptor);
+    let program = program(&provider, "probe.make 7");
+    let request = request(&program, &[]);
+    let Request::Call {
+        declaration,
+        arguments,
+        ..
+    } = &request
+    else {
+        panic!("resource result call")
+    };
+    let tables = program.tables.borrow();
+    let declared = &tables.declarations[*declaration];
+    assert_eq!(tables.namespaces[declared.namespace], "probe");
+    assert_eq!(declared.label, "make");
+    assert_eq!(arguments, &[Value::Int(7)]);
+    let Type::Function { result, .. } = &declared.ty else {
+        panic!("one-parameter function")
+    };
+    let Type::Meaning { index, arguments } = result.as_ref() else {
+        panic!("nominal resource result")
+    };
+    assert!(arguments.is_empty());
+    assert!(tables.meanings[*index].resource);
+    assert_eq!(tables.meanings[*index].label, "Handle");
+    CALLS.set(0);
+    assert_eq!(
+        contract(provider.call(&request, &tables)),
+        "unsupported native declaration type"
+    );
+    assert_eq!(CALLS.get(), 0);
+    drop(tables);
+    // No registered lookup or materialization assumption for the unused marker.
+    CALLS.set(0);
+    assert_eq!(run(&mut provider, "probe.echo 7", true), Ok(Value::Int(7)));
+    assert_eq!(CALLS.get(), 1);
+}

@@ -49,6 +49,7 @@ pub struct Phase {
 
 /// One evaluation's end.
 enum Evaluation {
+    Inactive,
     Value(Value),
     Fault(Fault),
     Unavailable(Unavailable),
@@ -110,7 +111,8 @@ fn literals(
             Evaluation::Value(value) => prepare(unit, node, &value, phase),
             // A generic body's reader dispatches on its witness when it
             // runs; a reader out of budget runs then too.
-            Evaluation::Unavailable(_)
+            Evaluation::Inactive
+            | Evaluation::Unavailable(_)
             | Evaluation::Fault(Fault {
                 reason: value::Reason::Budget,
                 ..
@@ -151,7 +153,8 @@ fn sequences(
         let span = unit.tables().nodes[node].span;
         match evaluate(unit, node, budget) {
             Evaluation::Value(value) => prepare(unit, node, &value, phase),
-            Evaluation::Unavailable(_)
+            Evaluation::Inactive
+            | Evaluation::Unavailable(_)
             | Evaluation::Fault(Fault {
                 reason: value::Reason::Budget,
                 ..
@@ -282,10 +285,15 @@ fn demanded(
     let mut errors = Vec::new();
     for node in nodes {
         let span = unit.tables().nodes[node].span;
-        match evaluate(unit, node, budget) {
+        // Demands name original reserved expressions or Timing nodes, not
+        // generated marked receiving adapters.
+        match evaluate_context(unit, node, budget, &[]) {
             Evaluation::Value(value) => {
                 prepare(unit, node, &value, phase);
                 phase.prepared.push((span, known(&value, &unit.tables())));
+            }
+            Evaluation::Inactive => {
+                unreachable!("standalone demand has no marked context")
             }
             Evaluation::Unavailable(what) => {
                 phase.unavailable.push((span, what));
@@ -404,6 +412,7 @@ fn entries(
             continue;
         };
         match settle(unit, (node, value), (index, &entry), budget) {
+            Settled::Inactive => plan.push(entry),
             Settled::Proved(shown) => {
                 // The entry leaves the node; its value stays the one child.
                 unit.tables.borrow_mut().nodes[node].kind =
@@ -444,6 +453,7 @@ fn entries(
 
 /// How an entry ended in the phase.
 enum Settled {
+    Inactive,
     Proved(String),
     Exhausted,
     Unavailable(Unavailable),
@@ -463,7 +473,12 @@ fn settle(
         limit: entry.label.clone(),
         value,
     };
-    let computed = match evaluate(unit, value, budget) {
+    let contexts = match compile::marked_contexts(&unit.tables(), node) {
+        Ok(c) => c,
+        Err(what) => return Settled::Unavailable(what),
+    };
+    let computed = match evaluate_context(unit, value, budget, &contexts) {
+        Evaluation::Inactive => return Settled::Inactive,
         Evaluation::Value(computed) => computed,
         Evaluation::Fault(Fault {
             reason: value::Reason::Budget,
@@ -475,11 +490,15 @@ fn settle(
         Evaluation::Unavailable(what) => return Settled::Unavailable(what),
     };
     let shown = value::structural::show(&computed, &unit.tables());
-    if let Some(constant) = constant(&computed) {
-        unit.tables.borrow_mut().prepared.insert(value, constant);
+    let original_left = contexts.iter().any(|context| matches!(unit.tables().nodes[*context].kind, ir::Kind::Marked { left, .. } if left == value));
+    if !original_left {
+        if let Some(constant) = constant(&computed) {
+            unit.tables.borrow_mut().prepared.insert(value, constant);
+        }
     }
     // A value holding a closure stays code; the test runs on it again.
-    match evaluate(unit, node, budget) {
+    match evaluate_context(unit, node, budget, &contexts) {
+        Evaluation::Inactive => Settled::Inactive,
         Evaluation::Value(_) => Settled::Proved(shown),
         Evaluation::Fault(Fault {
             reason: value::Reason::Budget,
@@ -537,14 +556,50 @@ fn enter_node(
 /// Run one node of the unit alone, on a fresh machine with the full
 /// budget.
 fn evaluate(unit: &ir::Unit, node: usize, budget: u64) -> Evaluation {
-    let program = match compile::evaluation(unit, node) {
+    let contexts = match compile::marked_contexts(&unit.tables(), node) {
+        Ok(c) => c,
+        Err(what) => return Evaluation::Unavailable(what),
+    };
+    evaluate_context(unit, node, budget, &contexts)
+}
+
+fn evaluate_context(
+    unit: &ir::Unit,
+    node: usize,
+    budget: u64,
+    contexts: &[usize],
+) -> Evaluation {
+    let lowered = if contexts.is_empty() {
+        compile::evaluation(unit, node)
+    } else {
+        compile::contextual_evaluation(unit, node, contexts)
+    };
+    let program = match lowered {
         Ok(program) => program,
         Err(what) => return Evaluation::Unavailable(what),
     };
     let mut machine = Machine::new(Some(budget));
     match machine.run(&program) {
-        Outcome::Done(Ok(value)) => Evaluation::Value(value),
+        Outcome::Done(Ok(mut value)) => {
+            if !contexts.is_empty() {
+                let Value::Tuple(parts) = value else {
+                    unreachable!("context envelope")
+                };
+                match parts.as_slice() {
+                    [] => return Evaluation::Inactive,
+                    [active] => value = active.clone(),
+                    _ => unreachable!("context envelope arity"),
+                }
+            }
+            Evaluation::Value(value)
+        }
         Outcome::Done(Err(fault)) => Evaluation::Fault(fault),
+        Outcome::Request(Request::Call { declaration, .. })
+            if !contexts.is_empty() =>
+        {
+            let _ = machine.abandon();
+            Evaluation::Unavailable(Unavailable::Host(declaration))
+        }
         Outcome::Request(request) => host_reached(&program, &request),
     }
 }
@@ -591,10 +646,16 @@ pub fn constant(value: &Value) -> Option<ir::Constant> {
             constructor: record.constructor,
             fields: each(&record.fields)?,
         },
-        Value::Packed(packed) => ir::Constant::Packed {
-            tag: packed.meaning,
-            value: Box::new(constant(&packed.value)?),
-        },
-        Value::Function(_) | Value::Meaning(_) => return None,
+        Value::Packed(packed) => {
+            let (source, target) = packed.roots();
+            ir::Constant::Packed {
+                source,
+                target,
+                value: Box::new(constant(packed.value())?),
+            }
+        }
+        Value::Resource(_) | Value::Function(_) | Value::Meaning(_) => {
+            return None
+        }
     })
 }

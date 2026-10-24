@@ -76,6 +76,7 @@ impl Infer<'_> {
         if matches!(applied, Type::Var(_)) {
             let side = self.fresh();
             self.state.families.push(Pending {
+                lexical_owner: self.state.lexical_owner.clone(),
                 ty: applied.clone(),
                 side: side.clone(),
                 good,
@@ -219,6 +220,7 @@ impl Infer<'_> {
             let payload = self.fresh();
             let rebuilt = with_side(family, arguments, good, payload.clone());
             self.state.rebuilding.push(Rebuilding {
+                lexical_owner: self.state.lexical_owner.clone(),
                 site,
                 family,
                 good,
@@ -293,28 +295,35 @@ impl Infer<'_> {
         self.journal_list(|s| &mut s.rebuilding);
         let pending = core::mem::take(&mut self.state.rebuilding);
         for owed in pending {
-            let applied = self.apply(&owed.result);
-            let unknown = matches!(applied, Type::Var(_));
-            let numeric = unknown && self.numeric_var(&applied);
-            if unknown && !numeric && !finish {
-                self.state.rebuilding.push(owed);
-                continue;
-            }
-            // E1 prefers the family reading while both unify.
-            let same = if unknown {
-                !numeric
-            } else {
-                family(&applied).is_some_and(|(f, _)| f == owed.family)
-            };
-            let reading = Self::reading(owed.family, owed.good, same);
-            self.settle_rebuild(
-                owed.site,
-                reading,
-                (&owed.rebuilt, &owed.payload, &owed.result),
-                owed.span,
-                owed.other,
-            );
+            let lexical_owner = owed.lexical_owner.clone();
+            self.with_lexical_owner(&lexical_owner, |inner| {
+                inner.solve_rebuild(owed, finish);
+            });
         }
+    }
+
+    fn solve_rebuild(&mut self, owed: Rebuilding, finish: bool) {
+        let applied = self.apply(&owed.result);
+        let unknown = matches!(applied, Type::Var(_));
+        let numeric = unknown && self.numeric_var(&applied);
+        if unknown && !numeric && !finish {
+            self.state.rebuilding.push(owed);
+            return;
+        }
+        // E1 prefers the family reading while both unify.
+        let same = if unknown {
+            !numeric
+        } else {
+            family(&applied).is_some_and(|(f, _)| f == owed.family)
+        };
+        let reading = Self::reading(owed.family, owed.good, same);
+        self.settle_rebuild(
+            owed.site,
+            reading,
+            (&owed.rebuilt, &owed.payload, &owed.result),
+            owed.span,
+            owed.other,
+        );
     }
 
     /// Decide every pending rebuild, the unknown ones by the family
@@ -450,6 +459,7 @@ impl Infer<'_> {
 
 #[derive(Clone)]
 pub(super) struct Pending {
+    lexical_owner: super::LexicalOwner,
     ty: Type,
     side: Type,
     good: bool,
@@ -464,6 +474,7 @@ pub(super) struct Pending {
 /// A marked-pipe rebuild waiting for its stage's result type.
 #[derive(Clone)]
 pub(super) struct Rebuilding {
+    lexical_owner: super::LexicalOwner,
     site: (usize, usize),
     family: Family,
     good: bool,
@@ -480,24 +491,30 @@ impl Infer<'_> {
         self.journal_list(|s| &mut s.families);
         let pending = core::mem::take(&mut self.state.families);
         for owed in pending {
-            let ty = self.apply(&owed.ty);
-            if matches!(ty, Type::Var(_)) {
-                if finish {
-                    self.error(owed.span, Reason::UnknownFamily);
-                } else {
-                    self.state.families.push(owed);
-                }
-            } else if let Some(side) = self.bracket_side(
-                &ty,
-                (owed.good, owed.has_payload, owed.pattern),
-                owed.span,
-                owed.other,
-            ) {
-                if owed.has_payload || owed.pattern {
-                    self.unify(&side, &owed.side, owed.span, owed.other);
-                } else {
-                    self.payload_present(owed.good, &side, owed.span);
-                }
+            let lexical_owner = owed.lexical_owner.clone();
+            self.with_lexical_owner(&lexical_owner, |inner| {
+                inner.solve_family(owed, finish);
+            });
+        }
+    }
+    fn solve_family(&mut self, owed: Pending, finish: bool) {
+        let ty = self.apply(&owed.ty);
+        if matches!(ty, Type::Var(_)) {
+            if finish {
+                self.error(owed.span, Reason::UnknownFamily);
+            } else {
+                self.state.families.push(owed);
+            }
+        } else if let Some(side) = self.bracket_side(
+            &ty,
+            (owed.good, owed.has_payload, owed.pattern),
+            owed.span,
+            owed.other,
+        ) {
+            if owed.has_payload || owed.pattern {
+                self.unify(&side, &owed.side, owed.span, owed.other);
+            } else {
+                self.payload_present(owed.good, &side, owed.span);
             }
         }
     }

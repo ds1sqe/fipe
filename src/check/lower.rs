@@ -77,6 +77,7 @@ impl Index {
         }
         let namespace = self.namespace(&name.origin);
         let index = self.store.push_meaning(ir::Meaning {
+            resource: false,
             label: name.name.clone(),
             namespace,
             parameters: Vec::new(),
@@ -95,57 +96,115 @@ impl Index {
     }
 
     pub fn ty(&mut self, home: &Origin, ty: &Type) -> ir::Type {
+        self.type_in(home, home, ty)
+    }
+
+    fn source_ty(&mut self, source: &Source<'_>, ty: &Type) -> ir::Type {
+        self.type_in(&source.home, &source.parameters_home, ty)
+    }
+
+    fn type_in(
+        &mut self,
+        home: &Origin,
+        parameters_home: &Origin,
+        ty: &Type,
+    ) -> ir::Type {
+        self.type_input(TypeInput {
+            ty,
+            home,
+            parameters_home,
+            bindings: &[],
+        })
+    }
+
+    fn type_input(&mut self, input: TypeInput<'_>) -> ir::Type {
+        if let Some(actual) = input.bound() {
+            return self.type_input(actual);
+        }
+        let TypeInput {
+            ty,
+            home,
+            parameters_home,
+            ..
+        } = input;
         match ty {
             Type::Unit => ir::Type::Unit,
             Type::Number(n) => ir::Type::Number(n.clone()),
             Type::Var(var) => self
                 .session_variables
-                .get(&(home.clone(), var.0))
+                .get(&(parameters_home.clone(), var.0))
                 .copied()
                 .or_else(|| {
-                    let before = *self.weak_before.get(home)?;
+                    let before = *self.weak_before.get(parameters_home)?;
                     ((var.0 as usize) < before)
                         .then(|| self.weak_slots[var.0 as usize])
                 })
                 .map_or_else(
                     || {
-                        ir::Type::Parameter(
-                            self.parameter(home, Parameter::Variable(var.0)),
-                        )
+                        ir::Type::Parameter(self.parameter(
+                            parameters_home,
+                            Parameter::Variable(var.0),
+                        ))
                     },
                     ir::Type::Session,
                 ),
             Type::Rigid(name) => ir::Type::Parameter(
-                self.parameter(home, Parameter::Rigid(name.clone())),
+                self.parameter(parameters_home, Parameter::Rigid(name.clone())),
             ),
             Type::Named { name, arguments } => ir::Type::Meaning {
                 index: self.meaning(home, name),
                 arguments: arguments
                     .iter()
-                    .map(|ty| self.ty(home, ty))
+                    .map(|ty| self.type_input(input.child(ty)))
                     .collect(),
             },
-            Type::Limited { meaning, .. } => self.ty(home, meaning),
+            Type::Limited { meaning, .. } => {
+                self.type_input(input.child(meaning))
+            }
             Type::Function { parameter, result } => ir::Type::Function {
-                parameter: alloc::boxed::Box::new(self.ty(home, parameter)),
-                result: alloc::boxed::Box::new(self.ty(home, result)),
+                parameter: alloc::boxed::Box::new(
+                    self.type_input(input.child(parameter)),
+                ),
+                result: alloc::boxed::Box::new(
+                    self.type_input(input.child(result)),
+                ),
             },
             Type::Array { element, length } => ir::Type::Array {
-                element: alloc::boxed::Box::new(self.ty(home, element)),
-                length: alloc::boxed::Box::new(self.ty(home, length)),
+                element: alloc::boxed::Box::new(
+                    self.type_input(input.child(element)),
+                ),
+                length: alloc::boxed::Box::new(
+                    self.type_input(input.child(length)),
+                ),
             },
-            Type::Tuple(parts) => ir::Type::Tuple(self.parts(home, parts)),
-            Type::Either(parts) => ir::Type::Packed(self.parts(home, parts)),
-            Type::Sum(parts) => ir::Type::Sum(self.parts(home, parts)),
-            Type::Both(parts) => ir::Type::All(self.parts(home, parts)),
-            Type::Not(inner) => {
-                ir::Type::Not(alloc::boxed::Box::new(self.ty(home, inner)))
-            }
+            Type::Tuple(parts) => ir::Type::Tuple(
+                parts
+                    .iter()
+                    .map(|ty| self.type_input(input.child(ty)))
+                    .collect(),
+            ),
+            Type::Either(parts) => ir::Type::Packed(
+                parts
+                    .iter()
+                    .map(|ty| self.type_input(input.child(ty)))
+                    .collect(),
+            ),
+            Type::Sum(parts) => ir::Type::Sum(
+                parts
+                    .iter()
+                    .map(|ty| self.type_input(input.child(ty)))
+                    .collect(),
+            ),
+            Type::Both(parts) => ir::Type::All(
+                parts
+                    .iter()
+                    .map(|ty| self.type_input(input.child(ty)))
+                    .collect(),
+            ),
+            Type::Not(inner) => ir::Type::Not(alloc::boxed::Box::new(
+                self.type_input(input.child(inner)),
+            )),
         }
-    }
-
-    fn parts(&mut self, home: &Origin, parts: &[Type]) -> Vec<ir::Type> {
-        parts.iter().map(|ty| self.ty(home, ty)).collect()
     }
 
     pub fn shapes(&mut self, home: &Origin, shapes: &[Shape]) {
@@ -190,6 +249,7 @@ impl Index {
                 })
                 .collect();
             let mut meaning = self.store.meaning_mut(index);
+            meaning.resource = shape.resource;
             meaning.parameters = parameters;
             meaning.constructors = constructors;
         }
@@ -257,18 +317,75 @@ fn fraction(text: &str) -> ir::Form {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TypeInput<'a> {
+    ty: &'a Type,
+    home: &'a Origin,
+    parameters_home: &'a Origin,
+    bindings: &'a [(crate::types::Var, Self)],
+}
+
+impl<'a> TypeInput<'a> {
+    const fn child(self, ty: &'a Type) -> Self {
+        Self { ty, ..self }
+    }
+
+    fn bound(self) -> Option<Self> {
+        let Type::Var(var) = self.ty else {
+            return None;
+        };
+        self.bindings
+            .iter()
+            .find_map(|(formal, actual)| (formal == var).then_some(*actual))
+    }
+}
+
 #[derive(Clone)]
 struct Source<'a> {
+    initializes_file: bool,
     declarations: &'a crate::decl::Declarations,
     files: &'a [(String, crate::ast::Module)],
     module: Rc<crate::ast::Module>,
     resolved: Rc<crate::resolve::Resolved>,
     typed: Rc<crate::typed::Typed>,
     home: Origin,
+    parameters_home: Origin,
     roots: Vec<crate::ast::ExprId>,
 }
 
+/// A source closure prepared without changing the session's runtime index.
+pub struct Prepared<'a> {
+    sources: Vec<Source<'a>>,
+    definitions: Vec<Vec<DefinitionInput>>,
+    contributions: Vec<Contribution>,
+}
+
+struct Contribution {
+    nodes: crate::infer::SourceNodes,
+    owned: alloc::collections::BTreeSet<crate::token::Span>,
+    lexical: bool,
+    replay: bool,
+}
+
+struct Readiness<'a, 'module> {
+    sources: &'a [Source<'module>],
+    contributions: &'a [Contribution],
+    owned: &'a alloc::collections::BTreeSet<(Origin, crate::token::Span)>,
+    definitions: &'a alloc::collections::BTreeSet<(Origin, crate::token::Span)>,
+}
+
+struct DefinitionInput {
+    site: crate::token::Span,
+    body_span: crate::token::Span,
+    label: String,
+    expression: Option<crate::ast::ExprId>,
+    arms: Vec<crate::ast::Arm>,
+    fill: bool,
+}
+
 struct Scope {
+    receiving_calls: RefCell<BTreeMap<crate::token::Span, usize>>,
+    payload_casts: BTreeMap<usize, (crate::token::Span, crate::ast::ExprId)>,
     receivers: RefCell<BTreeMap<crate::token::Span, usize>>,
     nodes: Vec<Option<usize>>,
     slots: BTreeMap<crate::token::Span, usize>,
@@ -278,6 +395,7 @@ impl Index {
     fn slot(
         &mut self,
         home: &Origin,
+        parameters_home: &Origin,
         site: crate::token::Span,
         scheme: &crate::types::Scheme,
         hidden: &[usize],
@@ -289,12 +407,17 @@ impl Index {
             .copied()
             .zip(body_parameters.iter().cloned())
             .collect();
-        let ty =
-            self.ty(home, &crate::types::replace(&scheme.ty, &replacements));
+        let ty = self.type_in(
+            home,
+            parameters_home,
+            &crate::types::replace(&scheme.ty, &replacements),
+        );
         let parameters: Vec<_> = body_parameters
             .iter()
             .map(|ty| {
-                let ir::Type::Parameter(index) = self.ty(home, ty) else {
+                let ir::Type::Parameter(index) =
+                    self.type_in(home, parameters_home, ty)
+                else {
                     unreachable!("generic body parameter")
                 };
                 index
@@ -311,16 +434,26 @@ impl Index {
         })
     }
 
-    fn reserve(&mut self, source: &Source<'_>) -> Scope {
+    fn reserve(
+        &mut self,
+        source: &Source<'_>,
+        contribution: &Contribution,
+        allocated: &BTreeMap<(Origin, crate::token::Span), usize>,
+    ) -> Scope {
         let namespace = self.namespace(&source.home);
         self.shapes(&source.home, &source.typed.shapes);
+        let unused = conversion_heads(source);
         let mut nodes = alloc::vec![None; source.module.expressions.len()];
         for (index, expression) in source.module.expressions.iter().enumerate()
         {
+            if unused[index] || !contribution.nodes.expressions.contains(&index)
+            {
+                continue;
+            }
             let Some(ty) = source.typed.expr(crate::ast::ExprId(index)) else {
                 continue;
             };
-            let ty = self.ty(&source.home, ty);
+            let ty = self.source_ty(source, ty);
             let node = self.store.push_node(ir::Node {
                 namespace,
                 span: expression.span,
@@ -329,8 +462,19 @@ impl Index {
             });
             nodes[index] = Some(node);
         }
-        let mut slots = self.store.visible().clone();
+        let mut slots = if contribution.lexical {
+            self.store.visible().clone()
+        } else {
+            BTreeMap::new()
+        };
         for ((start, end), scheme) in &source.typed.schemes {
+            let site = crate::token::Span {
+                start: *start,
+                end: *end,
+            };
+            if !contribution.owned.contains(&site) {
+                continue;
+            }
             let hidden = source
                 .typed
                 .hidden
@@ -348,33 +492,63 @@ impl Index {
                 start: *start,
                 end: *end,
             };
-            let existing = self
-                .store
-                .slots()
-                .get(&(source.home.clone(), site))
-                .copied()
-                .or_else(|| self.store.visible().get(&site).copied());
+            let existing = if contribution.replay {
+                None
+            } else {
+                allocated
+                    .get(&(source.home.clone(), site))
+                    .copied()
+                    .or_else(|| {
+                        self.store
+                            .slots()
+                            .get(&(source.home.clone(), site))
+                            .copied()
+                    })
+                    .or_else(|| {
+                        contribution
+                            .lexical
+                            .then(|| self.store.visible().get(&site).copied())
+                            .flatten()
+                    })
+            };
             let slot = existing.unwrap_or_else(|| {
-                self.slot(&source.home, site, scheme, hidden, &parameters)
+                self.slot(
+                    &source.home,
+                    &source.parameters_home,
+                    site,
+                    scheme,
+                    hidden,
+                    &parameters,
+                )
             });
             slots.insert(site, slot);
         }
+        let payload_casts = source.module.expressions.iter().filter_map(|expression| {
+            let crate::ast::ExprKind::Pipe { op: crate::ast::PipeOp::Good | crate::ast::PipeOp::Bad, left, right, .. } = &expression.kind else { return None };
+            let stage = source.module.expressions[right.0].span;
+            let bound = source.typed.bound.get(&(stage.start, stage.end))?;
+            bound.supplies.iter().any(|(_, supply)| matches!(supply,
+                crate::typed::Supply::Pipe(site) if *site == source.module.expressions[left.0].span
+            )).then_some((left.0, (stage, *right)))
+        }).collect();
         Scope {
+            receiving_calls: RefCell::new(BTreeMap::new()),
+            payload_casts,
             nodes,
             slots,
             receivers: RefCell::new(BTreeMap::new()),
         }
     }
 
-    fn node(
+    fn source_node(
         &mut self,
-        home: &Origin,
+        source: &Source<'_>,
         span: crate::token::Span,
         ty: &Type,
         kind: ir::Kind,
     ) -> usize {
-        let namespace = self.namespace(home);
-        let ty = self.ty(home, ty);
+        let namespace = self.namespace(&source.home);
+        let ty = self.source_ty(source, ty);
         self.store.push_node(ir::Node {
             namespace,
             span,
@@ -382,6 +556,59 @@ impl Index {
             kind,
         })
     }
+}
+
+// A conversion call selects its operation after its source supply is known;
+// its direct static head has a type, but no independently executable operation.
+fn conversion_heads(source: &Source<'_>) -> Vec<bool> {
+    use crate::ast::ExprKind;
+    let typed = &source.typed;
+    let mut unused = alloc::vec![false; source.module.expressions.len()];
+    for expression in &source.module.expressions {
+        let ExprKind::Call { callee, .. } = &expression.kind else {
+            continue;
+        };
+        let call = (expression.span.start, expression.span.end);
+        if !typed.conversions.contains_key(&call)
+            || !typed.selected.contains_key(&call)
+            || !typed.bound.contains_key(&call)
+        {
+            continue;
+        }
+        let head = &source.module.expressions[callee.0];
+        if !matches!(head.kind, ExprKind::Name(_) | ExprKind::Instance { .. })
+            || !matches!(
+                source.resolved.expr(*callee),
+                Some(crate::resolve::Target::TypeMember { .. })
+            )
+        {
+            continue;
+        }
+        let site = (head.span.start, head.span.end);
+        if typed.selected.contains_key(&site)
+            || typed.conversions.contains_key(&site)
+            || typed.bound.contains_key(&site)
+            || typed.accesses.contains_key(&site)
+            || typed.roots.contains_key(&site)
+            || typed.derived_defaults.contains_key(&site)
+            || typed.casts[callee.0].is_some()
+            || source.roots.contains(callee)
+            || typed
+                .tests
+                .iter()
+                .any(|test| test.expression.is_none() && test.value == *callee)
+            || typed.checks.iter().any(|check| {
+                check.place_origin == Origin::This
+                    && check.value.map_or(check.place == head.span, |value| {
+                        value == *callee
+                    })
+            })
+        {
+            continue;
+        }
+        unused[callee.0] = true;
+    }
+    unused
 }
 
 impl Scope {
@@ -466,5 +693,118 @@ fn free_parameters(ty: &ir::Type, parameters: &mut Vec<usize>) {
         }
         ir::Type::Not(inner) => free_parameters(inner, parameters),
         _ => (),
+    }
+}
+
+#[cfg(test)]
+mod source_binding_tests {
+    use super::*;
+
+    #[test]
+    fn execution_binders_and_weak_slots_do_not_change_nominal_home() {
+        let mut index = Index::default();
+        let caller = Origin::Line(3);
+        let host = Origin::Host(String::from("host"));
+        let other = Origin::Host(String::from("other"));
+        let variable = Type::Var(crate::types::Var(2));
+        let rigid = Type::Rigid(String::from("a"));
+        assert_eq!(
+            index.type_in(&host, &caller, &variable),
+            index.ty(&caller, &variable)
+        );
+        assert_eq!(
+            index.type_in(&host, &caller, &rigid),
+            index.ty(&caller, &rigid)
+        );
+        assert_ne!(index.ty(&host, &variable), index.ty(&caller, &variable));
+        assert_ne!(index.ty(&host, &rigid), index.ty(&caller, &rigid));
+        assert_ne!(index.ty(&host, &variable), index.ty(&other, &variable));
+        index.session_variables.insert((caller.clone(), 2), 9);
+        assert_eq!(
+            index.type_in(&host, &caller, &variable),
+            ir::Type::Session(9)
+        );
+        assert!(matches!(index.ty(&host, &variable), ir::Type::Parameter(_)));
+        let nominal = Type::Named {
+            name: TypeName {
+                origin: Origin::This,
+                name: String::from("W"),
+            },
+            arguments: alloc::vec![variable],
+        };
+        let ir::Type::Meaning {
+            index: meaning,
+            arguments,
+        } = index.type_in(&host, &caller, &nominal)
+        else {
+            panic!("nominal")
+        };
+        assert_eq!(arguments, [ir::Type::Session(9)]);
+        assert_eq!(
+            index.store.tables().namespaces
+                [index.store.tables().meanings[meaning].namespace],
+            "host"
+        );
+    }
+
+    #[test]
+    fn replay_owned_default_parameter_slots_are_private_and_fresh() {
+        let declarations = crate::decl::Declarations::new();
+        let module = Rc::new(
+            crate::parse::parse(crate::lex::lex("f = (copy = 7) => copy\nf"))
+                .unwrap(),
+        );
+        let resolved = Rc::new(
+            crate::resolve::resolve(&module, &declarations, &[]).unwrap(),
+        );
+        let typed = Rc::new(
+            crate::infer::infer(&module, &resolved, &declarations, &[])
+                .unwrap(),
+        );
+        let source = Source {
+            initializes_file: false,
+            declarations: &declarations,
+            files: &[],
+            roots: lines(&module),
+            module,
+            resolved,
+            typed,
+            home: Origin::Host(String::from("host")),
+            parameters_home: Origin::This,
+        };
+        let mut index = Index::default();
+        let mut contribution =
+            Index::contribution(&source, &[], source.roots.clone(), false);
+        contribution.replay = true;
+        let site = source
+            .module
+            .patterns
+            .iter()
+            .find_map(|p| match &p.kind {
+                crate::ast::PatternKind::Default { name, .. } => {
+                    Some(name.span)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(contribution.owned.contains(&site));
+        let first = index.reserve(
+            &source,
+            &contribution,
+            &alloc::collections::BTreeMap::default(),
+        );
+        index
+            .store
+            .insert_slot((source.home.clone(), site), first.slots[&site]);
+        let second = index.reserve(
+            &source,
+            &contribution,
+            &alloc::collections::BTreeMap::default(),
+        );
+        assert_ne!(first.slots[&site], second.slots[&site]);
+        assert_eq!(
+            index.store.slots()[&(source.home.clone(), site)],
+            first.slots[&site]
+        );
     }
 }

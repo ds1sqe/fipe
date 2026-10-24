@@ -1393,3 +1393,140 @@ fn a_literal_pattern_lays_out_the_bool_its_equality_yields() {
         .collect();
     assert_eq!(labels, ["True", "False"]);
 }
+
+#[test]
+fn resource_classification_reaches_real_ir_without_running_acquisition() {
+    let mut declarations = Declarations::new();
+    declarations.module("csv", "pub type resource Table\npub acquire: Vec<U8> -> Table\npub inspect: Table -> Vec<(String * String * Bool)>").unwrap();
+    for source in ["1", "use csv\nf = bytes => csv.acquire bytes"] {
+        let module = parse(lex(source)).unwrap();
+        let unit = check::check(
+            &module,
+            &declarations,
+            &[],
+            check::Options::default(),
+        )
+        .unwrap();
+        let tables = unit.tables();
+        assert!(tables.has_resources);
+        let table = tables.meanings.iter().find(|m| m.label == "Table");
+        if source == "1" {
+            assert!(table.is_none());
+        } else {
+            let table = table.unwrap();
+            assert!(table.resource);
+            assert!(table.constructors.is_empty());
+            assert_eq!(tables.namespaces[table.namespace], "csv");
+        }
+    }
+    let mut ordinary = Declarations::new();
+    ordinary.module("data", "pub type Packet").unwrap();
+    let module = parse(lex("1")).unwrap();
+    assert!(
+        !check::check(&module, &ordinary, &[], check::Options::default())
+            .unwrap()
+            .tables()
+            .has_resources
+    );
+}
+
+#[test]
+fn resource_generic_module_and_unit_arguments_keep_checked_shapes() {
+    let mut declarations = Declarations::new();
+    declarations.module("full.api", "pub ping: ()").unwrap();
+    declarations.commands("pub type resource Rd<Api>\npub unit: Rd<()>\npub module: Rd<full.api>\npub nested: Rd<Vec<(Integer * Bool)>>").unwrap();
+    let module = parse(lex("f = _ => (unit, module, nested)")).unwrap();
+    let unit =
+        check::check(&module, &declarations, &[], check::Options::default())
+            .unwrap();
+    let tables = unit.tables();
+    assert!(tables.has_resources);
+    let rd = tables
+        .meanings
+        .iter()
+        .position(|m| m.label == "Rd")
+        .unwrap();
+    assert!(tables.meanings[rd].resource);
+    assert_eq!(tables.meanings[rd].parameters.len(), 1);
+    let arguments: Vec<_> = tables
+        .declarations
+        .iter()
+        .filter_map(|d| match &d.ty {
+            ir::Type::Meaning { index, arguments } if *index == rd => {
+                Some(arguments)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(arguments.iter().any(|a| a.as_slice() == [ir::Type::Unit]));
+    assert!(arguments.iter().any(|a| matches!(a.as_slice(), [ir::Type::Meaning { index, .. }] if tables.meanings[*index].label == "full.api" && !tables.meanings[*index].resource)));
+    assert!(arguments.iter().any(|a| matches!(a.as_slice(), [ir::Type::Meaning { index, arguments }] if tables.meanings[*index].label == "Vec" && matches!(arguments.as_slice(), [ir::Type::Tuple(parts)] if matches!(parts.as_slice(), [ir::Type::Meaning { index: integer, arguments: ia }, ir::Type::Meaning { index: boolean, arguments: ba }] if tables.meanings[*integer].label == "Integer" && ia.is_empty() && tables.meanings[*boolean].label == "Bool" && ba.is_empty())))));
+    assert_eq!(arguments.len(), 3);
+}
+
+#[test]
+fn resource_host_module_argument_precedes_unused_forbidden_file_parent() {
+    let mut declarations = Declarations::new();
+    declarations.module("text.open", "pub ping: ()").unwrap();
+    declarations
+        .commands("pub type resource Rd<Api>\npub get: Rd<text.open>")
+        .unwrap();
+    let files = vec![(
+        "text".into(),
+        parse(lex("pub type resource Forbidden")).unwrap(),
+    )];
+    let module = parse(lex("f = _ => get")).unwrap();
+    let unit =
+        check::check(&module, &declarations, &files, check::Options::default())
+            .unwrap();
+    let tables = unit.tables();
+    let declared = tables
+        .declarations
+        .iter()
+        .find(|declared| declared.label == "get")
+        .unwrap();
+    let ir::Type::Meaning { index, arguments } = &declared.ty else {
+        panic!("{:?}", declared.ty)
+    };
+    assert!(tables.meanings[*index].resource);
+    let [ir::Type::Meaning { index, arguments }] = arguments.as_slice() else {
+        panic!("{arguments:?}")
+    };
+    assert!(arguments.is_empty());
+    let marker = &tables.meanings[*index];
+    assert_eq!(marker.label, "text.open");
+    assert_eq!(tables.namespaces[marker.namespace], "text.open");
+    assert!(!marker.resource);
+    assert!(marker.constructors.is_empty());
+    assert!(tables
+        .meanings
+        .iter()
+        .all(|meaning| tables.namespaces[meaning.namespace] != "text"));
+}
+
+#[test]
+fn owner_receiverless_rows_share_receiver_and_selected_type_arguments() {
+    let mut declarations = Declarations::new();
+    declarations.module("csv", "pub make: () -> a").unwrap();
+    let source="use csv\ntype W<T>: Zero & Add { value: T }\nimpl W<a>: Zero { zero = csv.make () }\nimpl W<a>: Add { add = other self => self }\nxs: Vec<W<Integer>> = []\nys: Vec<W<String>> = []\n(xs | sum, ys | sum)";
+    let module = parse(lex(source)).unwrap();
+    let unit =
+        check::check(&module, &declarations, &[], check::Options::default())
+            .unwrap();
+    let tables = unit.tables();
+    let rows:Vec<_>=tables.dispatch.iter().filter(|d|d.label=="zero").flat_map(|d|&d.rows).filter(|r|matches!(&r.receiver,ir::Type::Meaning{index,..}if tables.meanings[*index].label=="W")).collect();
+    assert!(!rows.is_empty());
+    for row in rows {
+        let ir::Type::Meaning { arguments, .. } = &row.receiver else {
+            unreachable!()
+        };
+        let ir::Implementation::Definition { meanings, .. } = &row.target
+        else {
+            panic!("written zero target")
+        };
+        assert_eq!(
+            meanings, arguments,
+            "owner/result target correlation: {row:?}"
+        );
+    }
+}

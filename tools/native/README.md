@@ -9,7 +9,7 @@ value operations the machine code calls. The VM is the oracle: a
 native run's observation and charged units equal the VM's.
 
 Both packages depend on `fipe` and share formats through `fipe-native-core`;
-the core language crate depends on neither backend nor runtime. Target: x86-64 Linux, SysV ABI. Toolchain: a Rust toolchain
+the core language crate depends on neither backend nor runtime. Target: x86-64 Linux, SysV ABI. Toolchain: Rust 1.98.1 or newer
 and `cc` (GCC or Clang) with libc.
 
 ## Build
@@ -99,8 +99,53 @@ same unit to read them.
 | 6 | a sequence (`Vec`, `Deque`, array) | list of values |
 | 7 | a tuple | list of values |
 | 8 | a record (sums, `Bool`, `Maybe` too) | number meaning, number constructor, list of field values |
-| 9 | a packed value | number meaning, value |
+| 9 | retired packed encoding | rejected (`Tag(9)`) |
 | 10 | a function | none; shows as `<function>` |
+| 11 | a packed value | complete source type, complete target type, value |
+| 12 | a shared data container | number: completed container ID in this message |
+
+Packed tag 11 carries descriptive type syntax, not resource identity or membership
+proof. Its immutable payload must be resource-free. Decoding requires no Tables;
+the old head-only tag 9 is rejected rather than silently upgraded. Other value
+tags keep their existing meanings. Both ends must use the same prerelease format.
+
+Sequences, tuples, records and Packed values receive implicit IDs in completion
+(postorder) order, starting at zero. Their first occurrence uses its ordinary
+encoding above; a later alias may use tag 12 and that ID. A reference introduces
+no new ID. Only already completed containers can be referenced: forward,
+cyclic and unknown references are malformed. No function or witness is a
+reference target. A shown function inside a container prevents that container
+from being referenced where functions are forbidden. This policy is derived
+from the content, never asserted by a wire flag.
+
+One memo spans all arguments, environment values and lines of a Call, or the
+result and lines of a Done; each reply has its own memo. IDs reset for every
+message and cannot name an earlier frame. Aliases carry data only: Packed
+metadata remains descriptive and decoding never restores its private membership
+or resource association. Genuine resources remain forbidden throughout a frame.
+
+Value depth is at most 256: a leaf has depth 0, a container has one plus the
+maximum depth of its children. A reference must also fit at the depth where it
+is inserted. Over-depth values are rejected symmetrically on encoding and
+decoding. This explicit bound covers codec-owned/returned Value graphs and their
+cleanup, not arbitrary Values a host constructs. Type syntax inside Packed is
+separate: its existing iterative reader and guarded ownership continue to admit
+deep Type roots (including 4096 levels).
+
+Ordinary unshared encodings within this depth bound remain byte-for-byte
+compatible. Older readers reject new references as unknown tag 12; there is no
+silent downgrade or cross-message upgrade. Previously over-depth legacy trees
+are now explicitly refused. Frame/reply outer tags and byte-length framing are
+unchanged.
+
+Each type starts with a number tag: 0 Unit; 1 Parameter and 2 Session followed by
+an index; 3 Number followed by decimal magnitude text; 4 Meaning followed by its
+index and list of type arguments; 5 Tuple, 8 Packed alternatives, 9 All, and 11 Sum
+followed by a list of types; 6 Array followed by element and length; 7 Function
+followed by parameter and result; 10 Not followed by its inner type. These types
+describe a value in its source index context. Arbitrary indices are not authority
+to execute a resource-bearing member. Native execution still refuses resource
+programs and genuine resource values.
 
 A function crosses only where the host shows it: in a main line or the
 run's result, as tag 10. In a request's arguments or `with`
@@ -129,8 +174,11 @@ must have the call's declared result type (otherwise a `Host` Fault),
 or number 1 then a text failure message, which Faults `Host` at the
 call.
 
-A host in Python (`host.py`): it answers every call with the integer
-8080 and prints each main line and the result. `python3 host.py exe`
+A small host in Python (`host.py`) for the scalar/unshared subset: it answers
+every call with the integer 8080 and prints each main line and the result.
+This example deliberately refuses Packed and shared-container tags 11/12; use
+the full Rust `fipe_native::codec` for the complete protocol. Retired tag 9 is
+always rejected, not interpreted as an old Packed value. `python3 host.py exe`
 runs `tests/fixtures/first.fipe` built with `--host
 ../../tests/fixtures/host`.
 
@@ -149,8 +197,10 @@ def value(b, i):  # a value's display, and the offset past it
     if tag == 2: neg, i = num(b, i); m, i = text(b, i); return '-' * neg + m, i
     if tag in (3, 4): bits, i = num(b, i); return f'<float {bits:#x}>', i
     if tag == 5: s, i = text(b, i); return repr(s), i
-    if tag == 9: _, i = num(b, i); return value(b, i)
+    if tag == 9: raise ValueError('retired Packed tag 9')
+    if tag in (11, 12): raise ValueError('use the full Rust codec for Packed/shared values')
     if tag == 10: return '<function>', i
+    if tag not in (6, 7, 8): raise ValueError(f'unknown value tag {tag}')
     head = ''
     if tag == 8: m, i = num(b, i); c, i = num(b, i); head = f'#{m}.{c}'
     n, i = num(b, i); parts = []
@@ -232,3 +282,25 @@ and not a gate:
 ```sh
 cargo test --release --locked --offline --test speed -- --ignored --nocapture
 ```
+
+See the [support policy](../../Documentation/development.md#compatibility-and-support)
+for the Rust 1.98.1 floor and platform qualification status.
+Executable support is x86_64-unknown-linux-gnu only. Match compiler, generated
+artifacts and runtime to the exact Fipe version; this policy does not imply a
+mechanical mismatched-version rejection guard.
+
+
+Checked programs with resource declarations are refused by native execution,
+including private or unused declarations. Native `lower`, `object`, `listing`
+and LLVM `module` return `Result<_, String>`; callers must propagate refusal.
+`Unit::new` and `Unit::compile` also refuse. Raw `Unit` source metadata still
+encodes/decodes unchanged; transporting sources does not certify executable
+support. Startup refuses reconstructed marked sources before opening the Host,
+reading input or calling generated code. Raw assembler/ELF and LLVM text APIs
+remain low-level interfaces without a checked-program support guarantee.
+
+Receiver-first method adapters use the existing body/call ABI. Their active
+locators and immutable invocation contexts participate in the compiler/runtime
+fingerprint along with bodies. Native reconstruction must reproduce these
+collections before generated code runs; this adds no portable artifact or
+cross-version compatibility promise.

@@ -210,6 +210,7 @@ export default grammar({
     'where',
     // A selector touching the token before it.
     $.field_name,
+    $.resource_modifier,
   ],
 
   extras: $ => [
@@ -309,9 +310,10 @@ export default grammar({
       field('type', $._annotation),
     ),
 
-    // type_item = "type", NAME, [ type_parameters ], [ type_body ].
+    // type_item = "type", [ contextual resource modifier ], NAME, ... .
     type_item: $ => seq(
       'type',
+      optional(field('resource', $.resource_modifier)),
       field('name', choice($.upper_name, $.name)),
       optional(field('parameters', $.type_parameters)),
       optional(choice(

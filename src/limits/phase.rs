@@ -197,15 +197,9 @@ impl Pass<'_> {
             ExprKind::Bind { value, .. } | ExprKind::Not { value, .. } => {
                 pure(*value)
             }
-            ExprKind::Field { value, field } => {
+            ExprKind::Field { value, .. } => {
                 pure(*value)
-                    && self.pure_member(
-                        field
-                            .segments
-                            .last()
-                            .map_or("", alloc::string::String::as_str),
-                        &mut Vec::new(),
-                    )
+                    && self.field_chain_pure(self.module, id, &mut Vec::new())
             }
             ExprKind::Selector(name) => self.pure_member(
                 name.segments
@@ -231,6 +225,175 @@ impl Pass<'_> {
             ExprKind::Outcome { payload, .. } => payload.is_none_or(pure),
             ExprKind::With { .. } => false,
             _ => true,
+        }
+    }
+
+    fn field_chain_pure(
+        &self,
+        module: &Module,
+        id: ExprId,
+        visited: &mut Vec<Target>,
+    ) -> bool {
+        if core::ptr::eq(module, self.module) {
+            return self.field_chain_pure_in(self.typed, module, id, visited);
+        }
+        if let Some(line) = self.frame.and_then(|frame| {
+            frame.lines.iter().find(|line| {
+                core::ptr::eq(core::ptr::from_ref(&line.module), module)
+            })
+        }) {
+            return self.field_chain_pure_in(&line.typed, module, id, visited);
+        }
+        if let Some((stem, _)) = self
+            .files
+            .iter()
+            .find(|(_, source)| core::ptr::eq(source, module))
+        {
+            return self.cache.files.borrow().get(stem).is_some_and(
+                |checked| {
+                    self.field_chain_pure_in(
+                        &checked.typed,
+                        module,
+                        id,
+                        visited,
+                    )
+                },
+            );
+        }
+        false
+    }
+
+    fn field_chain_pure_in(
+        &self,
+        typed: &crate::typed::Typed,
+        module: &Module,
+        id: ExprId,
+        visited: &mut Vec<Target>,
+    ) -> bool {
+        let expression = &module.expressions[id.0];
+        let ExprKind::Field { field, .. } = &expression.kind else {
+            return true;
+        };
+        let Some(steps) = typed
+            .accesses
+            .get(&(expression.span.start, expression.span.end))
+        else {
+            return false;
+        };
+        let steps_pure = steps.len() == field.segments.len()
+            && steps.iter().zip(&field.segments).all(|(step, name)| {
+                let operation = match &step.selected {
+                    crate::typed::Selected::Field { .. } => true,
+                    crate::typed::Selected::Value {
+                        origin: Origin::Host(_) | Origin::Commands,
+                        site,
+                    } => {
+                        let crate::typed::Selected::Value { origin, .. } =
+                            &step.selected
+                        else {
+                            unreachable!()
+                        };
+                        self.checked_member_pure(typed, origin, *site)
+                    }
+                    _ => self.pure_member_of(
+                        name,
+                        type_head(&step.head),
+                        visited,
+                    ),
+                };
+                operation
+                    && step.bound.as_ref().is_none_or(|bound| {
+                        bound.defaults.iter().all(|(_, default)| {
+                            self.recorded_default_pure(default, visited)
+                        })
+                    })
+            });
+        steps_pure
+            && typed
+                .bound
+                .get(&(expression.span.start, expression.span.end))
+                .filter(|bound| !bound.spots.is_empty())
+                .is_none_or(|bound| {
+                    bound.defaults.iter().all(|(_, default)| {
+                        self.recorded_default_pure(default, visited)
+                    })
+                })
+    }
+
+    fn checked_member_pure(
+        &self,
+        typed: &crate::typed::Typed,
+        origin: &Origin,
+        site: Span,
+    ) -> bool {
+        let Some(module) = self.owner(origin) else {
+            return false;
+        };
+        let Some(value) = module.entries.iter().find_map(|entry| {
+            let Entry::Item(item) = entry else {
+                return None;
+            };
+            let ItemKind::Impl { members, .. } = &item.kind else {
+                return None;
+            };
+            members.iter().find_map(|member| match member {
+                ImplMember::Named { name, value, .. } if name.span == site => {
+                    *value
+                }
+                _ => None,
+            })
+        }) else {
+            return false;
+        };
+        typed
+            .constructors
+            .iter()
+            .chain(&self.typed.constructors)
+            .any(|source| {
+                source.home == *origin
+                    && source.roots.contains(&value)
+                    && source.typed.known(value).is_some_and(|known| known.pure)
+            })
+    }
+
+    fn recorded_default_pure(
+        &self,
+        default: &crate::typed::DefaultValue,
+        visited: &mut Vec<Target>,
+    ) -> bool {
+        use crate::typed::DefaultValue;
+        match default {
+            DefaultValue::Expression(instance) => instance
+                .typed
+                .known(instance.value)
+                .is_some_and(|known| known.pure),
+            DefaultValue::Record { fields, .. } => {
+                fields.iter().all(|(_, _, default)| {
+                    self.recorded_default_pure(default, visited)
+                })
+            }
+            DefaultValue::Array { element, .. } => {
+                self.recorded_default_pure(element, visited)
+            }
+            DefaultValue::Type(ty) => {
+                self.pure_member_of("default", type_head(ty), visited)
+            }
+            DefaultValue::Prepared { selected, ty, .. } => match &**selected {
+                crate::typed::Selected::Field { .. } => true,
+                crate::typed::Selected::Value {
+                    origin: Origin::Host(_) | Origin::Commands,
+                    site,
+                } => {
+                    let crate::typed::Selected::Value { origin, .. } =
+                        &**selected
+                    else {
+                        unreachable!()
+                    };
+                    self.checked_member_pure(self.typed, origin, *site)
+                }
+                _ => self.pure_member_of("default", type_head(ty), visited),
+            },
+            DefaultValue::Declared { .. } => false,
         }
     }
 
@@ -342,6 +505,8 @@ impl Pass<'_> {
                 self.pure_scoped(module, resolved, target, visited)
             });
             pure && self.form_purity(module, resolved, ExprId(index), visited)
+                && (!matches!(expression.kind, ExprKind::Field { .. })
+                    || self.field_chain_pure(module, ExprId(index), visited))
                 && if let ExprKind::Binary { op, left, .. } = expression.kind {
                     let ty = self.expression_type(module, left);
                     self.pure_member_of(
@@ -1164,5 +1329,39 @@ const fn operator_member(op: crate::ast::BinaryOp) -> &'static str {
         B::Concat => "concat",
         B::Equal | B::NotEqual => "eq",
         B::Less | B::LessEqual | B::Greater | B::GreaterEqual => "cmp",
+    }
+}
+
+#[cfg(test)]
+mod grouped_field_tests {
+    #[test]
+    fn intermediate_and_outer_member_defaults_are_not_pure() {
+        let mut declarations = crate::decl::Declarations::new();
+        declarations.module("probe", "pub echo: Integer -> Integer\npub type B { pub n: Integer }\npub type A { pub seed: Integer }\nimpl A { pub step: (self: Self) -> (n: Integer = (echo 7)) -> B = self n => B n }").expect("Host source");
+        for source in [
+            "use probe\n(probe.A 0).step.n",
+            "use probe\n(probe.A 0).step",
+        ] {
+            let module =
+                crate::parse::parse(crate::lex::lex(source)).expect("module");
+            let resolved = crate::resolve::resolve(&module, &declarations, &[])
+                .expect("resolved");
+            let (typed, errors) = crate::infer::infer_partial(
+                &module,
+                &resolved,
+                &declarations,
+                &[],
+            );
+            assert!(errors.is_empty(), "{errors:?}");
+            let crate::ast::Entry::Line(value) =
+                module.entries.last().expect("last expression")
+            else {
+                panic!("expression")
+            };
+            assert!(
+                !typed.known(*value).expect("checked value").pure,
+                "an effectful omitted default must not be compile-pure"
+            );
+        }
     }
 }

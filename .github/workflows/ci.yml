@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: ${{ matrix.mode }} / ${{ matrix.runner }} / ${{ matrix.profile }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.mode == 'linux' && 60 || 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mode: quality, runner: ubuntu-24.04, profile: debug, host: x86_64-unknown-linux-gnu }
+          - { mode: linux, runner: ubuntu-24.04, profile: debug, host: x86_64-unknown-linux-gnu }
+          - { mode: linux, runner: ubuntu-24.04, profile: release, host: x86_64-unknown-linux-gnu }
+          - { mode: features, runner: ubuntu-24.04, profile: debug, host: x86_64-unknown-linux-gnu }
+          - { mode: vm, runner: windows-2025, profile: debug, host: x86_64-pc-windows-msvc }
+          - { mode: vm, runner: windows-2025, profile: release, host: x86_64-pc-windows-msvc }
+          - { mode: vm, runner: macos-15, profile: debug, host: aarch64-apple-darwin }
+          - { mode: vm, runner: macos-15, profile: release, host: aarch64-apple-darwin }
+          - { mode: vm, runner: macos-15-intel, profile: debug, host: x86_64-apple-darwin }
+          - { mode: vm, runner: macos-15-intel, profile: release, host: x86_64-apple-darwin }
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI_EXPECTED_HOST: ${{ matrix.host }}
+      CARGO_TARGET_DIR: ${{ runner.temp }}/fipe-target
+      CARGO_TERM_COLOR: never
+      RUSTC_WRAPPER: ''
+      FIPE_CLANG: clang-23
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install selected Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - name: Add feature-check target components
+        if: matrix.mode == 'features'
+        run: rustup target add --toolchain 1.98.1 thumbv7em-none-eabihf x86_64-pc-windows-msvc
+      # Authoring this hosted-only recipe does not authorize running it elsewhere.
+      - name: Provision signed LLVM 23 packages on hosted Ubuntu
+        if: matrix.mode == 'linux'
+        run: |
+          key="$RUNNER_TEMP/llvm-signing-key.asc"
+          curl --fail --silent --show-error --location https://apt.llvm.org/llvm-snapshot.gpg.key -o "$key"
+          fingerprint=$(gpg --batch --show-keys --with-colons "$key" | awk -F: '$1 == "fpr" { print $10; exit }')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          gpg --batch --yes --dearmor --output "$RUNNER_TEMP/llvm-keyring.gpg" "$key"
+          sudo install -m 0644 "$RUNNER_TEMP/llvm-keyring.gpg" /usr/share/keyrings/fipe-llvm.gpg
+          printf '%s\n' 'deb [signed-by=/usr/share/keyrings/fipe-llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main' | sudo tee /etc/apt/sources.list.d/fipe-llvm.list
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes clang-23
+          dpkg-query -W clang-23
+          clang-23 --version
+      - name: Run checks and retain log
+        run: |
+          mkdir -p "$RUNNER_TEMP/fipe-ci-logs"
+          bash scripts/ci.sh '${{ matrix.mode }}' '${{ matrix.profile }}' 2>&1 | tee "$RUNNER_TEMP/fipe-ci-logs/checks.log"
+      - name: Retain verification logs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ci-${{ matrix.mode }}-${{ matrix.runner }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/fipe-ci-logs
+          retention-days: 7
+          if-no-files-found: warn
+
+  package:
+    name: package / ubuntu-24.04
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI_EXPECTED_HOST: x86_64-unknown-linux-gnu
+      CARGO_TARGET_DIR: ${{ runner.temp }}/fipe-target
+      RUSTC_WRAPPER: ''
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install selected Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Verify packages
+        run: |
+          mkdir -p "$RUNNER_TEMP/fipe-ci-logs"
+          bash scripts/ci.sh package 2>&1 | tee "$RUNNER_TEMP/fipe-ci-logs/package.log"
+          find "$CARGO_TARGET_DIR/package" -maxdepth 1 -name '*.crate' -print | sort | tee "$RUNNER_TEMP/fipe-ci-logs/archives.log"
+          for archive in "$CARGO_TARGET_DIR"/package/*.crate; do
+            printf '%s\n' "$archive"
+            tar -tzf "$archive"
+          done >"$RUNNER_TEMP/fipe-ci-logs/archive-contents.log"
+      - name: Retain package verification logs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ci-package-ubuntu-24.04
+          path: ${{ runner.temp }}/fipe-ci-logs
+          retention-days: 7
+          if-no-files-found: warn

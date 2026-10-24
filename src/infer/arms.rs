@@ -164,7 +164,8 @@ impl Infer<'_> {
             }
             PatternKind::Record { fields, .. } => {
                 let target = self.resolved.pattern(id);
-                let Some((record, declared)) = self.record_shape(target) else {
+                let Some((record, declared)) = self.record_shape(target, span)
+                else {
                     return;
                 };
                 self.unify(ty, &record, span, input);

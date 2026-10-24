@@ -51,3 +51,22 @@ size: Vec<U8> = []
 #     ^ type
 #        ^ punctuation.bracket
 #         ^ type
+
+pub type resource Table
+#        ^ keyword.modifier
+#                 ^ type.definition
+
+type resource Rd<Api>
+#    ^ keyword.modifier
+#             ^ type.definition
+#                ^ type
+
+type resource
+#    ^ type.definition
+
+resource = 1
+# <- variable
+
+type resource where self > 0
+#    ^ type.definition
+#             ^ keyword

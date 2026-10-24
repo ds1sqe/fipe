@@ -128,3 +128,75 @@ fn an_empty_vector_runs_and_a_later_show_names_its_unfixed_element() {
         "{refused}"
     );
 }
+
+const OVERLOADED_CONVERSIONS: &str = "type P: From<Integer> & From<String> { n: Integer }\nimpl P: From<Integer> { from: Integer -> Self = n => Self n }\nimpl P: From<String> { from: String -> Self = s => Self 0 }";
+
+#[test]
+fn overloaded_conversion_call_runs_each_body_and_retains_session_choices() {
+    let mut lines = Lines::new();
+    assert_eq!(lines.line(OVERLOADED_CONVERSIONS), "()");
+    assert_eq!(lines.line("(P.from 1, P.from \"x\")"), "(P 1, P 0)");
+    assert_eq!(lines.line("(P.from \"x\", P.from 2)"), "(P 0, P 2)");
+    assert_eq!(lines.line("(P.from 3)"), "P 3");
+    assert_eq!(lines.line("f: Integer -> P = n => P.from n"), "()");
+    assert_eq!(lines.line("f 4"), "P 4");
+    assert_eq!(lines.line("5 | P.from"), "P 5");
+    for source in ["P.from True", "bad = x => P.from x"] {
+        let refused = lines.line(source);
+        assert!(
+            refused.starts_with("refused: ") && refused.contains("Conversion"),
+            "{source}: {refused}"
+        );
+    }
+}
+
+#[test]
+fn overloaded_conversion_call_evaluates_each_host_supply_once_in_order() {
+    use fipe::{
+        check,
+        embed::{Reply, Request},
+        lex::lex,
+        parse::parse,
+        value::Value,
+    };
+    let mut declarations = Declarations::new();
+    declarations
+        .module(
+            "supplies",
+            "pub integer: () -> Integer\npub text: () -> String",
+        )
+        .unwrap();
+    let source = format!("use supplies\n{OVERLOADED_CONVERSIONS}\n(P.from (supplies.integer ()), P.from (supplies.text ()))");
+    let module = parse(lex(&source)).unwrap();
+    let unit =
+        check::check(&module, &declarations, &[], check::Options::default())
+            .unwrap();
+    let program = compile::compile(&unit);
+    let mut machine = Machine::new(Some(BUDGET));
+    let mut outcome = machine.run(&program);
+    for (label, reply) in
+        [("integer", Value::Int(7)), ("text", Value::text("x"))]
+    {
+        let Outcome::Request(Request::Call {
+            declaration,
+            arguments,
+            ..
+        }) = outcome
+        else {
+            panic!("{outcome:?}")
+        };
+        assert_eq!(
+            program.tables.borrow().declarations[declaration].label,
+            label
+        );
+        assert_eq!(arguments, [Value::Unit]);
+        outcome = machine.reply(&program, Reply::Value(Ok(reply)));
+    }
+    let Outcome::Done(Ok(value)) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(
+        structural::show(&value, &program.tables.borrow()),
+        "(P 7, P 0)"
+    );
+}

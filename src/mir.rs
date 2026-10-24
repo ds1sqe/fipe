@@ -15,6 +15,11 @@ pub struct Program {
     /// The unit's tables, shared by a session's units.
     pub tables: Rc<RefCell<ir::Tables>>,
     pub bodies: Vec<Body>,
+    /// Creation locators for live rows; withdrawal discards removed rows
+    /// while retained callable bodies can still bind members of the live prefix.
+    pub receiver_adapters: Vec<ReceiverAdapter>,
+    /// Immutable invocation gates, indexed by body, retained for aliases.
+    pub receiver_contexts: Vec<Option<ReceiverContext>>,
     /// Values prepared at compile time, read by `Operand::Const`.
     pub constants: Vec<Value>,
     /// The body of each definition with spots, sized to
@@ -35,6 +40,47 @@ pub struct Program {
     pub main: usize,
 }
 
+/// The identity of the raw operation behind a receiver-first adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReceiverTarget {
+    Definition(usize),
+    Declared(usize),
+    Derived(ir::Derived),
+}
+/// A locator is scoped to the current append-only table rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceiverAdapter {
+    pub member: usize,
+    pub row: usize,
+    pub target: ReceiverTarget,
+    pub receiver_spot: usize,
+    pub body: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiverComparison {
+    Other,
+    Eq,
+    Cmp,
+}
+/// The extra witness is separate from the raw operation's witnesses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceiverContext {
+    /// The selected row's input entry, admitted as each spot is supplied.
+    pub input_contract: Option<usize>,
+    /// Exact executed Test-meaning IDs, not the operation's other variables.
+    pub input_parameters: Vec<usize>,
+    pub receiver_meaning: usize,
+    pub comparison: ReceiverComparison,
+    /// A Declared adapter's full caller callable, projected only on full call.
+    pub protocol_result: Option<ReceiverResult>,
+}
+/// Where the caller callable is held and how many protocol formals to peel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceiverResult {
+    pub meaning: usize,
+    pub arity: usize,
+}
+
 /// A graph of blocks over typed locals: a function, a thunk, a test, a
 /// default, a module's init or the main.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +91,8 @@ pub struct Body {
     pub arity: usize,
     /// How many captured values a closure of this body supplies.
     pub captures: usize,
+    /// Generated open-call wrapper mapping; absent on ordinary bodies.
+    pub binding: Option<OpenBinding>,
     /// The IR meaning parameters whose witness the caller supplies, in
     /// order: a `Type::Parameter(p)` met at run time is the witness at
     /// `p`'s position here.
@@ -53,6 +101,13 @@ pub struct Body {
     /// temporaries.
     pub locals: Vec<Local>,
     pub blocks: Vec<Block>,
+}
+
+/// The captured callee and relative raw spots of a generated open-call wrapper.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenBinding {
+    pub callee_capture: usize,
+    pub open: Vec<usize>,
 }
 
 /// A typed slot of a body.
@@ -118,6 +173,12 @@ pub enum Operand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Rvalue {
     Use(Operand),
+    /// Admit one source supply without invoking the callable.
+    /// Returns the private callable and admitted argument as a two-part tuple.
+    Admit {
+        values: [Operand; 2],
+        spot: usize,
+    },
     Construct {
         meaning: usize,
         constructor: usize,

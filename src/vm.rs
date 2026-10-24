@@ -26,6 +26,7 @@ mod natives;
 mod order;
 mod pending;
 mod predicates;
+mod resource;
 mod step;
 mod stepping;
 mod walk;
@@ -107,6 +108,13 @@ pub struct InputError {
 /// number of them.
 pub fn input_spot(program: &mir::Program) -> Result<ir::Type, InputError> {
     let tables = program.tables.borrow();
+    borrowed_input_spot(program, &tables).cloned()
+}
+
+fn borrowed_input_spot<'a>(
+    program: &'a mir::Program,
+    tables: &'a ir::Tables,
+) -> Result<&'a ir::Type, InputError> {
     let mut ty = &program.bodies[program.main].locals[0].ty;
     let mut spots = 0;
     let mut spot = None;
@@ -127,7 +135,7 @@ pub fn input_spot(program: &mir::Program) -> Result<ir::Type, InputError> {
         }
     }
     match spot {
-        Some(spot) if spots == 1 => Ok((**spot).clone()),
+        Some(spot) if spots == 1 => Ok(spot.as_ref()),
         _ => Err(InputError { spots }),
     }
 }
@@ -194,6 +202,12 @@ pub(crate) enum Return {
     },
     /// Continue the body frame below at `pass` or `fail` by the Bool.
     Branch { pass: usize, fail: usize },
+    /// Publish guarded spots to the existing callee without a source stop.
+    Arguments {
+        body: usize,
+        arity: usize,
+        node: usize,
+    },
     /// Resume the native frame below with the value.
     Resume,
     /// Continue the body frame below where it stands; the value is
@@ -211,8 +225,8 @@ pub(crate) enum Return {
 #[derive(Debug)]
 pub(crate) struct Owed {
     back: Return,
-    node: usize,
-    ty: ir::Type,
+    expected: resource::Frozen,
+    site: Fault,
 }
 
 /// What a step decided.
@@ -265,6 +279,26 @@ impl Machine {
     /// The budget of the runs to come; `None` is unbounded.
     pub const fn set_budget(&mut self, budget: Option<u64>) {
         self.budget = budget;
+    }
+
+    /// Stop unfinished execution without invoking the host or undoing effects.
+    ///
+    /// Returns true only when an active run was abandoned. False leaves an
+    /// already queued stepped terminal result intact: consume that `Stop::Done`
+    /// as success or Fault, not abandonment. Repeated abandonment is a no-op.
+    /// Prior globals, module initialization, program, lines and charges remain;
+    /// a session driver separately withdraws an abandoned line when needed.
+    /// Invalidate the driver's pending-call association first and discard late
+    /// replies before starting another run; this method does not identify replies.
+    #[must_use]
+    pub fn abandon(&mut self) -> bool {
+        if self.stage.is_none() {
+            return false;
+        }
+        self.end();
+        self.stops.clear();
+        self.stepping = false;
+        true
     }
 
     /// Forget what a session line withdrawn after its run Faulted
@@ -337,27 +371,51 @@ impl Machine {
         program: &mir::Program,
         input: Value,
     ) -> Result<Outcome<Result<Value, Fault>>, InputError> {
-        let spot = input_spot(program)?;
+        {
+            let tables = program.tables.borrow();
+            borrowed_input_spot(program, &tables)?;
+        }
         let line = program.bodies[program.main].node;
         let program = self.open(program);
-        let misfit = {
-            let tables = program.tables.borrow();
-            (!fits::fits(&input, &spot, &tables, &self.prelude()))
-                .then(|| fits::named(&spot, &tables))
-        };
-        if let Some(named) = misfit {
+        if let Err(reason) = self.admit_input(&program, &input) {
             self.end();
-            let reason =
-                Reason::Host(alloc::format!("the input is not {named}"));
             return Ok(Outcome::Done(Err(Self::fault(&program, line, reason))));
         }
         self.input = Some(Input::Owed { value: input, line });
         Ok(self.advance(&program))
     }
 
+    fn admit_input(
+        &mut self,
+        program: &mir::Program,
+        input: &Value,
+    ) -> Result<(), Reason> {
+        let work = self.resource_work();
+        let result = {
+            let tables = program.tables.borrow();
+            let spot = borrowed_input_spot(program, &tables)
+                .expect("validated input arity");
+            resource::Frozen::capture(spot, &tables, self.prelude(), &work)
+                .and_then(|expected| {
+                    if expected.fits(input, &tables, &work)? {
+                        Ok(())
+                    } else {
+                        Err(expected.input_mismatch())
+                    }
+                })
+        };
+        self.pay(work.spent())?;
+        result
+    }
+
     /// Join a run's program, size the machine to it and reset the run.
     fn open(&mut self, program: &mir::Program) -> Rc<mir::Program> {
-        merge::merge(&mut self.program, program);
+        if merge::merge(&mut self.program, program) {
+            self.globals.clear();
+            self.initialized.clear();
+            self.natives = None;
+            self.prelude = None;
+        }
         let program = self.joined();
         self.prepare(&program);
         self.charged = 0;
@@ -417,27 +475,31 @@ impl Machine {
         program: &mir::Program,
         reply: Reply,
     ) -> Result<Flow, Fault> {
-        let Owed { back, node, ty } =
-            self.waiting.take().expect("a host request is owed");
+        let Owed {
+            back,
+            expected,
+            mut site,
+        } = self.waiting.take().expect("a host request is owed");
         match reply {
             Reply::Value(Ok(value)) => {
-                let misfit = {
-                    let tables = program.tables.borrow();
-                    (!fits::fits(&value, &ty, &tables, &self.prelude()))
-                        .then(|| fits::named(&ty, &tables))
+                let work = self.resource_work();
+                let fits =
+                    expected.fits(&value, &program.tables.borrow(), &work);
+                let paid = self.pay(work.spent());
+                let reason = match paid.and(fits) {
+                    Ok(true) => None,
+                    Ok(false) => Some(expected.mismatch()),
+                    Err(reason) => Some(reason),
                 };
-                if let Some(named) = misfit {
-                    let message = alloc::format!("the reply is not {named}");
-                    return Err(Self::fault(
-                        program,
-                        node,
-                        Reason::Host(message),
-                    ));
+                if let Some(reason) = reason {
+                    site.reason = reason;
+                    return Err(site);
                 }
                 self.deliver(program, value, back)
             }
             Reply::Value(Err(message)) => {
-                Err(Self::fault(program, node, Reason::Host(message)))
+                site.reason = Reason::Host(message);
+                Err(site)
             }
             Reply::File(_) => panic!("a host call takes a value reply"),
         }
@@ -545,18 +607,59 @@ impl Machine {
     /// value must have the shape of `ty`, the call's result type.
     pub(crate) fn host(
         &mut self,
+        program: &mir::Program,
         declaration: usize,
         arguments: Vec<Value>,
         ty: ir::Type,
         back: Return,
         node: usize,
-    ) -> Flow {
-        self.waiting = Some(Owed { back, node, ty });
-        Flow::Request(Request::Call {
+    ) -> Result<Flow, Fault> {
+        let ty = crate::value::resource::Forest(alloc::vec![ty]);
+        let work = self.resource_work();
+        let expected = resource::Frozen::capture(
+            &ty.0[0],
+            &program.tables.borrow(),
+            self.prelude(),
+            &work,
+        );
+        self.pay(work.spent())
+            .map_err(|reason| Self::fault(program, node, reason))?;
+        let expected =
+            expected.map_err(|reason| Self::fault(program, node, reason))?;
+        self.waiting = Some(Owed {
+            back,
+            expected,
+            site: Self::fault(program, node, Reason::Budget),
+        });
+        Ok(Flow::Request(Request::Call {
             declaration,
             arguments,
             environment: self.environment.clone(),
-        })
+        }))
+    }
+
+    fn resource_work(&self) -> resource::Work {
+        resource::Work::new(
+            self.budget.map(|limit| limit.saturating_sub(self.charged)),
+        )
+    }
+
+    /// The exact frozen direct resource result of the currently pending Host call.
+    ///
+    /// # Errors
+    /// Returns `NoPendingCall` outside a Call or `NotResourceResult` for a
+    /// composite/ordinary result. It never guesses a nested resource position.
+    pub fn pending_resource_type(
+        &self,
+    ) -> Result<
+        crate::value::resource::ResourceType,
+        crate::value::resource::ResourceError,
+    > {
+        self.waiting
+            .as_ref()
+            .ok_or(crate::value::resource::ResourceError::NoPendingCall)?
+            .expected
+            .direct()
     }
 
     /// Size the globals and modules to the tables; refresh the natives
@@ -602,14 +705,45 @@ impl Machine {
         }
     }
 
-    /// A type with the frame's witnesses in place of its parameters.
+    /// A type with the frame's witnesses, charged before resource-capable copies.
     pub(crate) fn substitute(
+        &mut self,
         program: &mir::Program,
-        frame: &BodyFrame,
         ty: &ir::Type,
-    ) -> ir::Type {
-        let body = &program.bodies[frame.body];
-        let fixed = ty.substituted(&body.hidden, &frame.meanings);
-        crate::compile::dispatch::fixed(&program.tables.borrow(), &fixed)
+    ) -> Result<ir::Type, Reason> {
+        self.substitute_charged(program, ty, false)
+    }
+
+    pub(super) fn substitute_charged(
+        &mut self,
+        program: &mir::Program,
+        ty: &ir::Type,
+        callable: bool,
+    ) -> Result<ir::Type, Reason> {
+        let budgeted = callable || program.tables.borrow().has_resources;
+        let work = if budgeted {
+            self.resource_work()
+        } else {
+            resource::Work::new(None)
+        };
+        let copied = {
+            let Some(Frame::Body(frame)) = self.frames.last() else {
+                unreachable!("body frame")
+            };
+            let body = &program.bodies[frame.body];
+            let tables = program.tables.borrow();
+            resource::materialize(
+                ty,
+                &body.hidden,
+                &frame.meanings,
+                &tables,
+                &work,
+                &mut Ok,
+            )
+        };
+        if budgeted {
+            self.pay(work.spent())?;
+        }
+        Ok(copied?.0.pop().expect("copied type"))
     }
 }

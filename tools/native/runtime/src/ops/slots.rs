@@ -2,7 +2,9 @@
 //! from `src/vm/assign.rs` (an rvalue into a local) and `src/vm/step.rs`
 //! (a field read, a switch's key, a global read before the step that
 //! reads it).
-use super::{calls, casts, fail, predicates, Ctx, Faulted, Frame, Site};
+use super::{
+    calls, casts, dispatch, fail, predicates, Ctx, Faulted, Frame, Site,
+};
 use crate::start;
 use fipe::{
     ir,
@@ -35,6 +37,13 @@ pub fn assign(
         unreachable!("an assign site")
     };
     Ok(match rvalue {
+        Rvalue::Admit { spot, .. } => {
+            let argument = args.pop().expect("binding argument");
+            let callee = args.pop().expect("binding callee");
+            super::entries::admitted_binding(
+                &ctx, callee, *spot, argument, node,
+            )?
+        }
         // A rebuild is a record of its one value.
         Rvalue::Construct {
             meaning,
@@ -54,28 +63,32 @@ pub fn assign(
         Rvalue::Array(_) => Value::seq(args),
         // Captures are copied now, meanings substituted by this frame.
         Rvalue::Closure { body, meanings, .. } => {
-            Value::Function(Rc::new(Closure {
-                body: *body,
-                captures: args,
-                meanings: meanings
-                    .iter()
-                    .map(|ty| frame.substitute(&ctx, ty))
-                    .collect(),
-                filled: Vec::new(),
-                guards: Vec::new(),
-            }))
+            let mut copied =
+                closure_meanings(&ctx, &frame, *body, meanings, node)?;
+            super::entries::receiver_closure(
+                &ctx,
+                Closure {
+                    body: *body,
+                    captures: args,
+                    meanings: std::mem::take(&mut copied.0),
+                    filled: Vec::new(),
+                    guards: Vec::new(),
+                },
+                node,
+            )?
         }
         Rvalue::Cast { row, .. } => {
             // The target is the local's type, witnesses in place.
-            let target = frame.local_type(&ctx, *dest);
+            let target = dispatch::Types(vec![frame.local_type(&ctx, *dest)]);
             let value = args.pop().expect("the cast's value");
-            casts::cast(*row, &target, value, &ctx.prelude)
+            casts::cast(*row, &target.0[0], value, &ctx.prelude)
                 .map_err(|reason| fail(node, reason))?
         }
         // A native rvalue computes at once.
         Rvalue::Native { op, .. } => {
-            let result = frame.local_type(&ctx, *dest);
-            calls::native(&ctx, *op, args, Some(result), node)?
+            let mut result =
+                dispatch::Types(vec![frame.local_type(&ctx, *dest)]);
+            calls::native(&ctx, *op, args, result.0.pop(), node)?
         }
         Rvalue::Repeat { length, .. } => {
             let value = args.pop().expect("the repeated value");
@@ -88,14 +101,22 @@ pub fn assign(
             other => unreachable!("a sequence, not {other:?}"),
         },
         Rvalue::Pack { tag, .. } => {
-            let ir::Type::Meaning { index, .. } = frame.substitute(&ctx, tag)
-            else {
-                unreachable!("a tag is a meaning")
-            };
-            Value::Packed(Rc::new(Packed {
-                meaning: index,
-                value: args.pop().expect("the packed value"),
-            }))
+            let mut roots = dispatch::Types(vec![frame.substitute(&ctx, tag)]);
+            roots.0.push(frame.local_type(&ctx, *dest));
+            let value = args.pop().expect("the packed value");
+            let target = roots.0.pop().expect("target");
+            let source = roots.0.pop().expect("source");
+            Value::Packed(Rc::new(
+                Packed::from_data(source, target, &value).ok_or_else(|| {
+                    fail(
+                        node,
+                        Reason::Message(
+                            "native execution does not support resource values"
+                                .into(),
+                        ),
+                    )
+                })?,
+            ))
         }
         Rvalue::Convert {
             mode, predicate, ..
@@ -109,11 +130,36 @@ pub fn assign(
     })
 }
 
+fn closure_meanings(
+    ctx: &Ctx,
+    frame: &Frame,
+    body: usize,
+    meanings: &[ir::Type],
+    node: usize,
+) -> Result<dispatch::Types, Faulted> {
+    let mut copied = dispatch::Types::default();
+    let callable = ctx
+        .program
+        .receiver_contexts
+        .get(body)
+        .and_then(Option::as_ref)
+        .and_then(|context| context.protocol_result.as_ref())
+        .map(|result| result.meaning);
+    for (position, ty) in meanings.iter().enumerate() {
+        copied.0.push(if callable == Some(position) {
+            calls::copied_callable(ctx, Some(frame), ty, true, node)?
+        } else {
+            frame.substitute(ctx, ty)
+        });
+    }
+    Ok(copied)
+}
+
 /// A repeated element, its length written or read from a witness.
 fn repeat(frame: &Frame, value: Value, length: mir::Length) -> Value {
     let length = match length {
         mir::Length::Fixed(length) => length,
-        mir::Length::Hidden(index) => match &frame.meanings[index] {
+        mir::Length::Hidden(index) => match frame.meanings[index].as_type() {
             ir::Type::Number(number) => number.to_u64().expect("a length fits"),
             other => unreachable!("a length, not {other:?}"),
         },
@@ -136,12 +182,15 @@ fn convert(
     let prelude = &ctx.prelude;
     Ok(match mode {
         ir::ConversionMode::Direct => value,
-        ir::ConversionMode::Wrap => match frame.local_type(ctx, dest) {
-            ir::Type::Meaning { index, .. } if Some(index) == prelude.maybe => {
+        ir::ConversionMode::Wrap => {
+            let ty = dispatch::Types(vec![frame.local_type(ctx, dest)]);
+            if matches!(&ty.0[0],ir::Type::Meaning{index,..} if Some(*index)==prelude.maybe)
+            {
                 prelude.just(value)
+            } else {
+                prelude.ok(value)
             }
-            _ => prelude.ok(value),
-        },
+        }
         ir::ConversionMode::Unwrap => match &value {
             Value::Record(record) if record.constructor == 0 => {
                 record.fields[0].clone()
@@ -149,7 +198,9 @@ fn convert(
             _ => return Err(fail(node, Reason::Cast)),
         },
         ir::ConversionMode::Check | ir::ConversionMode::TryCheck => {
-            let passed = predicates::holds(ctx, predicate, &value, node)?;
+            let passed = predicates::holds_in_frame(
+                ctx, frame, predicate, &value, node,
+            )?;
             match (mode, passed) {
                 (ir::ConversionMode::TryCheck, true) => prelude.ok(value),
                 (ir::ConversionMode::TryCheck, false) => prelude.limit_error(),
@@ -196,7 +247,7 @@ pub fn field(value: &Value, index: usize) -> Value {
     match value {
         Value::Record(record) => record.fields[index].clone(),
         Value::Tuple(parts) | Value::Seq(parts) => parts[index].clone(),
-        Value::Packed(packed) => packed.value.clone(),
+        Value::Packed(packed) => packed.value().clone(),
         Value::Text(_) => fipe::value::text::bytes(value),
         other => unreachable!("a field of {other:?}"),
     }
@@ -212,7 +263,10 @@ pub fn field(value: &Value, index: usize) -> Value {
 pub fn switch_key(value: &Value) -> u64 {
     let key = match value {
         Value::Record(record) => record.constructor,
-        Value::Packed(packed) => packed.meaning,
+        Value::Packed(packed) => match packed.source_type() {
+            ir::Type::Meaning { index, .. } => *index,
+            _ => unreachable!("a nominal constructor switch"),
+        },
         Value::Int(number) => usize::try_from(*number).unwrap_or(usize::MAX),
         other => unreachable!("a switch on {other:?}"),
     };

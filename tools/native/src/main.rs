@@ -83,7 +83,7 @@ fn build(build: &Build) -> Result<(), String> {
         })
         .collect::<Result<_, String>>()?;
     let (unit, program) = Unit::new(&main, host, files)?;
-    let object = lower::object(&program, &unit.encode());
+    let object = lower::object(&program, &unit.encode())?;
     let bytes = elf::write(&object).map_err(|error| error.to_string())?;
     let write = |path: &Path| {
         std::fs::write(path, &bytes)

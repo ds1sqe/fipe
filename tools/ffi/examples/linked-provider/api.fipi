@@ -1,0 +1,3 @@
+pub integer: Integer -> Integer
+pub text: String -> String
+pub fail: () -> Integer

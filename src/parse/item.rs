@@ -68,6 +68,14 @@ impl Parser {
     /// optional; `type Name<params>` alone is an opaque type.
     fn type_item(&mut self) -> Result<ItemKind, Error> {
         self.bump();
+        // Inspect adjacent raw tokens: neither the modifier nor its name crosses LF.
+        // `where` already starts limits on an ordinary type named `resource`.
+        let resource = word(self.tokens.get(self.position), "resource")
+            && matches!(self.tokens.get(self.position + 1), Some(Token { kind: Kind::Name(parts), .. })
+                if parts.len() == 1 && parts[0] != "where");
+        if resource {
+            self.bump();
+        }
         let name = self.name(true)?;
         let parameters = self.type_parameters()?;
         let base = if self.eat(Symbol::Colon) {
@@ -82,6 +90,7 @@ impl Parser {
         };
         let limits = self.limits()?;
         Ok(ItemKind::Type {
+            resource,
             name,
             parameters,
             base,

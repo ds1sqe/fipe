@@ -771,3 +771,194 @@ fn reloaded_exports_and_docs_reach_completion_without_interface_script_features(
         .contains("interface"));
     assert_eq!(diagnostics_before(&replies, 5, &path), &json!([]));
 }
+
+const RESOURCE_TOOL_HEADER: &str = "## 한글 offline resource.\r\npub type resource Table\r\npub type Packet\r\npub acquire: () -> Table\r\n";
+const RESOURCE_TOOL_CLIENT: &str = "use api\nx: api.Table = b\"x\"";
+
+fn resource_tool_expected(host: &Host) -> Vec<(Value, String)> {
+    let module =
+        fipe::parse::parse(fipe::lex::lex(RESOURCE_TOOL_CLIENT)).unwrap();
+    fipe::check::check(
+        &module,
+        &host.declarations,
+        &[],
+        fipe::check::Options::default(),
+    )
+    .unwrap_err()
+    .iter()
+    .map(|error| {
+        let fipe_lsp::words::Placed::Here(span, message) =
+            fipe_lsp::words::check(error)
+        else {
+            panic!("client-owned resource diagnostic: {error:?}")
+        };
+        (
+            serde_json::to_value(fipe_lsp::position::range(
+                RESOURCE_TOOL_CLIENT,
+                span,
+                fipe_lsp::position::Encoding::Utf8,
+            ))
+            .unwrap(),
+            message,
+        )
+    })
+    .collect()
+}
+
+fn resource_tool_diagnostic(
+    messages: &[Value],
+    id: u64,
+    client: &Path,
+    expected: &[(Value, String)],
+) {
+    let actual = diagnostics_before(messages, id, client).as_array().unwrap();
+    assert!(!expected.is_empty());
+    for (range, message) in expected {
+        assert!(
+            actual.iter().any(|d| &d["range"] == range
+                && d["message"].as_str() == Some(message.as_str())),
+            "{id}: {actual:?}"
+        );
+    }
+}
+
+#[test]
+fn resource_tool_selected_declarations_and_codec_classification_are_real() {
+    let dir = directory("resource-tool-classification");
+    let path = dir.join("api.fipi");
+    fs::write(&path, RESOURCE_TOOL_HEADER).unwrap();
+    let host = Host::default()
+        .with_interfaces(&[input("api", &path)])
+        .unwrap();
+    assert_eq!(
+        host.source("api"),
+        Some((path.as_path(), RESOURCE_TOOL_HEADER))
+    );
+    let namespace = host.declarations.get_module("api").unwrap();
+    for (name, marked) in [("Table", true), ("Packet", false)] {
+        let declared =
+            namespace.types.iter().find(|ty| ty.name == name).unwrap();
+        assert!(
+            matches!(declared.kind, fipe::decl::Kind::Type { resource, .. } if resource == marked)
+        );
+    }
+    let module =
+        fipe::parse::parse(fipe::lex::lex("use api\napi.acquire ()")).unwrap();
+    let unit = fipe::check::check(
+        &module,
+        &host.declarations,
+        &[],
+        fipe::check::Options::default(),
+    )
+    .unwrap();
+    assert!(unit
+        .tables()
+        .meanings
+        .iter()
+        .any(|m| m.label == "Table" && m.resource));
+    assert!(!resource_tool_expected(&host).is_empty());
+    let ordinary =
+        fipe::parse::parse(fipe::lex::lex("use api\nx: api.Packet = b\"x\""))
+            .unwrap();
+    let ordinary_unit = fipe::check::check(
+        &ordinary,
+        &host.declarations,
+        &[],
+        fipe::check::Options::default(),
+    )
+    .unwrap();
+    assert!(ordinary_unit.tables().nodes.iter().any(|node| matches!(
+        node.kind,
+        fipe::ir::Kind::Cast {
+            row: fipe::ir::CastRow::Codec,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn resource_tool_reload_retains_marked_semantics_without_provider_fallback() {
+    let dir = directory("resource-tool-reload");
+    let path = dir.join("api.fipi");
+    fs::write(&path, RESOURCE_TOOL_HEADER).unwrap();
+    fs::write(dir.join("api.fipe"), "= malformed provider fallback (").unwrap();
+    let client = dir.join("client.fipe");
+    let navigation = dir.join("navigation.fipe");
+    let ordinary = dir.join("ordinary.fipe");
+    let host = Host::default()
+        .with_interfaces(&[input("api", &path)])
+        .unwrap();
+    let expected = resource_tool_expected(&host);
+    let edited = RESOURCE_TOOL_HEADER
+        .replace("offline resource", "edited offline resource")
+        + "pub ready: Integer\n";
+    let replies = scripted(
+        &[
+            initialize(
+                0,
+                &json!({"interfaces":[{"module":"api","path":path}]}),
+            ),
+            open(&client, RESOURCE_TOOL_CLIENT),
+            open(&ordinary, "use api\nx: api.Packet = b\"x\""),
+            open(&navigation, "use api\napi.acquire ()"),
+            at(1, "textDocument/hover", &navigation, 1, 5),
+            open(&path, &edited),
+            open(&dir.join("completion.fipe"), "use api\napi."),
+            at(
+                20,
+                "textDocument/completion",
+                &dir.join("completion.fipe"),
+                1,
+                4,
+            ),
+            at(2, "textDocument/definition", &navigation, 1, 5),
+            changed(&path, "pub type resource Table\npub acquire: ("),
+            at(3, "textDocument/definition", &navigation, 1, 5),
+            changed(&path, RESOURCE_TOOL_HEADER),
+            at(4, "textDocument/definition", &navigation, 1, 5),
+            close(&path),
+            at(5, "textDocument/definition", &navigation, 1, 5),
+            watched(&uri(&path), 2),
+            at(6, "textDocument/definition", &navigation, 1, 5),
+            watched(&uri(&path), 3),
+            at(7, "textDocument/definition", &navigation, 1, 5),
+        ],
+        vec![
+            (
+                5,
+                vec![DiskEdit::Write(path.clone(), edited.as_bytes().to_vec())],
+            ),
+            (6, vec![DiskEdit::Remove(path.clone())]),
+        ],
+        &Options::default(),
+    );
+    for id in 1..=7 {
+        resource_tool_diagnostic(&replies, id, &client, &expected);
+    }
+    for id in [1, 2, 4, 5, 6] {
+        assert_eq!(diagnostics_before(&replies, id, &ordinary), &json!([]));
+        if id != 1 {
+            assert_eq!(response(&replies, id)["result"][0]["uri"], uri(&path));
+            assert_eq!(
+                response(&replies, id)["result"][0]["range"],
+                json!({"start":{"line":3,"character":4},"end":{"line":3,"character":11}})
+            );
+        }
+    }
+    for id in [3, 7] {
+        no_location(&replies, id);
+        stale(&replies, id, &navigation);
+        assert!(!diagnostics_before(&replies, id, &path)
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    assert!(response(&replies, 20)["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["label"] == "ready"));
+    assert!(response(&replies, 1)["result"]
+        .to_string()
+        .contains("Table"));
+}

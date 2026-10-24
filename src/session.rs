@@ -20,6 +20,12 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 
+type Lowered = (
+    crate::ir::Unit,
+    Vec<crate::check::Settled>,
+    Option<crate::check::lower::Journal>,
+);
+
 /// Accepted lines are joined by a blank line in the session's source,
 /// the text their spans are in.
 mod docs;
@@ -520,11 +526,12 @@ impl Session {
                     offset,
                     pending.accept,
                 ) {
-                    Ok((unit, proved, kept)) => {
+                    Ok(Some((unit, proved, kept))) => {
                         settled = proved;
                         journal = kept;
                         Some(unit)
                     }
+                    Ok(None) => None,
                     Err(errors) => {
                         diagnostics.extend(errors);
                         None
@@ -571,17 +578,22 @@ impl Session {
         typed: &mut Typed,
         offset: usize,
         accept: bool,
-    ) -> Result<
-        (
-            crate::ir::Unit,
-            Vec<crate::check::Settled>,
-            Option<crate::check::lower::Journal>,
-        ),
-        Vec<Diagnostic>,
-    > {
+    ) -> Result<Option<Lowered>, Vec<Diagnostic>> {
         // An accepted line is emitted into the session's index, journaled
         // so a refusal by the compile phase undoes it; a query owns a copy.
         let lines = self.frame.lines.len();
+        let empty = crate::check::lower::Index::default();
+        let reader = self.index.as_ref().unwrap_or(&empty);
+        let Some(prepared) = reader.prepare(
+            (module, resolve::Origin::Line(lines)),
+            resolved.clone(),
+            typed.clone(),
+            &self.declarations,
+            &self.files,
+            &self.declared,
+        ) else {
+            return Ok(None);
+        };
         let index = self.index.get_or_insert_with(Default::default);
         let mut query;
         let index = if accept {
@@ -593,14 +605,7 @@ impl Session {
         };
         index.session(lines, typed);
         let first = index.tables().nodes.len();
-        let mut unit = index.emit(
-            module,
-            resolved.clone(),
-            typed.clone(),
-            &self.declarations,
-            &self.files,
-            &self.declared,
-        );
+        let mut unit = index.emit_prepared(prepared);
         let judged =
             self.judge(&mut unit, first, (module, resolved), typed, offset);
         let mut journal = None;
@@ -612,7 +617,7 @@ impl Session {
                 index.rollback();
             }
         }
-        judged.map(|settled| (unit, settled, journal))
+        judged.map(|settled| Some((unit, settled, journal)))
     }
 
     /// Run the compile phase over an emitted line and apply what it

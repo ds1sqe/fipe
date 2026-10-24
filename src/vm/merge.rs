@@ -13,8 +13,12 @@ use crate::mir::{
 use alloc::{rc::Rc, vec, vec::Vec};
 
 /// Join `program` to the machine's program, starting a new one when the
-/// tables differ; the result runs with `program`'s main and inits.
-pub(super) fn merge(merged: &mut Option<Rc<Program>>, program: &Program) {
+/// tables differ; return whether the runtime context is fresh.
+/// The result runs with `program`'s main and inits.
+pub(super) fn merge(
+    merged: &mut Option<Rc<Program>>,
+    program: &Program,
+) -> bool {
     let fresh = merged
         .as_ref()
         .is_none_or(|kept| !Rc::ptr_eq(&kept.tables, &program.tables));
@@ -22,6 +26,8 @@ pub(super) fn merge(merged: &mut Option<Rc<Program>>, program: &Program) {
         *merged = Some(Rc::new(Program {
             tables: Rc::clone(&program.tables),
             bodies: Vec::new(),
+            receiver_adapters: Vec::new(),
+            receiver_contexts: Vec::new(),
             constants: Vec::new(),
             definitions: Vec::new(),
             tests: Vec::new(),
@@ -32,11 +38,43 @@ pub(super) fn merge(merged: &mut Option<Rc<Program>>, program: &Program) {
     }
     let kept = Rc::make_mut(merged.as_mut().expect("a program"));
     Joining::new(kept, program).join();
+    fresh
 }
 
 /// Forget the definitions and tests from `definitions` and `tests` on:
 /// a withdrawn line's, whose indices the next line may take again.
 pub(super) fn forget(program: &mut Program, definitions: usize, tests: usize) {
+    // Session rollback truncates rows before Machine::withdraw. Retained
+    // callable bodies can still perform new bound reads of the live prefix.
+    let tables = program.tables.borrow();
+    program.receiver_adapters.retain(|adapter| {
+        let Some(row) = tables
+            .dispatch
+            .get(adapter.member)
+            .and_then(|dispatch| dispatch.rows.get(adapter.row))
+        else {
+            return false;
+        };
+        if row.receiver_spot != Some(adapter.receiver_spot) {
+            return false;
+        }
+        match (&adapter.target, &row.target) {
+            (
+                crate::mir::ReceiverTarget::Definition(old),
+                crate::ir::Implementation::Definition { index, .. },
+            ) => old == index && tables.definitions.get(*index).is_some(),
+            (
+                crate::mir::ReceiverTarget::Declared(old),
+                crate::ir::Implementation::Declared(index),
+            ) => old == index && tables.declarations.get(*index).is_some(),
+            (
+                crate::mir::ReceiverTarget::Derived(old),
+                crate::ir::Implementation::Derived { kind, .. },
+            ) => old == kind,
+            _ => false,
+        }
+    });
+    drop(tables);
     program.definitions.truncate(definitions);
     program.globals.truncate(definitions);
     program.tests.truncate(tests);
@@ -94,6 +132,7 @@ impl<'a> Joining<'a> {
             .chain(&program.globals)
             .filter_map(|body| *body)
             .chain(program.inits.iter().map(|(_, body)| *body))
+            .chain(program.receiver_adapters.iter().map(|adapter| adapter.body))
             .chain([program.main]);
         let mut pending: Vec<usize> = roots.collect();
         while let Some(body) = pending.pop() {
@@ -120,6 +159,28 @@ impl<'a> Joining<'a> {
                 if kept.is_none() {
                     *kept = own.map(|body| at(body, &self.bodies));
                 }
+            }
+        }
+        self.kept
+            .receiver_contexts
+            .resize(self.kept.bodies.len(), None);
+        for (own, context) in program.receiver_contexts.iter().enumerate() {
+            if let Some(kept) = self.bodies[own] {
+                if let Some(context) = context {
+                    self.kept.receiver_contexts[kept] = Some(context.clone());
+                }
+            }
+        }
+        for adapter in &program.receiver_adapters {
+            let mut adapter = adapter.clone();
+            adapter.body = at(adapter.body, &self.bodies);
+            if !self.kept.receiver_adapters.iter().any(|kept| {
+                kept.member == adapter.member
+                    && kept.row == adapter.row
+                    && kept.target == adapter.target
+                    && kept.receiver_spot == adapter.receiver_spot
+            }) {
+                self.kept.receiver_adapters.push(adapter);
             }
         }
         self.kept.inits = program
@@ -174,6 +235,11 @@ impl<'a> Joining<'a> {
 
     fn rvalue(&mut self, rvalue: &mut Rvalue) {
         match rvalue {
+            Rvalue::Admit { values, .. } => {
+                for value in values {
+                    self.operand(value);
+                }
+            }
             Rvalue::Use(value)
             | Rvalue::Repeat { value, .. }
             | Rvalue::Field(value, _)

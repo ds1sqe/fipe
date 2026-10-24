@@ -129,7 +129,9 @@ impl Infer<'_> {
         members
     }
 
-    fn dispatch_requests(&self) -> Vec<(alloc::string::String, bool)> {
+    pub(super) fn dispatch_requests(
+        &self,
+    ) -> Vec<(alloc::string::String, bool)> {
         use crate::typed::Selected;
         let mut requests = Vec::new();
         for selected in self
@@ -163,6 +165,58 @@ impl Infer<'_> {
                 requests.push(request);
             }
         }
+        // Only executable supplied sources and checked constructor dependencies
+        // contribute names. Unused declaration catalogs are not authority.
+        for source in self.file_cache.used() {
+            for dispatch in &source.typed.dispatch {
+                let request = (dispatch.name.clone(), dispatch.receiverless);
+                if !requests.contains(&request) {
+                    requests.push(request);
+                }
+            }
+        }
+        for source in self.file_cache.used_constructors() {
+            for dispatch in &source.typed.dispatch {
+                let request = (dispatch.name.clone(), dispatch.receiverless);
+                if !requests.contains(&request) {
+                    requests.push(request);
+                }
+            }
+        }
+        self.append_walked_member_requests(&mut requests);
+        for dispatch in self
+            .frame
+            .into_iter()
+            .flat_map(|frame| &frame.lines)
+            .flat_map(|line| &line.typed.dispatch)
+            .chain(
+                self.state
+                    .default_instances
+                    .values()
+                    .flat_map(|instance| &instance.typed.dispatch),
+            )
+        {
+            let request = (dispatch.name.clone(), dispatch.receiverless);
+            if !requests.contains(&request) {
+                requests.push(request);
+            }
+        }
+        for file in self.file_cache.files.borrow().values() {
+            for dispatch in &file.typed.dispatch {
+                let request = (dispatch.name.clone(), dispatch.receiverless);
+                if !requests.contains(&request) {
+                    requests.push(request);
+                }
+            }
+        }
+        requests
+    }
+
+    fn append_walked_member_requests(
+        &self,
+        requests: &mut Vec<(alloc::string::String, bool)>,
+    ) {
+        use crate::typed::Selected;
         // A prelude word that walks its argument (`show`, `sort`, `sum`)
         // performs a member of each value it meets; a backend finds a
         // written one through these rows, never by a label.
@@ -198,32 +252,6 @@ impl Infer<'_> {
                 }
             }
         }
-        for dispatch in self
-            .frame
-            .into_iter()
-            .flat_map(|frame| &frame.lines)
-            .flat_map(|line| &line.typed.dispatch)
-            .chain(
-                self.state
-                    .default_instances
-                    .values()
-                    .flat_map(|instance| &instance.typed.dispatch),
-            )
-        {
-            let request = (dispatch.name.clone(), dispatch.receiverless);
-            if !requests.contains(&request) {
-                requests.push(request);
-            }
-        }
-        for file in self.file_cache.files.borrow().values() {
-            for dispatch in &file.typed.dispatch {
-                let request = (dispatch.name.clone(), dispatch.receiverless);
-                if !requests.contains(&request) {
-                    requests.push(request);
-                }
-            }
-        }
-        requests
     }
 
     fn dispatch_rows(
@@ -259,7 +287,7 @@ impl Infer<'_> {
             {
                 return alloc::vec![DispatchRow {
                     receiver: receiver.clone(),
-                    receiver_spot: None,
+                    receiver_spot: Some(0),
                     argument: None,
                     selected,
                     meanings: Vec::new(),
@@ -329,7 +357,21 @@ impl Infer<'_> {
         receiver: &Type,
         callee: &super::Callee,
     ) -> Option<crate::typed::DispatchRow> {
+        let saved = self.state.subst.mark();
+        let row = self.dispatch_owned_row(receiver, callee);
+        self.state.subst.restore(saved);
+        row
+    }
+
+    fn dispatch_owned_row(
+        &mut self,
+        receiver: &Type,
+        callee: &super::Callee,
+    ) -> Option<crate::typed::DispatchRow> {
         use crate::typed::DispatchRow;
+        if let Some(owner) = &callee.owner {
+            self.state.subst.unify(owner, receiver).ok()?;
+        }
         if let Some(slot) = callee
             .self_slot
             .and_then(|index| callee.spots.as_ref()?.get(index))
@@ -350,7 +392,7 @@ impl Infer<'_> {
             })
             .map(|(_, slot)| self.apply(&slot.ty));
         Some(DispatchRow {
-            receiver: receiver.clone(),
+            receiver: self.apply(receiver),
             receiver_spot: callee.self_slot,
             argument,
             selected,

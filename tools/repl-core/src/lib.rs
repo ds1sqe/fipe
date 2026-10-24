@@ -1,11 +1,13 @@
 //! The Fipe REPL without I/O: bytes in, bytes and file requests out.
 //!
 //! A driver passes input to [`Repl::feed`] and acts on each [`Out`] in
-//! order: it writes [`Out::Write`], answers [`Out::File`] with
-//! [`Repl::file`], a host call ([`Out::Call`], when it hosts the
-//! session) with [`Repl::answer`], and stops at [`Out::Exit`]. Lines
-//! end at LF; at end of
-//! input the driver calls [`Repl::flush`] so a last line without LF runs.
+//! order: it writes [`Out::Write`], answers [`Out::File`] with [`Repl::file`]
+//! using its request identity and path, answers a host call ([`Out::Call`],
+//! when it hosts the session) with [`Repl::answer`] using its request identity,
+//! acknowledges [`Out::Start`], [`Out::End`] and [`Out::Reset`] with [`Repl::resume`] after its
+//! boundary actions, and stops at [`Out::Exit`]. Lines end at LF; at end of input the driver calls
+//! [`Repl::flush`] so a last line without LF runs, drains it, then calls
+//! [`Repl::close`] and handles its gates through Exit before disposal.
 //! The prompt comes out whenever the input holds no partial line and
 //! nothing is awaited, so `feed(&[])` yields the first one; none comes
 //! after `flush`. At a terminal a driver edits each line with
@@ -44,6 +46,7 @@ mod tree;
 use alloc::{
     boxed::Box,
     format,
+    rc::Rc,
     string::{String, ToString},
     vec::Vec,
 };
@@ -103,15 +106,139 @@ const COMMANDS: [(&str, &str); 10] = [
 /// The command namespace first, then the host modules by name.
 const HOST: [&str; 6] = ["commands", "fs", "sys", "cli", "text", "config"];
 
+/// The identity of one pending file request or host call.
+///
+/// Cloning preserves identity; only the REPL can create a fresh request.
+#[derive(Clone)]
+pub struct RequestId(Rc<()>);
+
+impl RequestId {
+    fn new() -> Self {
+        Self(Rc::new(()))
+    }
+}
+
+impl PartialEq for RequestId {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for RequestId {}
+
+impl core::fmt::Debug for RequestId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RequestId(..)")
+    }
+}
+
+/// The identity of one ordinary executable unit.
+///
+/// Cloning preserves identity; only the REPL creates a fresh identity.
+#[derive(Clone)]
+pub struct RunId(Rc<()>);
+
+impl RunId {
+    fn new() -> Self {
+        Self(Rc::new(()))
+    }
+}
+impl PartialEq for RunId {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for RunId {}
+impl core::fmt::Debug for RunId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RunId(..)")
+    }
+}
+
+/// The identity of one pending execution boundary.
+///
+/// Cloning preserves identity; only the REPL creates a fresh identity.
+#[derive(Clone)]
+pub struct ResumeId(Rc<()>);
+
+impl ResumeId {
+    fn new() -> Self {
+        Self(Rc::new(()))
+    }
+}
+impl PartialEq for ResumeId {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for ResumeId {}
+impl core::fmt::Debug for ResumeId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ResumeId(..)")
+    }
+}
+
+/// The actual VM terminal, before presentation and language withdrawal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunEnd {
+    /// VM success, including a language-level `Err` value.
+    Success,
+    /// A source-located VM failure.
+    Fault(Fault),
+    /// The driver stopped an unfinished run; prior effects are not rolled back.
+    Abandoned,
+}
+
+/// Why the driver must dispose its session owner before resuming.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetReason {
+    HostReplacement,
+    Exit,
+}
+
+/// A driver operation refused without changing the pending request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveError {
+    /// No request of this kind, identity and path is pending.
+    WrongRequest,
+    /// No boundary with this continuation identity is pending.
+    WrongContinuation,
+    /// A request or boundary must be handled before this operation.
+    Busy,
+    /// The instance has completed its exit protocol.
+    Closed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
     Write(Vec<u8>),
+    /// Runtime execution waits for the driver to acknowledge this start.
+    Start {
+        run: RunId,
+        resume: ResumeId,
+    },
+    /// The driver handles this terminal before acknowledging presentation/next input.
+    End {
+        run: RunId,
+        result: RunEnd,
+        resume: ResumeId,
+    },
     /// The driver reads this path and answers with [`Repl::file`].
-    File(String),
+    File {
+        id: RequestId,
+        path: String,
+    },
     /// A host call of the line's run, which the driver answers with
     /// [`Repl::answer`]; only when it hosts the session
     /// ([`Repl::hosted`]).
-    Call,
+    Call {
+        id: RequestId,
+    },
+    /// Dispose the old session owner before acknowledging this reset.
+    Reset {
+        reason: ResetReason,
+        resume: ResumeId,
+    },
     Exit,
 }
 
@@ -155,18 +282,52 @@ pub struct Repl {
     /// session's values.
     machine: Machine,
     /// Accepted lines replayed after a host reload run without output.
-    replaying: bool,
+    replay: Option<Replay>,
+    closing: bool,
     quit: bool,
     ended: bool,
 }
 
+struct Replacement {
+    declarations: Declarations,
+    texts: Vec<(String, String)>,
+    dir: String,
+    lines: Vec<String>,
+}
+struct Replay {
+    lines: Vec<String>,
+    next: usize,
+}
+enum Reset {
+    Host(Box<Replacement>),
+    Exit,
+}
+enum Terminal {
+    Vm(Result<Value, Fault>),
+    Abandoned,
+}
 enum Wait {
+    Reset {
+        resume: ResumeId,
+        action: Reset,
+    },
+    Start {
+        resume: ResumeId,
+        execution: Box<Execution>,
+    },
+    End {
+        resume: ResumeId,
+        execution: Box<Execution>,
+        result: Terminal,
+    },
     Line {
+        id: RequestId,
         stem: String,
         text: String,
         mode: Mode,
     },
     Host {
+        id: RequestId,
         dir: String,
         texts: Vec<String>,
     },
@@ -176,8 +337,15 @@ enum Wait {
 
 /// A line's run stopped at a host call.
 struct Pending {
-    program: Program,
+    id: RequestId,
     request: Request,
+    execution: Execution,
+}
+
+/// One execution moves through its boundaries and host calls without copying source.
+struct Execution {
+    run: RunId,
+    program: Program,
     report: Report,
     text: String,
 }
@@ -239,7 +407,8 @@ impl Repl {
             last: None,
             parsed: None,
             machine: Machine::new(Some(BUDGET)),
-            replaying: false,
+            replay: None,
+            closing: false,
             quit: false,
             ended: false,
         }
@@ -272,15 +441,22 @@ impl Repl {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
+        if self.quit {
+            return Vec::new();
+        }
         self.input.extend_from_slice(bytes);
         let mut out = Outs::default();
         self.run(&mut out);
         self.finish(out)
     }
 
-    /// End of input: a trailing line without LF and a buffered entry run
-    /// as complete, after an LF that ends the prompt's line.
+    /// Submit trailing input, after an LF that ends the prompt's line.
+    ///
+    /// This drains input, not ownership: drain the outputs then call close at EOF.
     pub fn flush(&mut self) -> Vec<Out> {
+        if self.quit {
+            return Vec::new();
+        }
         let mut out = Outs::default();
         if !self.ended && self.prompted {
             out.write(b"\n");
@@ -303,15 +479,88 @@ impl Repl {
         }
     }
 
-    /// Ctrl-C at a terminal: drop the entry held and any partial line,
-    /// then prompt afresh.
+    /// Drop input and abandon an unfinished run, preserving computed terminals.
+    ///
+    /// Withdrawal follows acknowledgement of the resulting Abandoned End.
+    ///
+    /// # Panics
+    /// If an internal pending Call has no active machine execution.
     pub fn interrupt(&mut self) -> Vec<Out> {
+        if self.quit {
+            return Vec::new();
+        }
+        self.clear_input();
+        let mut out = Outs::default();
+        self.abandon(&mut out);
+        self.run(&mut out);
+        self.finish(out)
+    }
+
+    /// Dispose explicitly: acknowledge any returned End, then Reset, before drop.
+    ///
+    /// # Errors
+    /// Busy preserves an already computed End or Reset, including its input/intent.
+    /// Drain that boundary and retry. Repeated close after Exit is inert.
+    ///
+    /// # Panics
+    /// If an internal pending Call has no active machine execution.
+    pub fn close(&mut self) -> Result<Vec<Out>, DriveError> {
+        if self.quit {
+            return Ok(Vec::new());
+        }
+        if matches!(self.wait, Some(Wait::End { .. } | Wait::Reset { .. })) {
+            return Err(DriveError::Busy);
+        }
+        self.clear_input();
+        self.closing = true;
+        let mut out = Outs::default();
+        self.abandon(&mut out);
+        self.run(&mut out);
+        Ok(self.finish(out))
+    }
+
+    fn clear_input(&mut self) {
         self.input.clear();
         self.entry.clear();
         self.continuation = Continuation::default();
-        let mut out = Outs::default();
-        self.run(&mut out);
-        self.finish(out)
+    }
+
+    fn abandon(&mut self, out: &mut Outs) {
+        // Taking the Wait invalidates the driver's association before VM work.
+        let execution = match self.wait.take() {
+            Some(Wait::Start { execution, .. }) => Some(*execution),
+            Some(Wait::Call(pending)) => {
+                assert!(
+                    self.machine.abandon(),
+                    "a pending call has active execution"
+                );
+                Some(pending.execution)
+            }
+            Some(wait @ (Wait::End { .. } | Wait::Reset { .. })) => {
+                self.wait = Some(wait);
+                return;
+            }
+            Some(Wait::Line { .. } | Wait::Host { .. }) | None => None,
+        };
+        if let Some(replay) = &mut self.replay {
+            replay.lines.truncate(replay.next);
+        }
+        if let Some(execution) = execution {
+            self.terminal(execution, Terminal::Abandoned, out);
+        }
+    }
+
+    fn reset(&mut self, action: Reset, out: &mut Outs) {
+        let reason = match &action {
+            Reset::Host(_) => ResetReason::HostReplacement,
+            Reset::Exit => ResetReason::Exit,
+        };
+        let resume = ResumeId::new();
+        out.0.push(Out::Reset {
+            reason,
+            resume: resume.clone(),
+        });
+        self.wait = Some(Wait::Reset { resume, action });
     }
 
     fn finish(&mut self, out: Outs) -> Vec<Out> {
@@ -324,13 +573,41 @@ impl Repl {
 
     /// The answer to the last [`Out::File`]: its text, or `None` when
     /// the path does not exist.
-    pub fn file(&mut self, path: &str, text: Option<&str>) -> Vec<Out> {
+    ///
+    /// # Errors
+    /// [`DriveError::WrongRequest`] unless this identity and path are pending.
+    pub fn file(
+        &mut self,
+        id: &RequestId,
+        path: &str,
+        text: Option<&str>,
+    ) -> Result<Vec<Out>, DriveError> {
+        let current = match &self.wait {
+            Some(Wait::Line {
+                id: pending, stem, ..
+            }) => pending == id && self.path(stem) == path,
+            Some(Wait::Host {
+                id: pending,
+                dir,
+                texts,
+            }) => {
+                pending == id
+                    && HOST
+                        .get(texts.len())
+                        .is_some_and(|name| host_path(dir, name) == path)
+            }
+            _ => false,
+        };
+        if !current {
+            return Err(DriveError::WrongRequest);
+        }
         let mut out = Outs::default();
         match self.wait.take() {
             Some(Wait::Line {
                 stem,
                 text: line,
                 mode,
+                ..
             }) => {
                 if let Some(text) = text {
                     self.withdrawn_loads.retain(|(name, _)| *name != stem);
@@ -340,7 +617,7 @@ impl Repl {
                 {
                     out.write(
                         format!(
-                            "`{name}`: its `:load` of {path} was withdrawn when its run Faulted; load it again with `:load {path}`\n"
+                            "`{name}`: its `:load` of {path} was withdrawn; load it again with `:load {path}`\n"
                         )
                         .as_bytes(),
                     );
@@ -349,13 +626,17 @@ impl Repl {
                 let outcome = self.session.reply(reply);
                 self.step(line, mode, outcome, &mut out);
             }
-            Some(Wait::Host { dir, mut texts }) => match text {
+            Some(Wait::Host { dir, mut texts, .. }) => match text {
                 None => out.write(format!("{path}: not found\n").as_bytes()),
                 Some(text) => {
                     texts.push(text.to_string());
                     if let Some(name) = HOST.get(texts.len()) {
-                        out.0.push(Out::File(host_path(&dir, name)));
-                        self.wait = Some(Wait::Host { dir, texts });
+                        let id = RequestId::new();
+                        out.0.push(Out::File {
+                            id: id.clone(),
+                            path: host_path(&dir, name),
+                        });
+                        self.wait = Some(Wait::Host { id, dir, texts });
                     } else {
                         let sources: Vec<_> = HOST
                             .iter()
@@ -366,46 +647,99 @@ impl Repl {
                     }
                 }
             },
-            waiting => {
-                self.wait = waiting;
-                out.write(format!("{path}: not requested\n").as_bytes());
-            }
+            _ => unreachable!("the file request was checked before taking it"),
         }
         self.run(&mut out);
-        self.finish(out)
+        Ok(self.finish(out))
     }
 
     /// The answer to the last [`Out::Call`]: `answer` gets the request
     /// and the run's tables and gives the reply, after which the run
     /// goes on.
+    ///
+    /// # Errors
+    /// [`DriveError::WrongRequest`] unless this host call is pending. The
+    /// callback is never invoked for a stale or wrong-kind identity.
     pub fn answer(
         &mut self,
+        id: &RequestId,
         answer: impl FnOnce(&Request, &Tables) -> Reply,
-    ) -> Vec<Out> {
+    ) -> Result<Vec<Out>, DriveError> {
+        if !matches!(&self.wait, Some(Wait::Call(pending)) if pending.id == *id)
+        {
+            return Err(DriveError::WrongRequest);
+        }
         let mut out = Outs::default();
         match self.wait.take() {
             Some(Wait::Call(pending)) => {
                 let Pending {
-                    program,
-                    request,
-                    report,
-                    text,
+                    request, execution, ..
                 } = *pending;
-                let reply = answer(&request, &program.tables.borrow());
-                let outcome = self.machine.reply(&program, reply);
-                self.settle(program, report, text, outcome, &mut out);
+                let reply =
+                    answer(&request, &execution.program.tables.borrow());
+                let outcome = self.machine.reply(&execution.program, reply);
+                self.settle(execution, outcome, &mut out);
             }
-            waiting => {
-                self.wait = waiting;
-                out.write(b"no host call is waiting\n");
-            }
+            _ => unreachable!("the host call was checked before taking it"),
         }
         self.run(&mut out);
-        self.finish(out)
+        Ok(self.finish(out))
+    }
+
+    /// Acknowledge a runtime boundary or session reset before the pump advances.
+    ///
+    /// # Errors
+    /// [`DriveError::WrongContinuation`] for a stale, foreign or wrong-stage ID;
+    /// the pending boundary is unchanged.
+    pub fn resume(&mut self, id: &ResumeId) -> Result<Vec<Out>, DriveError> {
+        if !matches!(&self.wait,
+            Some(Wait::Start { resume, .. } | Wait::End { resume, .. } | Wait::Reset { resume, .. }) if resume == id)
+        {
+            return Err(DriveError::WrongContinuation);
+        }
+        let mut out = Outs::default();
+        match self.wait.take() {
+            Some(Wait::Start { execution, .. }) => {
+                let outcome = self.machine.run(&execution.program);
+                self.settle(*execution, outcome, &mut out);
+            }
+            Some(Wait::End {
+                execution, result, ..
+            }) => {
+                self.complete_execution(*execution, result, &mut out);
+            }
+            Some(Wait::Reset { action, .. }) => match action {
+                Reset::Host(replacement) => self.install(*replacement),
+                Reset::Exit => {
+                    // Owner disposal was acknowledged; release all old language aliases.
+                    *self = Self::new();
+                    self.quit = true;
+                    out.0.push(Out::Exit);
+                }
+            },
+            _ => unreachable!("the continuation was checked before taking it"),
+        }
+        self.run(&mut out);
+        Ok(self.finish(out))
     }
 
     fn run(&mut self, out: &mut Outs) {
         while !self.quit && self.wait.is_none() {
+            if self.closing {
+                self.reset(Reset::Exit, out);
+                break;
+            }
+            if let Some(replay) = &mut self.replay {
+                if let Some(line) = replay.lines.get(replay.next).cloned() {
+                    replay.next += 1;
+                    let report = self.replay(&line);
+                    self.done(report, line, Mode::Accept, out);
+                } else {
+                    self.replay = None;
+                    out.write(format!("host: {}\n", self.host_dir).as_bytes());
+                }
+                continue;
+            }
             let Some(end) = self.input.iter().position(|&b| b == b'\n') else {
                 if self.ended && !self.entry.is_empty() {
                     self.submit(out);
@@ -489,8 +823,8 @@ impl Repl {
             .map_or((command, ""), |(name, arg)| (name, arg.trim()));
         match (name, arg) {
             ("q", "") => {
-                self.quit = true;
-                out.0.push(Out::Exit);
+                self.clear_input();
+                self.closing = true;
             }
             ("t", "") => match &self.last {
                 Some((report, text)) => types(&self.session, report, text, out),
@@ -562,22 +896,45 @@ impl Repl {
     /// Load host declarations by namespace, with `commands` first when
     /// present. Dotted module names create submodules. `dir` names where
     /// the sources come from, as a Fault in one is located.
+    ///
+    /// # Errors
+    /// [`DriveError::Busy`] while a request, boundary or replay is pending;
+    /// [`DriveError::Closed`] after Exit.
     pub fn host_sources(
         &mut self,
         dir: &str,
         sources: &[(&str, &str)],
-    ) -> Vec<Out> {
+    ) -> Result<Vec<Out>, DriveError> {
+        if self.quit {
+            return Err(DriveError::Closed);
+        }
+        if self.wait.is_some() || self.replay.is_some() {
+            return Err(DriveError::Busy);
+        }
         let mut out = Outs::default();
         self.host(dir, sources, &mut out);
         self.run(&mut out);
-        self.finish(out)
+        Ok(self.finish(out))
     }
 
     /// Load host declarations from a directory without interpreting it as input.
-    pub fn host_directory(&mut self, dir: &str) -> Vec<Out> {
+    ///
+    /// # Errors
+    /// [`DriveError::Busy`] while a request, boundary or replay is pending;
+    /// [`DriveError::Closed`] after Exit.
+    pub fn host_directory(
+        &mut self,
+        dir: &str,
+    ) -> Result<Vec<Out>, DriveError> {
+        if self.quit {
+            return Err(DriveError::Closed);
+        }
+        if self.wait.is_some() || self.replay.is_some() {
+            return Err(DriveError::Busy);
+        }
         let mut out = Outs::default();
         self.request_host(dir, &mut out);
-        self.finish(out)
+        Ok(self.finish(out))
     }
 
     fn request_host(&mut self, dir: &str, out: &mut Outs) {
@@ -586,8 +943,13 @@ impl Repl {
             out.write(b"host path contains a NUL character\n");
             return;
         }
-        out.0.push(Out::File(host_path(dir, HOST[0])));
+        let id = RequestId::new();
+        out.0.push(Out::File {
+            id: id.clone(),
+            path: host_path(dir, HOST[0]),
+        });
         self.wait = Some(Wait::Host {
+            id,
             dir: dir.to_string(),
             texts: Vec::new(),
         });
@@ -740,8 +1102,17 @@ impl Repl {
     ) {
         match outcome {
             Outcome::Request(Request::File { stem }) => {
-                out.0.push(Out::File(self.path(&stem)));
-                self.wait = Some(Wait::Line { stem, text, mode });
+                let id = RequestId::new();
+                out.0.push(Out::File {
+                    id: id.clone(),
+                    path: self.path(&stem),
+                });
+                self.wait = Some(Wait::Line {
+                    id,
+                    stem,
+                    text,
+                    mode,
+                });
             }
             Outcome::Request(Request::Call { .. }) => {
                 unreachable!("a session asks only for files")
@@ -799,8 +1170,21 @@ impl Repl {
             return;
         };
         let program = fipe::compile::compile(unit);
-        let outcome = self.machine.run(&program);
-        self.settle(program, report, text, outcome, out);
+        let execution = Execution {
+            run: RunId::new(),
+            program,
+            report,
+            text,
+        };
+        let resume = ResumeId::new();
+        out.0.push(Out::Start {
+            run: execution.run.clone(),
+            resume: resume.clone(),
+        });
+        self.wait = Some(Wait::Start {
+            resume,
+            execution: Box::new(execution),
+        });
     }
 
     /// Carry a line's run to its end: each host call goes to the driver
@@ -809,9 +1193,7 @@ impl Repl {
     /// Faults there.
     fn settle(
         &mut self,
-        program: Program,
-        report: Report,
-        text: String,
+        execution: Execution,
         mut outcome: Outcome<Result<Value, Fault>>,
         out: &mut Outs,
     ) {
@@ -819,34 +1201,80 @@ impl Repl {
             let request = match outcome {
                 Outcome::Request(request) => request,
                 Outcome::Done(result) => {
-                    if self.ended(&program, &report, &text, result, out) {
-                        self.last = Some((report, text));
-                    }
+                    self.terminal(execution, Terminal::Vm(result), out);
                     return;
                 }
             };
             let Request::Call { declaration, .. } = &request else {
                 unreachable!("a run asks only for host calls")
             };
-            if self.hosted && !self.replaying {
-                out.0.push(Out::Call);
+            if self.hosted && self.replay.is_none() {
+                let id = RequestId::new();
+                out.0.push(Out::Call { id: id.clone() });
                 self.wait = Some(Wait::Call(Box::new(Pending {
-                    program,
+                    id,
                     request,
-                    report,
-                    text,
+                    execution,
                 })));
                 return;
             }
             let message = {
-                let tables = program.tables.borrow();
+                let tables = execution.program.tables.borrow();
                 let declaration = &tables.declarations[*declaration];
                 format!(
                     "no host for {}.{}",
                     tables.namespaces[declaration.namespace], declaration.label
                 )
             };
-            outcome = self.machine.reply(&program, Reply::Value(Err(message)));
+            outcome = self
+                .machine
+                .reply(&execution.program, Reply::Value(Err(message)));
+        }
+    }
+
+    fn terminal(
+        &mut self,
+        execution: Execution,
+        result: Terminal,
+        out: &mut Outs,
+    ) {
+        let terminal = match &result {
+            Terminal::Vm(Ok(_)) => RunEnd::Success,
+            Terminal::Vm(Err(fault)) => RunEnd::Fault(fault.clone()),
+            Terminal::Abandoned => RunEnd::Abandoned,
+        };
+        let resume = ResumeId::new();
+        out.0.push(Out::End {
+            run: execution.run.clone(),
+            result: terminal,
+            resume: resume.clone(),
+        });
+        self.wait = Some(Wait::End {
+            resume,
+            execution: Box::new(execution),
+            result,
+        });
+    }
+
+    fn complete_execution(
+        &mut self,
+        execution: Execution,
+        result: Terminal,
+        out: &mut Outs,
+    ) {
+        match result {
+            Terminal::Vm(result) => {
+                if self.ended(
+                    &execution.program,
+                    &execution.report,
+                    &execution.text,
+                    result,
+                    out,
+                ) {
+                    self.last = Some((execution.report, execution.text));
+                }
+            }
+            Terminal::Abandoned => self.withdraw(&execution.report),
         }
     }
 
@@ -862,14 +1290,14 @@ impl Repl {
     ) -> bool {
         match result {
             Ok(value) => {
-                if !self.replaying && !matches!(value, Value::Unit) {
+                if self.replay.is_none() && !matches!(value, Value::Unit) {
                     let shown = render::value(&value, &program.tables.borrow());
                     out.write(format!("{}\n", visible(&shown)).as_bytes());
                 }
                 true
             }
             Err(fault) => {
-                if !self.replaying {
+                if self.replay.is_none() {
                     let tables = program.tables.borrow();
                     let reason = render::fault(&fault.reason, &tables);
                     let namespace = &tables.namespaces[fault.namespace];
@@ -880,21 +1308,7 @@ impl Repl {
                         self.fault(&fault, &reason, report.offset, text, out);
                     }
                 }
-                if let Some(withdrawn) =
-                    report.accepted.and_then(|line| self.session.withdraw(line))
-                {
-                    self.machine.withdraw(&withdrawn);
-                    let (files, paths) = core::mem::take(&mut self.before);
-                    self.files.truncate(files);
-                    for load in &self.paths {
-                        if !paths.contains(load) {
-                            self.withdrawn_loads
-                                .retain(|(name, _)| *name != load.0);
-                            self.withdrawn_loads.push(load.clone());
-                        }
-                    }
-                    self.paths = paths;
-                }
+                self.withdraw(report);
                 false
             }
         }
@@ -902,6 +1316,23 @@ impl Repl {
 
     /// `fault at L:C: reason` in the line, or in the earlier accepted
     /// line the span falls in, with its source line and a caret.
+    fn withdraw(&mut self, report: &Report) {
+        if let Some(withdrawn) =
+            report.accepted.and_then(|line| self.session.withdraw(line))
+        {
+            self.machine.withdraw(&withdrawn);
+            let (files, paths) = core::mem::take(&mut self.before);
+            self.files.truncate(files);
+            for load in &self.paths {
+                if !paths.contains(load) {
+                    self.withdrawn_loads.retain(|(name, _)| *name != load.0);
+                    self.withdrawn_loads.push(load.clone());
+                }
+            }
+            self.paths = paths;
+        }
+    }
+
     fn fault(
         &self,
         fault: &Fault,
@@ -964,7 +1395,7 @@ impl Repl {
                 {
                     let word = word.unwrap_or_default();
                     reason = format!(
-                        "{reason}: the line that bound `{word}` was withdrawn when its run Faulted; give it again"
+                        "{reason}: the line that bound `{word}` was withdrawn; give it again"
                     );
                 }
                 located("", line, error.span, &reason, out);
@@ -1091,28 +1522,32 @@ impl Repl {
         if failed {
             return;
         }
-        let lines: Vec<String> =
-            self.session.lines().map(String::from).collect();
-        self.host_texts = texts
-            .iter()
-            .map(|(name, text)| (String::from(*name), String::from(*text)))
-            .collect();
-        self.host_dir = String::from(dir);
-        self.declarations = declarations.clone();
-        self.session = Session::new(declarations);
+        let replacement = Replacement {
+            declarations,
+            texts: texts
+                .iter()
+                .map(|(name, text)| (String::from(*name), String::from(*text)))
+                .collect(),
+            dir: String::from(dir),
+            lines: self.session.lines().map(String::from).collect(),
+        };
+        self.reset(Reset::Host(Box::new(replacement)), out);
+    }
+
+    fn install(&mut self, replacement: Replacement) {
+        self.host_texts = replacement.texts;
+        self.host_dir = replacement.dir;
+        self.declarations = replacement.declarations.clone();
+        self.session = Session::new(replacement.declarations);
         self.session.strict(self.strict);
         self.session.compile_budget(self.compile_budget);
         self.last = None;
-        // New tables, so a new machine; the replayed lines rebuild its
-        // globals without printing again.
+        self.parsed = None;
         self.machine = Machine::new(self.machine.budget());
-        self.replaying = true;
-        for line in lines {
-            let report = self.replay(&line);
-            self.done(report, line, Mode::Accept, out);
-        }
-        self.replaying = false;
-        out.write(format!("host: {dir}\n").as_bytes());
+        self.replay = Some(Replay {
+            lines: replacement.lines,
+            next: 0,
+        });
     }
 
     /// Accept a line again, answering its `use` requests from the cache.

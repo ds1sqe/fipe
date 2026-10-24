@@ -467,6 +467,36 @@ impl fmt::Display for Known {
 }
 
 impl Known {
+    /// Transform only type-bearing facts, including nested callable values.
+    pub(crate) fn map_types(&mut self, map: &mut impl FnMut(&Type) -> Type) {
+        for (_, part) in &mut self.parts {
+            part.map_types(map);
+        }
+        if let Some(element) = &mut self.element {
+            element.map_types(map);
+        }
+        if let Some(function) = &mut self.function {
+            for parameter in function.parameters.iter_mut().flatten() {
+                *parameter = map(parameter);
+            }
+            function.result.map_types(map);
+        }
+    }
+
+    pub(crate) fn has_generic_type_facts(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|(_, part)| part.has_generic_type_facts())
+            || self
+                .element
+                .as_ref()
+                .is_some_and(|element| element.has_generic_type_facts())
+            || self.function.as_ref().is_some_and(|function| {
+                function.parameters.iter().flatten().any(type_has_binder)
+                    || function.result.has_generic_type_facts()
+            })
+    }
+
     /// What is known after two branches meet (07-checks §What is known
     /// 4, 8): the smallest range that holds both, the names both have,
     /// and of a function, in the value or a part, its parameters met and
@@ -641,6 +671,28 @@ impl Known {
     }
 }
 
+fn type_has_binder(ty: &Type) -> bool {
+    match ty {
+        Type::Var(_) | Type::Rigid(_) => true,
+        Type::Named { arguments, .. }
+        | Type::Tuple(arguments)
+        | Type::Either(arguments)
+        | Type::Both(arguments)
+        | Type::Sum(arguments) => arguments.iter().any(type_has_binder),
+        Type::Array { element, length } => {
+            type_has_binder(element) || type_has_binder(length)
+        }
+        Type::Function { parameter, result } => {
+            type_has_binder(parameter) || type_has_binder(result)
+        }
+        Type::Limited { name, meaning } => {
+            type_has_binder(name) || type_has_binder(meaning)
+        }
+        Type::Not(inner) => type_has_binder(inner),
+        Type::Unit | Type::Number(_) => false,
+    }
+}
+
 impl Function {
     /// A function known by its parameter limits alone.
     pub(crate) fn of(parameters: Vec<Option<Type>>) -> Self {
@@ -691,5 +743,61 @@ fn both(a: Option<Type>, b: Option<&Type>) -> Option<Type> {
         (None, Some(b)) => Some(b.clone()),
         (Some(a), Some(b)) if a == *b => Some(a),
         (Some(a), Some(b)) => Some(Type::Both(alloc::vec![a, b.clone()])),
+    }
+}
+
+#[cfg(test)]
+mod fact_type_mapping_tests {
+    use super::*;
+    use crate::types::{Type, Var};
+    use alloc::vec;
+
+    #[test]
+    fn callable_type_mapping_reaches_parts_elements_and_returned_functions() {
+        let callable = Known {
+            function: Some(Box::new(Function::of(vec![Some(Type::Var(Var(
+                7,
+            )))]))),
+            boolean: Some(true),
+            phase: super::super::Phase::Init,
+            ..Known::default()
+        };
+        let mut original = Known {
+            parts: vec![(String::from("stored"), callable.clone())],
+            element: Some(Box::new(callable.clone())),
+            function: Some(Box::new(Function {
+                parameters: vec![Some(Type::Var(Var(8)))],
+                result: callable,
+                feeds: Some(vec![Feed::Value(0)]),
+                takes: vec![],
+            })),
+            exact: Some(String::from("unchanged")),
+            ..Known::default()
+        };
+        let untouched = original.clone();
+        original.map_types(&mut |ty| {
+            crate::types::replace(ty, &[(Var(7), Type::Unit)])
+        });
+        for nested in [
+            &original.parts[0].1,
+            original.element.as_deref().unwrap(),
+            &original.function.as_ref().unwrap().result,
+        ] {
+            assert_eq!(
+                nested.function.as_ref().unwrap().parameters,
+                [Some(Type::Unit)]
+            );
+            assert_eq!(nested.boolean, Some(true));
+            assert_eq!(nested.phase, super::super::Phase::Init);
+        }
+        let outer = original.function.as_ref().unwrap();
+        assert_eq!(
+            outer.parameters,
+            [Some(Type::Var(Var(8)))],
+            "independent binder stays distinct"
+        );
+        assert_eq!(outer.feeds, untouched.function.as_ref().unwrap().feeds);
+        assert_eq!(outer.takes, untouched.function.as_ref().unwrap().takes);
+        assert_eq!(original.exact, untouched.exact);
     }
 }

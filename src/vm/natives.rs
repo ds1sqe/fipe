@@ -13,6 +13,11 @@ use alloc::vec::Vec;
 /// its Fault, or (from the first move only) the frame it becomes.
 pub(super) enum Step {
     Call(Invoke),
+    /// One private ordered argument guard, using its creator's witnesses.
+    AdmitArgument {
+        value: Value,
+        guard: super::pending::GuardJob,
+    },
     Done(Value),
     Fault(Reason),
     Start(super::pending::Pending),
@@ -26,7 +31,8 @@ pub(super) struct Ctx<'a> {
     pub(super) natives: &'a Natives,
     pub(super) globals: &'a [Option<Value>],
     /// The type of the call's destination, witnesses in place.
-    pub(super) result: Option<ir::Type>,
+    pub(super) result: Option<&'a ir::Type>,
+    pub(super) work: &'a super::resource::Work,
 }
 
 /// The meaning a shared label is declared for, where the value alone

@@ -2,6 +2,7 @@
 name = "fipe-native-rt"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "The runtime the code of Fipe's native backend links against"
 license.workspace = true
 repository.workspace = true

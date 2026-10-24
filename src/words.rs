@@ -130,10 +130,14 @@ impl fmt::Display for decl::Reason {
             Self::UnknownDocSpot { name } => {
                 write!(f, "doc names unknown spot `{name}`")
             }
+            Self::ResourceForm => f.write_str("a resource type must be an opaque host declaration without base, members or limits"),
             Self::NotDeclaration => {
                 f.write_str("not a declaration or `name = value`")
             }
             Self::Duplicate { .. } => f.write_str("already declared"),
+            Self::ConstructorCollision { name, first_type, second_type, .. } => write!(
+                f, "constructor `{name}` is declared by both type `{first_type}` and type `{second_type}`"
+            ),
             Self::NotYetChecked { form } => {
                 write!(f, "{form} is not yet checked")
             }
@@ -276,6 +280,8 @@ impl fmt::Display for infer::Reason {
                 "no meaning reads all literal forms: {}",
                 forms.join(", ")
             ),
+            Self::ResourceInFile { module } => write!(f, "resource declarations in file `{module}` require host registration"),
+            Self::NotRecord => f.write_str("not a record type or constructor"),
             Self::NotAFunction => f.write_str("not a function"),
             Self::ExtraArgument => f.write_str("one argument too many"),
             Self::IfWithoutElse => f.write_str(

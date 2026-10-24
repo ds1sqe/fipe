@@ -4,11 +4,11 @@
 //! written row for the member, calls it and continues with its answer.
 use super::{
     natives::{Ctx, Step},
-    pending::{member_call, written_row},
+    pending::{member_call, written_presence as written_row},
 };
 use crate::{
     ir,
-    value::{arith, float, structural, text, Value},
+    value::{arith, float, structural, text, Reason, Value},
 };
 use alloc::{string::String, vec::Vec};
 use core::cmp::Ordering;
@@ -50,6 +50,14 @@ pub(super) struct Build {
     pub(super) shape: Shape,
     pub(super) parts: Vec<ir::Type>,
     pub(super) built: Vec<Value>,
+}
+
+impl Drop for Build {
+    fn drop(&mut self) {
+        drop(crate::value::resource::Forest(core::mem::take(
+            &mut self.parts,
+        )));
+    }
 }
 
 #[derive(Debug)]
@@ -153,8 +161,10 @@ fn children(a: &Value, b: &Value) -> Option<Vec<(Value, Value)>> {
             && a.constructor == b.constructor)
             .then(|| zip(&a.fields, &b.fields))
             .flatten(),
-        (Value::Packed(a), Value::Packed(b)) => (a.meaning == b.meaning)
-            .then(|| alloc::vec![(a.value.clone(), b.value.clone())]),
+        (Value::Packed(a), Value::Packed(b)) => {
+            crate::value::resource::type_equal(a.source_type(), b.source_type())
+                .then(|| alloc::vec![(a.value().clone(), b.value().clone())])
+        }
         _ => structural::eq(a, b).then(Vec::new),
     }
 }
@@ -170,15 +180,32 @@ fn eq_step(
         }
     }
     while let Some((a, b)) = work.pop() {
-        if let (Value::Record(_), Value::Record(_)) = (&a, &b) {
-            if written_row(ctx, ctx.natives.members.eq, &a).is_some() {
-                return member_call(
-                    ctx,
-                    ctx.natives.members.eq,
-                    &a,
-                    alloc::vec![b],
-                );
-            }
+        if matches!(
+            (&a, &b),
+            (Value::Record(_), Value::Record(_))
+                | (Value::Resource(_), Value::Resource(_))
+                | (Value::Packed(_), _)
+        ) && match written_row(ctx, ctx.natives.members.eq, &a) {
+            Ok(row) => row.is_some(),
+            Err(reason) => return Step::Fault(reason),
+        } {
+            return member_call(
+                ctx,
+                ctx.natives.members.eq,
+                &a,
+                alloc::vec![b],
+            );
+        }
+        match super::dispatch::resource_pair(&a, &b, ctx.tables, ctx.work) {
+            Ok(Some(false)) => return Step::Done(ctx.prelude.bool(false)),
+            Err(reason) => return Step::Fault(reason),
+            _ => {}
+        }
+
+        if matches!(a, Value::Resource(_)) || matches!(b, Value::Resource(_)) {
+            return Step::Fault(Reason::Message(
+                "resource has no intrinsic equality".into(),
+            ));
         }
         match children(&a, &b) {
             None => return Step::Done(ctx.prelude.bool(false)),
@@ -200,6 +227,21 @@ fn ordering_of(value: &Value) -> Ordering {
     }
 }
 
+fn ordered_children(
+    a: &[Value],
+    b: &[Value],
+    after: Ordering,
+    work: &mut Vec<Order>,
+) {
+    work.push(Order::Decided(after));
+    work.extend(
+        a.iter()
+            .cloned()
+            .zip(b.iter().cloned())
+            .rev()
+            .map(|(a, b)| Order::Pair(a, b)),
+    );
+}
 fn cmp_step(
     work: &mut Vec<Order>,
     ctx: &Ctx<'_>,
@@ -221,22 +263,50 @@ fn cmp_step(
             }
             Order::Pair(a, b) => (a, b),
         };
-        let children = |a: &[Value],
-                        b: &[Value],
-                        after: Ordering,
-                        work: &mut Vec<Order>| {
-            work.push(Order::Decided(after));
-            work.extend(
-                a.iter()
-                    .cloned()
-                    .zip(b.iter().cloned())
-                    .rev()
-                    .map(|(a, b)| Order::Pair(a, b)),
-            );
-        };
+        if matches!(a, Value::Packed(_)) {
+            match written_row(ctx, ctx.natives.members.cmp, &a) {
+                Ok(Some(())) => {
+                    return member_call(
+                        ctx,
+                        ctx.natives.members.cmp,
+                        &a,
+                        alloc::vec![b],
+                    )
+                }
+                Err(reason) => return Step::Fault(reason),
+                Ok(None) => {}
+            }
+        }
+        match super::dispatch::resource_pair(&a, &b, ctx.tables, ctx.work) {
+            Ok(Some(false)) => {
+                return Step::Fault(Reason::Message(
+                    "different resource types have no intrinsic ordering"
+                        .into(),
+                ))
+            }
+            Err(reason) => return Step::Fault(reason),
+            _ => {}
+        }
+        if matches!((&a, &b), (Value::Resource(_), Value::Resource(_))) {
+            return match written_row(ctx, ctx.natives.members.cmp, &a) {
+                Ok(Some(())) => member_call(
+                    ctx,
+                    ctx.natives.members.cmp,
+                    &a,
+                    alloc::vec![b],
+                ),
+                Ok(None) => Step::Fault(Reason::Message(
+                    "resource has no intrinsic ordering".into(),
+                )),
+                Err(reason) => Step::Fault(reason),
+            };
+        }
         match (&a, &b) {
             (Value::Record(x), Value::Record(y)) => {
-                if written_row(ctx, ctx.natives.members.cmp, &a).is_some() {
+                if match written_row(ctx, ctx.natives.members.cmp, &a) {
+                    Ok(row) => row.is_some(),
+                    Err(reason) => return Step::Fault(reason),
+                } {
                     return member_call(
                         ctx,
                         ctx.natives.members.cmp,
@@ -246,7 +316,7 @@ fn cmp_step(
                 }
                 match x.constructor.cmp(&y.constructor) {
                     Ordering::Equal => {
-                        children(&x.fields, &y.fields, Ordering::Equal, work);
+                        ordered_children(&x.fields, &y.fields, Ordering::Equal, work);
                     }
                     decided => {
                         return Step::Done(ctx.prelude.ordering(decided))
@@ -255,16 +325,12 @@ fn cmp_step(
             }
             (Value::Seq(x), Value::Seq(y))
             | (Value::Tuple(x), Value::Tuple(y)) => {
-                children(x, y, x.len().cmp(&y.len()), work);
+                ordered_children(x, y, x.len().cmp(&y.len()), work);
             }
-            (Value::Packed(x), Value::Packed(y)) => match x
-                .meaning
-                .cmp(&y.meaning)
-            {
-                Ordering::Equal => {
-                    work.push(Order::Pair(x.value.clone(), y.value.clone()));
-                }
-                decided => return Step::Done(ctx.prelude.ordering(decided)),
+            (Value::Packed(x), Value::Packed(y)) => match structural::packed_order(x, y) {
+                Some(Ordering::Equal) => work.push(Order::Pair(x.value().clone(), y.value().clone())),
+                Some(decided) => return Step::Done(ctx.prelude.ordering(decided)),
+                None => return Step::Fault(Reason::Message("different structural sources have no intrinsic ordering".into())),
             },
             _ => {
                 let decided = structural::cmp(&a, &b);
@@ -277,18 +343,16 @@ fn cmp_step(
     Step::Done(ctx.prelude.ordering(Ordering::Equal))
 }
 
-fn show_step(
-    work: &mut Vec<Piece>,
+fn append_shown_return(
     out: &mut String,
-    argument: &mut bool,
-    ctx: &Ctx<'_>,
+    argument: bool,
     returned: Option<Value>,
-) -> Step {
+) {
     if let Some(answer) = returned {
         let Value::Text(shown) = answer else {
             unreachable!("show gives text")
         };
-        if *argument && shown.contains(' ') {
+        if argument && shown.contains(' ') {
             out.push('(');
             out.push_str(&shown);
             out.push(')');
@@ -296,6 +360,40 @@ fn show_step(
             out.push_str(&shown);
         }
     }
+}
+fn record_pieces(
+    work: &mut Vec<Piece>,
+    record: &crate::value::Record,
+    is_argument: bool,
+    tables: &ir::Tables,
+) {
+    let parenthesize = is_argument && !record.fields.is_empty();
+    if parenthesize {
+        work.push(Piece::Text(String::from(")")));
+    }
+    for field in record.fields.iter().rev() {
+        work.push(Piece::Value(field.clone(), true));
+        work.push(Piece::Text(String::from(" ")));
+    }
+    let meaning = &tables.meanings[record.meaning];
+    let label = meaning
+        .constructors
+        .get(record.constructor)
+        .map_or(&meaning.label, |constructor| &constructor.label);
+    work.push(Piece::Text(label.clone()));
+    if parenthesize {
+        work.push(Piece::Text(String::from("(")));
+    }
+}
+
+fn show_step(
+    work: &mut Vec<Piece>,
+    out: &mut String,
+    argument: &mut bool,
+    ctx: &Ctx<'_>,
+    returned: Option<Value>,
+) -> Step {
+    append_shown_return(out, *argument, returned);
     while let Some(piece) = work.pop() {
         let (value, is_argument) = match piece {
             Piece::Text(text) => {
@@ -304,10 +402,9 @@ fn show_step(
             }
             Piece::Value(value, is_argument) => (value, is_argument),
         };
-        match &value {
-            Value::Record(record) => {
-                if written_row(ctx, ctx.natives.members.show, &value).is_some()
-                {
+        if matches!(value, Value::Resource(_)) {
+            match written_row(ctx, ctx.natives.members.show, &value) {
+                Ok(Some(())) => {
                     *argument = is_argument;
                     return member_call(
                         ctx,
@@ -316,23 +413,28 @@ fn show_step(
                         Vec::new(),
                     );
                 }
-                let parenthesize = is_argument && !record.fields.is_empty();
-                if parenthesize {
-                    work.push(Piece::Text(String::from(")")));
+                Err(reason) => return Step::Fault(reason),
+                Ok(None) => {
+                    out.push_str("<resource>");
+                    continue;
                 }
-                for field in record.fields.iter().rev() {
-                    work.push(Piece::Value(field.clone(), true));
-                    work.push(Piece::Text(String::from(" ")));
+            }
+        }
+        match &value {
+            Value::Record(record) => {
+                if match written_row(ctx, ctx.natives.members.show, &value) {
+                    Ok(row) => row.is_some(),
+                    Err(reason) => return Step::Fault(reason),
+                } {
+                    *argument = is_argument;
+                    return member_call(
+                        ctx,
+                        ctx.natives.members.show,
+                        &value,
+                        Vec::new(),
+                    );
                 }
-                let meaning = &ctx.tables.meanings[record.meaning];
-                let label = meaning
-                    .constructors
-                    .get(record.constructor)
-                    .map_or(&meaning.label, |constructor| &constructor.label);
-                work.push(Piece::Text(label.clone()));
-                if parenthesize {
-                    work.push(Piece::Text(String::from("(")));
-                }
+                record_pieces(work, record, is_argument, ctx.tables);
             }
             Value::Seq(parts) | Value::Tuple(parts) => {
                 let (open, close) = if matches!(value, Value::Seq(_)) {
@@ -350,12 +452,28 @@ fn show_step(
                 work.push(Piece::Text(String::from(open)));
             }
             Value::Packed(packed) => {
-                work.push(Piece::Value(packed.value.clone(), is_argument));
+                match written_row(ctx, ctx.natives.members.show, &value) {
+                    Ok(Some(())) => {
+                        *argument = is_argument;
+                        return member_call(
+                            ctx,
+                            ctx.natives.members.show,
+                            &value,
+                            Vec::new(),
+                        );
+                    }
+                    Err(reason) => return Step::Fault(reason),
+                    Ok(None) => {}
+                }
+                work.push(Piece::Value(packed.value().clone(), is_argument));
             }
             Value::Int(_) | Value::Big(_) => out.push_str(&arith::show(&value)),
             Value::F32(_) | Value::F64(_) => out.push_str(&float::show(&value)),
             Value::Text(_) => out.push_str(&text::show(&value)),
-            Value::Unit | Value::Function(_) | Value::Meaning(_) => {
+            Value::Resource(_)
+            | Value::Unit
+            | Value::Function(_)
+            | Value::Meaning(_) => {
                 out.push_str(&structural::show(&value, ctx.tables));
             }
         }

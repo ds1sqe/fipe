@@ -545,3 +545,66 @@ fn a_budget_that_is_not_a_natural_number_fails_the_launch() {
         );
     }
 }
+
+#[test]
+fn command_discovery_finishes_before_reading_protocol_input() {
+    for (args, code, version) in [
+        (vec!["--version"], 0, true),
+        (vec!["--help"], 0, false),
+        (vec!["-h"], 0, false),
+        (vec!["--version", "extra"], 1, false),
+        (vec!["--help", "extra"], 1, false),
+        (vec!["--unknown"], 1, false),
+        (vec!["file.fipe"], 1, false),
+    ] {
+        let output = discovery(&args, true);
+        assert_eq!(output.status.code(), Some(code), "{args:?}");
+        if version {
+            assert_eq!(
+                output.stdout,
+                format!("fipe-dap {}\n", env!("CARGO_PKG_VERSION")).as_bytes()
+            );
+            assert!(output.stderr.is_empty());
+        } else if code == 0 {
+            assert!(output.stdout.starts_with(b"usage: fipe-dap"));
+            assert!(output.stderr.is_empty());
+        } else {
+            assert!(output.stdout.is_empty());
+            assert!(output.stderr.starts_with(b"usage: fipe-dap"));
+        }
+    }
+}
+
+fn discovery(args: &[&str], keep_open: bool) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fipe-dap"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _input = if keep_open {
+        child.stdin.take()
+    } else {
+        drop(child.stdin.take());
+        None
+    };
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= until {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("discovery waited for protocol input: {args:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn no_arguments_and_eof_still_exit_cleanly() {
+    let output = discovery(&[], false);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}

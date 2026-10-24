@@ -126,11 +126,11 @@ pub(super) fn immediate(
             let text = arg(0);
             // The free `read` reads the meaning its call's result holds:
             // a number by its reader, a program's meaning by its member.
-            let target = ctx.result.as_ref().and_then(read_target);
+            let target = ctx.result.and_then(read_target);
             let of = match target {
                 Some(ty) => match super::natives::of_type(ty, ctx.tables) {
                     Of::Other => {
-                        if let Some(step) = written_read(ty, &text, ctx) {
+                        if let Some(step) = written_read(ty, &text, ctx)? {
                             return Ok(Pending::started(step));
                         }
                         Of::Other
@@ -357,23 +357,30 @@ fn written_read(
     ty: &crate::ir::Type,
     text: &Value,
     ctx: &Ctx<'_>,
-) -> Option<Step> {
-    let crate::ir::Type::Meaning { index, .. } = ty else {
-        return None;
+) -> Result<Option<Step>, Reason> {
+    if !matches!(ty, crate::ir::Type::Meaning { .. }) {
+        return Ok(None);
+    }
+    let Some(member) = ctx.natives.members.read else {
+        return Ok(None);
     };
-    let member = ctx.natives.members.read?;
-    let selected =
-        crate::compile::dispatch::select_by_head(ctx.tables, member, *index)?;
-    let crate::ir::Implementation::Definition { index, meanings } =
-        &ctx.tables.dispatch[member].rows[selected.row].target
+    let Some(selected) = super::dispatch::select_for(
+        ctx.tables,
+        ctx.prelude,
+        member,
+        Some(ty),
+        None,
+        ctx.work,
+    )?
     else {
-        return None;
+        return Ok(None);
     };
-    Some(Step::Call(super::calls::definition_invoke(
-        ctx.program,
-        ctx.globals,
-        *index,
+    Ok(super::pending::supplied_target(
+        ctx,
+        &ctx.tables.dispatch[member].rows[selected.row].target,
+        &selected.bindings,
         alloc::vec![text.clone()],
-        meanings.clone(),
-    )))
+        ctx.result,
+    )?
+    .map(Step::Call))
 }

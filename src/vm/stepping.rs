@@ -29,23 +29,18 @@ impl Machine {
         program: &mir::Program,
         input: Value,
     ) -> Result<(), InputError> {
-        let spot = super::input_spot(program)?;
+        {
+            let tables = program.tables.borrow();
+            super::borrowed_input_spot(program, &tables)?;
+        }
         let line = program.bodies[program.main].node;
         self.begin(program);
         let program = self.joined();
-        let misfit = {
-            let tables = program.tables.borrow();
-            (!super::fits::fits(&input, &spot, &tables, &self.prelude()))
-                .then(|| super::fits::named(&spot, &tables))
-        };
-        if let Some(named) = misfit {
+        if let Err(reason) = self.admit_input(&program, &input) {
             self.end();
-            let reason = crate::value::Reason::Host(alloc::format!(
-                "the input is not {named}"
-            ));
-            self.stops.push_back(Stop::Done(Err(Self::fault(
+            self.queue(Some(Outcome::Done(Err(Self::fault(
                 &program, line, reason,
-            ))));
+            )))));
             return Ok(());
         }
         self.input = Some(Input::Owed { value: input, line });

@@ -81,7 +81,7 @@ fn token_kind(kind: &str, text: &str) -> String {
         "path" if text == "/" => "/".into(),
         // `where` is a name to the lexer, a word of the `type` item to
         // the parser.
-        "where" => "name".into(),
+        "where" | "resource_modifier" => "name".into(),
         _ => kind.into(),
     }
 }

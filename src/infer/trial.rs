@@ -18,11 +18,27 @@ pub(super) enum Undo {
     /// An obligation's `solved` and `assumed` flags.
     Flags(usize, bool, bool),
     Selected((usize, usize), Option<crate::typed::Selected>),
+    MemberContract(
+        crate::typed::MemberContractUse,
+        Option<Box<crate::typed::MemberContract>>,
+    ),
+    ContractStage((usize, usize), Option<super::ContractBindingUse>),
+    ContractRefinement(
+        (
+            crate::typed::MemberContractUse,
+            crate::token::Span,
+            crate::token::Span,
+            usize,
+            usize,
+        ),
+        Option<Type>,
+    ),
     MeaningArguments((usize, usize), Option<Vec<Type>>),
     DefaultInstance(
         (usize, usize, usize),
         Option<crate::typed::DeclaredExpression>,
     ),
+    Capsule(alloc::rc::Rc<super::LexicalContext>),
     Other(Box<dyn FnOnce(&mut State)>),
 }
 
@@ -80,12 +96,22 @@ impl State {
                 owed.assumed = assumed;
             }
             Undo::Selected(key, old) => put(&mut self.selected, key, old),
+            Undo::MemberContract(key, old) => {
+                put(&mut self.member_contracts, key, old.map(|old| *old));
+            }
+            Undo::ContractStage(key, old) => {
+                put(&mut self.contract_stages, key, old);
+            }
+            Undo::ContractRefinement(key, old) => {
+                put(&mut self.contract_refinements, key, old);
+            }
             Undo::MeaningArguments(key, old) => {
                 put(&mut self.meaning_arguments, key, old);
             }
             Undo::DefaultInstance(key, old) => {
                 put(&mut self.default_instances, key, old);
             }
+            Undo::Capsule(old) => self.restore_capsule(&old, None),
             Undo::Other(undo) => undo(self),
         }
     }
@@ -103,6 +129,33 @@ fn put<K: Ord, V>(map: &mut BTreeMap<K, V>, key: K, old: Option<V>) {
 }
 
 impl Infer<'_> {
+    pub(super) fn journal_shared_context(&mut self) {
+        self.journal_list(|s| &mut s.obligations);
+        self.journal_list(|s| &mut s.families);
+        self.journal_list(|s| &mut s.rebuilding);
+        self.journal_list(|s| &mut s.status);
+        self.journal_list(|s| &mut s.uses);
+        self.journal_list(|s| &mut s.deferred);
+        self.journal_list(|s| &mut s.pending_defaults);
+        self.journal_list(|s| &mut s.errors);
+        self.journal_list(|s| &mut s.warnings);
+        self.journal_list(|s| &mut s.defaults);
+        self.journal_list(|s| &mut s.lowering);
+        self.journal_list(|s| &mut s.lexical_frames);
+        if self.state.journaling() {
+            let dots_start = self.state.dots_start;
+            let solving_dots = self.state.solving_dots;
+            let lowered = self.state.lowered.clone();
+            let acyclic_types = self.state.acyclic_types.clone();
+            self.state.journal.push(Undo::Other(Box::new(move |state| {
+                state.dots_start = dots_start;
+                state.solving_dots = solving_dots;
+                state.lowered = lowered;
+                state.acyclic_types = acyclic_types;
+            })));
+        }
+    }
+
     /// Begin a trial reading.
     pub(super) fn snapshot(&mut self) -> Snapshot {
         let state = &mut self.state;
@@ -178,10 +231,19 @@ impl Infer<'_> {
         let mut rest = Vec::new();
         while state.journal.len() > snapshot.journal {
             let undo = state.journal.pop().expect("journal entry");
+            if let Undo::Capsule(old) = &undo {
+                state.restore_capsule(old, Some(field));
+                rest.push(undo);
+                continue;
+            }
             let mine = matches!(
                 (&undo, field),
                 (
-                    Undo::Selected(..) | Undo::MeaningArguments(..),
+                    Undo::Selected(..)
+                        | Undo::MeaningArguments(..)
+                        | Undo::MemberContract(..)
+                        | Undo::ContractStage(..)
+                        | Undo::ContractRefinement(..),
                     Field::Selection,
                 ) | (Undo::DefaultInstance(..), Field::DefaultInstances)
             );
@@ -193,6 +255,46 @@ impl Infer<'_> {
         }
         state.journal.extend(rest.into_iter().rev());
         self.keep(snapshot);
+    }
+
+    pub(super) fn set_member_contract(
+        &mut self,
+        key: crate::typed::MemberContractUse,
+        contract: crate::typed::MemberContract,
+    ) {
+        let old = self.state.member_contracts.insert(key.clone(), contract);
+        if self.state.journaling() {
+            self.state
+                .journal(Undo::MemberContract(key, old.map(Box::new)));
+        }
+    }
+
+    pub(super) fn set_contract_stage(
+        &mut self,
+        key: (usize, usize),
+        binding: Option<super::ContractBindingUse>,
+    ) {
+        let old = if let Some(binding) = binding {
+            self.state.contract_stages.insert(key, binding)
+        } else {
+            self.state.contract_stages.remove(&key)
+        };
+        self.state.journal(Undo::ContractStage(key, old));
+    }
+
+    pub(super) fn set_contract_refinement(
+        &mut self,
+        key: (
+            crate::typed::MemberContractUse,
+            crate::token::Span,
+            crate::token::Span,
+            usize,
+            usize,
+        ),
+        ty: Type,
+    ) {
+        let old = self.state.contract_refinements.insert(key.clone(), ty);
+        self.state.journal(Undo::ContractRefinement(key, old));
     }
 
     pub(super) fn set_type(&mut self, index: usize, ty: Type) {
@@ -296,5 +398,312 @@ impl Infer<'_> {
                 *list(state) = old;
             })));
         }
+    }
+}
+
+#[cfg(test)]
+mod lexical_tests {
+    use super::*;
+    use crate::{
+        ast::ExprId, decl::Declarations, resolve::Origin, token::Span,
+    };
+    use alloc::rc::Rc;
+
+    fn selection() -> crate::typed::Selected {
+        crate::typed::Selected::Derived {
+            ty: Type::Unit,
+            kind: crate::ir::Derived::Default,
+        }
+    }
+
+    #[test]
+    fn lexical_capsule_selection_keep_preserves_other_facts_for_outer_restore()
+    {
+        let module = crate::parse::parse(crate::lex::lex("1")).expect("module");
+        let declarations = Declarations::new();
+        let resolved = crate::resolve::resolve(&module, &declarations, &[])
+            .expect("resolved");
+        let cache = super::super::files::FileCache::new();
+        let mut infer = Infer::new(
+            &module,
+            &resolved,
+            &declarations,
+            &[],
+            None,
+            &[],
+            &cache,
+        );
+        let outer = infer.snapshot();
+        let selected_trial = infer.snapshot();
+        let before = infer.lexical_context();
+        infer.state.journal(Undo::Capsule(before));
+        infer.state.selected.insert((0, 1), selection());
+        infer
+            .state
+            .meaning_arguments
+            .insert((0, 1), alloc::vec![Type::Unit]);
+        infer.state.types[0] = Some(Type::Unit);
+        infer.keep_except(selected_trial, Field::Selection);
+        assert!(infer.state.selected.is_empty());
+        assert!(infer.state.meaning_arguments.is_empty());
+        assert_eq!(infer.state.types[0], Some(Type::Unit));
+        infer.restore(outer);
+        assert_eq!(infer.state.types[0], None);
+    }
+
+    #[test]
+    fn lexical_capsule_default_listing_keeps_new_token_and_embedded_instance() {
+        let module = crate::parse::parse(crate::lex::lex("1")).expect("module");
+        let declarations = Declarations::new();
+        let resolved = crate::resolve::resolve(&module, &declarations, &[])
+            .expect("resolved");
+        let cache = super::super::files::FileCache::new();
+        let mut infer = Infer::new(
+            &module,
+            &resolved,
+            &declarations,
+            &[],
+            None,
+            &[],
+            &cache,
+        );
+        let outer = infer.snapshot();
+        let listing = infer.snapshot();
+        let token = Rc::new(super::super::DefaultOwner {
+            key: (Origin::This, Span { start: 0, end: 1 }),
+        });
+        let mut context = (*infer.lexical_context()).clone();
+        context.owner = Some(Rc::clone(&token));
+        let context = Rc::new(context);
+        let instance = crate::typed::DeclaredExpression {
+            origin: Origin::This,
+            value: ExprId(0),
+            resolved: Rc::new(resolved.clone()),
+            typed: Rc::new(crate::typed::Typed::default()),
+        };
+        infer.journal_list(|state| &mut state.pending_defaults);
+        infer
+            .state
+            .pending_defaults
+            .push(super::super::PendingDefault {
+                context: Rc::clone(&context),
+                earlier: Vec::new(),
+                instance: instance.clone(),
+                uses: Vec::new(),
+                invocation: 0..0,
+                roots: BTreeMap::new(),
+            });
+        infer.state.journal(Undo::Capsule(context));
+        infer.state.pending_defaults[0].context = {
+            let mut changed =
+                (*infer.state.pending_defaults[0].context).clone();
+            changed
+                .facts
+                .default_instances
+                .insert((0, 1, 0), instance.clone());
+            changed.facts.types[0] = Some(Type::Unit);
+            Rc::new(changed)
+        };
+        infer.keep_except(listing, Field::DefaultInstances);
+        assert_eq!(infer.state.pending_defaults.len(), 1);
+        assert!(infer.state.pending_defaults[0]
+            .context
+            .facts
+            .default_instances
+            .is_empty());
+        assert_eq!(
+            infer.state.pending_defaults[0].context.facts.types[0],
+            Some(Type::Unit)
+        );
+        assert!(Rc::ptr_eq(
+            &instance.typed,
+            &infer.state.pending_defaults[0].instance.typed
+        ));
+        infer.restore(outer);
+        assert!(infer.state.pending_defaults.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod lexical_guard_tests {
+    use super::*;
+    use crate::{decl::Declarations, resolve::Origin, token::Span};
+    use alloc::rc::Rc;
+
+    #[test]
+    fn inactive_default_owner_reinstates_its_signature_guard_across_unit_work()
+    {
+        let module = crate::parse::parse(crate::lex::lex("1")).expect("module");
+        let declarations = Declarations::new();
+        let resolved = crate::resolve::resolve(&module, &declarations, &[])
+            .expect("resolved");
+        let cache = super::super::files::FileCache::new();
+        let mut infer = Infer::new(
+            &module,
+            &resolved,
+            &declarations,
+            &[],
+            None,
+            &[],
+            &cache,
+        );
+        let key = (Origin::This, Span { start: 0, end: 1 });
+        let token = Rc::new(super::super::DefaultOwner { key: key.clone() });
+        let owner = Some(Rc::clone(&token));
+        let mut context = (*infer.lexical_context()).clone();
+        context.owner = owner.clone();
+        let instance = crate::typed::DeclaredExpression {
+            origin: Origin::This,
+            value: crate::ast::ExprId(0),
+            resolved: Rc::new(resolved.clone()),
+            typed: Rc::new(crate::typed::Typed::default()),
+        };
+        infer
+            .state
+            .pending_defaults
+            .push(super::super::PendingDefault {
+                context: Rc::new(context),
+                earlier: Vec::new(),
+                instance,
+                uses: Vec::new(),
+                invocation: 0..0,
+                roots: BTreeMap::new(),
+            });
+        infer.with_lexical_owner(&owner, |inner| {
+            assert_eq!(inner.state.defaults, alloc::vec![key.clone()]);
+            inner.with_lexical_owner(&None, |unit| {
+                assert_eq!(unit.state.defaults, alloc::vec![key.clone()]);
+                unit.with_lexical_owner(&owner, |nested| {
+                    assert_eq!(nested.state.defaults, alloc::vec![key.clone()]);
+                });
+            });
+        });
+        assert!(infer.state.defaults.is_empty());
+    }
+
+    #[test]
+    fn member_contract_trial_restore_and_selection_keep_preserve_source_ownership(
+    ) {
+        let module = crate::parse::parse(crate::lex::lex("1")).unwrap();
+        let declarations = Declarations::new();
+        let resolved =
+            crate::resolve::resolve(&module, &declarations, &[]).unwrap();
+        let cache = super::super::files::FileCache::new();
+        let mut infer = Infer::new(
+            &module,
+            &resolved,
+            &declarations,
+            &[],
+            None,
+            &[],
+            &cache,
+        );
+        let site = Span { start: 0, end: 1 };
+        let read = crate::typed::MemberContractRead {
+            span: site,
+            step: 0,
+        };
+        let mut owed = super::super::Owed::new(
+            crate::types::Obligation::Member {
+                head: Type::Unit,
+                name: alloc::string::String::from("op"),
+                ty: Type::Unit,
+                dot: site,
+            },
+            site,
+        );
+        owed.contract_reads.push(read.clone());
+        infer.push_owed(owed);
+        let key = crate::typed::MemberContractUse {
+            origin: Origin::This,
+            binding: site,
+            at: site,
+            obligation: 0,
+        };
+        let contract = crate::typed::MemberContract {
+            selected: crate::typed::Selected::Derived {
+                ty: Type::Unit,
+                kind: crate::ir::Derived::Default,
+            },
+            home: Origin::This,
+            meanings: Vec::new(),
+            receiver: Type::Unit,
+            callable: Type::function(Type::Unit, Type::Unit),
+            reads: alloc::vec![read.clone()],
+        };
+        let binding = super::super::ContractBindingUse {
+            origin: Origin::This,
+            site,
+            at: site,
+        };
+        let refinement = (key.clone(), site, site, 0, 0);
+        let trial = infer.snapshot();
+        infer.journal_list(|s| &mut s.obligations);
+        infer.state.obligations[0].contract_reads.push(
+            crate::typed::MemberContractRead {
+                span: site,
+                step: 1,
+            },
+        );
+        infer.insert(
+            |s| &mut s.member_contract_reads,
+            (0, 1),
+            alloc::vec![alloc::vec![read.clone()]],
+        );
+        infer.set_member_contract(key.clone(), contract.clone());
+        infer.set_contract_stage((0, 1), Some(binding.clone()));
+        infer.set_contract_refinement(refinement.clone(), Type::Unit);
+        let facts = super::super::LexicalFacts::capture(&infer.state);
+        infer.state.member_contract_reads.clear();
+        infer.state.member_contracts.clear();
+        infer.state.contract_stages.clear();
+        infer.state.contract_refinements.clear();
+        facts.install(&mut infer.state);
+        assert_eq!(infer.state.member_contracts[&key], contract);
+        assert_eq!(
+            infer.state.member_contract_reads[&(0, 1)],
+            alloc::vec![alloc::vec![read.clone()]]
+        );
+        assert_eq!(infer.state.contract_stages[&(0, 1)], binding);
+        assert_eq!(infer.state.contract_refinements[&refinement], Type::Unit);
+        infer.restore(trial);
+        assert_eq!(
+            infer.state.obligations[0].contract_reads,
+            alloc::vec![read.clone()]
+        );
+        assert!(infer.state.member_contract_reads.is_empty());
+        assert!(infer.state.member_contracts.is_empty());
+        assert!(infer.state.contract_stages.is_empty());
+        assert!(infer.state.contract_refinements.is_empty());
+
+        selection_keeps_contract_source_reads(
+            &mut infer, key, contract, binding, refinement, read,
+        );
+    }
+    fn selection_keeps_contract_source_reads(
+        infer: &mut Infer<'_>,
+        key: crate::typed::MemberContractUse,
+        contract: crate::typed::MemberContract,
+        binding: super::super::ContractBindingUse,
+        refinement: (crate::typed::MemberContractUse, Span, Span, usize, usize),
+        read: crate::typed::MemberContractRead,
+    ) {
+        let outer = infer.snapshot();
+        let selected = infer.snapshot();
+        infer.insert(
+            |s| &mut s.member_contract_reads,
+            (0, 1),
+            alloc::vec![alloc::vec![read]],
+        );
+        infer.set_member_contract(key, contract);
+        infer.set_contract_stage((0, 1), Some(binding));
+        infer.set_contract_refinement(refinement, Type::Unit);
+        infer.keep_except(selected, Field::Selection);
+        assert!(infer.state.member_contracts.is_empty());
+        assert!(infer.state.contract_stages.is_empty());
+        assert!(infer.state.contract_refinements.is_empty());
+        assert!(!infer.state.member_contract_reads.is_empty());
+        infer.restore(outer);
+        assert!(infer.state.member_contract_reads.is_empty());
     }
 }

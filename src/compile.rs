@@ -44,6 +44,10 @@ pub fn compile(unit: &ir::Unit) -> mir::Program {
 /// not hold, so the compile phase cannot evaluate the node by itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Unavailable {
+    /// A contextual evaluation requested a Host effect; it was not answered.
+    Host(usize),
+    /// A target needs an intervening conditional environment.
+    Conditional(usize),
     /// A local slot or a parameter bound outside the node.
     Local(usize),
     /// A meaning parameter whose witness a caller supplies.
@@ -116,10 +120,18 @@ pub(crate) fn constant_value(constant: &ir::Constant) -> Value {
             constructor: *constructor,
             fields: each(fields),
         })),
-        ir::Constant::Packed { tag, value } => Value::Packed(Rc::new(Packed {
-            meaning: *tag,
-            value: constant_value(value),
-        })),
+        ir::Constant::Packed {
+            source,
+            target,
+            value,
+        } => Value::Packed(Rc::new(
+            Packed::data_roots(
+                Rc::clone(source),
+                Rc::clone(target),
+                &constant_value(value),
+            )
+            .expect("a prepared constant is resource-free"),
+        )),
     }
 }
 
@@ -185,6 +197,8 @@ struct Lowering<'a> {
     prelude: Option<usize>,
     bodies: Vec<mir::Body>,
     constants: Vec<Value>,
+    receiver_adapters: Vec<mir::ReceiverAdapter>,
+    receiver_contexts: Vec<Option<mir::ReceiverContext>>,
     definitions: Vec<Option<usize>>,
     tests: Vec<Option<usize>>,
     /// The body of each value definition no line stores.
@@ -218,6 +232,8 @@ impl<'a> Lowering<'a> {
             tables,
             bodies: Vec::new(),
             constants: Vec::new(),
+            receiver_adapters: Vec::new(),
+            receiver_contexts: Vec::new(),
             local_functions: BTreeMap::new(),
             definitions: alloc::vec![None; tables.definitions.len()],
             tests: alloc::vec![None; tables.tests.len()],
@@ -236,20 +252,28 @@ impl<'a> Lowering<'a> {
         inits: Vec<(usize, usize)>,
         main: usize,
     ) -> mir::Program {
-        while let Some(pending) = self.pending.pop() {
-            match pending {
-                Pending::Definition(definition, body) => {
-                    self.definition(definition, body);
+        loop {
+            while let Some(pending) = self.pending.pop() {
+                match pending {
+                    Pending::Definition(definition, body) => {
+                        self.definition(definition, body);
+                    }
+                    Pending::Test(test, body) => self.test(test, body),
+                    Pending::Global(definition, body) => {
+                        self.global(definition, body);
+                    }
                 }
-                Pending::Test(test, body) => self.test(test, body),
-                Pending::Global(definition, body) => {
-                    self.global(definition, body);
-                }
+            }
+            self.complete_receiver_adapters();
+            if self.pending.is_empty() {
+                break;
             }
         }
         mir::Program {
             tables: Rc::clone(&unit.tables),
             bodies: core::mem::take(&mut self.bodies),
+            receiver_adapters: core::mem::take(&mut self.receiver_adapters),
+            receiver_contexts: core::mem::take(&mut self.receiver_contexts),
             constants: core::mem::take(&mut self.constants),
             definitions: core::mem::take(&mut self.definitions),
             tests: core::mem::take(&mut self.tests),
@@ -373,6 +397,7 @@ impl Lowering<'_> {
     /// recursive reference finds it.
     fn reserve(&mut self, node: usize) -> usize {
         self.bodies.push(mir::Body {
+            binding: None,
             node,
             arity: 0,
             captures: 0,
@@ -400,8 +425,11 @@ impl Lowering<'_> {
     /// A constant's index, shared when an equal one exists; floats are
     /// equal by their bits, so `-0.0` keeps its sign.
     fn constant(&mut self, value: Value) -> usize {
-        if let Some(index) =
-            self.constants.iter().position(|known| same(known, &value))
+        if let Some(index) = (!contains_packed(&value))
+            .then(|| {
+                self.constants.iter().position(|known| same(known, &value))
+            })
+            .flatten()
         {
             return index;
         }
@@ -419,6 +447,29 @@ impl Lowering<'_> {
         }
         count
     }
+}
+
+fn contains_packed(value: &Value) -> bool {
+    let mut pending = alloc::vec![value];
+    let mut seen = alloc::collections::BTreeSet::new();
+    while let Some(value) = pending.pop() {
+        let identity = match value {
+            Value::Packed(_) => return true,
+            Value::Seq(x) => Some((0, Rc::as_ptr(x) as usize)),
+            Value::Tuple(x) => Some((1, Rc::as_ptr(x) as usize)),
+            Value::Record(x) => Some((2, Rc::as_ptr(x) as usize)),
+            _ => None,
+        };
+        if identity.is_some_and(|key| !seen.insert(key)) {
+            continue;
+        }
+        match value {
+            Value::Seq(x) | Value::Tuple(x) => pending.extend(x.iter()),
+            Value::Record(x) => pending.extend(&x.fields),
+            _ => {}
+        }
+    }
+    false
 }
 
 fn same(a: &Value, b: &Value) -> bool {
@@ -539,4 +590,167 @@ impl Lowering<'_> {
         builder.terminate(Terminator::Return, node);
         builder.finish(Some(body));
     }
+}
+
+/// Actual marked scopes around an adapter, outermost first.
+pub(crate) fn marked_contexts(
+    tables: &ir::Tables,
+    node: usize,
+) -> Result<Vec<usize>, Unavailable> {
+    let nearest = tables.nodes.iter().enumerate().find_map(|(index, n)| {
+        let ir::Kind::Marked { left, stage, .. } = n.kind else {
+            return None;
+        };
+        (node != left && outcomes::supplied_target(tables, stage, node, left))
+            .then_some(index)
+    });
+    let Some(nearest) = nearest else {
+        return Ok(Vec::new());
+    };
+    let mut contexts = alloc::vec![nearest];
+    let mut inner = nearest;
+    loop {
+        let parents: Vec<_> = tables
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, n)| {
+                if contexts.contains(&index) {
+                    return None;
+                }
+                let ir::Kind::Marked { stage, .. } = n.kind else {
+                    return None;
+                };
+                executable_contains(tables, stage, inner)
+                    .map(|conditional| (index, conditional))
+            })
+            .collect();
+        let parent = parents.iter().find(|(p, _)| {
+            let ir::Kind::Marked { stage, .. } = tables.nodes[*p].kind else {
+                unreachable!("marked parent")
+            };
+            !parents.iter().any(|(other, _)| {
+                p != other
+                    && executable_contains(tables, stage, *other).is_some()
+            })
+        });
+        let Some(&(parent, conditional)) = parent else {
+            break;
+        };
+        if conditional {
+            return Err(Unavailable::Conditional(parent));
+        }
+        contexts.push(parent);
+        inner = parent;
+    }
+    contexts.reverse();
+    Ok(contexts)
+}
+
+fn executable_contains(
+    tables: &ir::Tables,
+    start: usize,
+    target: usize,
+) -> Option<bool> {
+    let mut pending = alloc::vec![(start, false)];
+    let mut seen = alloc::collections::BTreeSet::new();
+    while let Some((node, conditional)) = pending.pop() {
+        if node == target {
+            return Some(conditional);
+        }
+        if !seen.insert((node, conditional)) {
+            continue;
+        }
+        let mut edges = Vec::new();
+        match &tables.nodes[node].kind {
+            ir::Kind::Call {
+                callee,
+                supplies,
+                defaults,
+                ..
+            } => {
+                edges.push(*callee);
+                edges.extend(supplies.iter().map(|s| s.value));
+                edges.extend(defaults.iter().map(|(_, n)| *n));
+            }
+            ir::Kind::Cast {
+                value, operation, ..
+            } => {
+                edges.push(*value);
+                edges.extend(operation.iter().copied());
+            }
+            ir::Kind::Timing { value, .. }
+            | ir::Kind::Ordering { value, .. }
+            | ir::Kind::Field { value, .. }
+            | ir::Kind::Repeat { value, .. }
+            | ir::Kind::Bind { value, .. }
+            | ir::Kind::Pack { value, .. }
+            | ir::Kind::Enter { value, .. } => edges.push(*value),
+            ir::Kind::Tuple(parts)
+            | ir::Kind::Array(parts)
+            | ir::Kind::Block(parts)
+            | ir::Kind::Construct { fields: parts, .. } => edges.extend(parts),
+            ir::Kind::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                edges.push(*condition);
+                pending.extend([(*then_body, true), (*else_body, true)]);
+            }
+            ir::Kind::With { key, value, body } => {
+                edges.extend([*key, *value, *body]);
+            }
+            ir::Kind::Lift { value, body, .. } => {
+                edges.push(*value);
+                pending.push((*body, true));
+            }
+            ir::Kind::Pipe { left, stage }
+            | ir::Kind::Marked { left, stage, .. } => {
+                edges.extend([*left, *stage]);
+            }
+            ir::Kind::Or { left, right, .. }
+            | ir::Kind::And { left, right, .. } => {
+                edges.push(*left);
+                pending.push((*right, true));
+            }
+            // A separately called body is not an enclosing execution environment.
+            ir::Kind::Function { .. }
+            | ir::Kind::Definition { .. }
+            | ir::Kind::Local { .. }
+            | ir::Kind::Capture { .. }
+            | ir::Kind::Declared(_)
+            | ir::Kind::Derived { .. }
+            | ir::Kind::Constructor { .. }
+            | ir::Kind::Dispatch { .. }
+            | ir::Kind::Literal { .. }
+            | ir::Kind::Convert { .. } => (),
+        }
+        pending.extend(edges.into_iter().map(|n| (n, conditional)));
+    }
+    None
+}
+
+pub(crate) fn contextual_evaluation(
+    unit: &ir::Unit,
+    node: usize,
+    contexts: &[usize],
+) -> Result<mir::Program, Unavailable> {
+    let tables = unit.tables();
+    let mut lowering = Lowering::new(&tables, destructured(&tables));
+    lowering.evaluating = true;
+    let result = outcomes::context_type(&tables, node, contexts);
+    let mut builder = Builder::new(
+        &mut lowering,
+        node,
+        result.clone(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let value = builder.contextual_target(node, contexts, &result);
+    builder.place(value, Some(0), node);
+    builder.terminate(Terminator::Return, node);
+    let main = builder.finish(None);
+    let program = lowering.program(unit, Vec::new(), main);
+    lowering.unavailable.get().map_or(Ok(program), Err)
 }

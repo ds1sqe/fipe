@@ -269,3 +269,25 @@ x: [T; n + 1] = y
           (name))
         (integer)))
     (name)))
+
+================================================================================
+Contextual resource headers and ordinary resource names
+================================================================================
+pub type resource Table
+type resource Rd<Api>
+type resource
+type resource<A>
+type resource: Integer
+type resource where self > 0
+resource = 1
+
+--------------------------------------------------------------------------------
+
+(file
+  (type_item (resource_modifier) (upper_name))
+  (type_item (resource_modifier) (upper_name) (type_parameters (type_parameter (upper_name))))
+  (type_item (name))
+  (type_item (name) (type_parameters (type_parameter (upper_name))))
+  (type_item (name) (named_type (upper_name)))
+  (type_item (name) (limits (binary (name) (integer))))
+  (binding (name) (integer)))

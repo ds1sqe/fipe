@@ -151,6 +151,9 @@ fn check_rvalue(
     rvalue: &Rvalue,
 ) {
     match rvalue {
+        Rvalue::Admit { values, .. } => {
+            check_operands(program, body, values);
+        }
         Rvalue::Use(value)
         | Rvalue::Field(value, _)
         | Rvalue::Length(value) => {

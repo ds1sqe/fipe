@@ -12,6 +12,9 @@ pub enum Frame {
 }
 
 /// A body in progress.
+///
+/// Witnesses are dropped iteratively. To transfer an owned field out of this
+/// `Drop` type, use `core::mem::take(&mut frame.field)`.
 #[derive(Debug)]
 pub struct BodyFrame {
     pub body: usize,
@@ -30,6 +33,14 @@ pub struct BodyFrame {
     pub(super) announced: Option<(usize, usize)>,
 }
 
+impl Drop for BodyFrame {
+    fn drop(&mut self) {
+        drop(crate::value::resource::Forest(core::mem::take(
+            &mut self.meanings,
+        )));
+    }
+}
+
 /// A native waiting on a call it made; `node` is the call site, for a
 /// Fault's span.
 #[derive(Debug)]
@@ -41,6 +52,14 @@ pub struct NativeFrame {
     /// every move of the frame reads; `None` for a frame no call typed
     /// (a test, an application, a walk another native asked for).
     pub(super) result: Option<ir::Type>,
+}
+
+impl Drop for NativeFrame {
+    fn drop(&mut self) {
+        if let Some(result) = self.result.take() {
+            drop(crate::value::resource::Forest(alloc::vec![result]));
+        }
+    }
 }
 
 impl BodyFrame {
