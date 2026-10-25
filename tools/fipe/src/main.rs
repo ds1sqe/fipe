@@ -13,8 +13,10 @@
 //! - `fipe build FILE -o EXE [--runtime LIB] [--llvm]` builds a native
 //!   executable that answers through the std host, its object from the
 //!   x86-64 backend or, with `--llvm`, from LLVM IR compiled by clang;
-//!   the runtime archive is `--runtime` or `FIPE_NATIVE_RT`; exit 1
-//!   when it cannot be built, 2 when the script does not check.
+//!   the runtime archive is `--runtime` or `FIPE_NATIVE_RT`. Building is
+//!   supported only on x86-64 Linux; exit 1 on an unsupported host or a
+//!   build failure, 2 for invalid arguments or a script check failure on
+//!   a supported host.
 #![forbid(unsafe_code)]
 
 mod format;
@@ -297,6 +299,12 @@ fn build(args: &[String]) -> Ran {
         .output
         .as_deref()
         .ok_or_else(|| usage(String::from(USAGE)))?;
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return Err((
+            1,
+            "fipe: native builds are supported only on x86-64 Linux".into(),
+        ));
+    }
     let script =
         load(Path::new(file)).map_err(|error| (2, error.to_string()))?;
     let (main, files) = script

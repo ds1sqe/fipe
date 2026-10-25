@@ -647,3 +647,111 @@ fn host_declarations_preserves_non_utf8_paths_and_refuses_symlink_destination()
     assert!(output.stdout.is_empty());
     assert_exported(&directory);
 }
+
+fn native_build_command(
+    dir: &Path,
+    arguments: &[&str],
+    runtime: Option<&Path>,
+) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fipe"));
+    command
+        .arg("build")
+        .args(arguments)
+        .current_dir(dir)
+        .env_remove("FIPE_NATIVE_RT")
+        .env_remove("FIPE_CLANG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(runtime) = runtime {
+        command.env("FIPE_NATIVE_RT", runtime);
+    }
+    command.output().unwrap()
+}
+
+fn assert_native_build_files(dir: &Path) {
+    assert!(!dir.join("fresh.exe").exists());
+    assert!(!dir.join("fresh.o").exists());
+    assert!(!dir.join("existing.o").exists());
+    assert_eq!(fs::read(dir.join("existing.exe")).unwrap(), b"keep output");
+    assert_eq!(fs::read(dir.join("runtime.a")).unwrap(), b"keep runtime");
+}
+
+fn assert_unsupported_native_build(
+    dir: &Path,
+    arguments: &[&str],
+    runtime: Option<&Path>,
+) {
+    assert_eq!(
+        shown(&native_build_command(dir, arguments, runtime)),
+        (
+            String::new(),
+            "fipe: native builds are supported only on x86-64 Linux\n".into(),
+            1,
+        )
+    );
+    assert_native_build_files(dir);
+}
+
+#[test]
+fn native_build_rejects_unsupported_hosts_before_effects() {
+    let dir = scratch("native-platform");
+    fs::write(dir.join("ok.fipe"), "1\n").unwrap();
+    fs::write(dir.join("bad.fipe"), "nope\n").unwrap();
+    fs::write(dir.join("runtime.a"), b"keep runtime").unwrap();
+    fs::write(dir.join("existing.exe"), b"keep output").unwrap();
+    let (usage, error, status) = shown(&fipe(&dir, &["help"], b""));
+    assert!(error.is_empty());
+    assert_eq!(status, 0);
+    for (arguments, expected) in [
+        (&[][..], usage.clone()),
+        (&["ok.fipe"][..], usage.clone()),
+        (&["--bad"][..], format!("unknown option --bad\n{usage}")),
+        (
+            &["ok.fipe", "extra.fipe", "-o", "fresh.exe"][..],
+            usage.clone(),
+        ),
+        (&["ok.fipe", "-o"][..], format!("-o takes a value\n{usage}")),
+    ] {
+        assert_eq!(
+            shown(&native_build_command(&dir, arguments, None)),
+            (String::new(), expected, 2)
+        );
+        assert_native_build_files(&dir);
+    }
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        assert_eq!(
+            shown(&native_build_command(
+                &dir,
+                &["ok.fipe", "-o", "fresh.exe"],
+                None,
+            )),
+            (
+                String::new(),
+                "fipe: no runtime: pass --runtime or set FIPE_NATIVE_RT\n"
+                    .into(),
+                1,
+            )
+        );
+        assert_native_build_files(&dir);
+        return;
+    }
+    let runtime = dir.join("runtime.a");
+    for llvm in [false, true] {
+        let mut arguments = vec!["ok.fipe", "-o", "fresh.exe"];
+        if llvm {
+            arguments.push("--llvm");
+        }
+        assert_unsupported_native_build(&dir, &arguments, None);
+        assert_unsupported_native_build(&dir, &arguments, Some(&runtime));
+        arguments.extend(["--runtime", "runtime.a"]);
+        assert_unsupported_native_build(&dir, &arguments, None);
+        for script in ["missing.fipe", "bad.fipe"] {
+            arguments[0] = script;
+            assert_unsupported_native_build(&dir, &arguments, None);
+        }
+        arguments[0] = "ok.fipe";
+        arguments[2] = "existing.exe";
+        assert_unsupported_native_build(&dir, &arguments, None);
+    }
+}

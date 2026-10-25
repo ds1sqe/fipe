@@ -134,6 +134,7 @@ case "$mode" in
             --locked --offline ${profile_arg:+"$profile_arg"}
         for test in the_repl_shows_values_and_performs_effects_through_the_std_host \
             check_exits_by_the_worst_file \
+            native_build_rejects_unsupported_hosts_before_effects \
             repl_eof_drains_trailing_input_and_effects_without_quit; do
             cargo_ci test -p fipe-cli --test cli --locked --offline \
                 ${profile_arg:+"$profile_arg"} "$test" -- --exact
