@@ -4366,3 +4366,331 @@ fn same_host_pending_member_incompatible_use_is_refused_before_execution() {
     );
     assert_eq!(callbacks, 0, "no Machine/reply on checker refusal");
 }
+
+// Original lexical reentry routes, each with a real terminating base case.
+const LEXICAL_WRITTEN_HELPER: &str = "use effects\npub type A { pub n: Integer }\nimpl A {\n f: Integer -> Integer = n => {\n  ignored = effects.visit n\n  if n == 0 { effects.tick } else { helper (n - 1) }\n }\n}\npub helper: Integer -> Integer = n => {\n ignored = effects.visit (100 + n)\n A.f n\n}\n";
+const LEXICAL_DEFAULT_BACKEDGE: &str = "use effects\npub type A { pub n: Integer }\nimpl A {\n f: Integer -> Integer = n => {\n  ignored = effects.visit n\n  if n == 0 { effects.tick } else { entry (n - 1) }\n }\n}\npub entry: (seed: Integer) -> (n: Integer = (A.f seed)) -> Integer\n";
+
+fn lexical_reentry_member(module: &fipe::ast::Module) -> fipe::token::Span {
+    use fipe::ast::{Entry, ImplMember, ItemKind, TypeKind};
+    let mut sites = Vec::new();
+    for entry in &module.entries {
+        let Entry::Item(item) = entry else { continue };
+        let ItemKind::Impl {
+            target, members, ..
+        } = &item.kind
+        else {
+            continue;
+        };
+        let TypeKind::Named { name, .. } =
+            &module.ty(*target).expect("actual impl target").kind
+        else {
+            continue;
+        };
+        if name.segments.as_slice() != ["A"] {
+            continue;
+        }
+        for member in members {
+            if let ImplMember::Named {
+                name,
+                value: Some(_),
+                ..
+            } = member
+            {
+                if name.segments.as_slice() == ["f"] {
+                    sites.push(name.span);
+                }
+            }
+        }
+    }
+    let [site] = sites.as_slice() else {
+        panic!("one actual written A.f");
+    };
+    *site
+}
+
+fn lexical_reentry_helper(module: &fipe::ast::Module) -> fipe::token::Span {
+    use fipe::ast::{Entry, ExprKind, PatternKind};
+    let mut sites = Vec::new();
+    for entry in &module.entries {
+        let Entry::Line(id) = entry else { continue };
+        let ExprKind::Bind {
+            public: true,
+            pattern,
+            ..
+        } = &module.expr(*id).expect("actual binding").kind
+        else {
+            continue;
+        };
+        let PatternKind::Name(name) =
+            &module.pattern(*pattern).expect("actual helper name").kind
+        else {
+            continue;
+        };
+        if name.segments.as_slice() == ["helper"] {
+            sites.push(name.span);
+        }
+    }
+    let [site] = sites.as_slice() else {
+        panic!("one actual public written helper");
+    };
+    *site
+}
+
+fn lexical_reentry_default(
+    module: &fipe::ast::Module,
+) -> (fipe::token::Span, fipe::token::Span) {
+    use fipe::ast::{ArgumentKind, Entry, ExprKind, ItemKind, TypeKind};
+    let mut defaults = Vec::new();
+    for entry in &module.entries {
+        let Entry::Item(item) = entry else { continue };
+        let ItemKind::Declare { name, ty } = &item.kind else {
+            continue;
+        };
+        if name.segments.as_slice() != ["entry"] {
+            continue;
+        }
+        let mut ty = *ty;
+        while let TypeKind::Function { parameter, result } =
+            &module.ty(ty).expect("actual entry type").kind
+        {
+            if let TypeKind::Labeled {
+                name,
+                default: Some(value),
+                ..
+            } = &module.ty(*parameter).expect("actual parameter").kind
+            {
+                assert_eq!(name.segments.as_slice(), ["n"]);
+                defaults.push(*value);
+            }
+            ty = *result;
+        }
+    }
+    let [value] = defaults.as_slice() else {
+        panic!("one actual entry default");
+    };
+    let mut value = *value;
+    let source_span = module.expr(value).expect("actual recorded default").span;
+    while let ExprKind::Group(parts) =
+        &module.expr(value).expect("actual default expression").kind
+    {
+        let [inner] = parts.as_slice() else {
+            panic!("one grouped default")
+        };
+        value = *inner;
+    }
+    let expression = module.expr(value).unwrap();
+    let ExprKind::Call {
+        callee, arguments, ..
+    } = &expression.kind
+    else {
+        panic!("actual default calls A.f");
+    };
+    let ExprKind::Name(name) = &module.expr(*callee).unwrap().kind else {
+        panic!("actual default callee");
+    };
+    assert_eq!(name.segments.as_slice(), ["A", "f"]);
+    let [argument] = arguments.as_slice() else {
+        panic!("one default seed")
+    };
+    let ArgumentKind::Positional(seed) = &argument.kind else {
+        panic!("positional default seed");
+    };
+    let ExprKind::Name(name) = &module.expr(*seed).unwrap().kind else {
+        panic!("actual earlier-slot read");
+    };
+    assert_eq!(name.segments.as_slice(), ["seed"]);
+    (source_span, expression.span)
+}
+
+fn lexical_reentry_body(
+    program: &fipe::mir::Program,
+    label: &str,
+    site: fipe::token::Span,
+    header_len: usize,
+) -> usize {
+    let tables = program.tables.borrow();
+    let found: Vec<_> = tables
+        .definitions
+        .iter()
+        .enumerate()
+        .filter(|(_, definition)| {
+            definition.label == label
+                && definition.span == site
+                && tables.namespaces[definition.namespace] == "probe"
+        })
+        .collect();
+    let [(index, definition)] = found.as_slice() else {
+        panic!("one actual checked written {label} definition");
+    };
+    let body = program.definitions[*index].expect("joined written body");
+    let compiled = &program.bodies[body];
+    assert!(compiled.arity > 0);
+    for node in [definition.body, compiled.node] {
+        let source = &tables.nodes[node];
+        assert_eq!(tables.namespaces[source.namespace], "probe");
+        assert!(source.span.start < source.span.end);
+        assert!(source.span.end <= header_len);
+    }
+    *index
+}
+
+fn lexical_reentry_default_ir(
+    program: &fipe::mir::Program,
+    site: fipe::token::Span,
+    inner_site: fipe::token::Span,
+    f: usize,
+) {
+    use fipe::ir::Kind;
+    let tables = program.tables.borrow();
+    let mut defaults = Vec::new();
+    for node in &tables.nodes {
+        let Kind::Call {
+            callee,
+            defaults: supplied,
+            ..
+        } = &node.kind
+        else {
+            continue;
+        };
+        let Kind::Declared(index) = &tables.nodes[*callee].kind else {
+            continue;
+        };
+        let declaration = &tables.declarations[*index];
+        if declaration.label != "entry"
+            || tables.namespaces[declaration.namespace] != "probe"
+        {
+            continue;
+        }
+        let [(1, default)] = supplied.as_slice() else {
+            panic!("entry's second spot has exactly one omitted default");
+        };
+        defaults.push(*default);
+    }
+    assert!(
+        !defaults.is_empty(),
+        "actual entry call retains its default"
+    );
+    for default in defaults {
+        let node = &tables.nodes[default];
+        assert_eq!(tables.namespaces[node.namespace], "probe");
+        assert_eq!(node.span, site);
+        let Kind::Block(parts) = &node.kind else {
+            panic!("the recorded parenthesized default is a block");
+        };
+        let [call] = parts.as_slice() else {
+            panic!("one actual expression in the default group");
+        };
+        let inner = &tables.nodes[*call];
+        assert_eq!(tables.namespaces[inner.namespace], "probe");
+        assert_eq!(inner.span, inner_site);
+        let Kind::Call { callee, .. } = &inner.kind else {
+            panic!("actual default expression calls the original member");
+        };
+        assert!(
+            program.bodies.iter().any(|body| body
+                .blocks
+                .iter()
+                .any(|block| block.nodes.contains(call))),
+            "actual inner default call has an emitted MIR location"
+        );
+        assert!(matches!(tables.nodes[*callee].kind,
+            Kind::Definition { index, .. } if index == f));
+    }
+}
+
+fn lexical_reentry_observe(header: &str, default: bool) {
+    use fipe::{
+        check, compile,
+        embed::{Outcome, Reply, Request},
+        value::Value,
+    };
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .module("effects", "pub visit: Integer -> ()\npub tick: Integer")
+        .expect("effects header");
+    declarations
+        .module("probe", header)
+        .expect("original lexical header");
+    let module = &declarations.get_module("probe").unwrap().module;
+    let f = lexical_reentry_member(module);
+    let (other, inner) = if default {
+        let (outer, inner) = lexical_reentry_default(module);
+        (outer, Some(inner))
+    } else {
+        (lexical_reentry_helper(module), None)
+    };
+    let main = fipe::parse::parse(fipe::lex::lex("use probe\nprobe.A.f 1"))
+        .expect("actual invoked source");
+    let mut callbacks = 0;
+    let unit =
+        check::check(&main, &declarations, &[], check::Options::default())
+            .expect("terminating original reentry checks");
+    assert_eq!(callbacks, 0, "no callback during checking");
+    let program = compile::compile(&unit);
+    let mut machine = fipe::vm::Machine::new(Some(100_000));
+    let mut outcome = machine.run(&program);
+    let joined = machine.program().expect("actual joined program");
+    let definition = lexical_reentry_body(joined, "f", f, header.len());
+    if default {
+        lexical_reentry_default_ir(
+            joined,
+            other,
+            inner.expect("actual default call span"),
+            definition,
+        );
+    } else {
+        lexical_reentry_body(joined, "helper", other, header.len());
+    }
+    let trace = if default {
+        vec![
+            ("effects", "visit", vec![Value::Int(1)], Value::Unit),
+            ("effects", "visit", vec![Value::Int(0)], Value::Unit),
+            ("effects", "tick", vec![], Value::Int(41)),
+            (
+                "probe",
+                "entry",
+                vec![Value::Int(0), Value::Int(41)],
+                Value::Int(41),
+            ),
+        ]
+    } else {
+        vec![
+            ("effects", "visit", vec![Value::Int(1)], Value::Unit),
+            ("effects", "visit", vec![Value::Int(100)], Value::Unit),
+            ("effects", "visit", vec![Value::Int(0)], Value::Unit),
+            ("effects", "tick", vec![], Value::Int(41)),
+        ]
+    };
+    for (namespace, label, expected, reply) in trace {
+        let Outcome::Request(Request::Call {
+            declaration,
+            arguments,
+            ..
+        }) = outcome
+        else {
+            panic!("exact next lexical effect: {outcome:?}")
+        };
+        {
+            let tables = machine.program().unwrap().tables.borrow();
+            let declaration = &tables.declarations[declaration];
+            assert_eq!(tables.namespaces[declaration.namespace], namespace);
+            assert_eq!(declaration.label, label);
+        }
+        assert_eq!(arguments, expected);
+        callbacks += 1;
+        outcome = machine.reply(&program, Reply::Value(Ok(reply)));
+    }
+    assert_eq!(callbacks, 4);
+    assert_eq!(outcome, Outcome::Done(Ok(Value::Int(41))));
+}
+
+#[test]
+fn host_written_helper_reentry_terminates_at_original_member() {
+    lexical_reentry_observe(LEXICAL_WRITTEN_HELPER, false);
+}
+
+#[test]
+fn host_written_default_reentry_executes_before_entry_callback() {
+    lexical_reentry_observe(LEXICAL_DEFAULT_BACKEDGE, true);
+}
