@@ -225,3 +225,35 @@ fn nested_type_members_and_api_markers_keep_their_module_identity() {
         check::check(&module, &host, &[], check::Options::default()).is_err()
     );
 }
+
+#[test]
+fn invalid_middle_import_does_not_bind_its_final_segment() {
+    let mut host = Declarations::new();
+    host.module("a", "pub n: Integer\npub type B {}").unwrap();
+    for (import, tail) in [("a.n.c", "c"), ("a.B.x", "x"), ("a.nope", "nope")] {
+        let source = format!("use {import}\n{tail}");
+        let parsed = parse(lex(&source)).unwrap();
+        let errors =
+            check::check(&parsed, &host, &[], check::Options::default())
+                .unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                check::Error::Resolve(error)
+                    if error.reason == fipe::resolve::Reason::NotExported
+                        && &source[error.span.start..error.span.end] == import
+            )),
+            "{source}: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                check::Error::Resolve(error)
+                    if error.reason == fipe::resolve::Reason::UnknownName
+                        && error.span.start == source.len() - tail.len()
+                        && error.span.end == source.len()
+            )),
+            "final segment leaked: {source}: {errors:?}"
+        );
+    }
+}

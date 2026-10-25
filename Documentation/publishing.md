@@ -136,3 +136,14 @@ consumer has updated its pins, re-enabled its ignored marked-pipe cases, removed
 its workaround or passed grant/stale/cleanup/session checks. Those observations
 remain consumer-owned acceptance gates. Final `0.2.0` compatibility, complete
 workspace packaging and cross-platform release claims remain separately gated.
+
+### Standalone version-maintenance inventory
+
+A workspace prerelease bump must also review the standalone provider proof lock,
+linked-provider example lock and both `.in` manifests under `tools/ffi`, plus the
+custom-host fixture's exact Fipe pin and lock under `tests/fixtures/custom-host`.
+Update only matching local package versions and exact pins, preserve external
+checksums, and validate each copied/standalone graph with `--locked`. Root workspace
+lock success does not establish those independent locks are current. Keep examples
+explicit about source patches versus registry availability; an ABI number or a
+historical published-version command is not automatically part of this bump.
