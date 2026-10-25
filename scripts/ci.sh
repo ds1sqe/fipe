@@ -70,6 +70,57 @@ case "$mode" in
             --locked --offline ${profile_arg:+"$profile_arg"}
         cargo_ci test --manifest-path tools/ffi/tests/providers/Cargo.toml \
             --test c_rust --locked --offline ${profile_arg:+"$profile_arg"}
+        # This rehearses source-built processes, not final installed archives.
+        (
+            test -z "${CARGO_BUILD_TARGET:-}"
+            unset PYTHONOPTIMIZE
+            timeout --kill-after=5s 600s cargo +1.98.1 build \
+                -p fipe-cli -p fipe-repl -p fipe-dap \
+                --locked --offline --jobs 8 ${profile_arg:+"$profile_arg"}
+            process_bin=$(python3 -c \
+                'import os,sys; print(os.path.abspath(sys.argv[1]) + "/" + sys.argv[2])' \
+                "${CARGO_TARGET_DIR:-$PWD/target}" "$profile")
+            work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fipe-process-${profile}.XXXXXX")
+            trap 'rm -rf -- "$work"' EXIT
+            mkdir -p "$work/drivers" "$work/Documentation/examples" \
+                "$work/tests/fixtures/host" "$work/tests/fixtures/traces"
+            cp tools/repl/tests/pty.py tools/dap/tests/installed.py "$work/drivers/"
+            cp Documentation/examples/02-outcomes.fipe "$work/Documentation/examples/"
+            cp tests/fixtures/traces/02-outcomes.txt "$work/tests/fixtures/traces/"
+            for module in commands cli config fs sys text; do
+                cp "tests/fixtures/host/$module.fipe" "$work/tests/fixtures/host/"
+            done
+            printf 'Source-built process rehearsal: profile=%s source=%s cwd=%s\n' \
+                "$profile" "$(git rev-parse HEAD)" "$work"
+            for command in fipe fipe-repl fipe-dap; do
+                test -f "$process_bin/$command" && test -x "$process_bin/$command"
+            done
+            sha256sum "$process_bin/fipe" "$process_bin/fipe-repl" \
+                "$process_bin/fipe-dap" > "$work/binary-sha256.txt"
+            cat "$work/binary-sha256.txt"
+            timeout --kill-after=5s 10s "$process_bin/fipe" --version
+            timeout --kill-after=5s 10s "$process_bin/fipe-dap" --version
+            cd "$work"
+            sha256sum drivers/*.py Documentation/examples/02-outcomes.fipe \
+                tests/fixtures/host/*.fipe tests/fixtures/traces/02-outcomes.txt \
+                > fixture-sha256.txt
+            stat -c '%a %n' drivers/*.py Documentation/examples/02-outcomes.fipe \
+                tests/fixtures/host/*.fipe tests/fixtures/traces/02-outcomes.txt \
+                > fixture-modes.txt
+            timeout --kill-after=5s 120s python3 drivers/pty.py "$process_bin/fipe-repl"
+            timeout --kill-after=5s 120s python3 drivers/pty.py \
+                --cli-interactive "$process_bin/fipe"
+            timeout --kill-after=5s 60s python3 drivers/pty.py --cli "$process_bin/fipe"
+            timeout --kill-after=5s 210s python3 drivers/installed.py \
+                --binary "$process_bin/fipe-dap" --root "$work"
+            sha256sum --check fixture-sha256.txt
+            sha256sum --check binary-sha256.txt
+            stat -c '%a %n' drivers/*.py Documentation/examples/02-outcomes.fipe \
+                tests/fixtures/host/*.fipe tests/fixtures/traces/02-outcomes.txt \
+                > fixture-modes-after.txt
+            cmp fixture-modes.txt fixture-modes-after.txt
+            printf 'PASS source-built process rehearsal: %s\n' "$profile"
+        )
         ;;
     vm)
         fetch
