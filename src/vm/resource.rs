@@ -2863,6 +2863,86 @@ mod tests {
             machine.end();
         }).unwrap().join().unwrap();
     }
+
+    #[test]
+    fn unrelated_ordinary_records_do_not_allocate_production_stamps() {
+        let mut source = alloc::string::String::new();
+        for index in 0..128 {
+            source.push_str(&alloc::format!(
+                "type Data{index} {{ n: Integer }}\nvalue{index} = Data{index} {index}\n"
+            ));
+        }
+        source.push_str("value127");
+        let mut session =
+            crate::session::Session::new(crate::decl::Declarations::new());
+        let crate::embed::Outcome::Done(report) = session.line(&source) else {
+            panic!("ordinary declarations have no source requests")
+        };
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        let unit = report.unit.as_ref().unwrap();
+        assert_eq!(unit.tables().resource_cache.len(), 0);
+        assert!(!unit.tables().has_resources);
+        let tables = unit.tables();
+        let namespace = tables.nodes[*unit.main.last().unwrap()].namespace;
+        assert_eq!(tables.namespaces[namespace], "line 1");
+        let actual: Vec<_> = tables
+            .meanings
+            .iter()
+            .enumerate()
+            .filter(|(_, meaning)| meaning.namespace == namespace)
+            .map(|(index, meaning)| (meaning.label.clone(), index))
+            .collect();
+        assert_eq!(actual.len(), 128);
+        let labels: alloc::collections::BTreeSet<_> =
+            actual.iter().map(|(label, _)| label.clone()).collect();
+        let expected = (0..128)
+            .map(|index| alloc::format!("Data{index}"))
+            .collect::<alloc::collections::BTreeSet<_>>();
+        assert_eq!(labels, expected);
+        assert_eq!(
+            actual
+                .iter()
+                .map(|(_, index)| *index)
+                .collect::<alloc::collections::BTreeSet<_>>()
+                .len(),
+            128
+        );
+        drop(tables);
+        let program = crate::compile::compile(unit);
+        assert_eq!(program.tables.borrow().resource_cache.len(), 0);
+        assert!(program.bodies.iter().all(|body| body.blocks.iter().all(
+            |block| {
+                block.statements.iter().all(|statement| {
+                    !matches!(
+                        statement,
+                        crate::mir::Statement::Assign(
+                            _,
+                            crate::mir::Rvalue::Pack { .. }
+                        )
+                    )
+                })
+            }
+        )));
+        let mut machine = crate::vm::Machine::new(None);
+        let crate::embed::Outcome::Done(Ok(Value::Record(record))) =
+            machine.run(&program)
+        else {
+            panic!("ordinary records execute without effects")
+        };
+        assert_eq!(record.fields, [Value::Int(127)]);
+        assert_eq!(program.tables.borrow().resource_cache.len(), 0);
+        assert_eq!(
+            machine
+                .program()
+                .unwrap()
+                .tables
+                .borrow()
+                .resource_cache
+                .len(),
+            0
+        );
+    }
+
     #[test]
     fn resource_cache_clone_and_pruning_are_sparse() {
         let cache = crate::value::resource::ResourceCache::default();

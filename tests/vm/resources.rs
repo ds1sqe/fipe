@@ -4193,3 +4193,272 @@ fn resource_recursion_conformance_concrete_nested_alias_and_scalar_negative() {
         );
     }
 }
+
+// Original named Packed route, with one init sentinel for external-input checks.
+const PACKED_ROUTE_HEADER: &str = "pub type Key: Eq\npub type resource Rd<T>\npub open: Rd<()>\npub echo: Key -> Key\nimpl Rd<a>: Key { eq = other self => True }\npub tick: Integer";
+const PACKED_ROUTE_SOURCE: &str = "use csv\ncsv.echo csv.open";
+const PACKED_ROUTE_INPUT: &str = "use csv\nuse boot\nf: csv.Key -> csv.Key = x => { ignored=boot.start\n x }\nf";
+
+fn packed_route_stop(
+    machine: &mut Machine,
+) -> Outcome<Result<Value, fipe::vm::Fault>> {
+    match next_protocol_stop(machine) {
+        fipe::vm::Stop::Request(request) => Outcome::Request(request),
+        fipe::vm::Stop::Done(result) => Outcome::Done(result),
+        other => panic!("protocol stop: {other:?}"),
+    }
+}
+
+fn packed_route_reply(
+    machine: &mut Machine,
+    program: &fipe::mir::Program,
+    value: Value,
+    stepped: bool,
+) -> Outcome<Result<Value, fipe::vm::Fault>> {
+    if stepped {
+        machine.answer(Reply::Value(Ok(value)));
+        packed_route_stop(machine)
+    } else {
+        machine.reply(program, Reply::Value(Ok(value)))
+    }
+}
+
+fn packed_route_label(
+    machine: &Machine,
+    outcome: &Outcome<Result<Value, fipe::vm::Fault>>,
+) -> String {
+    let Outcome::Request(fipe::embed::Request::Call { declaration, .. }) =
+        outcome
+    else {
+        panic!("actual call: {outcome:?}")
+    };
+    let program = machine.program().unwrap();
+    let tables = program.tables.borrow();
+    let declared = &tables.declarations[*declaration];
+    assert_eq!(tables.namespaces[declared.namespace], "csv");
+    declared.label.clone()
+}
+
+fn assert_packed_route_alias(actual: &Value, original: &Value) {
+    let (Value::Packed(actual), Value::Packed(original)) = (actual, original)
+    else {
+        panic!("actual checked Packed values")
+    };
+    assert!(Rc::ptr_eq(actual, original));
+    let (Value::Resource(actual), Value::Resource(original)) =
+        (actual.value(), original.value())
+    else {
+        panic!("genuine inner resource aliases")
+    };
+    assert!(Rc::ptr_eq(actual, original));
+}
+
+fn assert_packed_route_types(
+    machine: &Machine,
+    packed: &fipe::value::Packed,
+    alias: &Value,
+) {
+    let tables = machine.program().unwrap().tables.borrow();
+    let fipe::ir::Type::Meaning { index, arguments } = packed.source_type()
+    else {
+        panic!("full Rd source")
+    };
+    assert_eq!(tables.meanings[*index].label, "Rd");
+    assert_eq!(arguments, &[fipe::ir::Type::Unit]);
+    let fipe::ir::Type::Meaning { index, arguments } = packed.target_type()
+    else {
+        panic!("named Key target")
+    };
+    assert_eq!(tables.meanings[*index].label, "Key");
+    assert!(!tables.meanings[*index].resource);
+    assert!(tables.meanings[*index].constructors.is_empty());
+    assert!(arguments.is_empty());
+    let (Value::Resource(inner), Value::Resource(original)) =
+        (packed.value(), alias)
+    else {
+        panic!("genuine inner alias")
+    };
+    assert!(Rc::ptr_eq(inner, original));
+}
+
+fn assert_packed_route_destination(program: &fipe::mir::Program) {
+    let tables = program.tables.borrow();
+    let mut found = 0;
+    for body in &program.bodies {
+        for block in &body.blocks {
+            let fipe::mir::Terminator::Call {
+                callee: fipe::mir::Callee::Host(declaration),
+                dest,
+                ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            if tables.declarations[*declaration].label != "echo" {
+                continue;
+            }
+            let fipe::ir::Type::Meaning { index, arguments } =
+                &body.locals[*dest].ty
+            else {
+                panic!("actual named echo destination")
+            };
+            assert_eq!(tables.meanings[*index].label, "Key");
+            assert!(!tables.meanings[*index].resource);
+            assert!(tables.meanings[*index].constructors.is_empty());
+            assert!(arguments.is_empty());
+            found += 1;
+        }
+    }
+    assert_eq!(found, 1);
+}
+
+fn packed_route_echo(program: &fipe::mir::Program, stepped: bool) -> Value {
+    assert_packed_route_destination(program);
+    let mut machine = Machine::new(None);
+    let outcome = if stepped {
+        machine.begin(program);
+        packed_route_stop(&mut machine)
+    } else {
+        machine.run(program)
+    };
+    assert_eq!(packed_route_label(&machine, &outcome), "open");
+    let alias = ResourceDomain::new().issue(
+        &machine.pending_resource_type().unwrap(),
+        Rc::from(&b"packed-route-entry"[..]),
+    );
+    let outcome =
+        packed_route_reply(&mut machine, program, alias.clone(), stepped);
+    assert_eq!(packed_route_label(&machine, &outcome), "echo");
+    let Outcome::Request(fipe::embed::Request::Call { arguments, .. }) =
+        outcome
+    else {
+        unreachable!()
+    };
+    let [value @ Value::Packed(packed)] = arguments.as_slice() else {
+        panic!("actual checker-produced Packed echo operand")
+    };
+    assert_packed_route_types(&machine, packed, &alias);
+    assert!(machine.pending_resource_type().is_err());
+    let outcome =
+        packed_route_reply(&mut machine, program, value.clone(), stepped);
+    let Outcome::Done(Ok(returned)) = outcome else {
+        panic!("echo: {outcome:?}")
+    };
+    assert_packed_route_alias(&returned, value);
+    returned
+}
+
+fn packed_route_consumer(
+    session: &mut fipe::session::Session,
+) -> fipe::mir::Program {
+    let outcome = session.line(PACKED_ROUTE_INPUT);
+    let outcome = match outcome {
+        Outcome::Request(fipe::embed::Request::File { stem }) => {
+            assert_eq!(stem, "boot");
+            session
+                .reply(Reply::File(Some("use csv\npub start=csv.tick".into())))
+        }
+        done => done,
+    };
+    let Outcome::Done(report) = outcome else {
+        panic!("checked input consumer")
+    };
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    let program = compile::compile(report.unit.as_ref().unwrap());
+    assert!(!program.inits.is_empty(), "real module-init sentinel");
+    let fipe::ir::Type::Meaning { index, arguments } =
+        fipe::vm::input_spot(&program).unwrap()
+    else {
+        panic!("actual named Key input")
+    };
+    assert_eq!(program.tables.borrow().meanings[index].label, "Key");
+    assert!(arguments.is_empty());
+    program
+}
+
+fn packed_route_context() -> (
+    fipe::session::Session,
+    fipe::mir::Program,
+    fipe::mir::Program,
+) {
+    let mut host = Declarations::new();
+    host.module("csv", PACKED_ROUTE_HEADER).unwrap();
+    let mut session = fipe::session::Session::new(host);
+    let producer = session_program(&mut session, PACKED_ROUTE_SOURCE);
+    let consumer = packed_route_consumer(&mut session);
+    assert!(Rc::ptr_eq(&producer.tables, &consumer.tables));
+    (session, producer, consumer)
+}
+
+fn packed_route_input(
+    machine: &mut Machine,
+    program: &fipe::mir::Program,
+    value: &Value,
+    stepped: bool,
+) -> Outcome<Result<Value, fipe::vm::Fault>> {
+    if stepped {
+        machine.begin_with_input(program, value.clone()).unwrap();
+        packed_route_stop(machine)
+    } else {
+        machine.run_with_input(program, value.clone()).unwrap()
+    }
+}
+
+#[test]
+fn resource_named_packed_stepped_echo_preserves_both_aliases() {
+    let program = program(PACKED_ROUTE_HEADER, PACKED_ROUTE_SOURCE);
+    let value = packed_route_echo(&program, true);
+    assert!(matches!(value, Value::Packed(_)));
+}
+
+#[test]
+fn resource_named_packed_direct_and_stepped_input_precedes_real_init() {
+    let (_session, producer, consumer) = packed_route_context();
+    let value = packed_route_echo(&producer, false);
+    for stepped in [false, true] {
+        let mut machine = Machine::new(None);
+        let outcome =
+            packed_route_input(&mut machine, &consumer, &value, stepped);
+        assert_eq!(packed_route_label(&machine, &outcome), "tick");
+        let Outcome::Request(fipe::embed::Request::Call { arguments, .. }) =
+            outcome
+        else {
+            unreachable!()
+        };
+        assert!(arguments.is_empty());
+        let outcome =
+            packed_route_reply(&mut machine, &consumer, Value::Int(1), stepped);
+        let Outcome::Done(Ok(returned)) = outcome else {
+            panic!("input: {outcome:?}")
+        };
+        assert_packed_route_alias(&returned, &value);
+    }
+}
+
+#[test]
+fn resource_named_packed_forked_input_refuses_before_real_init() {
+    for populated in [false, true] {
+        let (session, producer, _consumer) = packed_route_context();
+        let mut fork = (!populated).then(|| session.clone());
+        let value = packed_route_echo(&producer, false);
+        if populated {
+            fork = Some(session.clone());
+        }
+        let forked = packed_route_consumer(fork.as_mut().unwrap());
+        assert!(!Rc::ptr_eq(&producer.tables, &forked.tables));
+        for stepped in [false, true] {
+            let original = value.clone();
+            let mut machine = Machine::new(None);
+            let outcome =
+                packed_route_input(&mut machine, &forked, &value, stepped);
+            let Outcome::Done(Err(fault)) = outcome else {
+                panic!("fork must refuse before init/effects: {outcome:?}")
+            };
+            assert!(
+                matches!(fault.reason, fipe::value::Reason::Host(_)),
+                "{fault:?}"
+            );
+            assert_packed_route_alias(&value, &original);
+        }
+    }
+}
