@@ -141,3 +141,18 @@ prerelease builds ignored them. Launch settings belong in DAP requests. With no
 arguments, stdio remains protocol-only and EOF retains its successful exit.
 
 Resource values display as `<resource>` without expandable payloads. Recorded text cannot reconstruct a resource; ordinary data replay remains available.
+
+
+## Header and body limits
+
+Headers are limited to 8192 bytes per line and 32768 bytes per header section,
+including LF/CRLF terminators and the empty separator. Inter-frame blank lines
+also count toward the section limit. Exactly-at-limit headers are accepted; an
+over-limit header ends input with an `InvalidData` error, without reading its
+body or trying to find a later frame. These are Fipe limits, not protocol-standard
+limits. The adapter reports the framing error on stderr and exits 1. Other reader or writer I/O errors also fail the process; ordinary EOF and disconnect remain successful.
+
+The existing body limit is 16 MiB; oversized-body handling and malformed-JSON
+recovery remain distinct from fatal header overflow. Byte limits do not impose a
+wall-clock deadline on a peer that stops sending. External supervisors own process
+deadlines and cleanup. No general arbitrary-stream resynchronization is promised.

@@ -334,3 +334,107 @@ fn valid_override_replaces_bad_options_and_base_errors_precede_interfaces() {
         "{completion}"
     );
 }
+
+// File-backed output cannot block the child while its input is being rejected.
+struct HeaderChild(std::process::Child);
+impl Drop for HeaderChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+fn header_process(
+    input: Vec<u8>,
+    case: usize,
+) -> (std::process::ExitStatus, Vec<u8>, String) {
+    use std::{
+        fs,
+        io::Write as _,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("lsp-headers-{}-{case}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    let stdout = directory.join("stdout");
+    let stderr = directory.join("stderr");
+    let mut child = HeaderChild(
+        Command::new(env!("CARGO_BIN_EXE_fipe-lsp"))
+            .stdin(Stdio::piped())
+            .stdout(fs::File::create(&stdout).unwrap())
+            .stderr(fs::File::create(&stderr).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdin = child.0.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            let _ = writer.join().unwrap();
+            panic!(
+                "header child exceeded 10 seconds; output at {}",
+                directory.display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // Reap explicitly even though try_wait has already collected termination.
+    assert_eq!(child.0.wait().unwrap(), status);
+    if let Err(error) = writer.join().unwrap() {
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+        ));
+    }
+    assert!(fs::metadata(&stdout).unwrap().len() <= 65536);
+    assert!(fs::metadata(&stderr).unwrap().len() <= 65536);
+    (
+        status,
+        fs::read(stdout).unwrap(),
+        fs::read_to_string(stderr).unwrap(),
+    )
+}
+
+#[test]
+fn header_limits_end_the_real_server_before_later_requests() {
+    let healthy = framed(&[
+        initialize(),
+        shutdown_and_exit()[0].clone(),
+        shutdown_and_exit()[1].clone(),
+    ]);
+    let (status, output, error) = header_process(healthy, 0);
+    assert_eq!(status.code(), Some(0));
+    assert!(error.is_empty());
+    let mut read = Cursor::new(output);
+    let mut ids = Vec::new();
+    while let Some(message) = transport::read(&mut read).unwrap() {
+        if let Some(id) = message["id"].as_u64() {
+            ids.push(id);
+        }
+    }
+    assert_eq!(ids, [0, 999]);
+    let mut line = vec![b'x'; transport::MAX_HEADER_LINE];
+    line.push(b'\n');
+    let many = b"X: x\n".repeat(transport::MAX_HEADER_BYTES / 5 + 1);
+    for (case, mut input) in [line, many].into_iter().enumerate() {
+        input.extend(framed(&[initialize()]));
+        let (status, output, error) = header_process(input, case + 1);
+        assert_eq!(status.code(), Some(1));
+        assert!(output.is_empty(), "later initialize must not execute");
+        assert_eq!(
+            error,
+            if case == 0 {
+                "fipe-lsp: header line exceeds 8192 bytes\n"
+            } else {
+                "fipe-lsp: headers exceed 32768 bytes\n"
+            }
+        );
+    }
+}

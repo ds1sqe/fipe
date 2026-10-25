@@ -623,3 +623,125 @@ fn scripted_json_escapes_windows_root_paths_without_changing_them() {
     assert_eq!(decoded["program"], format!("{root}/main.fipe"));
     assert_eq!(decoded["outputs"], format!("trace of {root}"));
 }
+
+// File-backed output cannot block the child while its input is being rejected.
+struct HeaderChild(std::process::Child);
+impl Drop for HeaderChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+fn header_process(
+    input: Vec<u8>,
+    case: usize,
+    closed_output: bool,
+) -> (std::process::ExitStatus, Vec<u8>, String) {
+    use std::{
+        fs,
+        io::Write as _,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("dap-headers-{}-{case}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    let stdout = directory.join("stdout");
+    let stderr = directory.join("stderr");
+    let output_file = fs::File::create(&stdout).unwrap();
+    let output = if closed_output {
+        Stdio::piped()
+    } else {
+        Stdio::from(output_file)
+    };
+    let mut child = HeaderChild(
+        Command::new(env!("CARGO_BIN_EXE_fipe-dap"))
+            .stdin(Stdio::piped())
+            .stdout(output)
+            .stderr(fs::File::create(&stderr).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    drop(child.0.stdout.take());
+    let mut stdin = child.0.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            let _ = writer.join().unwrap();
+            panic!(
+                "header child exceeded 10 seconds; output at {}",
+                directory.display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // Reap explicitly even though try_wait has already collected termination.
+    assert_eq!(child.0.wait().unwrap(), status);
+    if let Err(error) = writer.join().unwrap() {
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+        ));
+    }
+    assert!(fs::metadata(&stdout).unwrap().len() <= 65536);
+    assert!(fs::metadata(&stderr).unwrap().len() <= 65536);
+    (
+        status,
+        fs::read(stdout).unwrap(),
+        fs::read_to_string(stderr).unwrap(),
+    )
+}
+
+#[test]
+fn header_limits_end_the_real_adapter_before_later_requests() {
+    let initialize = r#"{"seq":1,"type":"request","command":"initialize"}"#;
+    let disconnect = r#"{"seq":2,"type":"request","command":"disconnect"}"#;
+    let mut healthy = framed(initialize);
+    healthy.extend(framed(disconnect));
+    let (status, output, error) = header_process(healthy, 0, false);
+    assert_eq!(status.code(), Some(0));
+    assert!(error.is_empty());
+    let mut read = std::io::Cursor::new(output);
+    let mut commands = Vec::new();
+    while let Some(Incoming::Message(message)) =
+        protocol::read(&mut read).unwrap()
+    {
+        if message["type"] == "response" {
+            commands.push(message["command"].as_str().unwrap().to_owned());
+        }
+    }
+    assert_eq!(commands, ["initialize", "disconnect"]);
+    let mut line = vec![b'x'; protocol::MAX_HEADER_LINE];
+    line.push(b'\n');
+    let many = b"X: x\n".repeat(protocol::MAX_HEADER_BYTES / 5 + 1);
+    for (case, mut input) in [line, many].into_iter().enumerate() {
+        input.extend(framed(initialize));
+        let (status, output, error) = header_process(input, case + 1, false);
+        assert_eq!(status.code(), Some(1));
+        assert_eq!(
+            error,
+            if case == 0 {
+                "fipe-dap: header line exceeds 8192 bytes\n"
+            } else {
+                "fipe-dap: headers exceed 32768 bytes\n"
+            }
+        );
+        assert!(output.is_empty(), "later initialize must not execute");
+    }
+}
+
+#[test]
+fn a_closed_output_pipe_is_a_failed_adapter() {
+    let input = framed(r#"{"seq":1,"type":"request","command":"initialize"}"#);
+    let (status, output, error) = header_process(input, 3, true);
+    assert_eq!(status.code(), Some(1));
+    assert!(output.is_empty());
+    assert!(error.starts_with("fipe-dap: "), "{error}");
+}

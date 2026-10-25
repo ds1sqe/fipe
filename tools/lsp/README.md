@@ -212,3 +212,18 @@ comment trailing whitespace is trimmed; doc-token trailing spaces are preserved.
 Selected `.fipi` interface buffers remain unavailable for formatting.
 
 Selected offline `.fipi` declarations retain resource classification across valid edits and last-good recovery. Loading metadata does not execute a provider or inspect live resource values.
+
+
+## Header and body limits
+
+Headers are limited to 8192 bytes per line and 32768 bytes per header section,
+including LF/CRLF terminators and the empty separator. Inter-frame blank lines
+also count toward the section limit. Exactly-at-limit headers are accepted; an
+over-limit header ends input with an `InvalidData` error, without reading its
+body or trying to find a later frame. These are Fipe limits, not protocol-standard
+limits. The server reports the framing error on stderr and exits 1.
+
+The existing body limit is 64 MiB; oversized-body handling and malformed-JSON
+recovery remain distinct from fatal header overflow. Byte limits do not impose a
+wall-clock deadline on a peer that stops sending. External supervisors own process
+deadlines and cleanup. No general arbitrary-stream resynchronization is promised.

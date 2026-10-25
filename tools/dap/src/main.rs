@@ -32,18 +32,31 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     }
-    serve();
-    ExitCode::SUCCESS
+    match serve() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("fipe-dap: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
-fn serve() {
+fn serve() -> io::Result<()> {
     let (requests, received) = mpsc::channel();
     thread::spawn(move || {
         let mut input = BufReader::new(io::stdin());
         // A malformed frame is handed on too, so the session answers it
         // and the input goes on; only the end of the input or a failed
         // read ends the reader.
-        while let Ok(Some(incoming)) = protocol::read(&mut input) {
+        loop {
+            let incoming = match protocol::read(&mut input) {
+                Ok(Some(incoming)) => Ok(incoming),
+                Ok(None) => break,
+                Err(error) => {
+                    let _ = requests.send(Err(error));
+                    break;
+                }
+            };
             if requests.send(incoming).is_err() {
                 break;
             }
@@ -54,14 +67,14 @@ fn serve() {
     loop {
         let request = if session.running() {
             match received.try_recv() {
-                Ok(request) => Some(request),
+                Ok(request) => Some(request?),
                 Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => return,
+                Err(TryRecvError::Disconnected) => return Ok(()),
             }
         } else {
             match received.recv() {
-                Ok(request) => Some(request),
-                Err(_) => return,
+                Ok(request) => Some(request?),
+                Err(_) => return Ok(()),
             }
         };
         let control = match &request {
@@ -76,12 +89,10 @@ fn serve() {
             session.advance(SLICE);
         }
         for message in session.out.take() {
-            if protocol::write(&mut output, &message).is_err() {
-                return;
-            }
+            protocol::write(&mut output, &message)?;
         }
         if control == Control::Exit {
-            return;
+            return Ok(());
         }
     }
 }
