@@ -214,6 +214,11 @@ impl Index {
                     origin: home_origin(home, &name.origin),
                     name: name.name.clone(),
                 };
+                // A checked shape is complete even with no constructors.
+                // Keep its first home and generic variable correspondence.
+                if self.store.shapes().contains_key(&key) {
+                    continue;
+                }
                 self.store.insert_shape(key, (home.clone(), shape.clone()));
             }
             let Type::Named { name, arguments } = &shape.ty else {
@@ -806,5 +811,152 @@ mod source_binding_tests {
             index.store.slots()[&(source.home.clone(), site)],
             first.slots[&site]
         );
+    }
+}
+
+#[cfg(test)]
+mod shape_completion_tests {
+    use super::*;
+    use crate::{decl::Declarations, embed::Outcome, lex::lex, parse::parse};
+
+    fn declarations() -> Declarations {
+        let mut declarations = Declarations::new();
+        declarations
+            .module("layout", "pub type Empty<T>\npub value: Empty<Integer>")
+            .unwrap();
+        declarations
+    }
+
+    fn checked_shapes() -> (Vec<Shape>, TypeName) {
+        let declarations = declarations();
+        let module = parse(lex("use layout\nlayout.value")).unwrap();
+        let resolved =
+            crate::resolve::resolve(&module, &declarations, &[]).unwrap();
+        let typed = crate::infer::infer(&module, &resolved, &declarations, &[])
+            .unwrap();
+        let key = typed
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                let Type::Named { name, .. } = &shape.ty else {
+                    return None;
+                };
+                (name.origin == Origin::Host("layout".into())
+                    && name.name == "Empty")
+                    .then_some(name.clone())
+            })
+            .expect("actual complete checked Empty layout");
+        (typed.shapes, key)
+    }
+
+    #[test]
+    fn completed_constructorless_shape_preserves_first_home_and_variables() {
+        let (first, key) = checked_shapes();
+        let (second, second_key) = checked_shapes();
+        assert_eq!(key, second_key);
+        let mut index = Index::default();
+        let first_home = Origin::Line(0);
+        index.shapes(&first_home, &first);
+        let before = index.tables().meanings.clone();
+        let stored = index.store.shapes().get(&key).unwrap().clone();
+        assert_eq!(stored.0, first_home);
+        let meaning = index.meanings[&key];
+        assert!(before[meaning].constructors.is_empty());
+        assert_eq!(before[meaning].parameters.len(), 1);
+        let Type::Named { arguments, .. } = &stored.1.ty else {
+            panic!("checked generic shape");
+        };
+        assert!(matches!(arguments.as_slice(), [Type::Var(_)]));
+        index.shapes(&Origin::Line(1), &second);
+        assert_eq!(index.tables().meanings, before);
+        assert_eq!(index.store.shapes().get(&key), Some(&stored));
+    }
+
+    #[test]
+    fn ordinary_session_repeated_source_keeps_constructorless_layouts() {
+        let mut session = crate::session::Session::new(declarations());
+        let Outcome::Done(first) = session.line("use layout\nlayout.value")
+        else {
+            panic!("no file request");
+        };
+        assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+        let first = first.unit.unwrap();
+        let tables = Rc::clone(&first.tables);
+        let before = tables.borrow().meanings.clone();
+        assert!(before.iter().any(|meaning| {
+            meaning.label == "Empty"
+                && meaning.parameters.len() == 1
+                && meaning.constructors.is_empty()
+        }));
+        let Outcome::Done(second) = session.line("layout.value") else {
+            panic!("no file request");
+        };
+        assert!(second.diagnostics.is_empty(), "{:?}", second.diagnostics);
+        assert!(second.accepted.is_some());
+        assert!(Rc::ptr_eq(&tables, &second.unit.unwrap().tables));
+        assert_eq!(tables.borrow().meanings, before);
+    }
+
+    #[test]
+    fn meaning_only_forward_placeholder_receives_its_first_complete_shape() {
+        let (shapes, key) = checked_shapes();
+        let mut index = Index::default();
+        let home = Origin::Line(0);
+        let meaning = index.meaning(&home, &key);
+        assert!(!index.store.shapes().contains_key(&key));
+        assert!(index.tables().meanings[meaning].parameters.is_empty());
+        let before = index.tables().clone();
+        for (line, keep_then_undo) in [(0, false), (1, true)] {
+            index.begin();
+            index.shapes(&Origin::Line(line), &shapes);
+            assert_eq!(index.meanings[&key], meaning);
+            assert_ne!(
+                index.tables().meanings[meaning],
+                before.meanings[meaning]
+            );
+            assert_eq!(index.tables().meanings[meaning].parameters.len(), 1);
+            assert!(index.store.shapes().contains_key(&key));
+            if keep_then_undo {
+                let journal = index.commit();
+                index.withdraw(journal);
+            } else {
+                index.rollback();
+            }
+            assert_eq!(index.meanings[&key], meaning);
+            assert!(!index.store.shapes().contains_key(&key));
+            assert_eq!(*index.tables(), before);
+        }
+        index.shapes(&home, &shapes);
+        assert_eq!(index.meanings[&key], meaning);
+        assert_eq!(index.tables().meanings[meaning].parameters.len(), 1);
+        assert!(index.tables().meanings[meaning].constructors.is_empty());
+        assert_eq!(index.store.shapes()[&key].0, home);
+    }
+
+    #[test]
+    fn rollback_and_withdraw_remove_shape_completion_before_refill() {
+        let (shapes, key) = checked_shapes();
+        let mut index = Index::default();
+        let before = index.tables().clone();
+        for (line, keep_then_undo) in [(0, false), (1, true)] {
+            index.begin();
+            index.shapes(&Origin::Line(line), &shapes);
+            assert!(index.store.shapes().contains_key(&key));
+            let meaning = index.meanings[&key];
+            assert_eq!(index.tables().meanings[meaning].parameters.len(), 1);
+            if keep_then_undo {
+                let journal = index.commit();
+                index.withdraw(journal);
+            } else {
+                index.rollback();
+            }
+            assert!(!index.store.shapes().contains_key(&key));
+            assert!(!index.meanings.contains_key(&key));
+            assert_eq!(*index.tables(), before);
+        }
+        index.shapes(&Origin::Line(2), &shapes);
+        assert_eq!(index.store.shapes()[&key].0, Origin::Line(2));
+        let meaning = index.meanings[&key];
+        assert_eq!(index.tables().meanings[meaning].parameters.len(), 1);
     }
 }

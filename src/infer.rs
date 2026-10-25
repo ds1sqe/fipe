@@ -2415,3 +2415,227 @@ impl<'a> Infer<'a> {
         }
     }
 }
+
+// Proof-only preparation; a live binding adoption caller is not implemented.
+#[cfg(test)]
+pub(crate) mod publication_proof {
+    use super::*;
+    use crate::ast::{ImplMember, TypeKind};
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Refusal {
+        Owner,
+        Member,
+        NonConcrete(Span),
+    }
+
+    #[derive(Debug)]
+    pub enum Failure {
+        Scope(Refusal),
+        Resolve(Vec<crate::resolve::Error>),
+        Type(Vec<Error>),
+    }
+
+    pub struct Checked {
+        pub(crate) origin: Origin,
+        pub(crate) owner: Type,
+        pub(crate) shapes: Vec<crate::typed::Shape>,
+        pub(crate) members: Vec<(Span, Type)>,
+    }
+
+    fn owner(module: &Module) -> Result<&Name, Failure> {
+        let owners: Vec<_> = module
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let Entry::Item(item) = entry else {
+                    return None;
+                };
+                if let ItemKind::Type {
+                    resource: true,
+                    name,
+                    parameters,
+                    base: None,
+                    members: None,
+                    limits,
+                } = &item.kind
+                {
+                    if parameters.is_empty() && limits.is_empty() {
+                        return Some(name);
+                    }
+                }
+                None
+            })
+            .collect();
+        let [name] = owners.as_slice() else {
+            return Err(Failure::Scope(Refusal::Owner));
+        };
+        if module
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(entry,
+                    Entry::Item(item)
+                        if matches!(item.kind, ItemKind::Type { .. })
+                )
+            })
+            .count()
+            != 1
+        {
+            return Err(Failure::Scope(Refusal::Owner));
+        }
+        Ok(name)
+    }
+
+    fn members<'a>(
+        module: &'a Module,
+        owner: &Name,
+    ) -> Result<Vec<&'a Name>, Failure> {
+        let mut names = Vec::new();
+        for entry in &module.entries {
+            let Entry::Item(item) = entry else {
+                return Err(Failure::Scope(Refusal::Member));
+            };
+            if matches!(item.kind, ItemKind::Type { .. }) {
+                continue;
+            }
+            let ItemKind::Impl {
+                target,
+                claim: None,
+                members,
+            } = &item.kind
+            else {
+                return Err(Failure::Scope(Refusal::Member));
+            };
+            if !matches!(&module.ty(*target).unwrap().kind,
+                TypeKind::Named { name, arguments }
+                    if name.segments == owner.segments && arguments.is_empty())
+            {
+                return Err(Failure::Scope(Refusal::Member));
+            }
+            for member in members {
+                let ImplMember::Named {
+                    name,
+                    annotation: Some(ty),
+                    value: None,
+                    ..
+                } = member
+                else {
+                    return Err(Failure::Scope(Refusal::Member));
+                };
+                let TypeKind::Function { parameter, result } =
+                    &module.ty(*ty).unwrap().kind
+                else {
+                    return Err(Failure::Scope(Refusal::Member));
+                };
+                let TypeKind::Labeled {
+                    name: receiver,
+                    ty,
+                    default: None,
+                } = &module.ty(*parameter).unwrap().kind
+                else {
+                    return Err(Failure::Scope(Refusal::Member));
+                };
+                if receiver.segments.as_slice() != ["self"]
+                    || !matches!(&module.ty(*ty).unwrap().kind,
+                        TypeKind::Named { name, arguments }
+                            if name.segments.as_slice() == ["Self"]
+                                && arguments.is_empty())
+                    || !matches!(&module.ty(*result).unwrap().kind,
+                        TypeKind::Named { arguments, .. }
+                            if arguments.is_empty())
+                {
+                    return Err(Failure::Scope(Refusal::Member));
+                }
+                names.push(name);
+            }
+        }
+        if names.is_empty() {
+            return Err(Failure::Scope(Refusal::Member));
+        }
+        Ok(names)
+    }
+
+    fn closed_getter(callee: &Callee, owner: &Type) -> bool {
+        callee.parameters.is_empty()
+            && callee.self_slot == Some(0)
+            && callee
+                .spots
+                .as_ref()
+                .is_some_and(|spots| spots.len() == 1 && spots[0].ty == *owner)
+            && matches!(&callee.ty,
+                Type::Named { name, arguments }
+                    if name.origin == Origin::Prelude
+                        && matches!(name.name.as_str(), "String" | "Integer")
+                        && arguments.is_empty())
+    }
+
+    pub fn check(
+        declarations: &Declarations,
+        namespace: &str,
+        cache: &files::FileCache,
+    ) -> Result<Checked, Failure> {
+        let namespace = declarations.get_module(namespace).unwrap();
+        let module = &namespace.module;
+        let name = owner(module)?;
+        let members = members(module, name)?;
+        let origin = Origin::Host(namespace.name.clone());
+        let (resolved, errors) = crate::resolve::resolve_declared_source(
+            module,
+            declarations,
+            &origin,
+        );
+        let errors: Vec<_> = errors.into_iter().flat_map(|(_, e)| e).collect();
+        if !errors.is_empty() {
+            return Err(Failure::Resolve(errors));
+        }
+        let mut infer =
+            Infer::new(module, &resolved, declarations, &[], None, &[], cache);
+        infer.declared_home = Some(origin.clone());
+        infer.declare();
+        infer.declare_source_bindings();
+        let owner = Type::named(origin.clone(), &last(name), Vec::new());
+        let mut checked = Vec::new();
+        let mut refused = None;
+        for member in members {
+            let candidates = infer.publication_members(
+                &origin,
+                &last(name),
+                &owner,
+                &last(member),
+                member.span,
+            );
+            let [callee] = candidates.as_slice() else {
+                return Err(Failure::Scope(Refusal::Member));
+            };
+            if !matches!(&callee.selected,
+                Some(crate::typed::Selected::Declared { origin: home, site })
+                    if home == &origin && *site == member.span)
+            {
+                return Err(Failure::Scope(Refusal::Member));
+            }
+            if !closed_getter(callee, &owner) {
+                refused = Some(member.span);
+            }
+            let whole = callee.whole();
+            infer
+                .state
+                .callee_types
+                .insert((member.span.start, member.span.end), whole.clone());
+            checked.push((member.span, whole));
+        }
+        let (typed, errors) = infer.finish();
+        if !errors.is_empty() {
+            return Err(Failure::Type(errors));
+        }
+        if let Some(site) = refused {
+            return Err(Failure::Scope(Refusal::NonConcrete(site)));
+        }
+        Ok(Checked {
+            origin,
+            owner,
+            shapes: typed.shapes,
+            members: checked,
+        })
+    }
+}

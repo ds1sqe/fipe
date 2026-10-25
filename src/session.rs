@@ -799,3 +799,577 @@ fn report_warnings(
             .collect()
     })
 }
+
+#[cfg(test)]
+mod publication_materialization_proof {
+    use super::*;
+    use crate::{
+        infer::publication_proof::{self, Checked, Failure, Refusal},
+        value::{
+            resource::{ResourceDomain, ResourceType},
+            Value,
+        },
+        vm::Machine,
+    };
+    use alloc::{
+        collections::{BTreeMap, BTreeSet},
+        format,
+        rc::Rc,
+    };
+
+    const STRING_VIEW: &str =
+        "pub type resource View\nimpl View {\n name: (self: Self) -> String\n}";
+    const INTEGER_VIEW: &str = "pub type resource View\nimpl View {\n name: (self: Self) -> Integer\n}";
+    const UNMARKED: &str =
+        "pub type View\nimpl View { name: (self: Self) -> String }";
+    const GENERIC: &str = "pub type resource View<T>\nimpl View<T> { name: (self: Self) -> String }";
+    const INVALID: &str = "pub type resource View\nimpl View { name: (self: Self) -> MissingType }";
+
+    #[derive(Debug)]
+    enum StageError {
+        Duplicate,
+        Declaration(Vec<crate::decl::Error>),
+        Checked(Failure),
+    }
+
+    struct Candidate {
+        declarations: Declarations,
+        cache: infer::files::FileCache,
+        checked: Checked,
+    }
+
+    struct Receipt {
+        journal: crate::check::lower::Journal,
+        declarations: Declarations,
+        cache: infer::files::FileCache,
+    }
+
+    struct Fixture {
+        session: Session,
+        machine: Machine,
+        tables: Rc<core::cell::RefCell<crate::ir::Tables>>,
+        original: Value,
+        witness: ResourceType,
+    }
+
+    type CachedExpressions =
+        BTreeMap<(resolve::Origin, usize), crate::typed::DeclaredExpression>;
+
+    struct Snapshot {
+        source: String,
+        lines: usize,
+        frame: String,
+        serial: u64,
+        last: String,
+        tables: crate::ir::Tables,
+        globals: Vec<(usize, Value)>,
+        origins: BTreeSet<resolve::Origin>,
+        expressions: CachedExpressions,
+        values: Vec<CacheEntry>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum CacheValue {
+        Checking,
+        Failed,
+        Typed(crate::types::Scheme),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CacheEntry {
+        origin: resolve::Origin,
+        name: String,
+        value: CacheValue,
+    }
+
+    fn cache_values(
+        session: &Session,
+        origins: &BTreeSet<resolve::Origin>,
+    ) -> Vec<CacheEntry> {
+        session
+            .declared
+            .values
+            .borrow()
+            .iter()
+            .filter(|((origin, _), _)| origins.contains(origin))
+            .map(|((origin, name), value)| {
+                let value = match value {
+                    infer::files::DeclaredValue::Checking => {
+                        CacheValue::Checking
+                    }
+                    infer::files::DeclaredValue::Failed => CacheValue::Failed,
+                    infer::files::DeclaredValue::Typed(scheme) => {
+                        CacheValue::Typed(scheme.clone())
+                    }
+                };
+                CacheEntry {
+                    origin: origin.clone(),
+                    name: name.clone(),
+                    value,
+                }
+            })
+            .collect()
+    }
+
+    fn cache_expressions(
+        session: &Session,
+        origins: &BTreeSet<resolve::Origin>,
+    ) -> CachedExpressions {
+        session
+            .declared
+            .expressions
+            .borrow()
+            .iter()
+            .filter(|((origin, _), _)| origins.contains(origin))
+            .map(|(key, expression)| (key.clone(), expression.clone()))
+            .collect()
+    }
+
+    fn fixture() -> Fixture {
+        let mut declarations = Declarations::new();
+        declarations
+            .module(
+                "base",
+                "pub type resource BaseJson\npub load: () -> BaseJson",
+            )
+            .unwrap();
+        declarations
+            .module("old", "pub identity: Integer -> Integer = value => value")
+            .unwrap();
+        let mut session = Session::new(declarations);
+        let Outcome::Done(report) =
+            session.line("use base old\nj = base.load ()\nold.identity 7")
+        else {
+            panic!("no file requests");
+        };
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.accepted.is_some());
+        let unit = report.unit.unwrap();
+        let tables = Rc::clone(&unit.tables);
+        assert!(tables.borrow().has_resources);
+        let program = crate::compile::compile(&unit);
+        let mut machine = Machine::new(Some(100_000));
+        let Outcome::Request(Request::Call {
+            declaration,
+            arguments,
+            ..
+        }) = machine.run(&program)
+        else {
+            panic!("actual load");
+        };
+        assert_eq!(arguments, [Value::Unit]);
+        {
+            let tables = machine.program().unwrap().tables.borrow();
+            let called = &tables.declarations[declaration];
+            assert_eq!(called.label, "load");
+            assert_eq!(tables.namespaces[called.namespace], "base");
+        }
+        let witness = machine.pending_resource_type().unwrap();
+        let original = ResourceDomain::new()
+            .issue(&witness, Rc::from(&b"publication-base-entry"[..]));
+        assert_eq!(
+            machine.reply(&program, Reply::Value(Ok(original.clone()))),
+            Outcome::Done(Ok(Value::Int(7))),
+        );
+        assert!(machine.globals().any(|(_, value)| value == &original));
+        let old = resolve::Origin::Host("old".into());
+        assert!(session.declared.expressions.borrow().iter().any(
+            |((origin, _), expression)| {
+                origin == &old && expression.origin == old
+            },
+        ));
+        assert!(matches!(
+            session
+                .declared
+                .values
+                .borrow()
+                .get(&(old, "identity".into())),
+            Some(infer::files::DeclaredValue::Typed(_)),
+        ));
+        Fixture {
+            session,
+            machine,
+            tables,
+            original,
+            witness,
+        }
+    }
+
+    fn snapshot(fixture: &Fixture) -> Snapshot {
+        let session = &fixture.session;
+        let origins = ["old", "base"]
+            .into_iter()
+            .map(|name| resolve::Origin::Host(name.into()))
+            .collect();
+        Snapshot {
+            source: session.source.clone(),
+            lines: session.lines.len(),
+            frame: format!("{:?}", session.frame),
+            serial: session.accepted,
+            last: format!("{:?}", session.last),
+            tables: fixture.tables.borrow().clone(),
+            globals: fixture
+                .machine
+                .globals()
+                .map(|(index, value)| (index, value.clone()))
+                .collect(),
+            expressions: cache_expressions(session, &origins),
+            values: cache_values(session, &origins),
+            origins,
+        }
+    }
+
+    fn original_unchanged(fixture: &Fixture, before: &Snapshot) {
+        let session = &fixture.session;
+        assert_eq!(
+            cache_expressions(session, &before.origins),
+            before.expressions
+        );
+        assert_eq!(cache_values(session, &before.origins), before.values);
+        assert_eq!(session.source, before.source);
+        assert_eq!(session.lines.len(), before.lines);
+        assert_eq!(format!("{:?}", session.frame), before.frame);
+        assert_eq!(session.accepted, before.serial);
+        assert_eq!(format!("{:?}", session.last), before.last);
+        let index = session.index.as_ref().unwrap();
+        assert!(core::ptr::eq(
+            &raw const *index.tables(),
+            &raw const *fixture.tables.borrow(),
+        ));
+        assert!(fixture.tables.borrow().has_resources);
+        let globals: Vec<_> = fixture
+            .machine
+            .globals()
+            .map(|(index, value)| (index, value.clone()))
+            .collect();
+        assert_eq!(globals, before.globals);
+        let Value::Resource(original) = &fixture.original else {
+            panic!("actual original resource");
+        };
+        let (_, stored) = fixture
+            .machine
+            .globals()
+            .find(|(_, value)| *value == &fixture.original)
+            .unwrap();
+        let Value::Resource(stored) = stored else {
+            panic!("resource global");
+        };
+        assert!(Rc::ptr_eq(original, stored));
+        assert_eq!(original.resource_type(), &fixture.witness);
+        assert_eq!(
+            ResourceType::registered(
+                &fixture.tables.borrow(),
+                "base",
+                "BaseJson",
+            )
+            .unwrap(),
+            fixture.witness,
+        );
+        let tables = fixture.tables.borrow();
+        let old = &before.tables;
+        assert_eq!(tables.meanings[..old.meanings.len()], old.meanings);
+        assert_eq!(
+            tables.definitions[..old.definitions.len()],
+            old.definitions,
+        );
+        assert_eq!(
+            tables.declarations[..old.declarations.len()],
+            old.declarations,
+        );
+    }
+
+    fn prepare(
+        session: &Session,
+        name: &str,
+        source: &str,
+    ) -> Result<Candidate, StageError> {
+        if session.declarations.get_module(name).is_some() {
+            return Err(StageError::Duplicate);
+        }
+        let mut declarations = session.declarations.clone();
+        declarations
+            .module(name, source)
+            .map_err(StageError::Declaration)?;
+        let cache = session.declared.inherit();
+        let checked = publication_proof::check(&declarations, name, &cache)
+            .map_err(StageError::Checked)?;
+        Ok(Candidate {
+            declarations,
+            cache,
+            checked,
+        })
+    }
+
+    fn materialize(session: &mut Session, checked: &Checked) -> ResourceType {
+        let index = session.index.as_mut().unwrap();
+        assert!(index.tables().has_resources);
+        index.begin();
+        index.shapes(&checked.origin, &checked.shapes);
+        let ty = index.ty(&checked.origin, &checked.owner);
+        let crate::ir::Type::Meaning {
+            index: meaning,
+            arguments,
+        } = ty
+        else {
+            panic!("checked nominal publication");
+        };
+        assert!(arguments.is_empty());
+        let tables = index.tables();
+        let actual = &tables.meanings[meaning];
+        assert!(actual.resource && actual.parameters.is_empty());
+        assert_eq!(actual.label, "View");
+        let resolve::Origin::Host(name) = &checked.origin else {
+            panic!("immutable Host origin");
+        };
+        assert_eq!(tables.namespaces[actual.namespace], *name);
+        ResourceType::registered(&tables, name, "View").unwrap()
+    }
+
+    fn contract(candidate: &Candidate, expected: &str) {
+        let [(site, whole)] = candidate.checked.members.as_slice() else {
+            panic!("one actual getter");
+        };
+        let resolve::Origin::Host(name) = &candidate.checked.origin else {
+            panic!("Host publication");
+        };
+        let namespace = candidate.declarations.get_module(name).unwrap();
+        assert_eq!(namespace.module.span.start, 0);
+        assert!(site.start < site.end && site.end <= namespace.module.span.end);
+        let crate::types::Type::Function { parameter, result } = whole else {
+            panic!("ordinary checked getter");
+        };
+        assert_eq!(**parameter, candidate.checked.owner);
+        assert!(matches!(&**result,
+            crate::types::Type::Named { name, arguments }
+            if name.origin == resolve::Origin::Prelude
+                && name.name == expected && arguments.is_empty()));
+    }
+
+    fn commit(session: &mut Session, candidate: Candidate) -> Receipt {
+        let journal = session.index.as_mut().unwrap().commit();
+        Receipt {
+            journal,
+            declarations: core::mem::replace(
+                &mut session.declarations,
+                candidate.declarations,
+            ),
+            cache: core::mem::replace(&mut session.declared, candidate.cache),
+        }
+    }
+
+    fn undo(session: &mut Session, receipt: Receipt) {
+        session.index.as_mut().unwrap().withdraw(receipt.journal);
+        session.declarations = receipt.declarations;
+        session.declared = receipt.cache;
+    }
+
+    fn absent(fixture: &Fixture, name: &str) {
+        assert!(matches!(
+            ResourceType::registered(&fixture.tables.borrow(), name, "View",),
+            Err(crate::value::resource::ResourceError::NotFound)
+        ));
+        assert!(fixture.session.declarations.get_module(name).is_none());
+    }
+
+    #[test]
+    fn checked_publication_trial_rolls_back_without_changing_live_load() {
+        let mut fixture = fixture();
+        let before = snapshot(&fixture);
+        let trial =
+            prepare(&fixture.session, "publicationtrial", STRING_VIEW).unwrap();
+        contract(&trial, "String");
+        let _trial_witness = materialize(&mut fixture.session, &trial.checked);
+        original_unchanged(&fixture, &before);
+        fixture.session.index.as_mut().unwrap().rollback();
+        drop(trial);
+        absent(&fixture, "publicationtrial");
+        assert_eq!(*fixture.tables.borrow(), before.tables);
+        assert_eq!(
+            cache_expressions(&fixture.session, &before.origins),
+            before.expressions
+        );
+        assert_eq!(
+            cache_values(&fixture.session, &before.origins),
+            before.values
+        );
+        original_unchanged(&fixture, &before);
+    }
+
+    #[test]
+    fn checked_publication_distinct_views_keep_string_and_integer() {
+        let mut fixture = fixture();
+        let before = snapshot(&fixture);
+        let a = prepare(&fixture.session, "publicationa", STRING_VIEW).unwrap();
+        contract(&a, "String");
+        let witness_a = materialize(&mut fixture.session, &a.checked);
+        let receipt_a = commit(&mut fixture.session, a);
+        original_unchanged(&fixture, &before);
+        let after_a = fixture.tables.borrow().clone();
+        let b =
+            prepare(&fixture.session, "publicationb", INTEGER_VIEW).unwrap();
+        contract(&b, "Integer");
+        let witness_b = materialize(&mut fixture.session, &b.checked);
+        let receipt_b = commit(&mut fixture.session, b);
+        assert_ne!(witness_a, witness_b);
+        assert_eq!(
+            fixture.tables.borrow().meanings[..after_a.meanings.len()],
+            after_a.meanings
+        );
+        assert_eq!(
+            ResourceType::registered(
+                &fixture.tables.borrow(),
+                "publicationa",
+                "View",
+            )
+            .unwrap(),
+            witness_a
+        );
+        original_unchanged(&fixture, &before);
+        assert!(matches!(
+            prepare(&fixture.session, "publicationa", INTEGER_VIEW),
+            Err(StageError::Duplicate),
+        ));
+        assert_eq!(
+            ResourceType::registered(
+                &fixture.tables.borrow(),
+                "publicationa",
+                "View",
+            )
+            .unwrap(),
+            witness_a
+        );
+        assert_eq!(
+            fixture
+                .session
+                .declarations
+                .get_module("publicationa")
+                .unwrap()
+                .module,
+            receipt_b
+                .declarations
+                .get_module("publicationa")
+                .unwrap()
+                .module
+        );
+        original_unchanged(&fixture, &before);
+        undo(&mut fixture.session, receipt_b);
+        original_unchanged(&fixture, &before);
+        absent(&fixture, "publicationb");
+        undo(&mut fixture.session, receipt_a);
+        original_unchanged(&fixture, &before);
+        absent(&fixture, "publicationa");
+        assert_eq!(*fixture.tables.borrow(), before.tables);
+        original_unchanged(&fixture, &before);
+    }
+
+    fn refusal(
+        fixture: &Fixture,
+        name: &str,
+        source: &str,
+        expected: &Refusal,
+    ) {
+        match prepare(&fixture.session, name, source) {
+            Err(StageError::Checked(Failure::Scope(actual))) => {
+                assert_eq!(&actual, expected);
+            }
+            Err(StageError::Declaration(errors)) => {
+                panic!("earlier declaration failure: {errors:?}");
+            }
+            Err(StageError::Checked(Failure::Resolve(errors))) => {
+                panic!("ordinary resolve diagnostics retained: {errors:?}");
+            }
+            Err(StageError::Checked(Failure::Type(errors))) => {
+                panic!("ordinary type diagnostics retained: {errors:?}");
+            }
+            _ => panic!("expected exact bounded publication refusal"),
+        }
+        absent(fixture, name);
+    }
+
+    #[test]
+    fn checked_publication_refusals_and_late_abort_preserve_original_context() {
+        let mut fixture = fixture();
+        let original = snapshot(&fixture);
+        let a = prepare(&fixture.session, "publicationa", STRING_VIEW).unwrap();
+        let witness_a = materialize(&mut fixture.session, &a.checked);
+        let receipt_a = commit(&mut fixture.session, a);
+        original_unchanged(&fixture, &original);
+        let b =
+            prepare(&fixture.session, "publicationb", INTEGER_VIEW).unwrap();
+        let witness_b = materialize(&mut fixture.session, &b.checked);
+        let receipt_b = commit(&mut fixture.session, b);
+        original_unchanged(&fixture, &original);
+        let before = snapshot(&fixture);
+        refusal(&fixture, "publicationunmarked", UNMARKED, &Refusal::Owner);
+        refusal(&fixture, "publicationgeneric", GENERIC, &Refusal::Owner);
+        let mut declarations = fixture.session.declarations.clone();
+        declarations.module("publicationinvalid", INVALID).unwrap();
+        let module = &declarations
+            .get_module("publicationinvalid")
+            .unwrap()
+            .module;
+        let site = module
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Item(crate::ast::Item {
+                    kind: ItemKind::Impl { members, .. },
+                    ..
+                }) => members.iter().find_map(|member| match member {
+                    crate::ast::ImplMember::Named { name, .. } => {
+                        Some(name.span)
+                    }
+                    crate::ast::ImplMember::Constructor { .. } => None,
+                }),
+                _ => None,
+            })
+            .unwrap();
+        refusal(
+            &fixture,
+            "publicationinvalid",
+            INVALID,
+            &Refusal::NonConcrete(site),
+        );
+        let candidate =
+            prepare(&fixture.session, "publicationrollback", STRING_VIEW)
+                .unwrap();
+        let _private_witness =
+            materialize(&mut fixture.session, &candidate.checked);
+        // Abort at the real staged boundary, before any catalog/cache commit.
+        fixture.session.index.as_mut().unwrap().rollback();
+        drop(candidate);
+        absent(&fixture, "publicationrollback");
+        assert_eq!(*fixture.tables.borrow(), before.tables);
+        assert_eq!(
+            cache_expressions(&fixture.session, &before.origins),
+            before.expressions
+        );
+        assert_eq!(
+            cache_values(&fixture.session, &before.origins),
+            before.values
+        );
+        original_unchanged(&fixture, &before);
+        assert_eq!(
+            ResourceType::registered(
+                &fixture.tables.borrow(),
+                "publicationa",
+                "View",
+            )
+            .unwrap(),
+            witness_a
+        );
+        assert_eq!(
+            ResourceType::registered(
+                &fixture.tables.borrow(),
+                "publicationb",
+                "View",
+            )
+            .unwrap(),
+            witness_b
+        );
+        undo(&mut fixture.session, receipt_b);
+        original_unchanged(&fixture, &original);
+        undo(&mut fixture.session, receipt_a);
+        original_unchanged(&fixture, &original);
+    }
+}

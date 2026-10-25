@@ -1632,3 +1632,17 @@ fn restore<T>(
         map.remove(&site);
     }
 }
+
+#[cfg(test)]
+impl Infer<'_> {
+    pub(super) fn publication_members(
+        &mut self,
+        origin: &Origin,
+        owner: &str,
+        named: &Type,
+        member: &str,
+        span: Span,
+    ) -> Vec<Callee> {
+        self.supplied_members(origin, owner, named, member, span)
+    }
+}

@@ -3881,3 +3881,488 @@ fn declared_reply_witnesses_survive_partial_and_returned_functions() {
         }
     }
 }
+
+// Historical generic written-member programs, preserved without rewriting.
+const HOST41_LIBRARY: &str = "use effects\npub type Probe where self.inspect: Integer\npub type Box<T>: Probe { pub value: T }\nimpl Box<T>: Probe { inspect: Self -> Integer = self => effects.tick }\npub factory: Box<Integer> -> Integer = value => value.inspect";
+const HOST41_DECLARED: &str = "pub type Probe where self.inspect: Integer\npub type Box<T>: Probe { pub value: T }\nimpl Box<T>: Probe { inspect: (self: Self) -> Integer }";
+const HOST41_DIRECT: &str =
+    "use probe\nx: probe.Box<Integer> = probe.Box 1\nx.inspect";
+const HOST41_PACKED: &str = "use probe\ninspect: probe.Probe -> Integer = value => value.inspect\nx: probe.Probe = probe.Box 1\ninspect x";
+const HOST41_FACTORY: &str = "use probe\nprobe.factory (probe.Box 1)";
+
+#[derive(Clone, Copy, Debug)]
+enum Host41Origin {
+    Host,
+    File,
+    Local,
+    Declared,
+}
+fn host41_program(origin: Host41Origin, source: &str) -> fipe::mir::Program {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("effects", "pub tick: Integer").unwrap();
+    let files = match origin {
+        Host41Origin::Host => {
+            declarations.module("probe", HOST41_LIBRARY).unwrap();
+            Vec::new()
+        }
+        Host41Origin::Declared => {
+            declarations.module("probe", HOST41_DECLARED).unwrap();
+            Vec::new()
+        }
+        Host41Origin::File => vec![(
+            "probe".into(),
+            fipe::parse::parse(fipe::lex::lex(HOST41_LIBRARY)).unwrap(),
+        )],
+        Host41Origin::Local => Vec::new(),
+    };
+    let module = fipe::parse::parse(fipe::lex::lex(source)).unwrap();
+    let unit = fipe::check::check(
+        &module,
+        &declarations,
+        &files,
+        fipe::check::Options::default(),
+    )
+    .unwrap_or_else(|errors| panic!("{origin:?}: {errors:?}"));
+    fipe::compile::compile(&unit)
+}
+#[derive(Clone, Copy, Debug)]
+enum Host41Route {
+    Direct,
+    Packed,
+    Factory,
+}
+fn host41_definition(
+    program: &fipe::mir::Program,
+    namespace: &str,
+    label: &str,
+    origin: Host41Origin,
+    route: Host41Route,
+) -> (usize, usize) {
+    let tables = program.tables.borrow();
+    let definitions: Vec<_> = tables
+        .definitions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, definition)| {
+            (definition.label == label
+                && tables.namespaces[definition.namespace] == namespace)
+                .then_some(index)
+        })
+        .collect();
+    let [index] = definitions.as_slice() else {
+        panic!("{origin:?}/{route:?}: exact {namespace}.{label} definition");
+    };
+    let body = program.definitions[*index].unwrap_or_else(|| {
+        panic!("{origin:?}/{route:?}: compiled {namespace}.{label} body")
+    });
+    assert!(body < program.bodies.len(), "{origin:?}/{route:?}");
+    (*index, body)
+}
+fn host41_call(
+    program: &fipe::mir::Program,
+    body_index: usize,
+    callee: &fipe::mir::Callee,
+    origin: Host41Origin,
+    route: Host41Route,
+) {
+    assert!(
+        program.bodies[body_index].blocks.iter().any(|block| {
+            matches!(&block.terminator,
+                fipe::mir::Terminator::Call { callee: actual, .. }
+                    if actual == callee)
+        }),
+        "{origin:?}/{route:?}: actual MIR call {body_index} -> {callee:?}"
+    );
+}
+fn host41_packed_rows(
+    program: &fipe::mir::Program,
+    meaning: usize,
+    definition: usize,
+    origin: Host41Origin,
+    route: Host41Route,
+) {
+    let tables = program.tables.borrow();
+    let targets: Vec<_> = tables
+        .dispatch
+        .iter()
+        .filter(|dispatch| dispatch.label == "inspect")
+        .flat_map(|dispatch| &dispatch.rows)
+        .filter(|row| {
+            matches!(&row.receiver,
+                fipe::ir::Type::Meaning { index, .. } if *index == meaning)
+        })
+        .map(|row| &row.target)
+        .collect();
+    assert!(
+        !targets.is_empty(),
+        "{origin:?}/{route:?}: actual dynamic Box inspect row"
+    );
+    for target in targets {
+        assert!(
+            matches!(target,
+                fipe::ir::Implementation::Definition { index, .. }
+                    if *index == definition),
+            "{origin:?}/{route:?}: row -> inspect definition: {target:?}"
+        );
+    }
+}
+fn host41_selection(
+    program: &fipe::mir::Program,
+    origin: Host41Origin,
+    route: Host41Route,
+) -> usize {
+    let tables = program.tables.borrow();
+    let namespace = if matches!(origin, Host41Origin::Local) {
+        "main"
+    } else {
+        "probe"
+    };
+    let meanings: Vec<_> = tables
+        .meanings
+        .iter()
+        .enumerate()
+        .filter_map(|(index, meaning)| {
+            (meaning.label == "Box"
+                && tables.namespaces[meaning.namespace] == namespace)
+                .then_some(index)
+        })
+        .collect();
+    let [meaning] = meanings.as_slice() else {
+        panic!("{origin:?}/{route:?}: exact Box owner");
+    };
+    if matches!(origin, Host41Origin::Declared) {
+        let declared: Vec<_> = tables
+            .declarations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, declaration)| {
+                (declaration.label == "inspect"
+                    && tables.namespaces[declaration.namespace] == "probe")
+                    .then_some(index)
+            })
+            .collect();
+        let [declared] = declared.as_slice() else {
+            panic!("{origin:?}/{route:?}: actual supplied inspect");
+        };
+        host41_call(
+            program,
+            program.main,
+            &fipe::mir::Callee::Host(*declared),
+            origin,
+            route,
+        );
+    } else {
+        let (definition, body) =
+            host41_definition(program, namespace, "inspect", origin, route);
+        match route {
+            Host41Route::Direct => host41_call(
+                program,
+                program.main,
+                &fipe::mir::Callee::Body(body),
+                origin,
+                route,
+            ),
+            Host41Route::Factory => {
+                let (_, factory) = host41_definition(
+                    program, namespace, "factory", origin, route,
+                );
+                host41_call(
+                    program,
+                    program.main,
+                    &fipe::mir::Callee::Body(factory),
+                    origin,
+                    route,
+                );
+                host41_call(
+                    program,
+                    factory,
+                    &fipe::mir::Callee::Body(body),
+                    origin,
+                    route,
+                );
+            }
+            Host41Route::Packed => {
+                host41_packed_rows(
+                    program, *meaning, definition, origin, route,
+                );
+            }
+        }
+    }
+    *meaning
+}
+fn host41_observe(origin: Host41Origin, source: &str, route: Host41Route) {
+    let mut callbacks = 0;
+    // No Machine exists before public registration/checking/compilation finish.
+    let program = host41_program(origin, source);
+    assert_eq!(callbacks, 0);
+    let mut machine = fipe::vm::Machine::new(Some(100_000));
+    let fipe::embed::Outcome::Request(fipe::embed::Request::Call {
+        declaration,
+        arguments,
+        ..
+    }) = machine.run(&program)
+    else {
+        panic!("{origin:?}: {route:?}: expected exactly one callback");
+    };
+    let joined = machine.program().unwrap();
+    let meaning = host41_selection(joined, origin, route);
+    let tables = joined.tables.borrow();
+    let declaration = &tables.declarations[declaration];
+    if matches!(origin, Host41Origin::Declared) {
+        assert_eq!(tables.namespaces[declaration.namespace], "probe");
+        assert_eq!(declaration.label, "inspect");
+        let [fipe::value::Value::Record(receiver)] = arguments.as_slice()
+        else {
+            panic!("actual supplied receiver");
+        };
+        assert_eq!(receiver.meaning, meaning);
+        assert_eq!(receiver.fields, [fipe::value::Value::Int(1)]);
+    } else {
+        assert_eq!(tables.namespaces[declaration.namespace], "effects");
+        assert_eq!(declaration.label, "tick");
+        assert!(arguments.is_empty());
+    }
+    drop(tables);
+    callbacks += 1;
+    assert_eq!(
+        machine.reply(
+            &program,
+            fipe::embed::Reply::Value(Ok(fipe::value::Value::Int(41)))
+        ),
+        fipe::embed::Outcome::Done(Ok(fipe::value::Value::Int(41)))
+    );
+    assert_eq!(callbacks, 1);
+}
+#[test]
+fn original_generic_host_written_members_execute_direct_packed_and_factory() {
+    for origin in [Host41Origin::Host, Host41Origin::File] {
+        host41_observe(origin, HOST41_DIRECT, Host41Route::Direct);
+        host41_observe(origin, HOST41_PACKED, Host41Route::Packed);
+        host41_observe(origin, HOST41_FACTORY, Host41Route::Factory);
+    }
+    let local = format!(
+        "{}\nx: Box<Integer> = Box 1\nx.inspect",
+        HOST41_LIBRARY.replace("pub ", "")
+    );
+    host41_observe(Host41Origin::Local, &local, Host41Route::Direct);
+    host41_observe(Host41Origin::Declared, HOST41_DIRECT, Host41Route::Direct);
+}
+
+// Finite original same-Host reentry controls, distinct from check-only cycles.
+const REENTRY_TERMINATING: &str = "use effects\npub type A { pub n: Integer }\npub type B { pub n: Integer }\nimpl A {\n f: Integer -> Integer = n => {\n  ignored = effects.visit n\n  if n == 0 { effects.tick } else { B.g (n - 1) }\n }\n}\nimpl B {\n g: Integer -> Integer = n => {\n  ignored = effects.visit (100 + n)\n  A.f n\n }\n}\n";
+const REENTRY_COMPATIBLE: &str = "use effects\npub type A { pub n: Integer }\npub type B { pub n: Integer }\nimpl A {\n f = n x => {\n  ignored = effects.visit n\n  if n == 0 { x } else { B.g (n - 1) x }\n }\n}\nimpl B {\n g = n x => {\n  ignored = effects.visit (100 + n)\n  first = A.f 0 \"a\"\n  second = A.f 0 \"b\"\n  A.f n x\n }\n}\n";
+
+fn reentry_inputs(
+    header: &str,
+    source: &str,
+) -> (
+    fipe::decl::Declarations,
+    fipe::ast::Module,
+    [fipe::token::Span; 2],
+) {
+    use fipe::ast::{Entry, ImplMember, ItemKind, TypeKind};
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .module("effects", "pub visit: Integer -> ()\npub tick: Integer")
+        .expect("effect declarations");
+    declarations
+        .module("probe", header)
+        .expect("actual Host header");
+    let module = &declarations.get_module("probe").unwrap().module;
+    let mut sites = Vec::new();
+    for (owner, member) in [("A", "f"), ("B", "g")] {
+        let mut found = Vec::new();
+        for entry in &module.entries {
+            let Entry::Item(item) = entry else { continue };
+            let ItemKind::Impl {
+                target, members, ..
+            } = &item.kind
+            else {
+                continue;
+            };
+            let TypeKind::Named { name, .. } =
+                &module.ty(*target).expect("actual impl target").kind
+            else {
+                continue;
+            };
+            if name.segments.as_slice() != [owner] {
+                continue;
+            }
+            for entry in members {
+                if let ImplMember::Named {
+                    name,
+                    value: Some(_),
+                    ..
+                } = entry
+                {
+                    if name.segments.as_slice() == [member] {
+                        found.push(name.span);
+                    }
+                }
+            }
+        }
+        let [site] = found.as_slice() else {
+            panic!("one actual written {owner}.{member} name");
+        };
+        sites.push(*site);
+    }
+    let sites: [_; 2] = sites.try_into().unwrap();
+    let main = fipe::parse::parse(fipe::lex::lex(source)).expect("main parses");
+    (declarations, main, sites)
+}
+
+fn reentry_bodies(
+    program: &fipe::mir::Program,
+    sites: [fipe::token::Span; 2],
+    header_len: usize,
+) {
+    let tables = program.tables.borrow();
+    for (label, site) in ["f", "g"].into_iter().zip(sites) {
+        let found: Vec<_> = tables
+            .definitions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, definition)| {
+                (definition.label == label
+                    && definition.span == site
+                    && tables.namespaces[definition.namespace] == "probe")
+                    .then_some((index, definition))
+            })
+            .collect();
+        let [(index, definition)] = found.as_slice() else {
+            panic!("one actual checked Host {label} definition at {site:?}");
+        };
+        let body = program.definitions[*index]
+            .expect("actual joined written function body");
+        let compiled = &program.bodies[body];
+        assert!(compiled.arity > 0);
+        let source = &tables.nodes[definition.body];
+        assert_eq!(tables.namespaces[source.namespace], "probe");
+        assert!(source.span.start < source.span.end);
+        assert!(source.span.end <= header_len);
+        let lowered = &tables.nodes[compiled.node];
+        assert_eq!(tables.namespaces[lowered.namespace], "probe");
+        assert!(lowered.span.start < lowered.span.end);
+        assert!(lowered.span.end <= header_len);
+    }
+}
+
+fn reentry_observe(
+    header: &str,
+    source: &str,
+    visits: &[i64],
+    tick: bool,
+    expected: fipe::value::Value,
+) {
+    use fipe::embed::{Outcome, Reply, Request};
+    use fipe::value::Value;
+    let (declarations, main, sites) = reentry_inputs(header, source);
+    let mut callbacks = 0;
+    let unit = fipe::check::check(
+        &main,
+        &declarations,
+        &[],
+        fipe::check::Options::default(),
+    )
+    .unwrap_or_else(|errors| panic!("{errors:?}"));
+    let program = fipe::compile::compile(&unit);
+    assert_eq!(callbacks, 0, "no Machine/callback before public checking");
+    let mut machine = fipe::vm::Machine::new(Some(100_000));
+    let mut outcome = machine.run(&program);
+    assert!(matches!(&outcome, Outcome::Request(Request::Call { .. })));
+    reentry_bodies(machine.program().unwrap(), sites, header.len());
+    for expected in visits {
+        let Outcome::Request(Request::Call {
+            declaration,
+            arguments,
+            ..
+        }) = outcome
+        else {
+            panic!("visit {expected}: {outcome:?}");
+        };
+        {
+            let tables = machine.program().unwrap().tables.borrow();
+            let declared = &tables.declarations[declaration];
+            assert_eq!(tables.namespaces[declared.namespace], "effects");
+            assert_eq!(declared.label, "visit");
+        }
+        assert_eq!(arguments, [Value::Int(*expected)]);
+        callbacks += 1;
+        outcome = machine.reply(&program, Reply::Value(Ok(Value::Unit)));
+    }
+    if tick {
+        let Outcome::Request(Request::Call {
+            declaration,
+            arguments,
+            ..
+        }) = outcome
+        else {
+            panic!("one terminal tick: {outcome:?}");
+        };
+        {
+            let tables = machine.program().unwrap().tables.borrow();
+            let declared = &tables.declarations[declaration];
+            assert_eq!(tables.namespaces[declared.namespace], "effects");
+            assert_eq!(declared.label, "tick");
+        }
+        assert!(arguments.is_empty());
+        callbacks += 1;
+        outcome = machine.reply(&program, Reply::Value(Ok(Value::Int(41))));
+    }
+    assert_eq!(outcome, Outcome::Done(Ok(expected)));
+    assert_eq!(callbacks, visits.len() + usize::from(tick));
+}
+
+#[test]
+fn same_host_written_reentry_terminates_after_actual_a_b_a_calls() {
+    reentry_observe(
+        REENTRY_TERMINATING,
+        "use probe\nprobe.A.f 1",
+        &[1, 100, 0],
+        true,
+        fipe::value::Value::Int(41),
+    );
+}
+
+#[test]
+fn same_host_pending_member_compatible_uses_execute_one_shared_source() {
+    reentry_observe(
+        REENTRY_COMPATIBLE,
+        "use probe\nprobe.A.f 1 \"done\"",
+        &[1, 100, 0, 0, 0],
+        false,
+        fipe::value::Value::text("done"),
+    );
+}
+
+#[test]
+fn same_host_pending_member_incompatible_use_is_refused_before_execution() {
+    let from = "second = A.f 0 \"b\"";
+    assert_eq!(REENTRY_COMPATIBLE.matches(from).count(), 1);
+    let header = REENTRY_COMPATIBLE.replace(from, "second = A.f 0 True");
+    let (declarations, main, sites) =
+        reentry_inputs(&header, "use probe\nprobe.A.f 1 \"done\"");
+    let callbacks = 0;
+    let errors = fipe::check::check(
+        &main,
+        &declarations,
+        &[],
+        fipe::check::Options::default(),
+    )
+    .expect_err("incompatible uses must not freshen pending A.f");
+    assert!(
+        errors.iter().any(|error| matches!(
+            error,
+            fipe::check::Error::Type(fipe::infer::Error {
+                span,
+                reason: fipe::infer::Reason::DeclarationValue {
+                    name, origin, declaration,
+                },
+            }) if *span == main.span && name == "A"
+                && *origin == fipe::resolve::Origin::Host("probe".into())
+                && *declaration == sites[0]
+        )),
+        "predicted public Host failure, preserving all diagnostics: {errors:?}"
+    );
+    assert_eq!(callbacks, 0, "no Machine/reply on checker refusal");
+}

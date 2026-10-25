@@ -1383,8 +1383,7 @@ fn resource_parameters(
     (index, tables.meanings[index].parameters.clone())
 }
 #[test]
-fn resource_metadata_undo_preserves_old_alias_and_retires_only_removed_argument(
-) {
+fn resource_stable_metadata_preserves_alias_and_retires_removed_argument() {
     const SOURCE: &str = "use tags\nx: csv.Rd<tags.Mark> = csv.open ()\nx";
     let mut host = Declarations::new();
     host.module(
@@ -1398,6 +1397,7 @@ fn resource_metadata_undo_preserves_old_alias_and_retires_only_removed_argument(
     let first = session_program(&mut session, "use csv\ncsv.unit");
     let (root, original_parameters) = resource_parameters(&first, "Rd");
     assert!(!original_parameters.is_empty());
+    let original_meaning = first.tables.borrow().meanings[root].clone();
     assert!(matches!(machine.run(&first), Outcome::Request(_)));
     let original_type = machine.pending_resource_type().unwrap();
     let original =
@@ -1422,9 +1422,9 @@ fn resource_metadata_undo_preserves_old_alias_and_retires_only_removed_argument(
                 .position(|meaning| meaning.label == "Rd"),
             Some(root)
         );
-        assert_ne!(
-            tables.meanings[root].parameters, original_parameters,
-            "must exercise a real surviving Meaning metadata rewrite"
+        assert_eq!(
+            tables.meanings[root], original_meaning,
+            "a complete resource shape must keep its original metadata"
         );
         tables
             .meanings
@@ -1442,6 +1442,7 @@ fn resource_metadata_undo_preserves_old_alias_and_retires_only_removed_argument(
     {
         let tables = first.tables.borrow();
         assert_eq!(tables.meanings[root].parameters, original_parameters);
+        assert_eq!(tables.meanings[root], original_meaning);
         assert!(!tables
             .meanings
             .iter()
@@ -4461,4 +4462,492 @@ fn resource_named_packed_forked_input_refuses_before_real_init() {
             assert_packed_route_alias(&value, &original);
         }
     }
+}
+
+fn ordinary_array_echo_types(
+    program: &fipe::mir::Program,
+) -> (fipe::ir::Type, fipe::ir::Type) {
+    use fipe::ir::Type;
+    let tables = program.tables.borrow();
+    assert!(
+        !tables.has_resources,
+        "exercise the original ordinary route"
+    );
+    let named = |label| Type::Meaning {
+        index: tables
+            .meanings
+            .iter()
+            .position(|meaning| {
+                meaning.label == label
+                    && tables.namespaces[meaning.namespace] == "prelude"
+            })
+            .unwrap(),
+        arguments: Vec::new(),
+    };
+    let source = Type::Array {
+        element: Box::new(named("Integer")),
+        length: Box::new(Type::Number(
+            fipe::token::Magnitude::parse("1", 10).unwrap(),
+        )),
+    };
+    let target = named("Eq");
+    let mut found = false;
+    for body in &program.bodies {
+        for block in &body.blocks {
+            let fipe::mir::Terminator::Call {
+                callee: fipe::mir::Callee::Host(declaration),
+                dest,
+                args,
+                ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            let declaration = &tables.declarations[*declaration];
+            if declaration.label != "echo" {
+                continue;
+            }
+            assert_eq!(tables.namespaces[declaration.namespace], "csv");
+            assert_eq!(body.locals[*dest].ty, target);
+            let [fipe::mir::Operand::Local(argument)] = args.as_slice() else {
+                panic!("actual echo operand")
+            };
+            assert!(body.blocks.iter().flat_map(|part| &part.statements).any(|statement| matches!(statement,
+                fipe::mir::Statement::Assign(local, fipe::mir::Rvalue::Pack { tag, .. })
+                    if local == argument && tag == &source
+            )), "echo must receive the actual full Array Pack local");
+            assert!(!found, "one original echo call");
+            found = true;
+        }
+    }
+    assert!(found);
+    (source, target)
+}
+
+fn assert_ordinary_array_echo_value(
+    value: &Value,
+    source: &fipe::ir::Type,
+    target: &fipe::ir::Type,
+) {
+    let Value::Packed(packed) = value else {
+        panic!("actual checker-produced structural Packed")
+    };
+    assert_eq!(packed.source_type(), source);
+    assert_eq!(packed.target_type(), target);
+    let Value::Seq(items) = packed.value() else {
+        panic!("original one-element array payload")
+    };
+    assert_eq!(items.as_slice(), [Value::Int(7)]);
+}
+
+#[test]
+fn ordinary_integer_array_packed_echo_preserves_full_source_and_target() {
+    // Exact original derived_array_integer producer, with no resource marker.
+    let program = program(
+        "pub open: Integer\npub echo: Eq -> Eq",
+        "use csv\ncsv.echo [csv.open]",
+    );
+    let (source, target) = ordinary_array_echo_types(&program);
+    let mut machine = Machine::new(None);
+    let mut calls = Vec::new();
+    let Outcome::Request(fipe::embed::Request::Call {
+        declaration,
+        arguments,
+        ..
+    }) = machine.run(&program)
+    else {
+        panic!("original open call")
+    };
+    {
+        let tables = machine.program().unwrap().tables.borrow();
+        let declaration = &tables.declarations[declaration];
+        assert_eq!(tables.namespaces[declaration.namespace], "csv");
+        assert_eq!(declaration.label, "open");
+        calls.push(declaration.label.clone());
+    }
+    assert!(arguments.is_empty());
+    let outcome = machine.reply(&program, Reply::Value(Ok(Value::Int(7))));
+    let Outcome::Request(fipe::embed::Request::Call {
+        declaration,
+        arguments,
+        ..
+    }) = outcome
+    else {
+        panic!("original array echo: {outcome:?}")
+    };
+    {
+        let tables = machine.program().unwrap().tables.borrow();
+        let declaration = &tables.declarations[declaration];
+        assert_eq!(tables.namespaces[declaration.namespace], "csv");
+        assert_eq!(declaration.label, "echo");
+        calls.push(declaration.label.clone());
+    }
+    let [echoed] = arguments.as_slice() else {
+        panic!("one whole Packed input")
+    };
+    assert_ordinary_array_echo_value(echoed, &source, &target);
+    let outcome = machine.reply(&program, Reply::Value(Ok(echoed.clone())));
+    let Outcome::Done(Ok(returned)) = outcome else {
+        panic!("ordinary Array echo must finish: {outcome:?}")
+    };
+    assert_eq!(&returned, echoed);
+    assert_ordinary_array_echo_value(&returned, &source, &target);
+    assert_eq!(calls, ["open", "echo"]);
+}
+
+// Original written body with its declared type parameter corrected.
+// Historical Rd<a> declared a number; fresh/impl/next a remain type variables.
+const WRITTEN_RESOURCE_HEADER: &str = "pub type Probe where self.inspect: Integer\npub type resource Rd<T>\npub open: Rd<()>\npub fresh: () -> Rd<a>\nimpl Rd<a>: Probe { inspect = self => { next: Rd<a> = fresh ()\n 9 } }";
+const WRITTEN_RESOURCE_MAIN: &str =
+    "use csv\ng: csv.Probe -> Integer = x => x.inspect\ng csv.open";
+
+#[derive(Clone, Copy)]
+enum WrittenResourceMode {
+    Original,
+    Sentinel,
+    WrongFresh,
+    BeforeFresh,
+    BeforeAfter,
+    Unused,
+}
+
+struct WrittenResourceCase {
+    program: fipe::mir::Program,
+    inspect: fipe::token::Span,
+    argument: String,
+}
+
+fn written_resource_case(
+    argument: &str,
+    mode: WrittenResourceMode,
+) -> WrittenResourceCase {
+    use fipe::ast::{Entry, ImplMember, ItemKind, TypeKind};
+    let from = "pub open: Rd<()>";
+    assert_eq!(WRITTEN_RESOURCE_HEADER.matches(from).count(), 1);
+    let mut header = WRITTEN_RESOURCE_HEADER
+        .replace(from, &format!("pub open: Rd<{argument}>"));
+    let source = match mode {
+        WrittenResourceMode::Original => WRITTEN_RESOURCE_MAIN.to_owned(),
+        WrittenResourceMode::Unused => "use csv\n9".to_owned(),
+        _ => {
+            header.push_str("\npub after: Integer -> Integer");
+            let (prefix, last) =
+                WRITTEN_RESOURCE_MAIN.rsplit_once('\n').unwrap();
+            assert_eq!(last, "g csv.open");
+            format!("{prefix}\ncsv.after (g csv.open)")
+        }
+    };
+    let mut declarations = Declarations::new();
+    declarations
+        .module("csv", &header)
+        .expect("original written header");
+    let module = &declarations.get_module("csv").unwrap().module;
+    let mut sites = Vec::new();
+    for entry in &module.entries {
+        let Entry::Item(item) = entry else { continue };
+        let ItemKind::Impl {
+            target, members, ..
+        } = &item.kind
+        else {
+            continue;
+        };
+        let TypeKind::Named { name, .. } =
+            &module.ty(*target).expect("actual impl target").kind
+        else {
+            continue;
+        };
+        if name.segments.as_slice() != ["Rd"] {
+            continue;
+        }
+        for entry in members {
+            if let ImplMember::Named {
+                name,
+                value: Some(_),
+                ..
+            } = entry
+            {
+                if name.segments.as_slice() == ["inspect"] {
+                    sites.push(name.span);
+                }
+            }
+        }
+    }
+    let [inspect] = sites.as_slice() else {
+        panic!("one actual written Rd.inspect AST name");
+    };
+    let inspect = *inspect;
+    let main = parse(lex(&source)).expect("original packed main");
+    let unit =
+        check::check(&main, &declarations, &[], check::Options::default())
+            .unwrap_or_else(|errors| panic!("{argument}: {errors:?}"));
+    // No Machine or callback driver exists before checking/compilation.
+    let program = compile::compile(&unit);
+    WrittenResourceCase {
+        program,
+        inspect,
+        argument: argument.to_owned(),
+    }
+}
+
+fn written_resource_request(
+    machine: &Machine,
+    outcome: &Outcome<Result<Value, fipe::vm::Fault>>,
+    label: &str,
+    expected: &[Value],
+) {
+    let Outcome::Request(fipe::embed::Request::Call {
+        declaration,
+        arguments,
+        ..
+    }) = outcome
+    else {
+        panic!("expected csv.{label}: {outcome:?}");
+    };
+    let tables = machine.program().unwrap().tables.borrow();
+    let declared = &tables.declarations[*declaration];
+    assert_eq!(tables.namespaces[declared.namespace], "csv");
+    assert_eq!(declared.label, label);
+    assert_eq!(arguments.as_slice(), expected);
+}
+
+fn written_resource_open_argument(machine: &Machine, expected: &str) {
+    use fipe::ir::Type;
+    let tables = machine.program().unwrap().tables.borrow();
+    let declarations: Vec<_> = tables
+        .declarations
+        .iter()
+        .filter(|declared| {
+            declared.label == "open"
+                && tables.namespaces[declared.namespace] == "csv"
+        })
+        .collect();
+    let [open] = declarations.as_slice() else {
+        panic!("actual open");
+    };
+    let Type::Meaning { index, arguments } = &open.ty else {
+        panic!("checked nominal Rd result");
+    };
+    assert_eq!(tables.meanings[*index].label, "Rd");
+    assert_eq!(tables.namespaces[tables.meanings[*index].namespace], "csv");
+    assert!(tables.meanings[*index].resource);
+    let [argument] = arguments.as_slice() else {
+        panic!("one Rd argument");
+    };
+    if expected == "()" {
+        assert_eq!(argument, &Type::Unit);
+    } else {
+        let Type::Meaning { index, arguments } = argument else {
+            panic!("concrete ordinary argument");
+        };
+        assert!(arguments.is_empty());
+        assert_eq!(tables.meanings[*index].label, expected);
+        assert_eq!(
+            tables.namespaces[tables.meanings[*index].namespace],
+            "prelude"
+        );
+    }
+}
+
+fn written_resource_body(machine: &Machine, inspect: fipe::token::Span) {
+    let program = machine.program().unwrap();
+    let tables = program.tables.borrow();
+    let found: Vec<_> = tables
+        .definitions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, definition)| {
+            (definition.label == "inspect"
+                && definition.span == inspect
+                && tables.namespaces[definition.namespace] == "csv")
+                .then_some((index, definition))
+        })
+        .collect();
+    let [(index, definition)] = found.as_slice() else {
+        panic!("actual written inspect Definition");
+    };
+    let body =
+        program.definitions[*index].expect("joined written function body");
+    assert!(program.bodies[body].arity > 0);
+    assert_eq!(
+        tables.namespaces[tables.nodes[definition.body].namespace],
+        "csv"
+    );
+    assert_eq!(
+        tables.namespaces[tables.nodes[program.bodies[body].node].namespace],
+        "csv"
+    );
+}
+
+fn written_resource_site(
+    machine: &Machine,
+    label: &str,
+) -> (usize, fipe::token::Span) {
+    let program = machine.program().unwrap();
+    let tables = program.tables.borrow();
+    let mut sites = Vec::new();
+    for body in &program.bodies {
+        for block in &body.blocks {
+            let fipe::mir::Terminator::Call {
+                callee: fipe::mir::Callee::Host(declaration),
+                ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            let declared = &tables.declarations[*declaration];
+            if declared.label == label
+                && tables.namespaces[declared.namespace] == "csv"
+            {
+                let node = &tables.nodes[*block.nodes.last().unwrap()];
+                let site = (node.namespace, node.span);
+                if !sites.contains(&site) {
+                    sites.push(site);
+                }
+            }
+        }
+    }
+    let [site] = sites.as_slice() else {
+        panic!("one actual {label} call site");
+    };
+    *site
+}
+
+fn written_resource_alias(
+    value: &Value,
+    original: &Value,
+    witness: &ResourceType,
+    domain: &ResourceDomain,
+) {
+    let (Value::Resource(value), Value::Resource(original)) = (value, original)
+    else {
+        panic!("genuine resource aliases");
+    };
+    assert!(Rc::ptr_eq(value, original));
+    assert_eq!(value.resource_type(), witness);
+    assert_eq!(value.domain(), domain);
+    assert_eq!(value.key(), b"original-written-entry");
+}
+
+fn written_resource_fault(
+    outcome: Outcome<Result<Value, fipe::vm::Fault>>,
+    site: (usize, fipe::token::Span),
+    budget: bool,
+) {
+    let Outcome::Done(Err(fault)) = outcome else {
+        panic!("no later effect after refusal: {outcome:?}");
+    };
+    assert_eq!((fault.namespace, fault.span), site);
+    if budget {
+        assert_eq!(fault.reason, fipe::value::Reason::Budget);
+    } else {
+        assert!(
+            matches!(&fault.reason, fipe::value::Reason::Host(message)
+                if message.starts_with("the reply is not a ")),
+            "actual resource mismatch: {fault:?}"
+        );
+    }
+}
+
+fn written_resource_finish(
+    machine: &mut Machine,
+    case: &WrittenResourceCase,
+    alias: &Value,
+    mode: WrittenResourceMode,
+    calls: &mut Vec<&'static str>,
+) {
+    let site = written_resource_site(machine, "fresh");
+    let limited = matches!(mode, WrittenResourceMode::BeforeAfter);
+    let limit = machine.charged();
+    if limited {
+        machine.set_budget(Some(limit));
+    }
+    let wrong = matches!(mode, WrittenResourceMode::WrongFresh);
+    let reply = if wrong { Value::Int(9) } else { alias.clone() };
+    let outcome = machine.reply(&case.program, Reply::Value(Ok(reply)));
+    if wrong || limited {
+        written_resource_fault(outcome, site, limited);
+        if limited {
+            assert!(machine.charged() <= limit);
+        }
+        assert_eq!(calls.as_slice(), ["open", "fresh"]);
+    } else if matches!(mode, WrittenResourceMode::Original) {
+        assert_eq!(outcome, Outcome::Done(Ok(Value::Int(9))));
+        assert_eq!(calls.as_slice(), ["open", "fresh"]);
+    } else {
+        written_resource_request(machine, &outcome, "after", &[Value::Int(9)]);
+        calls.push("after");
+        assert_eq!(
+            machine.reply(&case.program, Reply::Value(Ok(Value::Int(9)))),
+            Outcome::Done(Ok(Value::Int(9)))
+        );
+        assert_eq!(calls.as_slice(), ["open", "fresh", "after"]);
+    }
+}
+
+fn written_resource_observe(argument: &str, mode: WrittenResourceMode) {
+    let case = written_resource_case(argument, mode);
+    let mut machine = Machine::new(Some(100_000));
+    let outcome = machine.run(&case.program);
+    let mut calls = Vec::new();
+    if matches!(mode, WrittenResourceMode::Unused) {
+        assert_eq!(outcome, Outcome::Done(Ok(Value::Int(9))));
+        assert!(calls.is_empty());
+        return;
+    }
+    written_resource_request(&machine, &outcome, "open", &[]);
+    calls.push("open");
+    written_resource_open_argument(&machine, &case.argument);
+    let witness = machine.pending_resource_type().unwrap();
+    let domain = ResourceDomain::new();
+    let alias =
+        domain.issue(&witness, Rc::from(&b"original-written-entry"[..]));
+    let original = alias.clone();
+    written_resource_alias(&alias, &original, &witness, &domain);
+    if matches!(mode, WrittenResourceMode::BeforeFresh) {
+        let site = written_resource_site(&machine, "open");
+        let limit = machine.charged();
+        machine.set_budget(Some(limit));
+        let outcome =
+            machine.reply(&case.program, Reply::Value(Ok(alias.clone())));
+        written_resource_fault(outcome, site, true);
+        assert!(machine.charged() <= limit);
+        assert_eq!(calls.as_slice(), ["open"]);
+    } else {
+        let outcome =
+            machine.reply(&case.program, Reply::Value(Ok(alias.clone())));
+        written_resource_request(&machine, &outcome, "fresh", &[Value::Unit]);
+        calls.push("fresh");
+        written_resource_body(&machine, case.inspect);
+        assert_eq!(machine.pending_resource_type().unwrap(), witness);
+        written_resource_alias(&alias, &original, &witness, &domain);
+        written_resource_finish(&mut machine, &case, &alias, mode, &mut calls);
+    }
+    written_resource_alias(&alias, &original, &witness, &domain);
+}
+
+#[test]
+fn written_resource_member_preserves_original_factory_witness_for_three_arguments(
+) {
+    for argument in ["()", "Integer", "String"] {
+        written_resource_observe(argument, WrittenResourceMode::Original);
+    }
+}
+
+#[test]
+fn written_resource_member_refusals_stop_before_later_effect() {
+    for argument in ["()", "Integer", "String"] {
+        written_resource_observe(argument, WrittenResourceMode::WrongFresh);
+    }
+    for mode in [
+        WrittenResourceMode::Sentinel,
+        WrittenResourceMode::BeforeFresh,
+        WrittenResourceMode::BeforeAfter,
+    ] {
+        written_resource_observe("()", mode);
+    }
+}
+
+#[test]
+fn unused_written_resource_member_performs_no_host_effect() {
+    written_resource_observe("()", WrittenResourceMode::Unused);
 }
