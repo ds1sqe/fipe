@@ -89,3 +89,22 @@ fails. Replacement changes the inode (hard-link aliases retain old contents);
 ACLs/extended attributes, crash durability and concurrent-writer exclusion are
 not guaranteed. Paths retain exact OS bytes. Literal/doc token content is kept;
 ordinary comment alignment/content is kept with trailing whitespace trimmed.
+
+
+## Export Standard declarations
+
+`fipe host-declarations DIR` writes the Standard host's five declaration files
+into a fresh directory. Its parent must already exist. Use the same installed
+Fipe version for the exporter and language server, then select that directory
+explicitly with `fipe-lsp --host DIR` or your editor's host setting. This exports
+metadata only; it does not run a script or load a provider. A destination
+starting with `-` must use an explicit relative or absolute spelling, such as
+`./-name`; option-like operands are rejected. Custom host selection
+replaces this directory, rather than merging with Standard declarations.
+
+The command exits 0 with no output on success, or 2 with a diagnostic on stderr
+for invalid arguments or filesystem errors. Existing destinations are refused,
+including symlinks; their files are not overwritten. Export is not transactional:
+if a later file write fails, the diagnostic identifies the incomplete destination
+left in place. Inspect or remove it yourself before retrying into a new directory.
+No automatic deletion or durability guarantee is provided.

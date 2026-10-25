@@ -22,13 +22,15 @@ mod format;
 use fipe_host::{load, Host, LoadError, Policy};
 use fipe_native::{codec::Unit, elf, link, lower};
 use std::{
-    io,
+    fs,
+    io::{self, Write as _},
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
 const USAGE: &str = "\
 usage: fipe run FILE [--budget N] [--allow-write DIR]... [-- ARG...]
+       fipe host-declarations DIR
        fipe check FILE...
        fipe fmt [--check] FILE...
        fipe repl [--strict] [--budget N] [--compile-budget N] \
@@ -96,6 +98,18 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<Options, String> {
 
 fn main() -> ExitCode {
     let raw: Vec<_> = std::env::args_os().skip(1).collect();
+    if raw
+        .first()
+        .is_some_and(|command| command == "host-declarations")
+    {
+        return match host_declarations(&raw[1..]) {
+            Ok(code) => ExitCode::from(code),
+            Err((code, message)) => {
+                eprintln!("{message}");
+                ExitCode::from(code)
+            }
+        };
+    }
     if raw.first().is_some_and(|command| command == "fmt") {
         return ExitCode::from(format::run(&raw[1..]));
     }
@@ -135,6 +149,38 @@ type Ran = Result<u8, (u8, String)>;
 
 const fn usage(error: String) -> (u8, String) {
     (2, error)
+}
+
+/// Export fixed Standard metadata, without running a program or merging hosts.
+fn host_declarations(arguments: &[std::ffi::OsString]) -> Ran {
+    let [directory] = arguments else {
+        return Err(usage("usage: fipe host-declarations DIR".into()));
+    };
+    if directory.as_encoded_bytes().starts_with(b"-") {
+        return Err(usage("usage: fipe host-declarations DIR".into()));
+    }
+    let directory = Path::new(directory);
+    fs::create_dir(directory).map_err(|error| {
+        (
+            2,
+            format!("fipe host-declarations: {}: {error}", directory.display()),
+        )
+    })?;
+    for (namespace, source) in fipe_host::sources() {
+        let path = directory.join(format!("{namespace}.fipe"));
+        let write = || -> io::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            file.write_all(source.as_bytes())
+        };
+        write().map_err(|error| {
+            (2, format!("fipe host-declarations: {}: {error}; incomplete destination {} left in place",
+                path.display(), directory.display()))
+        })?;
+    }
+    Ok(0)
 }
 
 /// The one file a command takes.

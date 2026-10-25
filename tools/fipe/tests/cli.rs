@@ -534,3 +534,116 @@ fn fmt_unsupported_option_keeps_quotes_and_escaped_control_characters() {
         b"fipe fmt: unsupported option \"--bad\\n\\\"\"\n"
     );
 }
+
+/// Export paths stay OS strings, as formatting paths do.
+fn export_declarations(arguments: &[&std::ffi::OsStr]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_fipe"))
+        .arg("host-declarations")
+        .args(arguments)
+        .output()
+        .unwrap()
+}
+fn assert_exported(directory: &Path) {
+    let mut names: Vec<_> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "cli.fipe",
+            "commands.fipe",
+            "fs.fipe",
+            "sys.fipe",
+            "text.fipe"
+        ]
+        .map(std::ffi::OsString::from)
+    );
+    for (namespace, source) in fipe_host::sources() {
+        assert_eq!(
+            fs::read(directory.join(format!("{namespace}.fipe"))).unwrap(),
+            source.as_bytes()
+        );
+    }
+}
+#[test]
+fn host_declarations_exports_exact_sources_and_preserves_existing_destination()
+{
+    let root = scratch("host-declarations-exact");
+    let directory = root.join("standard");
+    let output = export_declarations(&[directory.as_os_str()]);
+    assert_eq!(shown(&output), (String::new(), String::new(), 0));
+    assert_exported(&directory);
+    fs::write(directory.join("sentinel"), b"keep").unwrap();
+    let output = export_declarations(&[directory.as_os_str()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains(directory.display().to_string().as_str()));
+    assert_eq!(fs::read(directory.join("sentinel")).unwrap(), b"keep");
+    for (namespace, source) in fipe_host::sources() {
+        assert_eq!(
+            fs::read(directory.join(format!("{namespace}.fipe"))).unwrap(),
+            source.as_bytes()
+        );
+    }
+}
+#[test]
+fn host_declarations_refuses_bad_arity_and_invalid_parents_without_success() {
+    let root = scratch("host-declarations-errors");
+    for arguments in [vec![], vec![root.as_os_str(), root.as_os_str()]] {
+        let output = export_declarations(&arguments);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"usage: fipe host-declarations DIR\n");
+    }
+    for option in ["--help", "--bad"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_fipe"))
+            .current_dir(&root)
+            .args(["host-declarations", option])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(output.stderr, b"usage: fipe host-declarations DIR\n");
+        assert!(output.stdout.is_empty());
+        assert!(!root.join(option).exists());
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_fipe"))
+        .current_dir(&root)
+        .args(["host-declarations", "./-name"])
+        .output()
+        .unwrap();
+    assert_eq!(shown(&output), (String::new(), String::new(), 0));
+    assert_exported(&root.join("-name"));
+    let file = root.join("file");
+    fs::write(&file, b"unchanged").unwrap();
+    for path in [file.clone(), file.join("child"), root.join("missing/child")] {
+        let output = export_declarations(&[path.as_os_str()]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("fipe host-declarations:"));
+        assert!(error.contains(path.display().to_string().as_str()));
+    }
+    assert_eq!(fs::read(file).unwrap(), b"unchanged");
+    assert!(!root.join("missing").exists());
+}
+#[cfg(unix)]
+#[test]
+fn host_declarations_preserves_non_utf8_paths_and_refuses_symlink_destination()
+{
+    use std::os::unix::{ffi::OsStringExt, fs::symlink};
+    let root = scratch("host-declarations-os-path");
+    let directory =
+        root.join(std::ffi::OsString::from_vec(b"standard-\xff".to_vec()));
+    let output = export_declarations(&[directory.as_os_str()]);
+    assert_eq!(shown(&output), (String::new(), String::new(), 0));
+    assert_exported(&directory);
+    let link = root.join("link");
+    symlink(&directory, &link).unwrap();
+    let output = export_declarations(&[link.as_os_str()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert_exported(&directory);
+}
