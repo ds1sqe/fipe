@@ -171,20 +171,23 @@ of the checker owns it.
 
 ## Values
 
-`value::Value` is the runtime's value, shared by every backend: sixteen
-bytes, a tag and one eight-byte payload, immutable and shared by
-reference. It is the unit, an `Int` that fits `i64`, a `Big` integer that
-does not (never one that fits), an always finite `F32` or `F64`, text,
-a sequence (a `Vec`, a `Deque` or an array; `Vec<U8>` is a sequence of
-integers, with no second layout), a tuple, a record by meaning and
-constructor index with its fields (every sum and product, `Bool` and
-`Maybe` included), a closure, a meaning witness, or a packed value with
-the meaning index of its tag. A closure holds its body, its captured
-values, its meanings and the prefix of spots a run-time partial
-application filled. The operations are `value`'s, by module: `arith` on
-integers, `float` on both widths, `text`, and `structural` for equality,
-order, display and defaults by a value's tag; each Faults by a
-`value::Reason` the machine spans.
+`value::Value` is the runtime's immutable, shared value. The current x86-64
+native slot asserts sixteen bytes and alignment eight; that is not a universal
+stable Rust ABI or a resource transport contract. It is the unit, an `Int`
+that fits `i64`, a `Big` integer that does not (never one that fits), an
+always finite `F32` or `F64`, text, a sequence (a `Vec`, a `Deque` or an
+array; `Vec<U8>` is a sequence of integers, with no second layout), a tuple, a
+record by meaning and constructor index with its fields (every sum and
+product, `Bool` and `Maybe` included), a closure, a meaning witness, a packed
+value with the meaning index of its tag, or `Value::Resource` holding a
+genuine issued reference. A Resource is not a Record, integer key or payload.
+Current native/LLVM executable entry points reject marked programs; the common
+MIR or raw metadata roundtrip does not bypass that refusal. A closure holds
+its body, its captured values, its meanings and the prefix of spots a run-time
+partial application filled. The operations are `value`'s, by module: `arith`
+on integers, `float` on both widths, `text`, and `structural` for equality,
+order, display and defaults by a value's tag; each Faults by a `value::Reason`
+the machine spans.
 
 `:mir` displays a checked line's program in words on both REPL builds,
 and `:mir <line>` a queried one, without internal byte offsets.
@@ -211,14 +214,15 @@ its `program` joins every run's, so a stored function value keeps its body.
 the heap, never on the Rust stack. A `Host` callee, or a dispatch row naming a
 host's declaration, is the one place a run returns `Request::Call` with the
 arguments in spot order and the `with` environment open at the call; `reply`
-with the same program continues it, a value going where the call wanted it and a
-failure Faulting `Host` at the call. A value without the shape of the call's
+with the same program continues it, a value going where the call wanted it and
+a failure Faulting `Host` at the call. A value without the shape of the call's
 result type (a primitive's kind, a tuple's or array's length, a record's
-meaning, constructor and fields, in every part; limits and opaque types are the
-host's) Faults `Host` "the reply is not a T" there. A Fault ends the run where
-it happens, its span in its `namespace`'s source; the host's prior effects
-stand. `withdraw` forgets a withdrawn line's globals and module inits
-([embedding](09-embed.md) §Session): given again, they rerun.
+meaning, constructor and fields, in every part; limits and ordinary opaque
+data are the Host's; genuine resource identity and typed resource-bearing
+parts are independently admitted) Faults `Host` "the reply is not a T" there.
+A Fault ends the run where it happens, its span in its `namespace`'s source;
+the host's prior effects stand. `withdraw` forgets a withdrawn line's globals
+and module inits ([embedding](09-embed.md) §Session): given again, they rerun.
 
 The budget is per run, `None` for an unbounded one; `charged` reports the units
 of the run in progress or of the last one, bounded or not. A block pays its
@@ -254,8 +258,26 @@ wrote ([embedding](09-embed.md) §Requests and replies).
 
 ## What follows
 
-The compile phase of the checker ([checking](07-check.md) §The compile
-phase) runs the same machine on `Compile` entries, program-reader
-literals and demands, turning them into constants. The deque's
-representation, a repeated length read from a witness, and a debugger's
-step granularity are not fixed by this chapter.
+The compile phase of the checker ([checking](07-check.md) §The compile phase)
+runs the same machine on `Compile` entries, program-reader literals and
+demands, turning them into constants. The deque's representation, a repeated
+length read from a witness, and a debugger's step granularity are not fixed by
+this chapter.
+
+### Frozen resource admission
+
+Input is admitted before module initialization; a reply is admitted using the
+resource-relevant layout and context captured before its Call. Correct typed
+containers and explicit Function captures may retain aliases; opaque data
+cannot hide them. New resource expansion, identity scans and selected path
+materialization are paid before work. A pre-Call refusal prevents the
+callback, whereas a rejected reply follows any Host effects already performed.
+External work and physical cleanup remain outside this accounting.
+
+The Host may select a nested resource witness from the pending frozen result
+with `pending_resource_type_at`; exact steps, early data-only behavior and
+costs are in [embedding](09-embed.md#new-resources-inside-composite-replies).
+Projection Budget refusal latches the pending Call: normal reply/answer yields
+one original-site Budget terminal before reply fit or resumed effects. No live
+table reread, metadata transport, pointer or witness alone authorizes access
+to a Host entry.

@@ -90,9 +90,10 @@ not a T" at the line before the run starts, and its limits are the host's.
 
 ## Opaque resource references
 
-This subsection describes the working checkout's pending 0.2.0 API, not the
-published `0.2.0-dev.2` package above. The VM boundary is being qualified;
-native, LLVM, Codec and scalar FFI integration have separate acceptance gates.
+This subsection describes the working checkout's qualified resource VM API,
+not a guarantee about earlier published package contents. Native and LLVM
+currently refuse marked programs; Codec data and scalar FFI gain no resource
+transport.
 
 A trusted Host/commands interface may declare `pub type resource Table` and
 operations returning or accepting `Table`. A loaded script file cannot declare
@@ -103,7 +104,7 @@ Metadata or schema is ordinary typed data supplied alongside a reference; a
 reference is not its payload or a memory address.
 
 ~~~text
-value::resource::{ResourceDomain, ResourceType, ResourceRef, ResourceError}
+value::resource::{ResourceDomain, ResourceType, ResourceRef, ResourceError, ResourceStep}
 Value::Resource(Rc<ResourceRef>)
 ResourceDomain::new() -> ResourceDomain
 ResourceDomain::issue(&self, ty: &ResourceType, key: Rc<[u8]>) -> Value
@@ -113,35 +114,39 @@ ResourceRef::{domain, resource_type, key}
 ~~~
 
 At a `Request::Call`, `pending_resource_type` returns the exact frozen direct
-resource result, including its generic arguments. The Host validates or acquires
-its own entry, then wraps its opaque entry key with `domain.issue(&ty, key)` and
-returns the value through the usual reply. Unit arguments, full module markers
-and ordinary generic arguments retain their checked identities. A composite
-result returns `NotResourceResult`: this accessor does not guess a nested
-resource position. Already issued references may be returned inside compatible
-typed tuples, sequences, records and packed values. A typed function may capture
-references; an opaque or wildcard data position cannot hide one, including in
-captures or partially applied arguments. This shape check does not validate an
-arbitrary supplied function body's behavior.
+resource result, including its generic arguments. The Host validates or
+acquires its own entry, then wraps its opaque entry key with
+`domain.issue(&ty, key)` and returns the value through the usual reply. Unit
+arguments, full module markers and ordinary generic arguments retain their
+checked identities. A composite result returns `NotResourceResult`: this
+accessor does not guess a nested resource position. For new composite issuance
+use [`pending_resource_type_at`](#new-resources-inside-composite-replies).
+Already issued references may be returned inside compatible typed tuples,
+sequences, records and packed values. A typed function may capture references;
+an opaque or wildcard data position cannot hide one, including in captures or
+partially applied arguments. This shape check does not validate an arbitrary
+supplied function body's behavior.
 
 `registered` finds an already materialized marked zero-parameter meaning by
-exact namespace and name. An unused declaration may return `NotFound`; a generic
-type returns `NotMonomorphic`. It does not register a type, lower source eagerly
-or accept an arbitrary `ir::Type`. Both witness routes describe language type
-identity only. Ordinary nominal arguments carry identity too; matching labels or
-reused numeric slots are insufficient.
+exact namespace and name. An unused declaration may return `NotFound`; a
+generic type returns `NotMonomorphic`. It does not register a type, lower
+source eagerly or accept an arbitrary `ir::Type`. Registered, direct and
+projected witnesses describe language type identity only. Ordinary nominal
+arguments carry identity too; matching labels or reused numeric slots are
+insufficient.
 
-The call's resource-relevant expected fields, arguments and diagnostic site are
-frozen before its request. Nonconcrete resource identity refuses before that
-request. Host input uses the same admission rules before module initialization
-or the main body; invalid input arity still leaves a previous run untouched.
-New resource type expansion and matching use the Machine budget. Budget refusal
-before a request prevents that request; refusal while admitting a reply follows
-an effect the Host has already performed and does not roll it back. An unbudgeted
-Machine remains unbounded. Trusted Rust registration and entry-key work are
-outside Machine accounting. Existing predicate metadata copying is also outside
-this new-resource-work bound; it is not a bound on every historical VM or Host
-traversal.
+The call's resource-relevant expected fields, arguments and diagnostic site
+are frozen before its request. Nonconcrete resource identity refuses before
+that request. Host input uses the same admission rules before module
+initialization or the main body; invalid input arity still leaves a previous
+run untouched. New resource type expansion and matching use the Machine
+budget. Budget refusal before a request prevents that request; refusal while
+admitting a reply follows an effect the Host has already performed and does
+not roll it back. An unbudgeted Machine remains unbounded. Trusted Rust
+registration and entry-key work are outside Machine accounting.
+Guard/predicate copying has its separately documented logical work schedule;
+this is not a bound on every historical VM traversal or external Host
+operation.
 
 A Tables context keeps identity across runs, including a new Machine using the
 same tables. A Session fork or fresh Tables context gets fresh identity even
@@ -539,26 +544,30 @@ distinguish the outcome errors; the latter recommends `||` or `|:`.
 starts loading host files directly from a directory, without interpreting the
 path as source or commands. Drivers call it before feeding session input and
 service each `Out::File { id, path }` with `Repl::file(&id, &path, text)`.
-`Out::Call { id }` is answered with `Repl::answer(&id, callback)`. These methods
-return a `Result`; a stale or wrong-kind identity, or wrong file path, returns
-`DriveError::WrongRequest` without changing the request or invoking the callback.
-Ordinary executable units yield `Out::Start { run, resume }` before runtime execution
-and `Out::End { run, result, resume }` before presentation, failed-line withdrawal or
-next buffered acceptance. Handle each boundary and process `Repl::resume(&resume)`
-outputs in order; stale/foreign continuations return `WrongContinuation` unchanged.
-`RunEnd::Success` includes language `Err` data; Fault carries the actual VM fault;
-Abandoned reports an unfinished run stopped by interrupt/close. Interrupt preserves
-an existing terminal or Reset. File/Call IDs and boundary continuations are distinct.
-Valid host replacement yields `Out::Reset` before old language state is discarded;
-acknowledge after owner disposal, then replay proceeds through Start/End using cached
-sources and refusing Host calls. Invalid declarations preserve the old session.
-`close()` yields Exit Reset, possibly after an Abandoned End; computed End/Reset
-returns Busy unchanged. `flush()` only drains input: at EOF drain it, then close and
-drain Reset through Out::Exit. Built-in EOF/error paths perform explicit closing;
-read errors retain exit2 after terminal restoration. After Exit, Vec APIs are inert,
-close is idempotent and host replacement returns Closed. Start excludes bounded
-pure checking/compile evaluation. The built-in Host adapter auto-acknowledges and
-has no cleanup hook; actual resource owners need a lifecycle-aware repl-core driver.
-No GC callback, physical cleanup, native preemption, rollback or owner authorization
-is implied; Standard owner-adapter qualification and real-resource proof remain
-separate gates. Interior NUL in a host-directory path is rejected.
+`Out::Call { id }` is answered with `Repl::answer(&id, callback)`. These
+methods return a `Result`; a stale or wrong-kind identity, or wrong file path,
+returns `DriveError::WrongRequest` without changing the request or invoking
+the callback. Ordinary executable units yield `Out::Start { run, resume }`
+before runtime execution and `Out::End { run, result, resume }` before
+presentation, failed-line withdrawal or next buffered acceptance. Handle each
+boundary and process `Repl::resume(&resume)` outputs in order; stale/foreign
+continuations return `WrongContinuation` unchanged. `RunEnd::Success` includes
+language `Err` data; Fault carries the actual VM fault; Abandoned reports an
+unfinished run stopped by interrupt/close. Interrupt preserves an existing
+terminal or Reset. File/Call IDs and boundary continuations are distinct.
+Valid host replacement yields `Out::Reset` before old language state is
+discarded; acknowledge after owner disposal, then replay proceeds through
+Start/End using cached sources and refusing Host calls. Invalid declarations
+preserve the old session. `close()` yields Exit Reset, possibly after an
+Abandoned End; computed End/Reset returns Busy unchanged. `flush()` only
+drains input: at EOF drain it, then close and drain Reset through Out::Exit.
+Built-in EOF/error paths perform explicit closing; read errors retain exit2
+after terminal restoration. After Exit, Vec APIs are inert, close is
+idempotent and host replacement returns Closed. Start excludes bounded pure
+checking/compile evaluation. The built-in Host adapter auto-acknowledges and
+has no cleanup hook; actual resource owners need a lifecycle-aware repl-core
+driver. No GC callback, physical cleanup, native preemption, rollback or owner
+authorization is implied. The lifecycle conformance driver demonstrates actual
+resource ownership using these boundaries; it does not install a universal
+owner in the built-in adapter. Interior NUL in a host-directory path is
+rejected.

@@ -77,5 +77,18 @@ language rules unless specified.
    host or explicit `fault`. A script cannot catch it.
 4. `Err e` and `Nothing` are ordinary values, not Faults.
 
-Diagnostics identify a source and span; independent errors may be
-collected, but a unit with any error never executes.
+Diagnostics identify a source and span; independent errors may be collected,
+but a unit with any error never executes.
+
+## Resource rules
+
+[Syntax](02-syntax.md#resource-declarations) owns the contextual declaration;
+[types](03-types.md#resource-identity) owns exact checked identity;
+[members](04-members.md#resource-destinations) owns conversion restrictions;
+[Host](09-host.md#environment-and-resources) owns authorization and lifecycle.
+[Embedding](../api/09-embed.md#new-resources-inside-composite-replies)
+documents the qualified VM issuance/projection API, and
+[conformance](10-conformance.md#resource-boundaries) maps executable
+observations and the bounded finite recursion cases. Current native/LLVM
+resource refusal is an implementation boundary, not ordinary backend
+equivalence or a promise of future resource support.

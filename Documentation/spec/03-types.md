@@ -18,11 +18,12 @@ an operation means; where operations differ it is a new meaning, as
 limits.
 
 A **place** holds a value and declares a type: a parameter, a field, a
-constructor payload, an element, an annotated binding, a declared result,
-the host boundary, the payload fallback of `||`. Every value in a place
-meets its limits; outside a hatch (T4) values and places are immutable, so
-this never goes stale. The meaning belongs to the value, the limits to the
-place: `2` is an `Integer` and may enter every place whose limits it meets.
+constructor payload, an element, an annotated binding, a declared result, the
+host boundary, the payload fallback of `||`. Every value in a place meets its
+limits; outside a hatch (T4) values and places are immutable, so its language
+type remains fixed. This does not keep a Host entry live or authorize a later
+operation on it. The meaning belongs to the value, the limits to the place:
+`2` is an `Integer` and may enter every place whose limits it meets.
 
 ## Type forms
 
@@ -63,11 +64,17 @@ over `self`; [syntax](02-syntax.md) gives their precedence:
 
 ## Declared meanings
 
-`type Name { members }` declares a meaning: a record, whose lowercase
-fields are its constructor's spots in order, or a sum, whose uppercase
-members are its constructors; a one-field record is the newtype.
-[Limits](06-limits.md) owns the other forms of `type`. Value types are
-nonrecursive; whether a function type may make one indirect is T3's.
+`type Name { members }` declares a meaning: a record, whose lowercase fields
+are its constructor's spots in order, or a sum, whose uppercase members are
+its constructors; a one-field record is the newtype. [Limits](06-limits.md)
+owns the other forms of `type`. The checker admits finite nominal templates
+that refer back to their declared meaning, including changing arguments such
+as `N<Vec<T>>` and `N<Rd<T>>`. This is not polymorphic recursive function
+inference or permission for cyclic value graphs. The bounded finite-value
+cases in
+[conformance](10-conformance.md#finite-recursive-resource-conformance) admit
+ordinary depths 0–2 and a genuine nested resource alias, rejecting incorrect
+shapes. Broader recursive evaluation and detection termination remain T3's.
 `String` is the prelude's `type String { bytes: Vec<U8> }` with a private
 field and valid UTF-8; `Bool` is `type Bool { True, False }`. The language
 names no resource type; [embedding](09-host.md) says how a host declares one.
@@ -245,3 +252,27 @@ family, including one learned later; with none, `m = [:1]` is the check
 error "outcome family unknown". `Just`, `Nothing`, `Ok` and `Err` are
 ordinary constructors and fix a family. `Either` has no bracket form, as it
 has no `|:`.
+
+## Resource identity
+
+A trusted Host declares `type resource Rd<T>` for a genuine reference. An
+unmarked opaque `Packet` is ordinary data; opacity alone does not make a
+resource. A marked reference cannot be manufactured by a record constructor,
+literal, `default` or automatic byte Codec conversion. Supplied Host
+operations may explicitly return one, subject to the declared boundary type.
+
+Its checked identity includes the marked declaration's context and all generic
+arguments, including unit, full module references and ordinary nominal
+arguments. Names, table indexes and an entry key alone do not establish that
+identity. A Session fork/query context has fresh identity; withdrawing a
+declaration retires its stamp, without retiring surviving earlier
+declarations. The Host may rewrap a still-live entry using a validated witness
+in a fresh context; that is not a new acquisition and cannot revive a closed
+entry.
+
+Typed tuples, arrays, sequences, records, packed values and function captures
+may retain genuine aliases. An opaque or wildcard data position cannot conceal
+one, including inside closure captures or filled arguments. A type witness
+proves language identity, not payload provenance, permissions, grants or
+liveness. [Host](09-host.md#environment-and-resources) owns those independent
+checks.

@@ -113,7 +113,7 @@ anywhere else it is `String`.
 | numeric meaning | a number of another numeric meaning | exact, or Fault; a literal is checked at compile time |
 | a `Read` | word or `String` | Fault |
 | `String`, `Vec<U8>` | any `T` claiming `Show` | never |
-| host-declared type | `Vec<U8>` via the host codec | Fault |
+| unmarked host-declared data type | `Vec<U8>` via the host codec | Fault |
 | `Vec<U8>` | `String` | never |
 | a packed type | a meaning that claims its limits | never |
 
@@ -248,3 +248,15 @@ f: F64 = 2             # 2.0, by F64's `literal`
 k: I64 = round 2.5     # 2, by the number row, then the limit
 g: I46 -> I46 = x => x # an unknown type, not a variable
 ```
+
+### Resource destinations
+
+The automatic byte-to-Host Codec row applies to unmarked data, including
+opaque `Packet`, not a marked resource destination. Neither record syntax,
+structural conversion, a constant, a literal nor a derived default mints a
+resource reference. This does not ban an explicitly supplied Host `Read`,
+`default`, `show` or factory operation: it executes under its declared
+contract, and its returned value is admitted against the frozen result type.
+No reverse Codec row or general ban on ordinary metadata follows. [Resource
+identity](03-types.md#resource-identity) and [Host
+duties](09-host.md#environment-and-resources) remain separate.

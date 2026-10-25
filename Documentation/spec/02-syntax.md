@@ -248,3 +248,16 @@ type Point {
     pub y: I64,
 }
 ```
+
+### Resource declarations
+
+`type resource Name<Params>` marks a Host reference type. `resource` remains a
+`NAME`, not a keyword: after `type` it is a modifier only when the next raw
+token is another singleton name other than `where`. Whitespace is allowed; a
+retained newline breaks the pair, while a lexical backslash join removes that
+newline. Thus `type resource` declares a type named `resource`, and `resource
+= 1` is an ordinary binding. Parsing recognizes marked declarations
+independently of origin; checking admits them only in trusted Host/commands
+declarations, not main, Session/query input or loaded script files.
+[Types](03-types.md#resource-identity) and
+[Host](09-host.md#environment-and-resources) own their meaning and authority.

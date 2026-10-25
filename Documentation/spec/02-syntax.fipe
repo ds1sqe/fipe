@@ -1,4 +1,4 @@
-# Lexical and syntax corpus, not a runnable program for Fipe 0.1.0.
+# Lexical and syntax corpus for Fipe 0.2; not a runnable or fully checked program.
 # The opening example lives in tests/fixtures/opening.fipe; this file
 # covers the remaining surface forms.
 use fs
@@ -128,3 +128,12 @@ with cwd /tmp {
 if ready { True } else { False }
 compare = x y => x <= y
 find x || fault "no x"
+
+# Marked declarations are syntax-only here; main/File checking rejects them.
+pub type resource Table
+pub type resource Handle<Api>
+type resource
+resource = 1
+type DataWithResourceField { resource: Integer }
+type resource \
+JoinedHandle

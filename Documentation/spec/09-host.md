@@ -139,17 +139,39 @@ it. `with key value { body }` evaluates its body under a child environment
 for that evaluation only; lookup, mutation, fallback and permissions are
 declared host operations.
 
-A host with resources declares an opaque nominal type and the functions
-that make one from a number or word or refine it to an API, as the
-conformance host's `Rd` and `Rd<fs>`; the language names none. A resource
-value carries identity, not a handle. The host opens, caches and closes
-capabilities; the backend validates replies against their declared types,
-and a reply that does not fit Faults `Host` "the reply is not a T" at the
-call. It
-cleans up on success and Fault; a failed cleanup is written to the error
-output and changes neither the value nor the Fault. A closure captures
-values, not the environment: called after its `with` ended, it sees the
-environment open at the call.
+A trusted Host/commands interface marks a reference with `type resource
+Rd<T>`. An unmarked opaque type is ordinary data. A supplied factory may take
+a number, word or other data, but only the Host can authorize an entry and
+issue its genuine reference. Scripts have no resource literal or structural
+constructor. Returned references carry exact checked context and generic
+identity, not payloads or addresses; the backend admits them against the
+call's frozen expected type.
+
+The Host owns private payloads, issuer/domain and entry generations,
+current-call grants, liveness, borrow/access leases and cleanup. It checks
+these before payload access on every operation; a correctly typed alias may
+still be closed or denied. Cloning, capturing or dropping a Fipe alias neither
+transfers ownership nor closes an entry. A successful run retains its new
+entries in the owning session until explicit close or disposal. Fault or
+abandonment revokes only entries newly created by that run, including entries
+not returned; earlier successful entries survive. Explicit close logically
+revokes every alias even if physical release fails. Outstanding leases may
+delay release, and cleanup failure cannot restore authority. Earlier Host
+effects and explicit closes are not rolled back.
+
+Resource-relevant result layouts, required identities and the diagnostic call
+site are frozen before a Call. A required nonconcrete resource identity
+refuses before the callback. A Host can issue a registered monomorphic type or
+obtain a generic witness from that pending frozen expectation, including
+inside composite results; the Rust spelling and path/error rules belong to
+[embedding](../api/09-embed.md#new-resources-inside-composite-replies).
+Snapshot evidence does not grant access or prove backend portability. Offline
+Unit or source transport may preserve declarations without loading/executing
+providers or granting authority. Core stores no payload or automatic owner
+ledger.
+
+A closure captures values, not the environment: called after its `with` ended,
+it sees the environment open at the call.
 
 ## Input, output and observation
 
@@ -176,13 +198,19 @@ declares its own modules and documents its contract in its
 
 ## Budget
 
-The host may supply a budget before a run; a script cannot raise it.
-With none, the run is unbounded. With one, the run Faults `Budget` before
-the first action it cannot pay, with that action's source location;
-earlier effects stand, and no runtime check or member call escapes the
-budget. What one unit measures is the backend's and is documented with
-it: the VM's is in the [MIR chapter](../api/08-mir.md) §Running. A unit
-common to every backend, and limits on memory or time, are open (H1).
+The host may supply a budget before a run; a script cannot raise it. With
+none, the run is unbounded. With one, the run Faults `Budget` before the first
+action it cannot pay, with that action's source location; earlier effects
+stand. Newly introduced resource capture, selected projection and admission
+work is charged before expansion, copying or comparison. A refusal before a
+Call prevents that callback; reply admission follows any effect the Host has
+already performed. Projection Budget refusal remains pending until normal
+reply/answer or abandonment, and increasing the budget does not clear that
+latch. This is not a bound on external Host work, physical release, or every
+historical ordinary shape/metadata traversal. What one unit measures is the
+backend's and is documented with it: the VM's is in the [MIR
+chapter](../api/08-mir.md) §Running. A unit common to every backend, and
+limits on memory or time, are open (H1).
 
 The host also sets the compile budget and the strict session
 ([checks](07-checks.md) §Modes). The compile budget bounds each
@@ -193,9 +221,9 @@ acceptance.
 
 ## Backend equivalence
 
-Given the same checked unit, host responses, input and environment, a run
-that no budget stops produces the same observation on every conforming
-backend:
+Given the same checked unit, host responses, input and environment, a run that
+no budget stops produces the same observation on conforming backends which
+support that unit:
 
 ```text
 observation = (returned value OR source-located Fault,
@@ -205,10 +233,15 @@ observation = (returned value OR source-located Fault,
 
 Where a budget stops a run is the backend's.
 
-Addresses, allocation and instruction layout are not observations; a
-backend may optimize only while preserving the observation. The checker
-emits one typed intermediate form. The VM is the first backend and the
-oracle; the native backend (`tools/native`, x86-64 Linux) is the second,
-and its runs equal the VM's observation and units. An LLVM backend would
-be a separate package.
-Host nondeterminism is open in H1.
+Addresses, allocation and instruction layout are not observations; a backend
+may optimize only while preserving the observation. The checker emits one
+typed intermediate form. The VM is the first backend and the oracle; the
+native backend (`tools/native`, x86-64 Linux) is the second, and supported
+runs preserve the VM's observation, not necessarily its budget units. LLVM is
+a separate implementation in `tools/llvm`. Current native and LLVM entry
+points reject any program containing marked resource declarations, including
+private unused declarations, before execution. Raw Unit metadata can roundtrip
+without being executable. Ordinary unmarked data remains supported. This
+describes current refusal, not a promise of future resource support or a
+settled broader platform policy; scalar FFI does not gain a resource wire
+representation. Host nondeterminism is open in H1.

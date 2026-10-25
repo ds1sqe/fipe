@@ -4034,3 +4034,162 @@ fn resource_projection_retired_argument_index_cannot_rebind_old_witness() {
         Outcome::Done(Err(_))
     ));
 }
+
+// Finite checked nominal replies, not arbitrary recursive normalization.
+fn recursion_probe_nodes(
+    program: &fipe::mir::Program,
+) -> (usize, usize, usize) {
+    let tables = program.tables.borrow();
+    let (meaning, nominal) = tables
+        .meanings
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.label == "N")
+        .expect("checked N");
+    let constructor = |name| {
+        nominal
+            .constructors
+            .iter()
+            .position(|item| item.label == name)
+            .expect("checked constructor")
+    };
+    (meaning, constructor("Leaf"), constructor("Next"))
+}
+
+fn recursion_probe_value(ids: (usize, usize, usize), depth: usize) -> Value {
+    let (meaning, leaf, next) = ids;
+    let mut payload = Value::Int(1);
+    for _ in 0..depth {
+        payload = Value::seq(vec![payload]);
+    }
+    let mut value = projection_record(meaning, leaf, vec![payload]);
+    for _ in 0..depth {
+        value = projection_record(meaning, next, vec![value]);
+    }
+    value
+}
+
+fn recursion_probe_reply(
+    program: &fipe::mir::Program,
+    value: &Value,
+    accepts: bool,
+) {
+    let mut machine = Machine::new(Some(100_000));
+    projection_request(&mut machine, program, "get");
+    let outcome = machine.reply(program, Reply::Value(Ok(value.clone())));
+    eprintln!("finite reply accepts={accepts}: {outcome:?}");
+    if accepts {
+        assert!(
+            matches!(outcome, Outcome::Done(Ok(actual)) if actual == *value)
+        );
+    } else {
+        assert!(matches!(
+            outcome,
+            Outcome::Done(Err(fipe::vm::Fault {
+                reason: fipe::value::Reason::Host(_),
+                ..
+            }))
+        ));
+    }
+}
+
+#[test]
+fn resource_recursion_conformance_ordinary_depths_and_shape_negatives() {
+    let program = program(
+        "pub type N<T> { Leaf(value:T), Next(value:N<Vec<T>>) }\npub get: N<Integer>",
+        "use csv\ncsv.get",
+    );
+    let ids = recursion_probe_nodes(&program);
+    for depth in 0..=2 {
+        recursion_probe_reply(
+            &program,
+            &recursion_probe_value(ids, depth),
+            true,
+        );
+    }
+    let (meaning, leaf, next) = ids;
+    for bad in [
+        projection_record(meaning, leaf, vec![Value::text("wrong scalar")]),
+        projection_record(meaning, usize::MAX, vec![Value::Int(1)]),
+        projection_record(meaning, leaf, vec![]),
+        projection_record(meaning, next, vec![Value::Int(1)]),
+        projection_record(
+            meaning,
+            next,
+            vec![projection_record(meaning, leaf, vec![Value::Int(1)])],
+        ),
+    ] {
+        recursion_probe_reply(&program, &bad, false);
+    }
+}
+
+#[test]
+fn resource_recursion_conformance_concrete_nested_alias_and_scalar_negative() {
+    let program = program(
+        "pub type resource Rd<T>\npub type N<T> { Leaf(value:T), Next(value:N<Rd<T>>) }\npub acquire: Rd<Integer>\npub get: N<Integer>",
+        "use csv\nheld = csv.acquire\ncsv.get",
+    );
+    let (meaning, leaf, next) = recursion_probe_nodes(&program);
+    for correct in [true, false] {
+        let mut machine = Machine::new(Some(100_000));
+        projection_request(&mut machine, &program, "acquire");
+        let witness = machine.pending_resource_type().unwrap();
+        let alias = ResourceDomain::new().issue(
+            &witness,
+            Rc::from(&b"finite recursion private live entry"[..]),
+        );
+        let outcome = machine.reply(&program, Reply::Value(Ok(alias.clone())));
+        let Outcome::Request(fipe::embed::Request::Call {
+            declaration, ..
+        }) = outcome
+        else {
+            panic!("get after one actual acquisition: {outcome:?}");
+        };
+        assert_eq!(
+            program.tables.borrow().declarations[declaration].label,
+            "get"
+        );
+        let payload = if correct {
+            alias.clone()
+        } else {
+            Value::Int(1)
+        };
+        let reply = projection_record(
+            meaning,
+            next,
+            vec![projection_record(meaning, leaf, vec![payload])],
+        );
+        let outcome = machine.reply(&program, Reply::Value(Ok(reply.clone())));
+        eprintln!("nested genuine alias correct={correct}: {outcome:?}");
+        if correct {
+            let Outcome::Done(Ok(actual)) = outcome else {
+                panic!("concrete nested reply: {outcome:?}");
+            };
+            assert_eq!(actual, reply);
+            let Value::Record(outer) = &actual else {
+                panic!("Next record")
+            };
+            let Value::Record(inner) = &outer.fields[0] else {
+                panic!("Leaf record")
+            };
+            let Value::Resource(retained) = &inner.fields[0] else {
+                panic!("genuine alias")
+            };
+            let Value::Resource(original) = &alias else {
+                unreachable!()
+            };
+            assert!(Rc::ptr_eq(retained, original));
+        } else {
+            assert!(matches!(
+                outcome,
+                Outcome::Done(Err(fipe::vm::Fault {
+                    reason: fipe::value::Reason::Host(_),
+                    ..
+                }))
+            ));
+        }
+        assert!(
+            matches!(alias, Value::Resource(ref reference) if reference.resource_type() == &witness)
+        );
+    }
+}

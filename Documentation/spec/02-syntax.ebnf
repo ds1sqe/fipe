@@ -1,7 +1,8 @@
 (* Token grammar; continuation, adjacency, the binding rule, the case rule
    and the list newline rule are in syntax.md. `newlines` marks where a
    list admits line breaks. A quoted keyword is a token spelling, except
-   "where", a NAME read as a word only in a type item (lexical.md).
+   "where" and contextual "resource", which remain NAME tokens
+   (01-lexical.md and the resource_modifier side condition below).
    INTEGER, FLOAT and STRING include a prefix or suffix; `b"…"` is a
    STRING with the prefix `b`. *)
 file = newlines, [ inner_doc ], { entry, NEWLINE, newlines }, [ entry ], EOF ;
@@ -13,7 +14,12 @@ newlines = { NEWLINE } ;
 item = import | type_item | impl_item ;
 declaration = NAME, ":", annotation ;
 import = "use", NAME, { NAME }, [ INTEGER ] ;
-type_item = "type", NAME, [ type_parameters ], [ type_body ] ;
+type_item = "type", [ resource_modifier ], NAME, [ type_parameters ], [ type_body ] ;
+resource_modifier = "resource" ;
+(* Contextual NAME, not a keyword: recognized only when the next raw token is
+   another singleton NAME other than where. A retained LF breaks this pair;
+   a lexical backslash join removes it. Checking restricts marked types to
+   trusted Host/commands declarations. *)
 type_body = [ ":", type ], "{", newlines, [ members ], newlines, "}",
             [ limits ]
           | ":", type, [ limits ]

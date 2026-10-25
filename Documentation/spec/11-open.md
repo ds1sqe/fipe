@@ -42,18 +42,23 @@ Purity for the compile phase is [checks](07-checks.md) §Phases.
 
 ## T3 — Declarations
 
-A trait is a type (ruled 2026-09-29), and every operation lives in a
-type: [types](03-types.md), [limits](06-limits.md), [checks](07-checks.md) and
+A trait is a type (ruled 2026-09-29), and every operation lives in a type:
+[types](03-types.md), [limits](06-limits.md), [checks](07-checks.md) and
 [members](04-members.md). Still open from T3: `Self<A>`, inferred Bool
-arguments, default-expression evaluation and termination of recursive
-type detection. Binding is ruled 2026-09-30: a function spot uses only its
-declared default, a record field also its type default; a limited type
-default requires proved entry. A trailing Vec's single operand tries the
-whole list before one element; no operand leaves it for pipe and defaults.
-`Maybe` and `Result` are valid parameter types. Host default errors are
-reported at the first stage needing them, naming the spot; program defaults
-are checked at their declaration ([evaluation](08-evaluation.md),
-[types](03-types.md), [host](09-host.md)).
+arguments, default-expression evaluation and termination of recursive type
+detection. The checker admits changing-argument nominal templates; the
+[finite-value conformance
+table](10-conformance.md#finite-recursive-resource-conformance) records
+bounded ordinary depths 0–2 and a genuine nested resource alias. Those
+observations justify neither a blanket recursion ban nor unrestricted runtime
+support. Binding is ruled 2026-09-30: a function spot uses only its declared
+default, a record field also its type default; a limited type default requires
+proved entry. A trailing Vec's single operand tries the whole list before one
+element; no operand leaves it for pipe and defaults. `Maybe` and `Result` are
+valid parameter types. Host default errors are reported at the first stage
+needing them, naming the spot; program defaults are checked at their
+declaration ([evaluation](08-evaluation.md), [types](03-types.md),
+[host](09-host.md)).
 
 Ruled 2026-09-30: a host type that takes an API reference declares its
 parameter uppercase, `type Rd<Api>`; the use site `Rd<fs>` stays
@@ -107,18 +112,21 @@ generated for a finite range, the one code a limited type's name holds
 
 ## E3 — Effects, state, laziness, parallelism, async
 
-A direction, not a rule; nothing here becomes syntax or a type in the
-core. Purity is one static bit per scheme ([checks](07-checks.md)
-§Phases). Mutation is never in the language; state is a host resource.
-Evaluation is strict; delay is `() => …`; a host `Stream<T>` is pulled on
-demand. `map f` with pure `f` may run in parallel without syntax; impure
-stages stay in order. No coloring: a host call is the host's to perform,
-as a syscall is the kernel's. Open: whether the run blocks in the host or
-suspends until its reply (the VM suspends,
-[embedding](../api/09-embed.md); the native backend blocks on its
-host's reply); a run left waiting on a reply that never
-comes, and cancelling it; asynchronous hosts and threads, and with them
-`Task<T>`. `Stream`, `Task` and `Cell` are declared by the host (09).
+A direction, not a rule; nothing here becomes syntax or a type in the core.
+Purity is one static bit per scheme ([checks](07-checks.md) §Phases). Mutation
+is never in the language; state is a host resource. Evaluation is strict;
+delay is `() => …`; a host `Stream<T>` is pulled on demand. `map f` with pure
+`f` may run in parallel without syntax; impure stages stay in order. No
+coloring: a host call is the host's to perform, as a syscall is the kernel's.
+Open: whether the run blocks in the host or suspends until its reply (the VM
+suspends, [embedding](../api/09-embed.md); the native backend blocks on its
+host's reply); a run left waiting on a reply that never comes, and
+asynchronous hosts and threads, and with them `Task<T>`. The existing
+embedding boundary supports explicit abandonment and owner disposal: success
+retains entries, Fault/abandon revokes only the run's NEW entries, and close
+revokes aliases before physical release. This is not automatic GC cleanup,
+effect rollback, native preemption or an async task API. `Stream`, `Task` and
+`Cell` are declared by the host (09).
 
 ## P1 — Prelude breadth (from the dogfood scripts)
 
@@ -137,23 +145,22 @@ is read by a pattern only, no projection syntax
 
 Ruled 2026-09-29: `use` runs a module once where it stands and a cycle is a
 check error, and the compile budget and the strict session are host inputs
-([host](09-host.md)). Ruled 2026-10-12: the budget is
-optional, its unit is the backend's, and where it stops a run is not an
-observation ([host](09-host.md) §Budget); the compile budget defaults to
-2^20 steps. Open: a unit common to every
-backend; limits on memory or time; host nondeterminism (a reply that
-differs between runs). Ruled 2026-09-30: the lexer has no
-bound on a number ([lexical](01-lexical.md) §Numbers). Ruled 2026-10-21:
-module identity, closure capture of the environment, cleanup failure,
-reply validation and codec failure ([host](09-host.md)); cancellation is
-E3. Every
-host-declared type admits the codec cast (ruled 2026-09-30). No Reovim
-paths, wire hashes or placeholder budget numbers become language constants.
-Tests replay one host response/effect trace on each backend. From the
-dogfood scripts: an `Entry` field telling a directory from a file, a
-directory's size as its contents', and a modification time or a pinned
-clock are changes to the entry's shape, which the user's ruling R2 of
-plan 15 keeps as the conformance host's (2026-10-22, held again
-2026-10-23); they stay out until that ruling changes. A `String` reads as a `Sink` by its path, so
-a shadowed `out` writes a file named by the data: the contract states
-it and the tour warns.
+([host](09-host.md)). Ruled 2026-10-12: the budget is optional, its unit is
+the backend's, and where it stops a run is not an observation
+([host](09-host.md) §Budget); the compile budget defaults to 2^20 steps. Open:
+a unit common to every backend; limits on memory or time; host nondeterminism
+(a reply that differs between runs). Ruled 2026-09-30: the lexer has no bound
+on a number ([lexical](01-lexical.md) §Numbers). Ruled 2026-10-21: module
+identity, closure capture of the environment, cleanup failure, reply
+validation and codec failure ([host](09-host.md)); cancellation is E3.
+Unmarked Host data types admit the automatic Codec cast; marked resource
+destinations do not ([members](04-members.md#resource-destinations)). No
+Reovim paths, wire hashes or placeholder budget numbers become language
+constants. Tests replay one host response/effect trace on each backend. From
+the dogfood scripts: an `Entry` field telling a directory from a file, a
+directory's size as its contents', and a modification time or a pinned clock
+are changes to the entry's shape, which the user's ruling R2 of plan 15 keeps
+as the conformance host's (2026-10-22, held again 2026-10-23); they stay out
+until that ruling changes. A `String` reads as a `Sink` by its path, so a
+shadowed `out` writes a file named by the data: the contract states it and the
+tour warns.
