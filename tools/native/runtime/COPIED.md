@@ -23,7 +23,7 @@ source is still hashed, and the drift fixtures of the backend
 | `src/ops/slots.rs` | `src/vm/step.rs` | `02ca45d9cbf41787` | a field read, a switch's key, an unset global's body run first |
 | `src/ops/slots.rs` | `src/vm/globals.rs` | `9d804dba464e8e36` | the globals a step reads, before it runs |
 | `src/ops/calls.rs` | `src/vm/calls.rs` | `c4ec8e276183780b` | the callee kinds, selected rows, receiver admission, eval/apply and ordered guard admission, partial/beyond transfers and definition invocation |
-| `src/ops/calls.rs` | `src/vm/resource.rs` | `d778950e9dfc691e` | charged iterative semantic C/closure meanings and raw predicate Type materialization: Read/Finish, substitution, limbs, Session modes and guarded partial roots |
+| `src/ops/calls.rs` | `src/vm/resource.rs` | `7f91a20e6626da26` | charged iterative semantic C/closure meanings and raw predicate Type materialization: Read/Finish, substitution, limbs, Session modes and guarded partial roots |
 | `src/ops/calls.rs` | `src/vm/step.rs` | `02ca45d9cbf41787` | a call terminator: its witnesses and result type substituted |
 | `src/ops/calls.rs` | `src/vm/pending.rs` | `af5bd18fb7e68618` | supplied targets/caller result, lazy source-owner/index guard selection and ordered current-argument updates; synchronous instead of resumed frames |
 | `src/ops/calls.rs` | `src/vm/drive.rs` | `01a45314db002f16` | what an invocation runs |
@@ -38,7 +38,7 @@ source is still hashed, and the drift fixtures of the backend
 | `src/ops/higher.rs` | `src/vm/pending.rs` | `af5bd18fb7e68618` | *rewritten*: `map`, `fold`, `filter`, `sum` |
 | `src/ops/higher.rs` | `src/vm/order.rs` | `23d2ba79df9f369f` | *rewritten*: `sort` (the VM's merge order), `count` |
 | `src/ops/predicates.rs` | `src/vm/predicates.rs` | `a25d6f881c760ed9` | *rewritten*: root snapshot and per-component preparation, immediate leaf payment, creator-bound witnesses; branch and checked conversion verdicts |
-| `src/ops/predicates.rs` | `src/vm/resource.rs` | `d778950e9dfc691e` | charged raw Predicate snapshot/preparation traversal; Type events delegate to the existing `calls.rs` engine |
+| `src/ops/predicates.rs` | `src/vm/resource.rs` | `7f91a20e6626da26` | charged raw Predicate snapshot/preparation traversal; Type events delegate to the existing `calls.rs` engine |
 | `src/ops/predicates.rs` | `src/value/resource.rs` | `15ccd591dcf21aee` | iterative owned Predicate forest cleanup; Test meanings drain through the existing Type forest |
 | `src/ops/entries.rs` | `src/vm/entries.rs` | `0e13913df15849b8` | projected components and creator-bound guards; ordinary snapshot before empty-component capture/run bypass, function-local attachment before snapshot |
 | `src/ops/entries.rs` | `src/vm/step.rs` | `02ca45d9cbf41787` | the `Enter` statement |

@@ -2866,11 +2866,14 @@ mod tests {
 
     #[test]
     fn unrelated_ordinary_records_do_not_allocate_production_stamps() {
+        use core::fmt::Write as _;
         let mut source = alloc::string::String::new();
         for index in 0..128 {
-            source.push_str(&alloc::format!(
+            write!(
+                &mut source,
                 "type Data{index} {{ n: Integer }}\nvalue{index} = Data{index} {index}\n"
-            ));
+            )
+            .unwrap();
         }
         source.push_str("value127");
         let mut session =
