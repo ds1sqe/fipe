@@ -38,16 +38,16 @@ panic = "abort"
 
 [workspace.package]
 rust-version = "1.98.1"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ds1sqe/fipe"
 
 [workspace.dependencies]
-fipe = { version = "=0.2.0-dev.2", path = "." }
-fipe-host = { version = "=0.2.0-dev.2", path = "tools/host" }
-fipe-native-core = { version = "=0.2.0-dev.2", path = "tools/native-core" }
-fipe-llvm = { version = "=0.2.0-dev.2", path = "tools/llvm" }
-fipe-native = { version = "=0.2.0-dev.2", path = "tools/native" }
-fipe-repl-core = { version = "=0.2.0-dev.2", path = "tools/repl-core" }
-fipe-repl = { version = "=0.2.0-dev.2", path = "tools/repl" }
+fipe = { version = "=0.2.0-dev.3", path = "." }
+fipe-host = { version = "=0.2.0-dev.3", path = "tools/host" }
+fipe-native-core = { version = "=0.2.0-dev.3", path = "tools/native-core" }
+fipe-llvm = { version = "=0.2.0-dev.3", path = "tools/llvm" }
+fipe-native = { version = "=0.2.0-dev.3", path = "tools/native" }
+fipe-repl-core = { version = "=0.2.0-dev.3", path = "tools/repl-core" }
+fipe-repl = { version = "=0.2.0-dev.3", path = "tools/repl" }

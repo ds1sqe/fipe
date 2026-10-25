@@ -41,11 +41,11 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "fipe"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 
 [[package]]
 name = "fipe-cli"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
  "fipe-host",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "fipe-dap"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
  "fipe-host",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "fipe-ffi"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
  "fipe-llvm",
@@ -74,14 +74,14 @@ dependencies = [
 
 [[package]]
 name = "fipe-host"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
 ]
 
 [[package]]
 name = "fipe-llvm"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
  "fipe-native-core",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "fipe-lsp"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
  "lsp-types",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "fipe-native"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
  "fipe-llvm",
@@ -108,14 +108,14 @@ dependencies = [
 
 [[package]]
 name = "fipe-native-core"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
 ]
 
 [[package]]
 name = "fipe-native-rt"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
  "fipe-host",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "fipe-repl"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
  "fipe-repl-core",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "fipe-repl-core"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "fipe",
 ]
@@ -335,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-fipe"
-version = "0.2.0-dev.2"
+version = "0.2.0-dev.3"
 dependencies = [
  "cc",
  "fipe",
