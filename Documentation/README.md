@@ -12,8 +12,8 @@ for the selected Rust 1.98.1 floor and platform qualification gaps.
 | --- | --- |
 | Write scripts with the standard host | [Tour](tour/README.md), then [CLI reference](../tools/fipe/README.md) |
 | Find a runnable script or Rust example | [Examples index](examples/README.md), including the practical dogfood scripts |
-| Embed with an application-owned Host | [Minimal Rust example](../README.md#embed-in-rust), [custom Host example](../examples/custom_host.rs), then [embedding API](api/09-embed.md) |
-| Choose between your Host and Standard | [Layer ownership](architecture.md) and [standard-host contract](../tools/host/README.md) |
+| Embed with an application-owned Host | [Practical embedding walkthrough](embedding.md), then [embedding API](api/09-embed.md) |
+| Choose between your Host and Standard | [Choose who performs effects](embedding.md#choose-who-performs-effects), [layer ownership](architecture.md) and [standard-host contract](../tools/host/README.md) |
 | Write or change Fipe with an agent | [Agent guidance](agents.md) and the [language specification](spec/README.md) |
 | Contribute or verify a checkout | [Development and CI](development.md); [publishing](publishing.md) owns package/release checks |
 

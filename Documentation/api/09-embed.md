@@ -6,6 +6,13 @@ distinguishes this boundary from an application Host and optional Standard.
 
 ## Start in another repository
 
+The [practical embedding walkthrough](../embedding.md) covers an independent
+project, pure execution, application-owned effects and the optional Standard
+choice. It uses the qualified but unpublished dev.3 candidate APIs; its
+registry-only walkthrough has not yet been verified. The introductory dev.2 examples
+below target the currently published baseline, not every later resource or REPL
+API in this checkout. Keep source, documentation and exact package versions matched.
+
 Add `fipe = "=0.2.0-dev.2"` to your Cargo dependencies. The
 [README](../../README.md#embed-in-rust) contains a minimal checked evaluation;
 [`examples/embed.rs`](../../examples/embed.rs) runs a pipeline and
