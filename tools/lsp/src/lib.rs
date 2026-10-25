@@ -74,7 +74,8 @@ struct SelectedInterface {
 
 impl SelectedInterface {
     fn matches(&self, path: &Path) -> bool {
-        path == self.input.path || path == self.canonical
+        uri::same_path(path, &self.input.path)
+            || uri::same_path(path, &self.canonical)
     }
 }
 
@@ -449,7 +450,7 @@ impl Server {
             if !selected.matches(&path) {
                 continue;
             }
-            let original = path == selected.input.path;
+            let original = uri::same_path(&path, &selected.input.path);
             if let Some((prior_uri, prior_text, prior_original)) = chosen {
                 if prior_text != text {
                     return Err(ReloadError::Input {
@@ -504,8 +505,7 @@ impl Server {
                     uri.parse::<Uri>()
                         .ok()
                         .and_then(|uri| uri::path(&uri))
-                        .as_ref()
-                        == Some(wanted)
+                        .is_some_and(|path| uri::same_path(&path, wanted))
                 }) {
                     return uri.clone();
                 }
@@ -1340,4 +1340,33 @@ fn publish(uri: &str, diagnostics: Vec<Diagnostic>) -> Option<Value> {
         "method": "textDocument/publishDiagnostics",
         "params": params,
     }))
+}
+
+#[cfg(all(test, windows))]
+mod selected_path_tests {
+    use super::*;
+
+    #[test]
+    fn selected_paths_keep_original_and_canonical_identity_without_io() {
+        let selected = SelectedInterface {
+            input: Interface {
+                module: "probe".into(),
+                path: PathBuf::from(r"D:\missing\link.fipi"),
+            },
+            canonical: PathBuf::from(r"\\?\D:\missing\target.fipi"),
+        };
+        for text in [
+            "file:///D:/missing/link.fipi",
+            "file:///D:/missing/target.fipi",
+        ] {
+            let path = uri::path(&text.parse().unwrap()).unwrap();
+            assert!(selected.matches(&path));
+        }
+        assert!(uri::same_path(
+            Path::new(r"\\?\D:\missing\link.fipi"),
+            &selected.input.path
+        ));
+        assert!(!uri::same_path(&selected.input.path, &selected.canonical));
+        assert!(!selected.matches(Path::new(r"D:\missing\unselected.fipi")));
+    }
 }

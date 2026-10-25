@@ -138,7 +138,7 @@ fn renamed(replies: &[Value], id: u64) -> Vec<(String, String)> {
         .unwrap_or_else(|| panic!("{replies:?}"));
     let mut replaced = Vec::new();
     for (uri, edits) in changes {
-        let path = PathBuf::from(uri.trim_start_matches("file://"));
+        let path = fipe_lsp::uri::path(&uri.parse().unwrap()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
         for edit in edits.as_array().unwrap() {
@@ -248,7 +248,7 @@ fn renaming_a_pub_type_rewrites_its_uses_in_the_importing_example() {
 
 /// A library and the file that imports from it, written for a test.
 fn library() -> (PathBuf, PathBuf) {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rename");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rename é # %");
     std::fs::create_dir_all(&dir).unwrap();
     let lib = dir.join("lib.fipe");
     let main = dir.join("main.fipe");
@@ -348,6 +348,44 @@ fn formatting_lays_out_a_file_and_refuses_one_with_errors() {
     assert_eq!(message(&replies, 2)["error"]["code"], -32803);
 }
 
+/// Change layout without changing the input's first-line newline convention.
+fn dirty(text: &str) -> String {
+    let newline =
+        if text.find('\n').is_some_and(|at| text[..at].ends_with('\r')) {
+            "\r\n"
+        } else {
+            "\n"
+        };
+    text.lines()
+        .map(|line| {
+            let line = line.trim_start();
+            if line.starts_with("##") {
+                format!("{line}{newline}")
+            } else {
+                format!("{line}  {newline}")
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn dirty_layout_retains_lf_and_crlf_fixed_points() {
+    let uri = uri(&root().join("scratch/format-endings.fipe"));
+    for newline in ["\n", "\r\n"] {
+        let text = ["x = 1", "f = n => {", "    n + x", "}", ""].join(newline);
+        let messy = dirty(&text);
+        assert_ne!(messy, text);
+        let again = fipe_lsp::format::format(&messy).unwrap();
+        assert_eq!(again, text);
+        assert_eq!(
+            fipe::parse::parse(fipe::lex::lex(&again)),
+            fipe::parse::parse(fipe::lex::lex(&text))
+        );
+        let replies = exchange(&[open(&uri, &text), formatting(1, &uri)]);
+        assert_eq!(message(&replies, 1)["result"], json!([]));
+    }
+}
+
 #[test]
 fn the_examples_are_at_a_fixed_point_and_come_back_to_it() {
     for entry in std::fs::read_dir(examples()).unwrap() {
@@ -361,17 +399,7 @@ fn the_examples_are_at_a_fixed_point_and_come_back_to_it() {
         // Flattened indentation and spread gaps come back to the same
         // text, which therefore parses to the same tree.
         // A doc's trailing spaces are its own (a Markdown line break).
-        let messy: String = text
-            .lines()
-            .map(|line| {
-                let line = line.trim_start();
-                if line.starts_with("##") {
-                    format!("{line}\n")
-                } else {
-                    format!("{line}  \n")
-                }
-            })
-            .collect();
+        let messy = dirty(&text);
         let again = fipe_lsp::format::format(&messy).unwrap();
         assert_eq!(again, text, "{}", path.display());
         assert_eq!(
