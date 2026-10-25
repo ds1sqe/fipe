@@ -4122,3 +4122,204 @@ fn bodyless_row_nonprefix_bool_sentinel_accepts_in_source_order() {
 fn bodyless_row_nonprefix_bool_sentinel_refuses_before_saved() {
     native_bound_case(true, 300);
 }
+// An intermediate value default must reach the runtime structural default walker.
+const WRITTEN_DEFAULT_HEADER: &str = "pub type Key<T>: Eq & Ord & Show & Len & Add & Zero & Default { pub n: T }\nimpl Key<T>: Eq { eq: Self -> (self: Self) -> Bool }\nimpl Key<T>: Ord { cmp: Self -> (self: Self) -> Ordering }\nimpl Key<T>: Show { show: (self: Self) -> String }\nimpl Key<T>: Len { len: (self: Self) -> Natural }\nimpl Key<T>: Add { add: Self -> (self: Self) -> Self }\nimpl Key<T>: Zero { zero: Self }\nimpl Key<T>: Default { default: Self }\npub keep: Key<Integer> -> ()\npub keep_wrong: Key<String> -> ()\npub after: ()";
+const WRITTEN_DEFAULT_SOURCE: &str = "use probe\nx: probe.Key<Integer> = probe.Key 7\nprobe.keep x\nanswer = with lang \"audit\" { x.default.n }\nprobe.after\nanswer";
+
+fn assert_generic_written_default_producer(program: &Program) {
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations
+        .module("probe", WRITTEN_DEFAULT_HEADER)
+        .unwrap();
+    let module =
+        fipe::parse::parse(fipe::lex::lex(WRITTEN_DEFAULT_SOURCE)).unwrap();
+    let resolved = fipe::resolve::resolve(&module, &declarations, &[]).unwrap();
+    let typed =
+        fipe::infer::infer(&module, &resolved, &declarations, &[]).unwrap();
+    let start = WRITTEN_DEFAULT_SOURCE.find("x.default.n").unwrap();
+    let site = (start, start + "x.default.n".len());
+    let accesses = &typed.accesses[&site];
+    assert!(
+        matches!(
+            accesses.as_slice(),
+            [
+                fipe::typed::Access {
+                    selected: fipe::typed::Selected::Derived {
+                        kind: fipe::ir::Derived::Default,
+                        ty: fipe::types::Type::Named { .. }
+                    },
+                    ..
+                },
+                fipe::typed::Access {
+                    selected: fipe::typed::Selected::Field { index: 0, .. },
+                    ..
+                }
+            ]
+        ),
+        "actual intermediate default then n field"
+    );
+    assert!(
+        !typed.derived_defaults.contains_key(&site),
+        "intermediate default is not replaced by a prepared Host call"
+    );
+    let tables = program.tables.borrow();
+    let actual = assert_written_default_rows(&tables);
+    assert_written_default_dependency(program, &tables, &actual, site);
+}
+
+fn assert_written_default_rows(tables: &fipe::ir::Tables) -> fipe::ir::Type {
+    let prelude = fipe::value::Prelude::new(tables);
+    let key = tables
+        .meanings
+        .iter()
+        .position(|meaning| meaning.label == "Key")
+        .unwrap();
+    let actual = fipe::ir::Type::Meaning {
+        index: key,
+        arguments: vec![fipe::ir::Type::Meaning {
+            index: prelude.integer.unwrap(),
+            arguments: Vec::new(),
+        }],
+    };
+    let rows: Vec<_> = tables.dispatch.iter()
+        .filter(|member| member.label == "default")
+        .flat_map(|member| &member.rows)
+        .filter(|row| matches!(&row.receiver,
+            fipe::ir::Type::Meaning { index, .. } if *index == key))
+        .filter(|row| matches!(row.target, fipe::ir::Implementation::Declared(index)
+            if tables.declarations[index].label == "default"
+            && tables.namespaces[tables.declarations[index].namespace] == "probe"))
+        .collect();
+    let [generic, instantiated] = rows.as_slice() else {
+        panic!("exact generic and instantiated Key-owned default rows")
+    };
+    let fipe::ir::Implementation::Declared(target) = generic.target else {
+        unreachable!()
+    };
+    assert_eq!(
+        instantiated.target, generic.target,
+        "both checked receiver shapes select the same supplied declaration"
+    );
+    assert_eq!(generic.receiver_spot, None);
+    assert_eq!(instantiated.receiver_spot, None);
+    assert_eq!(
+        generic.receiver, tables.declarations[target].ty,
+        "generic row retains the actual declaration's full binder"
+    );
+    assert_eq!(
+        instantiated.receiver, actual,
+        "second row is the actual script-issued Key<Integer> shape"
+    );
+    let fipe::ir::Type::Meaning { arguments, .. } = &generic.receiver else {
+        unreachable!()
+    };
+    let [fipe::ir::Type::Parameter(parameter)] = arguments.as_slice() else {
+        panic!("the generic Key row retains exactly its own binder")
+    };
+    let integer = fipe::ir::Type::Meaning {
+        index: prelude.integer.unwrap(),
+        arguments: Vec::new(),
+    };
+    assert_eq!(
+        generic.receiver.substituted(&[*parameter], &[integer]),
+        actual,
+        "generic first-match binding and instantiated row agree exactly"
+    );
+    actual
+}
+
+fn assert_written_default_dependency(
+    program: &Program,
+    tables: &fipe::ir::Tables,
+    actual: &fipe::ir::Type,
+    site: (usize, usize),
+) {
+    let start = site.0;
+    assert!(
+        tables.nodes.iter().any(|node| {
+            if node.span.start != start || node.span.end != site.1 {
+                return false;
+            }
+            let fipe::ir::Kind::Field { value, index: 0 } = node.kind else {
+                return false;
+            };
+            let call = &tables.nodes[value];
+            if call.span != node.span || call.ty != *actual {
+                return false;
+            }
+            let fipe::ir::Kind::Call {
+                callee,
+                slots,
+                supplies,
+                defaults,
+                open,
+            } = &call.kind
+            else {
+                return false;
+            };
+            let derived = &tables.nodes[*callee];
+            slots.is_empty()
+                && supplies.is_empty()
+                && defaults.is_empty()
+                && open.is_empty()
+                && derived.span == node.span
+                && derived.ty == *actual
+                && matches!(&derived.kind, fipe::ir::Kind::Derived {
+                kind: fipe::ir::Derived::Default, ty } if ty == actual)
+        }),
+        "actual field reads its exact zero-argument derived-default call"
+    );
+    assert!(program.bodies.iter().any(|body| body.blocks.iter().any(|block| {
+        let fipe::mir::Terminator::Call { callee: fipe::mir::Callee::Derived {
+            kind: fipe::ir::Derived::Default, ty }, dest, .. } = &block.terminator
+        else { return false };
+        ty == actual && body.blocks.iter().flat_map(|next| &next.statements).any(|statement|
+            matches!(statement, fipe::mir::Statement::Assign(_, fipe::mir::Rvalue::Field(
+                fipe::mir::Operand::Local(value), 0)) if value == dest))
+    })), "MIR n field reads the same derived-default destination");
+}
+
+#[test]
+fn intermediate_value_default_intercepts_the_written_host_default() {
+    let (unit, program) = Unit::new(
+        WRITTEN_DEFAULT_SOURCE,
+        vec![("probe".into(), WRITTEN_DEFAULT_HEADER.into())],
+        vec![],
+    )
+    .expect("intermediate value default is admitted");
+    assert_generic_written_default_producer(&program);
+    let tables = program.tables.borrow();
+    let on_vm = |budget| {
+        let mut saved = (None, None);
+        host_run_vm(&program, budget, |request| {
+            supplied_host_reply(&tables, request, &mut saved, false)
+        })
+    };
+    let whole = on_vm(None);
+    let labels: Vec<_> = whole
+        .1
+        .iter()
+        .map(|(request, _, _)| {
+            let Request::Call { declaration, .. } = request else {
+                panic!("call")
+            };
+            tables.declarations[*declaration].label.as_str()
+        })
+        .collect();
+    assert_eq!(labels, ["keep", "default", "after"]);
+    assert_eq!(whole.0.as_ref().expect("default n result"), &Value::Int(7));
+    let executable =
+        common::executable("intermediate-written-default", &unit, &program);
+    let on_native = |budget| {
+        let mut saved = (None, None);
+        host_run_native(&executable, budget, |request| {
+            supplied_host_reply(&tables, request, &mut saved, false)
+        })
+    };
+    assert_eq!(on_native(None), whole);
+    for limit in [whole.3 / 3, whole.3 / 2, whole.3.saturating_sub(1)] {
+        let vm = on_vm(Some(limit));
+        assert!(matches!(&vm.0, Err(fault) if fault.reason == Reason::Budget));
+        assert_eq!(on_native(Some(limit)), vm);
+    }
+}
