@@ -47,3 +47,20 @@ frame, no transport reuse. Hosts close both ends and reap their child with a
 supervisor deadline; they must not wait for Done after a failed write. Normal
 encoded Host failures and typed mismatch still use ordinary Fault/Done exit 1.
 This length/error policy does not add resource transport or change scalar ABI.
+
+## Finite float payloads
+
+Serialized `F32` and `F64` values must be finite, as required by the language.
+The shared codec refuses NaN and either infinity as `Error::Malformed` when
+encoding or decoding an actual float leaf, including nested data and frame
+arguments, environment, lines, and results. Previously accepted nonfinite
+wire bits now refuse; finite bit patterns, signed zero and subnormals retain
+the same bytes. Runtime malformed replies use the existing poisoned-transport
+exit2/no-Done behavior.
+
+Rust producers can use `fipe::value::float::Float::F32(number).finite()` or
+`fipe::value::float::Float::F64(number).finite()` to construct a checked `Value`;
+failure is `Reason::NotFinite`. This does not
+change the contract of raw Rust `Value` producers or add a scan of opaque
+function captures, a valid-value fee, a new tag, or resource transport. FFI's
+separate scalar conversion already rejects nonfinite `F64` values.

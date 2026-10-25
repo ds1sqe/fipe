@@ -4458,13 +4458,17 @@ fn reply_boundary_frames(bytes: Vec<u8>) -> Vec<Frame> {
     frames
 }
 
-fn reply_boundary_run(executable: &Path, mode: &str) -> (Vec<Frame>, i32) {
+fn reply_boundary_run(
+    executable: &Path,
+    mode: &str,
+    writer_source: &str,
+) -> (Vec<Frame>, i32) {
     let directory = common::scratch(&format!("reply-boundary-{mode}"));
     let writer_error = directory.join("writer.stderr");
     let runtime_error = directory.join("runtime.stderr");
     let mut writer = PipeChild::new(
         Command::new("python3")
-            .args(["-c", REPLY_WRITER, mode])
+            .args(["-c", writer_source, mode])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(std::fs::File::create(&writer_error).unwrap())
@@ -4624,7 +4628,8 @@ fn native_reply_failures_terminate_without_done_or_later_effects() {
         "over",
         "maximum",
     ] {
-        let (frames, code) = reply_boundary_run(&executable, mode);
+        let (frames, code) =
+            reply_boundary_run(&executable, mode, REPLY_WRITER);
         assert_reply_boundary_case(&program, &frames, mode, code);
     }
 }
@@ -4671,4 +4676,150 @@ fn reply_sender_refuses_oversize_before_header_and_reaps_waiting_child() {
         wait_pipe_child(&mut child, "pre-header sender refusal").code(),
         Some(0)
     );
+}
+
+const FLOAT_REPLY_WRITER: &str = r"
+import os, struct, sys
+width, case, bits = sys.argv[1].split(':')
+tag = 3 if width == 'F32' else 4
+def send(payload):
+    os.write(1, struct.pack('<Q', len(payload)) + payload)
+send(struct.pack('<QQQ', 0, tag, int(bits)))
+if case in ('finite', 'subnormal'):
+    send(struct.pack('<QQq', 0, 1, 8))
+";
+
+fn assert_float_reply_width(program: &Program, width: &str) {
+    let tables = program.tables.borrow();
+    let declaration = |label| {
+        tables
+            .declarations
+            .iter()
+            .find(|declaration| {
+                declaration.label == label
+                    && tables.namespaces[declaration.namespace] == "probe"
+            })
+            .unwrap()
+    };
+    let fipe::ir::Type::Function { parameter, result } =
+        &declaration("value").ty
+    else {
+        panic!("the actual value declaration is a function");
+    };
+    assert_eq!(**parameter, fipe::ir::Type::Unit);
+    let fipe::ir::Type::Meaning { index, arguments } = &**result else {
+        panic!("the checked float result is nominal");
+    };
+    assert!(arguments.is_empty());
+    assert_eq!(tables.meanings[*index].label, width);
+    let fipe::ir::Type::Function { parameter, .. } = &declaration("after").ty
+    else {
+        panic!("the actual later declaration is a function");
+    };
+    assert_eq!(parameter, result);
+}
+
+fn assert_float_reply_case(
+    program: &Program,
+    frames: &[Frame],
+    width: &str,
+    bits: u64,
+    healthy: bool,
+    code: i32,
+) {
+    let mut labels = Vec::new();
+    let mut done = None;
+    for frame in frames {
+        match frame {
+            Frame::Call {
+                request:
+                    Request::Call {
+                        declaration,
+                        arguments,
+                        ..
+                    },
+                ..
+            } => {
+                let tables = program.tables.borrow();
+                let declaration = &tables.declarations[*declaration];
+                assert_eq!(tables.namespaces[declaration.namespace], "probe");
+                labels.push(declaration.label.clone());
+                if declaration.label == "value" {
+                    assert_eq!(arguments, &[Value::Unit]);
+                } else {
+                    assert_eq!(declaration.label, "after");
+                    match (width, arguments.as_slice()) {
+                        ("F32", [Value::F32(value)]) => {
+                            assert_eq!(u64::from(value.to_bits()), bits);
+                        }
+                        ("F64", [Value::F64(value)]) => {
+                            assert_eq!(value.to_bits(), bits);
+                        }
+                        _ => panic!("actual later argument keeps its width"),
+                    }
+                }
+            }
+            Frame::Done { result, .. } => {
+                assert!(done.is_none());
+                done = Some(result);
+            }
+            other @ Frame::Call { .. } => {
+                panic!("unexpected scalar protocol: {other:?}");
+            }
+        }
+    }
+    if healthy {
+        assert_eq!(labels, ["value", "after"]);
+        assert_eq!(code, 0);
+        assert_eq!(done, Some(&Ok(Value::Int(8))));
+    } else {
+        assert_eq!(labels, ["value"], "no effect after a malformed float");
+        assert_eq!(code, 2);
+        assert!(done.is_none(), "poisoned transport must not attempt Done");
+    }
+}
+
+#[test]
+fn nonfinite_float_replies_refuse_before_later_effects() {
+    for (width, cases) in [
+        (
+            "F32",
+            [
+                ("nan", 0x7fc0_0000_u64, false),
+                ("positive-infinity", 0x7f80_0000, false),
+                ("negative-infinity", 0xff80_0000, false),
+                ("finite", 0x40e0_0000, true),
+                ("subnormal", 1, true),
+            ],
+        ),
+        (
+            "F64",
+            [
+                ("nan", 0x7ff8_0000_0000_0000, false),
+                ("positive-infinity", 0x7ff0_0000_0000_0000, false),
+                ("negative-infinity", 0xfff0_0000_0000_0000, false),
+                ("finite", 0x401c_0000_0000_0000, true),
+                ("subnormal", 1, true),
+            ],
+        ),
+    ] {
+        let header =
+            format!("pub value: () -> {width}\npub after: {width} -> Integer");
+        let (unit, program) = Unit::new(
+            "use probe\nx = probe.value ()\nprobe.after x",
+            vec![("probe".into(), header)],
+            vec![],
+        )
+        .unwrap();
+        assert_float_reply_width(&program, width);
+        let executable = common::executable("float_reply", &unit, &program);
+        for (case, bits, healthy) in cases {
+            let mode = format!("{width}:{case}:{bits}");
+            let (frames, code) =
+                reply_boundary_run(&executable, &mode, FLOAT_REPLY_WRITER);
+            assert_float_reply_case(
+                &program, &frames, width, bits, healthy, code,
+            );
+        }
+    }
 }

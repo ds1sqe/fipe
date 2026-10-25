@@ -19,7 +19,7 @@ use fipe::{
     mir::Program,
     parse::parse,
     token::{Magnitude, Span},
-    value::{BigInt, Closure, Packed, Reason, Record, Value},
+    value::{float::Float, BigInt, Closure, Packed, Reason, Record, Value},
     vm::Fault,
 };
 use std::{collections::BTreeMap, fmt, rc::Rc};
@@ -569,11 +569,13 @@ impl<'a> ValueWriter<'a> {
                 true
             }
             Value::F32(float) => {
+                Float::F32(*float).finite().map_err(|_| Error::Malformed)?;
                 number(self.out, 3);
                 number(self.out, u64::from(float.to_bits()));
                 true
             }
             Value::F64(float) => {
+                Float::F64(*float).finite().map_err(|_| Error::Malformed)?;
                 number(self.out, 4);
                 number(self.out, float.to_bits());
                 true
@@ -800,11 +802,15 @@ impl<'r, 'a> ValueReader<'r, 'a> {
                     magnitude,
                 }))
             }
-            3 => Value::F32(f32::from_bits(
+            3 => Float::F32(f32::from_bits(
                 u32::try_from(self.input.number()?)
                     .map_err(|_| Error::Malformed)?,
-            )),
-            4 => Value::F64(f64::from_bits(self.input.number()?)),
+            ))
+            .finite()
+            .map_err(|_| Error::Malformed)?,
+            4 => Float::F64(f64::from_bits(self.input.number()?))
+                .finite()
+                .map_err(|_| Error::Malformed)?,
             5 => Value::text(&self.input.text()?),
             10 if shown => function(),
             _ => return Err(Error::Tag(tag)),
@@ -1716,6 +1722,207 @@ mod value_graph_wire {
         assert_eq!(decode_reply(&huge), Err(Error::Short));
         for end in 0..encoded.len() {
             assert!(decode_reply(&encoded[..end]).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod finite_float_wire {
+    use super::*;
+
+    const BAD: [(u64, u64); 6] = [
+        (3, 0x7fc0_0000),
+        (3, 0x7f80_0000),
+        (3, 0xff80_0000),
+        (4, 0x7ff8_0000_0000_0000),
+        (4, 0x7ff0_0000_0000_0000),
+        (4, 0xfff0_0000_0000_0000),
+    ];
+    const FINITE: [(u64, u64); 12] = [
+        (3, 0x40e0_0000),
+        (3, 1),
+        (3, 0x8000_0001),
+        (3, 0),
+        (3, 0x8000_0000),
+        (3, 0x7f7f_ffff),
+        (4, 0x401c_0000_0000_0000),
+        (4, 1),
+        (4, 0x8000_0000_0000_0001),
+        (4, 0),
+        (4, 0x8000_0000_0000_0000),
+        (4, 0x7fef_ffff_ffff_ffff),
+    ];
+
+    fn words(values: &[u64]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    fn raw_value(tag: u64, bits: u64) -> Value {
+        match tag {
+            3 => Value::F32(f32::from_bits(u32::try_from(bits).unwrap())),
+            4 => Value::F64(f64::from_bits(bits)),
+            _ => panic!("a fixture float tag"),
+        }
+    }
+
+    fn float_bits(value: &Value) -> (u64, u64) {
+        match value {
+            Value::F32(value) => (3, u64::from(value.to_bits())),
+            Value::F64(value) => (4, value.to_bits()),
+            _ => panic!("a decoded float"),
+        }
+    }
+
+    const fn tuple(value: &Value) -> &Rc<Vec<Value>> {
+        let Value::Tuple(parts) = value else {
+            panic!("a tuple")
+        };
+        parts
+    }
+
+    fn data_roots(value: &Value) -> Vec<Value> {
+        let shared = Value::Tuple(Rc::new(vec![value.clone()]));
+        vec![
+            value.clone(),
+            Value::seq(vec![value.clone()]),
+            Value::Tuple(Rc::new(vec![value.clone()])),
+            Value::Record(Rc::new(Record {
+                meaning: 4,
+                constructor: 2,
+                fields: vec![value.clone()],
+            })),
+            // Descriptive data only, matching existing packed wire fixtures.
+            Value::Packed(Rc::new(
+                Packed::from_data(
+                    ir::Type::Unit,
+                    ir::Type::Parameter(3),
+                    value,
+                )
+                .unwrap(),
+            )),
+            Value::Tuple(Rc::new(vec![shared.clone(), shared])),
+        ]
+    }
+
+    fn encoded_roots(tag: u64, bits: u64) -> Vec<Vec<u8>> {
+        let scalar = words(&[tag, bits]);
+        vec![
+            scalar.clone(),
+            [words(&[6, 1]), scalar.clone()].concat(),
+            [words(&[7, 1]), scalar.clone()].concat(),
+            [words(&[8, 4, 2, 1]), scalar.clone()].concat(),
+            [words(&[11, 0, 1, 3]), scalar.clone()].concat(),
+            [words(&[7, 2, 7, 1]), scalar, words(&[VALUE_REFERENCE, 0])]
+                .concat(),
+        ]
+    }
+
+    fn frames(value: &Value) -> Vec<Frame> {
+        vec![
+            Frame::Call {
+                request: Request::Call {
+                    declaration: 3,
+                    arguments: vec![value.clone()],
+                    environment: vec![],
+                },
+                lines: vec![],
+            },
+            Frame::Call {
+                request: Request::Call {
+                    declaration: 3,
+                    arguments: vec![],
+                    environment: vec![(7, value.clone())],
+                },
+                lines: vec![],
+            },
+            Frame::Call {
+                request: Request::Call {
+                    declaration: 3,
+                    arguments: vec![],
+                    environment: vec![],
+                },
+                lines: vec![(7, value.clone())],
+            },
+            Frame::Done {
+                result: Ok(value.clone()),
+                lines: vec![],
+                charged: 0,
+            },
+            Frame::Done {
+                result: Ok(Value::Unit),
+                lines: vec![(7, value.clone())],
+                charged: 0,
+            },
+        ]
+    }
+
+    fn encoded_frames(value: &[u8]) -> Vec<Vec<u8>> {
+        vec![
+            [words(&[0, 3, 1]), value.to_vec(), words(&[0, 0])].concat(),
+            [words(&[0, 3, 0, 1, 7]), value.to_vec(), words(&[0])].concat(),
+            [words(&[0, 3, 0, 0, 1, 7]), value.to_vec()].concat(),
+            [words(&[1, 0]), value.to_vec(), words(&[0, 0])].concat(),
+            [words(&[1, 0, 0, 1, 7]), value.to_vec(), words(&[0])].concat(),
+        ]
+    }
+
+    #[test]
+    fn nonfinite_float_bits_refuse_at_every_serialized_value_root() {
+        for (tag, bits) in BAD {
+            let value = raw_value(tag, bits);
+            assert_eq!(Float::of(&value).finite(), Err(Reason::NotFinite));
+            for root in data_roots(&value) {
+                assert_eq!(
+                    encode_reply(&Ok(root.clone())),
+                    Err(Error::Malformed)
+                );
+                for frame in frames(&root) {
+                    assert_eq!(frame.encode(), Err(Error::Malformed));
+                }
+            }
+            for root in encoded_roots(tag, bits) {
+                let reply = [words(&[0]), root.clone()].concat();
+                assert_eq!(decode_reply(&reply), Err(Error::Malformed));
+                for frame in encoded_frames(&root) {
+                    assert_eq!(Frame::decode(&frame), Err(Error::Malformed));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finite_float_bits_round_trip_without_changing_wire_bytes() {
+        for (tag, bits) in FINITE {
+            let value = Float::of(&raw_value(tag, bits)).finite().unwrap();
+            let encoded = encode_reply(&Ok(value.clone())).unwrap();
+            assert_eq!(encoded, words(&[0, tag, bits]));
+            let decoded = decode_reply(&encoded).unwrap().unwrap();
+            assert_eq!(float_bits(&decoded), (tag, bits));
+            for (root, expected) in
+                data_roots(&value).into_iter().zip(encoded_roots(tag, bits))
+            {
+                let reply = [words(&[0]), expected.clone()].concat();
+                assert_eq!(encode_reply(&Ok(root.clone())).unwrap(), reply);
+                let decoded = decode_reply(&reply).unwrap();
+                assert_eq!(encode_reply(&decoded).unwrap(), reply);
+                for (frame, expected) in
+                    frames(&root).into_iter().zip(encoded_frames(&expected))
+                {
+                    assert_eq!(frame.encode().unwrap(), expected);
+                    let decoded = Frame::decode(&expected).unwrap();
+                    assert_eq!(decoded.encode().unwrap(), expected);
+                }
+            }
+            let shared = Value::Tuple(Rc::new(vec![value]));
+            let original = Value::Tuple(Rc::new(vec![shared.clone(), shared]));
+            let encoded = encode_reply(&Ok(original)).unwrap();
+            let decoded = decode_reply(&encoded).unwrap().unwrap();
+            let parts = tuple(&decoded);
+            assert!(Rc::ptr_eq(tuple(&parts[0]), tuple(&parts[1])));
+            assert_eq!(float_bits(&tuple(&parts[0])[0]), (tag, bits));
         }
     }
 }
