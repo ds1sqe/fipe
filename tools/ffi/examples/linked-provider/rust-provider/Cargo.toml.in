@@ -6,4 +6,4 @@ rust-version = "1.98.1"
 publish = false
 
 [dependencies]
-fipe-ffi = "=0.2.0-dev.2"
+fipe-ffi = "=0.2.0-dev.3"

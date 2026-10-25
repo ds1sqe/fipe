@@ -28,7 +28,7 @@ cp Cargo.toml.in Cargo.toml
 cp rust-provider/Cargo.toml.in rust-provider/Cargo.toml
 ```
 
-The templates pin `fipe` and `fipe-ffi` to `=0.2.0-dev.2`. No registry availability
+The templates pin `fipe` and `fipe-ffi` to `=0.2.0-dev.3`. No registry availability
 is assumed. Prepublication verification supplies both dependencies through an
 explicit task-local Cargo patch configuration. For example, with absolute paths to
 approved extracted packages:
@@ -36,8 +36,8 @@ approved extracted packages:
 ```toml
 # Save outside the package as /absolute/task/artifact-patches.toml.
 [patch.crates-io]
-fipe = { path = "/absolute/artifacts/fipe-0.2.0-dev.2" }
-fipe-ffi = { path = "/absolute/artifacts/fipe-ffi-0.2.0-dev.2" }
+fipe = { path = "/absolute/artifacts/fipe-0.2.0-dev.3" }
+fipe-ffi = { path = "/absolute/artifacts/fipe-ffi-0.2.0-dev.3" }
 ```
 
 For a maintainer's source-only check these paths may instead select the approved
@@ -50,7 +50,7 @@ The final release workflow updates both pins and regenerates the example lock.
 This example requires Rust 1.98.1, a C11 `cc` accepting GCC-style flags, and the
 same `x86_64-unknown-linux-gnu` host/target. No cross or other-platform support is
 claimed. Set `FIPE_FFI_INCLUDE` to the absolute directory containing `fipe.h` from
-the matching adapter package: `/absolute/artifacts/fipe-ffi-0.2.0-dev.2/include`.
+the matching adapter package: `/absolute/artifacts/fipe-ffi-0.2.0-dev.3/include`.
 A source-only maintainer check may use the approved snapshot's `tools/ffi/include`.
 The build never searches a registry directory or downloads a header.
 
@@ -74,7 +74,7 @@ fetch a different version. After resolution, use a task-private target and build
 directory for the test and both implementations:
 
 ```sh
-export FIPE_FFI_INCLUDE=/absolute/artifacts/fipe-ffi-0.2.0-dev.2/include
+export FIPE_FFI_INCLUDE=/absolute/artifacts/fipe-ffi-0.2.0-dev.3/include
 cargo +1.98.1 test --locked --offline -j 8 --config /absolute/task/artifact-patches.toml --target-dir /absolute/task/target --config 'build.build-dir="/absolute/task/build"'
 cargo +1.98.1 run --locked --offline -j 8 --config /absolute/task/artifact-patches.toml --target-dir /absolute/task/target --config 'build.build-dir="/absolute/task/build"' -- c /absolute/copied-example/api.fipi
 cargo +1.98.1 run --locked --offline -j 8 --config /absolute/task/artifact-patches.toml --target-dir /absolute/task/target --config 'build.build-dir="/absolute/task/build"' -- rust /absolute/copied-example/api.fipi

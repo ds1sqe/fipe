@@ -10,6 +10,6 @@ members = ["rust-provider"]
 resolver = "2"
 
 [dependencies]
-fipe = "=0.2.0-dev.2"
-fipe-ffi = "=0.2.0-dev.2"
+fipe = "=0.2.0-dev.3"
+fipe-ffi = "=0.2.0-dev.3"
 fipe-linked-rust-provider = { path = "rust-provider" }
