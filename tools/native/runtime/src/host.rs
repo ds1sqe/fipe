@@ -44,7 +44,11 @@ impl fmt::Display for Error {
 /// Who answers the run's calls.
 pub enum Host {
     /// The two ends of the pipe.
-    Pipe { requests: File, replies: File },
+    Pipe {
+        requests: File,
+        replies: File,
+        failed: bool,
+    },
     /// The std host, its output streamed to stdout and stderr.
     Std(fipe_host::Host),
 }
@@ -59,7 +63,11 @@ impl Host {
         let requests = OpenOptions::new().write(true).open("/dev/fd/3");
         let replies = File::open("/dev/fd/4");
         if let Some((requests, replies)) = requests.ok().zip(replies.ok()) {
-            return Ok(Self::Pipe { requests, replies });
+            return Ok(Self::Pipe {
+                requests,
+                replies,
+                failed: false,
+            });
         }
         let allow: Vec<PathBuf> = std::env::var_os("FIPE_ALLOW_WRITE")
             .map(|dirs| std::env::split_paths(&dirs).collect())
@@ -107,34 +115,138 @@ impl Host {
                     }
                 }
             }
+            Self::Pipe { failed: true, .. } => Err(Error::Absent),
             Self::Pipe { .. } => {
                 let frame = Frame::Call {
                     request: request.clone(),
                     lines: lines.to_vec(),
                 };
-                self.send(&frame)?;
-                let Self::Pipe { replies, .. } = self else {
-                    unreachable!("the pipe the frame went down")
-                };
-                let mut length = [0; 8];
-                replies.read_exact(&mut length).map_err(Error::Io)?;
-                let length = usize::try_from(u64::from_le_bytes(length))
-                    .map_err(|_| Error::Codec(codec::Error::Malformed))?;
-                let mut payload = vec![0; length];
-                replies.read_exact(&mut payload).map_err(Error::Io)?;
-                codec::decode_reply(&payload).map_err(Error::Codec)
+                let result = self.send(&frame).and_then(|()| {
+                    let Self::Pipe { replies, .. } = self else {
+                        unreachable!("the pipe the frame went down")
+                    };
+                    read_reply(replies)
+                });
+                if result.is_err() {
+                    let Self::Pipe { failed, .. } = self else {
+                        unreachable!()
+                    };
+                    *failed = true;
+                }
+                result
             }
         }
     }
 
     /// Write one frame on the pipe.
     pub fn send(&mut self, frame: &Frame) -> Result<(), Error> {
-        let Self::Pipe { requests, .. } = self else {
+        let Self::Pipe {
+            requests,
+            failed: false,
+            ..
+        } = self
+        else {
             return Err(Error::Absent);
         };
         let payload = frame.encode().map_err(Error::Codec)?;
         let mut out = (payload.len() as u64).to_le_bytes().to_vec();
         out.extend(payload);
         requests.write_all(&out).map_err(Error::Io)
+    }
+}
+
+fn read_reply(replies: &mut impl Read) -> Result<Result<Value, String>, Error> {
+    let mut length = [0; 8];
+    replies.read_exact(&mut length).map_err(Error::Io)?;
+    let announced = u64::from_le_bytes(length);
+    if announced > codec::MAX_REPLY_BYTES {
+        return Err(Error::Codec(codec::Error::TooLong(announced)));
+    }
+    let length = usize::try_from(announced)
+        .map_err(|_| Error::Codec(codec::Error::Malformed))?;
+    let mut payload = vec![0; length];
+    replies.read_exact(&mut payload).map_err(Error::Io)?;
+    codec::decode_reply(&payload).map_err(Error::Codec)
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    struct HeaderOnly {
+        header: Cursor<[u8; 8]>,
+        body_reads: usize,
+    }
+    impl Read for HeaderOnly {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.header.position() == 8 {
+                self.body_reads += 1;
+                panic!("excessive length reached body reader");
+            }
+            self.header.read(bytes)
+        }
+    }
+    fn framed(payload: &[u8]) -> Vec<u8> {
+        let mut bytes =
+            u64::try_from(payload.len()).unwrap().to_le_bytes().to_vec();
+        bytes.extend(payload);
+        bytes
+    }
+    #[test]
+    fn native_reply_reader_bounds_lengths_before_body_and_preserves_valid_errors(
+    ) {
+        for reply in [Ok(Value::Int(7)), Err("denied".into())] {
+            let bytes = codec::encode_reply(&reply).unwrap();
+            assert_eq!(
+                read_reply(&mut Cursor::new(framed(&bytes))).unwrap(),
+                reply
+            );
+        }
+        for length in 0..8 {
+            let error =
+                read_reply(&mut Cursor::new(vec![0; length])).unwrap_err();
+            assert!(
+                matches!(error, Error::Io(error) if error.kind() == io::ErrorKind::UnexpectedEof)
+            );
+        }
+        let mut short = 24_u64.to_le_bytes().to_vec();
+        short.extend([0; 8]);
+        assert!(matches!(read_reply(&mut Cursor::new(short)),
+            Err(Error::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof));
+        for length in [codec::MAX_REPLY_BYTES + 1, u64::MAX] {
+            let mut input = HeaderOnly {
+                header: Cursor::new(length.to_le_bytes()),
+                body_reads: 0,
+            };
+            assert!(matches!(read_reply(&mut input),
+                Err(Error::Codec(codec::Error::TooLong(actual))) if actual == length));
+            assert_eq!(input.body_reads, 0);
+        }
+        assert!(matches!(
+            read_reply(&mut Cursor::new(framed(&99_u64.to_le_bytes()))),
+            Err(Error::Codec(codec::Error::Tag(99)))
+        ));
+        let invalid_utf8: Vec<_> = [1_u64, 1]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .chain([255])
+            .collect();
+        assert!(matches!(
+            read_reply(&mut Cursor::new(framed(&invalid_utf8))),
+            Err(Error::Codec(codec::Error::Malformed))
+        ));
+        // Real production limit, not a small test-only substitute. Chain avoids
+        // allocating another framing copy of the 64 MiB payload.
+        let length = usize::try_from(codec::MAX_REPLY_BYTES).unwrap() - 24;
+        let value = Value::Text(std::rc::Rc::new("x".repeat(length)));
+        let payload = codec::encode_reply(&Ok(value.clone())).unwrap();
+        assert_eq!(
+            u64::try_from(payload.len()).unwrap(),
+            codec::MAX_REPLY_BYTES
+        );
+        let mut input = Cursor::new(codec::MAX_REPLY_BYTES.to_le_bytes())
+            .chain(Cursor::new(payload.as_slice()));
+        assert_eq!(read_reply(&mut input).unwrap(), Ok(value));
     }
 }

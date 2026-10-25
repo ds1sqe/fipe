@@ -122,6 +122,12 @@ fn started(unit: &[u8], run: fn(&mut Value) -> u32) -> i32 {
     let result = ran(run, input, spot.as_ref(), line);
     let mut state = STATE.take().expect("the run's state");
     match &mut state.host {
+        Host::Pipe { failed: true, .. } => {
+            // /dev/fd/4 opens a duplicate. Only process exit closes every copy;
+            // writing Done first could deadlock against a blocked reply writer.
+            eprintln!("fipe: the host pipe failed; transport closed");
+            2
+        }
         Host::Pipe { .. } => {
             let code = i32::from(result.is_err());
             let done = Frame::Done {

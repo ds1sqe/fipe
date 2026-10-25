@@ -21,6 +21,55 @@ use std::{
     process::{Command, Stdio},
 };
 
+// Every pipe owner reaps its child on early framing/write failure or assertion.
+struct PipeChild(Option<std::process::Child>);
+impl PipeChild {
+    const fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+    fn wait_with_output(mut self) -> std::io::Result<std::process::Output> {
+        self.0.take().unwrap().wait_with_output()
+    }
+}
+impl std::ops::Deref for PipeChild {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+impl std::ops::DerefMut for PipeChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
+impl Drop for PipeChild {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+fn pipe_reply(
+    output: &mut impl Write,
+    reply: &Result<Value, String>,
+) -> Result<(), String> {
+    // Serialization/size refusal occurs before even the eight-byte header.
+    let encoded =
+        codec::encode_reply(reply).map_err(|error| error.to_string())?;
+    pipe_payload(output, &encoded)
+}
+fn pipe_payload(output: &mut impl Write, encoded: &[u8]) -> Result<(), String> {
+    let length = u64::try_from(encoded.len()).unwrap();
+    if length > codec::MAX_REPLY_BYTES {
+        return Err(codec::Error::TooLong(length).to_string());
+    }
+    output
+        .write_all(&length.to_le_bytes())
+        .and_then(|()| output.write_all(encoded))
+        .map_err(|error| error.to_string())
+}
+
 mod common;
 #[path = "../../../tests/host/replies.rs"]
 mod replies;
@@ -156,7 +205,7 @@ fn native(
     if let Some(budget) = budget {
         command.env("FIPE_BUDGET", budget.to_string());
     }
-    let mut child = command.spawn().unwrap();
+    let mut child = PipeChild::new(command.spawn().unwrap());
     let mut frames = child.stdout.take().unwrap();
     let mut replies = child.stdin.take().unwrap();
     let mut host = replies::Host::default();
@@ -165,6 +214,7 @@ fn native(
         let mut length = [0; 8];
         if let Err(error) = frames.read_exact(&mut length) {
             drop(replies);
+            drop(frames);
             let mut supervisor_killed = false;
             let mut kill_error = None;
             let status = child.try_wait().unwrap().unwrap_or_else(|| {
@@ -193,11 +243,12 @@ fn native(
             Frame::Call { request, lines } => {
                 host.write_lines(&lines, &program.tables.borrow());
                 let answer = host.answer(&program.tables.borrow(), &request);
-                let reply = codec::encode_reply(&answer).unwrap();
-                replies
-                    .write_all(&(reply.len() as u64).to_le_bytes())
-                    .unwrap();
-                replies.write_all(&reply).unwrap();
+                if let Err(error) = pipe_reply(&mut replies, &answer) {
+                    drop(replies);
+                    drop(frames);
+                    drop(child);
+                    panic!("native reply failed before completion: {error}");
+                }
                 trace.push((request, Reply::Value(answer)));
             }
             Frame::Done {
@@ -1044,15 +1095,17 @@ fn bodyless_ordinary_wrapper_eq_keeps_its_host_callback() {
         assert_bodyless_wrapper_vm(&mut vm, &program, declaration, &yes);
     let executable =
         common::executable("bodyless-ordinary-wrapper-eq", &unit, &program);
-    let mut child = Command::new("sh")
-        .args(["-c", "exec \"$0\" 3>&1 4<&0 1>&2 0</dev/null"])
-        .arg(&executable)
-        .env_remove("FIPE_BUDGET")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = PipeChild::new(
+        Command::new("sh")
+            .args(["-c", "exec \"$0\" 3>&1 4<&0 1>&2 0</dev/null"])
+            .arg(&executable)
+            .env_remove("FIPE_BUDGET")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     let mut frames = child.stdout.take().unwrap();
     let mut replies = child.stdin.take().unwrap();
     let mut calls = 0;
@@ -1079,11 +1132,12 @@ fn bodyless_ordinary_wrapper_eq_keeps_its_host_callback() {
                     .all(|value| matches!(value, Value::Packed(_))));
                 calls += 1;
                 assert!(calls <= 1, "one actual comparison");
-                let reply = codec::encode_reply(&Ok(yes.clone())).unwrap();
-                replies
-                    .write_all(&(reply.len() as u64).to_le_bytes())
-                    .unwrap();
-                replies.write_all(&reply).unwrap();
+                if let Err(error) = pipe_reply(&mut replies, &Ok(yes.clone())) {
+                    drop(replies);
+                    drop(frames);
+                    drop(child);
+                    panic!("wrapper reply failed before completion: {error}");
+                }
             }
             Frame::Done { result, .. } => break result.unwrap(),
             other @ Frame::Call {
@@ -1170,7 +1224,7 @@ fn host_run_native(
     if let Some(limit) = budget {
         command.env("FIPE_BUDGET", limit.to_string());
     }
-    let mut child = command.spawn().unwrap();
+    let mut child = PipeChild::new(command.spawn().unwrap());
     let mut frames = child.stdout.take().unwrap();
     let mut replies = child.stdin.take().unwrap();
     let mut calls = Vec::new();
@@ -1183,12 +1237,22 @@ fn host_run_native(
         match Frame::decode(&payload).unwrap() {
             Frame::Call { request, lines } => {
                 let value = reply(&request);
-                let encoded = codec::encode_reply(&Ok(value.clone())).unwrap();
+                let encoded = match codec::encode_reply(&Ok(value.clone())) {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        drop(replies);
+                        drop(frames);
+                        drop(child);
+                        panic!("supplied reply refused before header: {error}");
+                    }
+                };
                 calls.push((request, Reply::Value(Ok(value)), lines));
-                replies
-                    .write_all(&(encoded.len() as u64).to_le_bytes())
-                    .unwrap();
-                replies.write_all(&encoded).unwrap();
+                if let Err(error) = pipe_payload(&mut replies, &encoded) {
+                    drop(replies);
+                    drop(frames);
+                    drop(child);
+                    panic!("supplied reply failed before completion: {error}");
+                }
             }
             Frame::Done {
                 result,
@@ -1637,7 +1701,7 @@ fn admission_native(
     if let Some(budget) = budget {
         command.env("FIPE_BUDGET", budget.to_string());
     }
-    let mut child = command.spawn().unwrap();
+    let mut child = PipeChild::new(command.spawn().unwrap());
     let mut frames = child.stdout.take().unwrap();
     let mut replies = child.stdin.take().unwrap();
     let mut calls = Vec::new();
@@ -1672,11 +1736,12 @@ fn admission_native(
                 );
                 let answer =
                     admission_answer(program, declaration, &arguments, false);
-                let reply = codec::encode_reply(&Ok(answer)).unwrap();
-                replies
-                    .write_all(&(reply.len() as u64).to_le_bytes())
-                    .unwrap();
-                replies.write_all(&reply).unwrap();
+                if let Err(error) = pipe_reply(&mut replies, &Ok(answer)) {
+                    drop(replies);
+                    drop(frames);
+                    drop(child);
+                    panic!("admission reply failed before completion: {error}");
+                }
             }
             Frame::Done {
                 result,
@@ -2045,7 +2110,7 @@ fn graph_echo_native(
     if let Some(budget) = budget {
         command.env("FIPE_BUDGET", budget.to_string());
     }
-    let mut child = command.spawn().unwrap();
+    let mut child = PipeChild::new(command.spawn().unwrap());
     let mut frames = child.stdout.take().unwrap();
     let mut replies = child.stdin.take().unwrap();
     let mut trace = Vec::new();
@@ -2059,11 +2124,14 @@ fn graph_echo_native(
             Frame::Call { request, lines } => {
                 assert!(lines.is_empty());
                 let answer = graph_echo_answer(program, &request, reply);
-                let bytes = codec::encode_reply(&Ok(answer.clone())).unwrap();
-                replies
-                    .write_all(&(bytes.len() as u64).to_le_bytes())
-                    .unwrap();
-                replies.write_all(&bytes).unwrap();
+                if let Err(error) =
+                    pipe_reply(&mut replies, &Ok(answer.clone()))
+                {
+                    drop(replies);
+                    drop(frames);
+                    drop(child);
+                    panic!("graph reply failed before completion: {error}");
+                }
                 trace.push((request, Reply::Value(Ok(answer))));
             }
             Frame::Done {
@@ -4322,4 +4390,285 @@ fn intermediate_value_default_intercepts_the_written_host_default() {
         assert!(matches!(&vm.0, Err(fault) if fault.reason == Reason::Budget));
         assert_eq!(on_native(Some(limit)), vm);
     }
+}
+
+const REPLY_WRITER: &str = r"
+import os, struct, sys
+mode = sys.argv[1]
+def send(payload):
+    os.write(1, struct.pack('<Q', len(payload)) + payload)
+if mode == 'healthy':
+    send(struct.pack('<QQq', 0, 1, 7))
+    send(struct.pack('<QQq', 0, 1, 8))
+elif mode == 'host-error':
+    send(struct.pack('<QQ', 1, 6) + b'denied')
+elif mode == 'wrong-type':
+    send(struct.pack('<QQQ', 0, 5, 3) + b'bad')
+elif mode == 'short-header':
+    os.write(1, b'\0' * 4)
+elif mode == 'short-body':
+    os.write(1, struct.pack('<QQ', 24, 0))
+elif mode == 'tag':
+    send(struct.pack('<Q', 99))
+elif mode == 'utf8':
+    send(struct.pack('<QQ', 1, 1) + b'\xff')
+else:
+    length = (64 * 1024 * 1024 + 1) if mode == 'over' else (2**64 - 1)
+    try:
+        os.write(1, struct.pack('<Q', length))
+        # Deliberately uncooperative peer: bounded actual writes, no huge object.
+        for _ in range(1024):
+            os.write(1, b'x' * 1024)
+    except BrokenPipeError:
+        sys.exit(0)
+    sys.exit(3)  # No observed closure: never call this a passing shutdown.
+";
+
+fn wait_pipe_child(
+    child: &mut PipeChild,
+    context: &str,
+) -> std::process::ExitStatus {
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert_eq!(child.wait().unwrap(), status);
+            return status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{context}: process exceeded 10 seconds"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn reply_boundary_frames(bytes: Vec<u8>) -> Vec<Frame> {
+    let mut input = std::io::Cursor::new(bytes);
+    let mut frames = Vec::new();
+    while input.position() < u64::try_from(input.get_ref().len()).unwrap() {
+        let mut length = [0; 8];
+        input.read_exact(&mut length).unwrap();
+        let length = usize::try_from(u64::from_le_bytes(length)).unwrap();
+        assert!(length <= 65536, "this scalar fixture emits small frames");
+        let mut payload = vec![0; length];
+        input.read_exact(&mut payload).unwrap();
+        frames.push(Frame::decode(&payload).unwrap());
+    }
+    frames
+}
+
+fn reply_boundary_run(executable: &Path, mode: &str) -> (Vec<Frame>, i32) {
+    let directory = common::scratch(&format!("reply-boundary-{mode}"));
+    let writer_error = directory.join("writer.stderr");
+    let runtime_error = directory.join("runtime.stderr");
+    let mut writer = PipeChild::new(
+        Command::new("python3")
+            .args(["-c", REPLY_WRITER, mode])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(std::fs::File::create(&writer_error).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let mut runtime = PipeChild::new(
+        Command::new("sh")
+            .args(["-c", "exec \"$0\" 3>&1 4<&0 1>&2 0</dev/null"])
+            .arg(executable)
+            .env_remove("FIPE_BUDGET")
+            .stdin(Stdio::from(writer.stdout.take().unwrap()))
+            .stdout(Stdio::piped())
+            .stderr(std::fs::File::create(&runtime_error).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let frames = runtime.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        frames.take(65537).read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let runtime_status = wait_pipe_child(&mut runtime, mode);
+    let writer_status = wait_pipe_child(&mut writer, mode);
+    let bytes = reader.join().unwrap();
+    assert!(bytes.len() <= 65536);
+    std::fs::write(directory.join("frames.bin"), &bytes).unwrap();
+    assert!(std::fs::metadata(&writer_error).unwrap().len() <= 65536);
+    assert!(std::fs::metadata(&runtime_error).unwrap().len() <= 65536);
+    assert_eq!(std::fs::read(&writer_error).unwrap(), b"");
+    assert_eq!(
+        writer_status.code(),
+        Some(0),
+        "{mode}: writer must observe closure, not timeout"
+    );
+    let code = runtime_status
+        .code()
+        .expect("normal native exit, not abort");
+    let error = std::fs::read_to_string(&runtime_error).unwrap();
+    if code == 2 {
+        assert_eq!(error, "fipe: the host pipe failed; transport closed\n");
+    } else {
+        assert!(error.is_empty(), "{mode}: {error}");
+    }
+    println!(
+        "native reply {mode}: runtime={code} writer=0 bytes={}",
+        bytes.len()
+    );
+    (reply_boundary_frames(bytes), code)
+}
+
+fn assert_reply_boundary_case(
+    program: &Program,
+    frames: &[Frame],
+    mode: &str,
+    code: i32,
+) {
+    let mut labels = Vec::new();
+    let mut done = None;
+    for frame in frames {
+        match frame {
+            Frame::Call {
+                request:
+                    Request::Call {
+                        declaration,
+                        arguments,
+                        ..
+                    },
+                ..
+            } => {
+                let tables = program.tables.borrow();
+                let declaration = &tables.declarations[*declaration];
+                assert_eq!(tables.namespaces[declaration.namespace], "probe");
+                labels.push(declaration.label.clone());
+                assert_eq!(
+                    arguments,
+                    if declaration.label == "value" {
+                        &[Value::Unit][..]
+                    } else {
+                        &[Value::Int(7)][..]
+                    }
+                );
+            }
+            Frame::Done { result, .. } => {
+                assert!(done.is_none());
+                done = Some(result);
+            }
+            other @ Frame::Call { .. } => {
+                panic!("unexpected scalar protocol: {other:?}");
+            }
+        }
+    }
+    if mode == "healthy" {
+        assert_eq!(labels, ["value", "after"]);
+        assert_eq!(code, 0);
+        assert_eq!(done, Some(&Ok(Value::Int(8))));
+    } else {
+        assert_eq!(labels, ["value"], "no later effect after refusal");
+        if matches!(mode, "host-error" | "wrong-type") {
+            assert_eq!(code, 1);
+            let Some(Err(fault)) = done else {
+                panic!("ordinary source Fault must send Done");
+            };
+            assert_eq!(
+                fault.reason,
+                Reason::Host(
+                    if mode == "host-error" {
+                        "denied"
+                    } else {
+                        "the reply is not an Integer"
+                    }
+                    .into()
+                )
+            );
+            let source = "use probe\nx = probe.value ()\nprobe.after x";
+            let start = source.find("probe.value ()").unwrap();
+            assert_eq!(
+                fault.span,
+                fipe::token::Span {
+                    start,
+                    end: start + "probe.value ()".len()
+                }
+            );
+            let tables = program.tables.borrow();
+            let namespace =
+                tables.nodes[program.bodies[program.main].node].namespace;
+            assert_eq!(tables.namespaces[namespace], "main");
+            assert_eq!(fault.namespace, namespace);
+        } else {
+            assert_eq!(code, 2);
+            assert!(done.is_none(), "poisoned transport must not attempt Done");
+        }
+    }
+}
+
+#[test]
+fn native_reply_failures_terminate_without_done_or_later_effects() {
+    let (unit, program) = Unit::new(
+        "use probe\nx = probe.value ()\nprobe.after x",
+        vec![(
+            "probe".into(),
+            "pub value: () -> Integer\npub after: Integer -> Integer".into(),
+        )],
+        vec![],
+    )
+    .unwrap();
+    let executable = common::executable("reply_boundaries", &unit, &program);
+    for mode in [
+        "healthy",
+        "host-error",
+        "wrong-type",
+        "short-header",
+        "short-body",
+        "tag",
+        "utf8",
+        "over",
+        "maximum",
+    ] {
+        let (frames, code) = reply_boundary_run(&executable, mode);
+        assert_reply_boundary_case(&program, &frames, mode, code);
+    }
+}
+
+#[test]
+fn reply_sender_refuses_oversize_before_header_and_reaps_waiting_child() {
+    struct CountedWriter {
+        pipe: std::process::ChildStdin,
+        attempted: usize,
+    }
+    impl Write for CountedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.attempted += bytes.len();
+            self.pipe.write(bytes)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.pipe.flush()
+        }
+    }
+    let mut child = PipeChild::new(
+        Command::new("sh")
+            .args(["-c", "cat >/dev/null"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut writer = CountedWriter {
+        pipe: child.stdin.take().unwrap(),
+        attempted: 0,
+    };
+    let value = Value::Text(std::rc::Rc::new(
+        "x".repeat(usize::try_from(codec::MAX_REPLY_BYTES).unwrap() - 23),
+    ));
+    let error = pipe_reply(&mut writer, &Ok(value)).unwrap_err();
+    assert_eq!(
+        error,
+        codec::Error::TooLong(codec::MAX_REPLY_BYTES + 1).to_string()
+    );
+    assert_eq!(writer.attempted, 0, "not even a reply header was written");
+    drop(writer);
+    assert_eq!(
+        wait_pipe_child(&mut child, "pre-header sender refusal").code(),
+        Some(0)
+    );
 }

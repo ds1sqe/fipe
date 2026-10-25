@@ -74,8 +74,27 @@ Raise `FIPE_STACK` or bound the run with `FIPE_BUDGET`.
 A host starts the executable with two pipes: the program writes frames
 on fd 3 and reads replies on fd 4. Native code blocks on each reply.
 
-Every frame and reply is a length, then that many payload bytes. In a
-payload:
+Every frame and reply is a length, then that many payload bytes. Host replies
+are limited to 64 MiB of encoded payload, excluding the eight-byte prefix; exactly
+64 MiB is accepted. `codec::MAX_REPLY_BYTES` owns this limit. Hosts must call
+`encode_reply` and handle `Error::TooLong` BEFORE writing any header. Reduce or
+chunk application results through declared operations; never truncate a reply.
+This is a new limit on previously unbounded replies and a new public Error variant;
+update exhaustive Rust matches. It is not a limit on runtime-to-Host frames or
+in-process Standard results, and encoding an already-owned large value can still
+allocate before final size refusal.
+
+A short header/body, excessive length, malformed reply or pipe I/O error makes the
+transport unusable. The runtime exits 2 without a Done frame: writing Done while a
+peer is blocked writing a rejected body could deadlock. Process exit closes all
+inherited descriptor copies. A valid Host error or a well-formed wrong-type reply
+still produces the ordinary source Fault/Done and exits 1. After any transport
+error, hosts must close both pipe ends and reap the child under a deadline, killing
+it if necessary; do not retry or fall back to Standard. Supervisors must drain or
+file-back stderr. Length bounds do not time out a peer that stops sending a valid
+body. Startup's existing no-pipe Standard selection is unchanged.
+
+In a payload:
 
 - a *number* is 8 bytes, an unsigned integer little-endian;
 - a *text* is a number (its byte length), then UTF-8 bytes;
@@ -186,7 +205,7 @@ runs `tests/fixtures/first.fipe` built with `--host
 #!/usr/bin/env python3
 # A host for a fipe-native executable: answers each call 8080, prints
 # each main line and the result. Usage: host.py EXE [ARG]...
-import os, struct, sys
+import os, signal, struct, sys, time
 
 def num(b, i): return struct.unpack_from('<Q', b, i)[0], i + 8
 def text(b, i): n, i = num(b, i); return b[i:i + n].decode(), i + n
@@ -207,19 +226,49 @@ def value(b, i):  # a value's display, and the offset past it
     for _ in range(n): v, i = value(b, i); parts.append(v)
     return head + '[(('[tag - 6] + ', '.join(parts) + ']))'[tag - 6], i
 
+MAX_REPLY_BYTES = 64 * 1024 * 1024
+
+def exact(stream, count):
+    chunks = bytearray()
+    while len(chunks) < count:
+        part = stream.read(count - len(chunks))
+        if not part: raise EOFError('native pipe ended inside a frame')
+        chunks.extend(part)
+    return chunks
+
+def reap(pid):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        found, status = os.waitpid(pid, os.WNOHANG)
+        if found: return status
+        time.sleep(0.01)
+    try: os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+    os.waitpid(pid, 0)
+    raise TimeoutError('native peer did not exit after transport closure')
+
 req_r, req_w = os.pipe(); rep_r, rep_w = os.pipe()
 pid = os.posix_spawn(sys.argv[1], sys.argv[1:], os.environ, file_actions=[
     (os.POSIX_SPAWN_DUP2, req_w, 3), (os.POSIX_SPAWN_DUP2, rep_r, 4)])
 os.close(req_w); os.close(rep_r)
 frames, replies = os.fdopen(req_r, 'rb'), os.fdopen(rep_w, 'wb')
-while True:
-    b = frames.read(struct.unpack('<Q', frames.read(8))[0])
-    tag, i = num(b, 0)
-    if tag == 1: break  # done
-    declaration, _ = num(b, i)
-    print(f'call {declaration} -> 8080')
-    reply = struct.pack('<QQq', 0, 1, 8080)  # a value: the I64 8080
-    replies.write(struct.pack('<Q', len(reply)) + reply); replies.flush()
+try:
+    while True:
+        length = struct.unpack('<Q', exact(frames, 8))[0]
+        b = exact(frames, length)  # This example trusts its generated scalar peer.
+        tag, i = num(b, 0)
+        if tag == 1: break  # done
+        declaration, _ = num(b, i)
+        print(f'call {declaration} -> 8080')
+        reply = struct.pack('<QQq', 0, 1, 8080)
+        if len(reply) > MAX_REPLY_BYTES: raise ValueError('native reply too long')
+        replies.write(struct.pack('<Q', len(reply)) + reply); replies.flush()
+finally:
+    # Also runs on malformed frames, pre-header refusal or a failed write.
+    try: replies.close()
+    finally:
+        try: frames.close()
+        finally: status = reap(pid)
 ok, i = num(b, i)
 if ok == 0: result, i = value(b, i)
 else:  # a Fault: span, namespace, reason, the reason's payload
@@ -231,7 +280,7 @@ else:  # a Fault: span, namespace, reason, the reason's payload
 n, i = num(b, i)
 for _ in range(n): _, i = num(b, i); line, i = value(b, i); print('line', line)
 charged, _ = num(b, i)
-print('result', result, '| charged', charged, '| exit', os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+print('result', result, '| charged', charged, '| exit', os.waitstatus_to_exitcode(status))
 ```
 
 `tests/equivalence.rs` is the conformance host written against the

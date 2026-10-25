@@ -29,6 +29,8 @@ use std::{collections::BTreeMap, fmt, rc::Rc};
 pub enum Error {
     /// The bytes end inside an item.
     Short,
+    /// An encoded reply exceeds [`MAX_REPLY_BYTES`].
+    TooLong(u64),
     /// A tag no item has.
     Tag(u64),
     /// Malformed text, numbers, graph references or excessive Value depth.
@@ -42,6 +44,8 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Short => f.write_str("the frame ends early"),
+            Self::TooLong(length) => write!(f,
+                "a reply of {length} bytes exceeds the {MAX_REPLY_BYTES} byte limit"),
             Self::Tag(tag) => write!(f, "no item has tag {tag}"),
             Self::Malformed => f.write_str("a malformed codec payload"),
             Self::Opaque => f.write_str(
@@ -400,11 +404,15 @@ impl Frame {
     }
 }
 
+/// Maximum encoded Host reply payload, excluding its eight-byte length prefix.
+pub const MAX_REPLY_BYTES: u64 = 64 * 1024 * 1024;
+
 /// A reply's payload: the value, or the failure's message.
 ///
 /// # Errors
 ///
-/// [`Error::Opaque`] for a function or a witness in the value.
+/// [`Error::Opaque`] for a function or a witness in the value, or
+/// [`Error::TooLong`] if the encoded reply exceeds [`MAX_REPLY_BYTES`].
 pub fn encode_reply(reply: &Result<Value, String>) -> Result<Vec<u8>, Error> {
     if carrier_scan(reply.iter()).0 {
         return Err(Error::Opaque);
@@ -419,6 +427,10 @@ pub fn encode_reply(reply: &Result<Value, String>) -> Result<Vec<u8>, Error> {
             number(&mut out, 1);
             bytes(&mut out, message.as_bytes());
         }
+    }
+    let length = u64::try_from(out.len()).unwrap_or(u64::MAX);
+    if length > MAX_REPLY_BYTES {
+        return Err(Error::TooLong(length));
     }
     Ok(out)
 }
@@ -1158,6 +1170,22 @@ impl Reader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoded_reply_limit_accepts_true_boundary_and_refuses_larger_payloads() {
+        let maximum = usize::try_from(MAX_REPLY_BYTES).unwrap();
+        for size in [maximum - 25, maximum - 24, maximum - 23] {
+            let reply = Ok(Value::Text(Rc::new("x".repeat(size))));
+            let encoded = encode_reply(&reply);
+            if size + 24 > maximum {
+                assert_eq!(encoded, Err(Error::TooLong(MAX_REPLY_BYTES + 1)));
+            } else {
+                let encoded = encoded.unwrap();
+                assert_eq!(encoded.len(), size + 24);
+                assert_eq!(decode_reply(&encoded).unwrap(), reply);
+            }
+        }
+    }
 
     #[test]
     fn resource_value_boundary_memo_counts_stored_edges_without_owned_copies() {

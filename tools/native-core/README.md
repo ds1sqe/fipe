@@ -28,3 +28,22 @@ otherwise become function placeholders. The preflight borrows values, walks
 iteratively and expands each shared allocation once; it does not add resource
 transport or promise a global work budget, arbitrary-depth encoding or stack-safe
 destruction of every input value.
+
+
+## Bounded replies
+
+`codec::MAX_REPLY_BYTES` is 64 MiB of encoded Host reply payload, excluding its
+eight-byte framing prefix. `encode_reply` accepts exactly that size and returns
+`Error::TooLong(actual_bytes)` for larger replies before the caller can send a
+header. This new public enum variant requires exhaustive callers to update their
+matches; previously unbounded large replies must be reduced or chunked through
+application operations. The check follows serialization, so it is not a general
+encoder allocation quota. Slice-only decoding, runtime-to-Host frames and
+in-process Standard behavior are unchanged.
+
+An excessive incoming length is refused before runtime allocation/body reads.
+Short, malformed or failed reply transports are terminal: runtime exit 2, no Done
+frame, no transport reuse. Hosts close both ends and reap their child with a
+supervisor deadline; they must not wait for Done after a failed write. Normal
+encoded Host failures and typed mismatch still use ordinary Fault/Done exit 1.
+This length/error policy does not add resource transport or change scalar ABI.
