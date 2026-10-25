@@ -557,3 +557,200 @@ unsafe extern "C" fn rt_test(
 extern "C" fn rt_init(body: u64) -> u32 {
     status(ops::init(size(body)))
 }
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+    use std::{
+        mem::{align_of, size_of, MaybeUninit},
+        ptr,
+        rc::Rc,
+    };
+
+    const fn text_owner(value: &Value) -> &Rc<String> {
+        let Value::Text(owner) = value else {
+            panic!("a text slot")
+        };
+        owner
+    }
+
+    #[test]
+    fn slots_initialize_and_drop_once() {
+        assert_eq!(size_of::<Value>(), 16);
+        assert_eq!(align_of::<Value>(), 8);
+        let mut single = MaybeUninit::<Value>::uninit();
+        // SAFETY: single is aligned, valid storage containing no Value.
+        assert_eq!(unsafe { rt_unit(single.as_mut_ptr()) }, OK);
+        // SAFETY: rt_unit initialized this slot; inspect then drop it once.
+        unsafe {
+            assert_eq!(single.assume_init_ref(), &Value::Unit);
+            single.assume_init_drop();
+        }
+
+        let mut frame = MaybeUninit::<[Value; 3]>::uninit();
+        let base = frame.as_mut_ptr().cast::<Value>();
+        // SAFETY: frame has three consecutive empty, aligned Value slots.
+        unsafe { rt_units(base, 3) };
+        // SAFETY: all three slots were initialized and remain live.
+        unsafe {
+            for at in 0..3 {
+                assert_eq!(&*base.add(at), &Value::Unit);
+            }
+        }
+        let owner = Rc::new(String::from("owned by the frame"));
+        let weak = Rc::downgrade(&owner);
+        // SAFETY: slot1 holds Unit; put drops it and installs the owned text.
+        unsafe { put(base.add(1), Value::Text(owner)) };
+        // SAFETY: each initialized slot is dropped exactly once.
+        unsafe { rt_drops(base, 3) };
+        assert!(weak.upgrade().is_none());
+        // frame stays MaybeUninit: no read or second Value drop follows.
+    }
+
+    #[test]
+    fn copy_preserves_alias_and_releases_destination() {
+        let mut slots = [Value::text("source"), Value::text("displaced")];
+        let source = Rc::downgrade(text_owner(&slots[0]));
+        let displaced = Rc::downgrade(text_owner(&slots[1]));
+        let base = slots.as_mut_ptr();
+        // SAFETY: both slots are live; copy explicitly permits self alias.
+        unsafe {
+            rt_copy(base.add(1), base);
+            rt_copy(base.add(1), base.add(1));
+            assert!(Rc::ptr_eq(text_owner(&*base), text_owner(&*base.add(1))));
+            assert_eq!(Rc::strong_count(text_owner(&*base)), 2);
+        }
+        assert!(displaced.upgrade().is_none());
+        drop(slots);
+        assert!(source.upgrade().is_none());
+    }
+
+    #[test]
+    fn move_leaves_unit_without_cloning() {
+        let mut slots = [Value::text("source"), Value::text("displaced")];
+        let original = Rc::clone(text_owner(&slots[0]));
+        let source = Rc::downgrade(&original);
+        let displaced = Rc::downgrade(text_owner(&slots[1]));
+        let base = slots.as_mut_ptr();
+        // SAFETY: these are distinct initialized slots in one live array.
+        unsafe {
+            rt_move(base.add(1), base);
+            assert_eq!(&*base, &Value::Unit);
+            assert!(Rc::ptr_eq(&original, text_owner(&*base.add(1))));
+            assert_eq!(Rc::strong_count(text_owner(&*base.add(1))), 2);
+        }
+        assert!(displaced.upgrade().is_none());
+        drop(original);
+        drop(slots);
+        assert!(source.upgrade().is_none());
+    }
+
+    #[test]
+    fn spots_snapshot_precedes_overlapping_writes() {
+        let a = Rc::new(String::from("A"));
+        let b = Rc::new(String::from("B"));
+        let mut slots = [
+            Value::Text(Rc::clone(&a)),
+            Value::Text(Rc::clone(&b)),
+            Value::text("C"),
+        ];
+        let displaced = Rc::downgrade(text_owner(&slots[2]));
+        let base = slots.as_mut_ptr();
+        // SAFETY: source0..2 and destination1..3 are live in this array.
+        // rt_spots snapshots all source clones before any destination write.
+        unsafe {
+            rt_spots(base.add(1), base, 2);
+            rt_spots(base, base, 3);
+            assert!(Rc::ptr_eq(text_owner(&*base), &a));
+            assert!(Rc::ptr_eq(text_owner(&*base.add(1)), &a));
+            assert!(Rc::ptr_eq(text_owner(&*base.add(2)), &b));
+            assert_eq!(Rc::strong_count(&a), 3);
+            assert_eq!(Rc::strong_count(&b), 2);
+        }
+        assert!(displaced.upgrade().is_none());
+        drop(slots);
+        assert_eq!(Rc::strong_count(&a), 1);
+        assert_eq!(Rc::strong_count(&b), 1);
+    }
+
+    #[test]
+    fn zero_count_paths_do_not_touch_storage() {
+        let mut storage = MaybeUninit::<[Value; 1]>::uninit();
+        let base = storage.as_mut_ptr().cast::<Value>();
+        // SAFETY: read explicitly permits null when count is zero. Exports
+        // instead receive valid aligned storage; none touches a Value at zero.
+        unsafe {
+            assert!(read(ptr::null(), 0).is_empty());
+            rt_units(base, 0);
+            rt_drops(base, 0);
+            rt_spots(base, base.cast_const(), 0);
+        }
+        // No Value was initialized, assumed, read, or dropped from storage.
+    }
+
+    #[test]
+    fn field_and_index_clone_before_alias_replacement() {
+        let expected = Rc::new(String::from("selected"));
+        let fields = Rc::new(vec![Value::Text(Rc::clone(&expected))]);
+        let aggregate = Rc::downgrade(&fields);
+        let mut slot = [Value::Tuple(fields)];
+        let base = slot.as_mut_ptr();
+        // SAFETY: one live tuple slot, valid part0, and out may equal from.
+        unsafe {
+            rt_field(base, base, 0);
+            assert!(Rc::ptr_eq(text_owner(&*base), &expected));
+        }
+        assert!(aggregate.upgrade().is_none());
+        drop(slot);
+        assert_eq!(Rc::strong_count(&expected), 1);
+
+        let mut slots =
+            [Value::text("displaced"), Value::Text(Rc::clone(&expected))];
+        let displaced = Rc::downgrade(text_owner(&slots[0]));
+        let base = slots.as_mut_ptr();
+        // SAFETY: index1 exists and both slots are initialized. The source
+        // clone is complete before replacing slot0 in the same array.
+        unsafe {
+            rt_index(base, base, 1);
+            assert!(Rc::ptr_eq(text_owner(&*base), text_owner(&*base.add(1))));
+        }
+        assert!(displaced.upgrade().is_none());
+        drop(slots);
+        assert_eq!(Rc::strong_count(&expected), 1);
+    }
+
+    #[test]
+    fn land_fault_keeps_destination() {
+        let original = Rc::new(String::from("keep on Fault"));
+        let weak = Rc::downgrade(&original);
+        let mut slots = [Value::Text(Rc::clone(&original))];
+        let base = slots.as_mut_ptr();
+        // SAFETY: out is initialized; Fault must not replace it.
+        unsafe {
+            assert_eq!(land(base, Err(Faulted)), FAULT);
+            assert!(Rc::ptr_eq(text_owner(&*base), &original));
+        }
+        drop(original);
+        // SAFETY: the same live slot still owns the text; Ok replaces it.
+        unsafe {
+            assert_eq!(land(base, Ok(Value::Unit)), OK);
+            assert_eq!(&*base, &Value::Unit);
+        }
+        assert!(weak.upgrade().is_none());
+        assert_eq!(status(Ok(())), OK);
+        assert_eq!(status(Err(Faulted)), FAULT);
+    }
+
+    #[test]
+    fn switch_reads_live_scalar_without_mutation() {
+        let mut slots = [Value::Int(7), Value::Int(-1)];
+        let base = slots.as_mut_ptr();
+        // SAFETY: both live slots hold the scalar kind this switch accepts.
+        unsafe {
+            assert_eq!(rt_switch(base), 7);
+            assert_eq!(rt_switch(base.add(1)), u64::MAX);
+            assert_eq!(&*base, &Value::Int(7));
+            assert_eq!(&*base.add(1), &Value::Int(-1));
+        }
+    }
+}

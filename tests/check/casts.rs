@@ -1208,3 +1208,59 @@ fn host_written_default_owners_keep_direct_binding_recursion_distinct_from_membe
         }
     }
 }
+
+#[test]
+fn local_limited_impl_rejects_written_eq_ord_and_show() {
+    for source in [
+        "type Key: Eq\nimpl Key: Eq { eq: Self -> (self: Self) -> Bool = other self => True }\ntype P: Key { n: Integer }\nx: Key = P 1\ny: Key = P 2\n(x, 0) == (y, 0)",
+        "type Key: Ord\nimpl Key: Ord { cmp: Self -> (self: Self) -> Ordering = other self => Greater }\ntype P: Key { n: Integer }\na: Key = P 1\nb: Key = P 2\na < b",
+        "type Key: Show\nimpl Key: Show { show: (self: Self) -> String = self => \"key word\" }\ntype P: Key { n: Integer }\ntype Holder { item: Key }\nx: Key = P 7\nshow (x, Holder x)",
+    ] {
+        let module = parse(lex(source)).unwrap();
+        let targets: Vec<_> = module
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let fipe::ast::Entry::Item(item) = entry else {
+                    return None;
+                };
+                let fipe::ast::ItemKind::Impl { target, .. } = &item.kind
+                else {
+                    return None;
+                };
+                let target = module.ty(*target).expect("actual impl target");
+                let fipe::ast::TypeKind::Named { name, .. } = &target.kind
+                else {
+                    panic!("the literal impl targets Key");
+                };
+                assert_eq!(name.segments, ["Key"]);
+                Some(target.span)
+            })
+            .collect();
+        assert_eq!(targets.len(), 1, "{source}");
+        let target_span = targets[0];
+        assert_eq!(&source[target_span.start..target_span.end], "Key");
+        let errors = checker::check(
+            &module,
+            &Declarations::new(),
+            &[],
+            checker::Options::default(),
+        )
+        .expect_err("a local limited impl must refuse");
+        let limited: Vec<_> = errors
+            .iter()
+            .filter_map(|error| match error {
+                checker::Error::Resolve(error)
+                    if matches!(
+                        &error.reason,
+                        fipe::resolve::Reason::LimitedImpl
+                    ) =>
+                {
+                    Some(error.span)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(limited, [target_span], "{source}: {errors:?}");
+    }
+}
