@@ -1,5 +1,5 @@
 //! Diagnostics in words a reader understands: the crate's typed reasons
-//! with this server's wording.
+//! with Core Display wording; source snapshots use `fipe::analysis` stable records.
 
 use fipe::check::Error;
 use fipe::{infer, parse, resolve};

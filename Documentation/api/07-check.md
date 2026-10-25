@@ -246,3 +246,49 @@ default expressions retain their own indexed entries.
 Retracting a session line also removes the dispatch choices learned from
 that line. Table identities remain allocated; surviving units keep their
 indices.
+
+## Offline analysis snapshots
+
+The development API `fipe::analysis::analyze` accepts an already parsed main
+module, admitted `Declarations`, supplied file modules, a `Sources` catalog and
+`analysis::Options`. It performs no file/provider I/O and does not execute Host
+calls. The returned `Snapshot` contains partial `Resolved` and `Typed` stages
+plus structured diagnostics; invalid source does not issue an executable unit.
+This API is a development addition, not part of the published dev.2 API.
+
+`SourceId` is a `usize` index into the caller's exact UTF-8 text slice.
+`Sources::origins` maps File/Host/Commands/Prelude origins onto those indices;
+`current` identifies This, and `current_file` maps an import cycle back to the
+current document. Modules and texts must represent the same source snapshot.
+Locations are raw byte spans, including unchanged CRLF offsets and real
+zero-width EOF spans. Each related location has its own source, span and message.
+Paths, URI/UTF16 conversion and revision identities belong to the caller.
+
+Diagnostic `code` strings identify typed semantic categories independently of
+message wording. Severity is Error, Warning, Information or Hint; current
+checker errors and warnings emit only the first two. Syntax errors use
+`syntax.*` (lexical causes `lex.*`), resolution uses `resolve.*`, typing uses
+`type.*`, compile evaluation uses `check.*`, and ambiguous-call warnings use
+`warning.ambiguous-call`. File wrappers preserve the inner code and actual file
+location, with the reaching import as related information. Codes are not enum
+ordinals or Debug strings.
+
+`Options::checking` preserves the normal strict/compile-budget policy. Optional
+`Limits` cap individual/total source bytes and source count before analysis;
+None defaults preserve existing admission. These are input bounds, not a total
+inference-work bound, cancellation facility or latency guarantee. The caller
+must check untrusted byte limits before lexing if it also needs to bound its
+own parsing allocations. There is no diagnostic truncation.
+
+`InputError` implements Display and `core::error::Error`. A rejected catalog or
+limit is not successful checking with empty diagnostics: display the current
+revision's failure explicitly. Retain old snapshots only under their original
+revision and discard stale results rather than drawing them as current.
+Session analysis, navigation/completion and owned runtime fault traces remain
+separate APIs/work; this snapshot exposes no Unsupported placeholders for them.
+
+Core snapshots retain every individual file diagnostic and code. The LSP
+presents one summary per broken used file: its first record supplies the
+primary code/severity, and every actual grouped error is preserved with its
+own source location/message in related information. This grouping changes
+presentation only; library consumers retain the full per-record vector.

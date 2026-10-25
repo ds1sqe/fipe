@@ -677,15 +677,9 @@ impl Server {
     fn diagnose(&self, uri: &str) -> Option<Value> {
         let analysis = self.analyse(uri)?;
         let mut diagnostics: Vec<Diagnostic> = analysis
-            .diagnostics
+            .rendered
             .iter()
-            .map(|(span, message)| Diagnostic {
-                range: position::range(&analysis.text, *span, self.encoding),
-                severity: Some(DiagnosticSeverity::ERROR),
-                source: Some(String::from("fipe")),
-                message: message.clone(),
-                ..Diagnostic::default()
-            })
+            .map(|rendered| self.analysis_diagnostic(&analysis, uri, rendered))
             .collect();
         if let Some(failure) = &self.reload_error {
             diagnostics.push(Diagnostic {
@@ -696,6 +690,75 @@ impl Server {
             });
         }
         publish(uri, diagnostics)
+    }
+
+    fn analysis_diagnostic(
+        &self,
+        analysis: &Analysis,
+        uri: &str,
+        rendered: &analysis::RenderedDiagnostic,
+    ) -> Diagnostic {
+        use fipe::analysis::Severity;
+        let span = rendered.span;
+        let matches = |location: &fipe::analysis::Location| {
+            location.source == 0
+                && (location.span.start, location.span.end) == span
+        };
+        let common =
+            rendered.common.and_then(|index| analysis.common.get(index));
+        let severity = common.map_or(DiagnosticSeverity::ERROR, |diagnostic| {
+            match diagnostic.severity {
+                Severity::Error => DiagnosticSeverity::ERROR,
+                Severity::Warning => DiagnosticSeverity::WARNING,
+                Severity::Information => DiagnosticSeverity::INFORMATION,
+                Severity::Hint => DiagnosticSeverity::HINT,
+            }
+        });
+        let mut related = Vec::new();
+        if let Ok(document) = uri.parse::<Uri>() {
+            let mut add = |location: &fipe::analysis::Location,
+                           message: &str| {
+                let source =
+                    analysis.diagnostic_sources.get(location.source)?;
+                let location = self.location(
+                    analysis,
+                    &document,
+                    &(source.clone(), (location.span.start, location.span.end)),
+                )?;
+                let item = lsp_types::DiagnosticRelatedInformation {
+                    location,
+                    message: message.to_owned(),
+                };
+                if !related.contains(&item) {
+                    related.push(item);
+                }
+                Some(())
+            };
+            for index in rendered.common.iter().chain(&rendered.additional) {
+                let Some(item) = analysis.common.get(*index) else {
+                    continue;
+                };
+                if !matches(&item.location) {
+                    let _ = add(&item.location, &item.message);
+                }
+                for item in &item.related {
+                    let _ = add(&item.location, &item.message);
+                }
+            }
+        }
+        Diagnostic {
+            range: position::range(&analysis.text, span, self.encoding),
+            severity: Some(severity),
+            code: Some(lsp_types::NumberOrString::String(
+                common
+                    .map_or("host.configuration", |diagnostic| diagnostic.code)
+                    .to_owned(),
+            )),
+            related_information: (!related.is_empty()).then_some(related),
+            source: Some(String::from("fipe")),
+            message: rendered.message.clone(),
+            ..Diagnostic::default()
+        }
     }
 
     /// The analysis of an open document, made once per change.
@@ -1368,5 +1431,268 @@ mod selected_path_tests {
         ));
         assert!(!uri::same_path(&selected.input.path, &selected.canonical));
         assert!(!selected.matches(Path::new(r"D:\missing\unselected.fipi")));
+    }
+}
+
+#[cfg(test)]
+mod shared_diagnostic_tests {
+    use super::*;
+
+    fn server() -> Server {
+        Server {
+            host: Host::default(),
+            host_dir: None,
+            interface_base: Host::default(),
+            interfaces: Vec::new(),
+            reload_error: None,
+            encoding: Encoding::Utf16,
+            asked: Asked { inlay_hints: true },
+            phase: Phase::Running,
+            documents: BTreeMap::new(),
+            analyses: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    #[test]
+    fn shared_severity_codes_map_to_all_four_wire_values() {
+        let server = server();
+        let mut analysis =
+            Analysis::new("missing", None, &server.host, &|_| None);
+        assert_eq!(analysis.common.len(), 1);
+        let location = analysis.common[0].location.clone();
+        let span = (location.span.start, location.span.end);
+        let message = analysis.common[0].message.clone();
+        for (severity, number) in [
+            (fipe::analysis::Severity::Error, 1),
+            (fipe::analysis::Severity::Warning, 2),
+            (fipe::analysis::Severity::Information, 3),
+            (fipe::analysis::Severity::Hint, 4),
+        ] {
+            analysis.common[0].severity = severity;
+            let diagnostic = server.analysis_diagnostic(
+                &analysis,
+                "file:///shared-diagnostic.fipe",
+                &analysis::RenderedDiagnostic {
+                    span,
+                    message: message.clone(),
+                    common: Some(0),
+                    additional: Vec::new(),
+                },
+            );
+            let wire = serde_json::to_value(diagnostic).unwrap();
+            assert_eq!(wire["severity"], number);
+            assert_eq!(wire["code"], "resolve.unknown-name");
+        }
+    }
+
+    #[test]
+    fn imported_diagnostic_keeps_file_location_in_wire_related_information() {
+        let server = server();
+        let text = "use broken\nbroken.value";
+        let file = "pub value: Integer = True";
+        let mut analysis = Analysis::new(text, None, &server.host, &|_| None);
+        let parsed = fipe::parse::parse_partial(fipe::lex::lex(file));
+        let pairs = vec![(String::from("broken"), parsed.clone())];
+        let origins =
+            [(fipe::resolve::Origin::File(String::from("broken")), 1)];
+        let snapshot = fipe::analysis::analyze(
+            &analysis.module,
+            &server.host.declarations,
+            &pairs,
+            fipe::analysis::Sources {
+                texts: &[text, file],
+                current: 0,
+                origins: &origins,
+                current_file: None,
+            },
+            fipe::analysis::Options::default(),
+        )
+        .unwrap();
+        analysis.files.push(loader::File {
+            stem: String::from("broken"),
+            path: std::env::temp_dir().join("shared-diagnostic-broken.fipe"),
+            text: String::from(file),
+            module: parsed,
+        });
+        analysis.common = snapshot.diagnostics;
+        analysis.diagnostic_sources = vec![Source::This, Source::File(0)];
+        let common = analysis
+            .common
+            .iter()
+            .find(|diagnostic| diagnostic.location.source == 1)
+            .unwrap();
+        let imported = common
+            .related
+            .iter()
+            .find(|related| related.message == "imported here")
+            .unwrap();
+        let span = (imported.location.span.start, imported.location.span.end);
+        let diagnostic = server.analysis_diagnostic(
+            &analysis,
+            "file:///shared-diagnostic-main.fipe",
+            &analysis::RenderedDiagnostic {
+                span,
+                message: String::from("file error summary"),
+                common: analysis
+                    .common
+                    .iter()
+                    .position(|diagnostic| core::ptr::eq(diagnostic, common)),
+                additional: Vec::new(),
+            },
+        );
+        assert_eq!(
+            diagnostic.code,
+            Some(lsp_types::NumberOrString::String(common.code.into()))
+        );
+        let related = diagnostic.related_information.unwrap();
+        assert!(related.iter().any(|item| {
+            item.location.uri == uri::of(&analysis.files[0].path)
+                && item.message == common.message
+        }));
+        assert!(related.iter().any(|item| item.message == "imported here"));
+    }
+    fn nested_analysis(server: &Server) -> Analysis {
+        let path = std::env::temp_dir().join("shared-diagnostic-main.fipe");
+        Analysis::new("use a", Some(&path), &server.host, &|path| match path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+        {
+            Some("a") => Some(String::from("use b")),
+            Some("b") => Some(String::from(
+                "pub first: Integer = True\npub second: I64 = 2.5",
+            )),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn nested_file_summary_uses_the_actual_reaching_import() {
+        let server = server();
+        let analysis = nested_analysis(&server);
+        let rendered = analysis
+            .rendered
+            .iter()
+            .find(|rendered| {
+                rendered.common.iter().chain(&rendered.additional).any(
+                    |index| analysis.common[*index].code == "type.not-exact",
+                )
+            })
+            .unwrap();
+        assert_eq!(rendered.span, (4, 5));
+        let wire = server.analysis_diagnostic(
+            &analysis,
+            "file:///shared-diagnostic-main.fipe",
+            rendered,
+        );
+        assert_eq!(
+            wire.code,
+            Some(lsp_types::NumberOrString::String(
+                analysis.common[rendered.common.unwrap()].code.into(),
+            ))
+        );
+        let related = wire.related_information.unwrap();
+        let file = analysis.files.iter().find(|file| file.stem == "b").unwrap();
+        assert!(related
+            .iter()
+            .any(|item| item.location.uri == uri::of(&file.path)));
+    }
+
+    #[test]
+    fn same_use_diagnostics_keep_distinct_codes_despite_identical_summary_words(
+    ) {
+        let server = server();
+        let mut analysis = nested_analysis(&server);
+        for (_, message) in &mut analysis.diagnostics {
+            *message = String::from("legacy wording changed");
+        }
+        let mut codes = std::collections::BTreeSet::new();
+        let mut indices = std::collections::BTreeSet::new();
+        for rendered in &mut analysis.rendered {
+            rendered.message = String::from("identical presentation words");
+        }
+        for (index, common) in analysis.common.iter().enumerate() {
+            let rendered = analysis::RenderedDiagnostic {
+                span: (4, 5),
+                message: String::from("identical presentation words"),
+                common: Some(index),
+                additional: Vec::new(),
+            };
+            if !["type.mismatch", "type.not-exact"].contains(&common.code) {
+                continue;
+            }
+            assert_eq!(rendered.span, (4, 5));
+            let wire = server.analysis_diagnostic(
+                &analysis,
+                "file:///shared-diagnostic-main.fipe",
+                &rendered,
+            );
+            assert_eq!(
+                wire.code,
+                Some(lsp_types::NumberOrString::String(common.code.into()))
+            );
+            assert_eq!(wire.message, "identical presentation words");
+            let file =
+                analysis.files.iter().find(|file| file.stem == "b").unwrap();
+            assert!(wire.related_information.unwrap().iter().any(|item| {
+                item.location.uri == uri::of(&file.path)
+                    && item.message == common.message
+            }));
+            codes.insert(common.code);
+            indices.insert(index);
+        }
+        assert_eq!(
+            codes,
+            std::collections::BTreeSet::from([
+                "type.mismatch",
+                "type.not-exact"
+            ])
+        );
+        assert_eq!(indices.len(), 2);
+    }
+    #[test]
+    fn nested_file_wire_group_keeps_every_actual_related_error_once() {
+        let server = server();
+        let analysis = nested_analysis(&server);
+        assert_eq!(analysis.diagnostics.len(), 1);
+        assert!(analysis.diagnostics[0].1.ends_with("(and 1 more)"));
+        assert_eq!(analysis.rendered.len(), 1);
+        let rendered = &analysis.rendered[0];
+        assert_eq!(rendered.span, (4, 5));
+        assert_eq!(rendered.additional.len(), 1);
+        let first = &analysis.common[rendered.common.unwrap()];
+        let wire = server.analysis_diagnostic(
+            &analysis,
+            "file:///shared-diagnostic-main.fipe",
+            rendered,
+        );
+        assert_eq!(
+            wire.code,
+            Some(lsp_types::NumberOrString::String(first.code.into()))
+        );
+        let related = wire.related_information.unwrap();
+        for index in rendered.common.iter().chain(&rendered.additional) {
+            let common = &analysis.common[*index];
+            let source = &analysis.diagnostic_sources[common.location.source];
+            let expected = server
+                .location(
+                    &analysis,
+                    &"file:///shared-diagnostic-main.fipe".parse().unwrap(),
+                    &(
+                        source.clone(),
+                        (common.location.span.start, common.location.span.end),
+                    ),
+                )
+                .unwrap();
+            assert!(related.iter().any(|item| {
+                item.location == expected && item.message == common.message
+            }));
+        }
+        assert_eq!(
+            related
+                .iter()
+                .filter(|item| item.message == "imported here")
+                .count(),
+            1
+        );
     }
 }

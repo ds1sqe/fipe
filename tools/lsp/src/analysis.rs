@@ -1,10 +1,10 @@
 //! One document's stages, from its text to its check diagnostics, and
 //! the queries the actions ask of them.
 
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use fipe::ast::{ExprKind, Module, Node};
-use fipe::check::{check, Options};
 use fipe::infer::infer_partial;
 use fipe::lex::lex;
 use fipe::parse::parse_partial;
@@ -13,7 +13,6 @@ use fipe::typed::Typed;
 use fipe::types::Scheme;
 
 use crate::loader::{self, File, Host};
-use crate::words::{self, Placed};
 
 /// Where a span lies.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +30,15 @@ pub enum Source {
 /// A located span.
 pub type Located = (Source, (usize, usize));
 
+/// One wire presentation, explicitly associated with its shared diagnostic.
+#[derive(Clone, Debug)]
+pub(crate) struct RenderedDiagnostic {
+    pub span: (usize, usize),
+    pub message: String,
+    pub common: Option<usize>,
+    pub additional: Vec<usize>,
+}
+
 /// A document analysed against the host and the files it uses.
 pub struct Analysis {
     pub text: String,
@@ -42,6 +50,9 @@ pub struct Analysis {
     pub typed: Typed,
     /// Each diagnostic of the document, by byte span.
     pub diagnostics: Vec<((usize, usize), String)>,
+    pub(crate) common: Vec<fipe::analysis::Diagnostic>,
+    pub(crate) rendered: Vec<RenderedDiagnostic>,
+    pub(crate) diagnostic_sources: Vec<Source>,
 }
 
 impl Analysis {
@@ -63,18 +74,22 @@ impl Analysis {
             .iter()
             .map(|file| (file.stem.clone(), file.module.clone()))
             .collect();
-        let (resolved, _) =
-            resolve_partial(&module, &host.declarations, &pairs);
-        let (typed, _) =
-            infer_partial(&module, &resolved, &host.declarations, &pairs);
+        let stem = path
+            .and_then(Path::file_stem)
+            .and_then(|stem| stem.to_str());
+        let (snapshot, diagnostic_sources) =
+            snapshot(&module, text, &files, &pairs, host, stem);
         let mut analysis = Self {
             text: String::from(text),
             module,
             files,
             pairs,
-            resolved,
-            typed,
+            resolved: snapshot.resolved,
+            typed: snapshot.typed,
             diagnostics: Vec::new(),
+            common: snapshot.diagnostics,
+            rendered: Vec::new(),
+            diagnostic_sources,
         };
         let stem = path
             .and_then(Path::file_stem)
@@ -84,82 +99,117 @@ impl Analysis {
     }
 
     fn check(
-        &self,
+        &mut self,
         host: &Host,
         stem: Option<&str>,
     ) -> Vec<((usize, usize), String)> {
-        let mut diagnostics: Vec<_> = host
-            .errors
-            .iter()
-            .map(|error| ((0, 0), format!("host declarations: {error}")))
-            .collect();
-        let Err(errors) = check(
-            &self.module,
-            &host.declarations,
-            &self.pairs,
-            Options::default(),
-        ) else {
-            return diagnostics;
-        };
+        self.rendered.clear();
+        let mut diagnostics = Vec::new();
+        for error in &host.errors {
+            let message = format!("host declarations: {error}");
+            diagnostics.push(((0, 0), message.clone()));
+            self.rendered.push(RenderedDiagnostic {
+                span: (0, 0),
+                message,
+                common: None,
+                additional: Vec::new(),
+            });
+        }
         let mut here = Vec::new();
-        // Each used file's diagnostics: the first one's words, and how
-        // many more, shown once at the file's `use`.
-        let mut files: Vec<(String, (usize, usize), String, usize)> =
-            Vec::new();
-        for error in &errors {
-            match words::check(error) {
-                Placed::Here(span, message) => here.push((span, message)),
-                // A file module that is the document itself, reached
-                // through a cycle: its words belong here.
-                Placed::File(file, span, message)
-                    if Some(file.as_str()) == stem =>
+        let mut files: Vec<(usize, RenderedDiagnostic)> = Vec::new();
+        for (common, diagnostic) in self.common.iter().enumerate() {
+            let span =
+                (diagnostic.location.span.start, diagnostic.location.span.end);
+            let message = diagnostic.message.clone();
+            match &self.diagnostic_sources[diagnostic.location.source] {
+                Source::This => here.push(RenderedDiagnostic {
+                    span,
+                    message,
+                    common: Some(common),
+                    additional: Vec::new(),
+                }),
+                Source::File(index)
+                    if Some(self.files[*index].stem.as_str()) == stem =>
                 {
-                    here.push((span, message));
+                    here.push(RenderedDiagnostic {
+                        span,
+                        message,
+                        common: Some(common),
+                        additional: Vec::new(),
+                    });
                 }
-                Placed::File(file, (start, _), message) => {
-                    if let Some(entry) =
-                        files.iter_mut().find(|entry| entry.0 == file)
+                Source::File(index) => {
+                    if let Some((_, rendered)) =
+                        files.iter_mut().find(|(file, _)| file == index)
                     {
-                        entry.3 += 1;
-                        continue;
+                        rendered.additional.push(common);
+                    } else {
+                        files.push((
+                            *index,
+                            self.imported_diagnostic(*index, common),
+                        ));
                     }
-                    let at = loader::uses(&self.module)
-                        .find(|(used, _)| *used == file)
-                        .map_or((0, 0), |(_, span)| span);
-                    let line = self
-                        .files
-                        .iter()
-                        .find(|known| known.stem == file)
-                        .map_or(0, |known| {
-                            known.text[..start.min(known.text.len())]
-                                .matches('\n')
-                                .count()
-                                + 1
-                        });
-                    let text =
-                        format!("in {file}.fipe, line {line}: {message}");
-                    files.push((file, at, text, 0));
                 }
+                Source::Host(_) | Source::Prelude => {}
             }
         }
-        // What the document says of a broken file's names follows from
-        // the file's own errors.
-        here.retain(|((start, end), _)| {
-            let said = self.text.get(*start..*end).unwrap_or_default();
-            !files.iter().any(|(file, ..)| {
-                said == file || said.starts_with(&format!("{file}."))
+        // Preserve the legacy per-file summary and cascade presentation.
+        here.retain(|rendered| {
+            let said = self
+                .text
+                .get(rendered.span.0..rendered.span.1)
+                .unwrap_or_default();
+            !files.iter().any(|(file, _)| {
+                let stem = &self.files[*file].stem;
+                said == stem || said.starts_with(&format!("{stem}."))
             })
         });
-        diagnostics.extend(here);
-        for (_, at, text, more) in files {
-            let text = match more {
-                0 => text,
-                1 => format!("{text} (and 1 more)"),
-                n => format!("{text} (and {n} more)"),
-            };
-            diagnostics.push((at, text));
+        diagnostics.extend(
+            here.iter()
+                .map(|rendered| (rendered.span, rendered.message.clone())),
+        );
+        self.rendered.extend(here);
+        for (_, mut rendered) in files {
+            match rendered.additional.len() {
+                0 => {}
+                1 => rendered.message.push_str(" (and 1 more)"),
+                more => {
+                    let _ = write!(rendered.message, " (and {more} more)");
+                }
+            }
+            diagnostics.push((rendered.span, rendered.message.clone()));
+            self.rendered.push(rendered);
         }
         diagnostics
+    }
+
+    fn imported_diagnostic(
+        &self,
+        file: usize,
+        common: usize,
+    ) -> RenderedDiagnostic {
+        let diagnostic = &self.common[common];
+        let at = diagnostic
+            .related
+            .iter()
+            .find(|related| related.location.source == 0)
+            .map_or((0, 0), |related| {
+                (related.location.span.start, related.location.span.end)
+            });
+        let file = &self.files[file];
+        let line = file.text[..diagnostic.location.span.start]
+            .matches('\n')
+            .count()
+            + 1;
+        RenderedDiagnostic {
+            span: at,
+            message: format!(
+                "in {}.fipe, line {line}: {}",
+                file.stem, diagnostic.message
+            ),
+            common: Some(common),
+            additional: Vec::new(),
+        }
     }
 
     /// The span of a node of `module`.
@@ -924,4 +974,71 @@ pub fn target_head(written: &str) -> &str {
     } else {
         written.split(['<', ' ']).next().unwrap_or_default().trim()
     }
+}
+
+/// Build one shared diagnostic snapshot after the loader has prepared files.
+fn snapshot(
+    module: &Module,
+    text: &str,
+    files: &[File],
+    pairs: &[(String, Module)],
+    host: &Host,
+    stem: Option<&str>,
+) -> (fipe::analysis::Snapshot, Vec<Source>) {
+    use fipe::analysis::{Diagnostic, Location, Options, Severity, Sources};
+    let mut texts = vec![text];
+    let mut places = vec![Source::This];
+    let mut origins = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        origins.push((Origin::File(file.stem.clone()), texts.len()));
+        texts.push(file.text.as_str());
+        places.push(Source::File(index));
+    }
+    for (name, _, source) in &host.sources {
+        let origin = if name == "commands" {
+            Origin::Commands
+        } else {
+            Origin::Host(name.clone())
+        };
+        origins.push((origin, texts.len()));
+        texts.push(source.as_str());
+        places.push(Source::Host(name.clone()));
+    }
+    origins.push((Origin::Prelude, texts.len()));
+    texts.push(fipe::decl::prelude_source());
+    places.push(Source::Prelude);
+    let sources = Sources {
+        texts: &texts,
+        current: 0,
+        origins: &origins,
+        current_file: stem,
+    };
+    let snapshot = fipe::analysis::analyze(
+        module,
+        &host.declarations,
+        pairs,
+        sources,
+        Options::default(),
+    )
+    .unwrap_or_else(|error| {
+        // A source-catalog failure is visible, never an empty successful check.
+        let (resolved, _) = resolve_partial(module, &host.declarations, pairs);
+        let (typed, _) =
+            infer_partial(module, &resolved, &host.declarations, pairs);
+        fipe::analysis::Snapshot {
+            resolved,
+            typed,
+            diagnostics: vec![Diagnostic {
+                location: Location {
+                    source: 0,
+                    span: fipe::token::Span::default(),
+                },
+                severity: Severity::Error,
+                code: "analysis.input",
+                message: error.to_string(),
+                related: Vec::new(),
+            }],
+        }
+    });
+    (snapshot, places)
 }
