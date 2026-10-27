@@ -106,10 +106,11 @@ Fipe. The floor stays fixed through final `0.2.x` patch releases.
 
 Final `0.2.x` patches preserve public Rust APIs (including public fields, enums
 and modules), language and host namespace/permission semantics, CLI flags and
-exit behavior, and advertised LSP/DAP behavior. The current `0.2.0-dev.2` is a
-prerelease: migrations before final `0.2.0` remain explicit and consumers should
-pin exact versions. No stable Rust memory ABI, persisted-session format or
-cross-version native codec is promised.
+exit behavior, and advertised LSP/DAP behavior. Published dev.2 tools and
+Core/REPL-core dev.3 are prereleases; migrations remain explicit and consumers
+should pin exact versions. See the [package publication status](publishing.md).
+No stable Rust memory ABI, persisted-session format or cross-version native
+codec is promised.
 
 | Surface | Selected release targets | Qualification |
 | --- | --- | --- |

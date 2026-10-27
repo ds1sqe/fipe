@@ -5,9 +5,10 @@ pure evaluation, then a host call, then a small no_std application Host with mem
 sources, private resource payloads and per-call permission checks. You do not need
 Standard, a terminal REPL, a native provider or an OS integration to embed Core.
 
-**Candidate:** this guide targets unpublished `0.2.0-dev.3`. The registry
-commands require that exact version to be published first. For the published dev.2
-pure example, see the [README](../README.md#embed-in-rust).
+This guide targets published Core `0.2.0-dev.3`, qualified through an outside
+registry-only custom Host and no_std consumer. Only Core and REPL-core dev.3 are
+published; this does not announce Standard dev.3 or a final release. For the
+historical dev.2 pure example, see the [README](../README.md#embed-in-rust).
 
 ## Choose who performs effects
 
@@ -64,8 +65,8 @@ application files must stand alone. For your own application, rename the package
 and its imports together after this baseline works.
 
 **Do not copy the fixture's Cargo.lock.** That lock was generated for a source-patched
-proof and has no registry source/checksum association for Fipe. After dev.3 is
-published, resolve a fresh lock from your external project directory:
+proof and has no registry source/checksum association for Fipe. For published
+dev.3, resolve a fresh lock from your external project directory:
 
 ```sh
 cargo +1.98.1 --config 'resolver.incompatible-rust-versions="fallback"' generate-lockfile
@@ -202,12 +203,13 @@ whether to submit for diagnostics, not that the text is valid.
 
 ## Qualification and limits
 
-The pinned custom Host source has passed its four runtime tests, the same-library
-bare-target check and a two-package graph check without Standard. Those checks
-used a source override. The registry-only walkthrough has not yet been verified,
-and the fixture source is newer than the prepared candidate archives.
+The pinned custom Host source matches the published Core dev.3 fixture. Its
+four contract tests, same-library bare-target check, pure example and exact
+consumer→Core graph passed from registry-only inputs without Standard. Separate
+Core/REPL-core host and bare checks retained the independent three-node graph.
+These results do not establish a newer checkout, Standard or final release.
 
-After publication, check your fresh project's resolution:
+Check your fresh project's resolution:
 
 ```sh
 cargo +1.98.1 metadata --locked --format-version 1
@@ -221,4 +223,4 @@ not establish this registry association.
 The [API reference](api/09-embed.md), [language specification](spec/README.md) and
 [publishing procedure](publishing.md) describe the detailed contracts. This guide
 adds no permission grant, payload schema or native resource transport, and does
-not announce a final `0.2.0` release.
+not announce a final `0.2.x` release.

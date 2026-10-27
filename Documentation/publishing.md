@@ -1,149 +1,156 @@
 # Publishing Fipe packages
 
-Fipe's Rust packages are one workspace and are distributed independently on
-crates.io. The last published workspace release is `0.2.0-dev.2`, which added nested
-host namespaces and published the tools. The next prerelease candidate
-is `0.2.0-dev.3`; source versioning alone does not publish any package.
-The earlier core prerelease `0.2.0-dev.1` remains available.
+## Published versions and selected cuts
 
-The planned `0.2.0` release includes a Rust source compatibility change for
-`fipe::value::Guard`, not present in published `0.2.0-dev.2`: its new `Drop`
-implementation can reject owned field moves, destructuring and struct update
-with E0509. See the [embedding migration guidance](api/09-embed.md#opaque-resource-references)
-before updating consumers; the public fields and value/wire representation remain unchanged.
+Fipe's 13 workspace packages are distributed independently on crates.io.
+`0.2.0-dev.2` is the last broad workspace/tooling baseline, not evidence that
+all 13 packages were published: the current `fipe-ffi` API returns 404.
+Only **`fipe` and `fipe-repl-core`** have published `0.2.0-dev.3` versions.
+Their accepted immutable archives have SHA-256 checksums:
 
-## Check the release
+- `fipe`: `b4bde8862142888b0db5afff99e03270cfac7536807ca771d6f69e0ce6f7c2db`.
+- `fipe-repl-core`: `652e6f30c1448ad569dbe1e2f00b1e7cb9355d3051ee03faf57f35dda5eab0bf`.
 
-Run the [workspace checks](development.md), both embedding examples, and:
+The other published tool packages remain at dev.2. Do not substitute a dev.2
+Standard/native/runtime/tool package into a purported matched dev.3 release.
+The earlier Core `0.2.0-dev.1` remains historical. No stable `0.2.0` or `0.2.1`
+release is established by these facts.
 
-```sh
-cargo package --workspace --locked
-cargo publish --workspace --dry-run --locked
-```
+The held-grant Standard cut at `a784bc36` has private dev.3 archive and extracted
+consumer rehearsals. Those different archive bytes cannot replace published
+dev.3. The selected next stabilization release is **unpublished `0.2.1`**;
+its final source, compatibility decisions, versions and package set still need
+approval. Source versioning, a private rehearsal and successful CI do not publish.
 
-Cargo packages the workspace dependencies together and builds the extracted
-sources. This catches files accidentally read from another package or omitted
-from the archive. Inspect `target/package/*.crate` for the README, license
-texts, host declarations and tree-sitter sources. Tool integration tests use
-repository fixtures and run in the checkout, rather than being shipped.
+## Qualify the exact source and package set
 
-During local preparation, add `--allow-dirty` to inspect uncommitted changes.
-Before a release, review the exact diff and run the checks on the source being
-published. Package generation does not upload anything; `publish --dry-run`
-does not upload either.
-
-## Publish
-
-Authenticate locally with `cargo login` or a configured Cargo credential
-provider. Keep credentials out of source files, command arguments and logs.
-Then, for this release:
+Use a clean committed version cut, the [workspace checks](development.md), both
+embedding examples, and actual supported-platform results. Retain the full
+source byte/mode map, Git revision/tree and package inventory. For a full
+workspace archive qualification, run:
 
 ```sh
-cargo publish --workspace --locked
+cargo +1.98.1 package --workspace --locked
 ```
 
-Cargo publishes in dependency order. The graph is:
+A separately selected partial rehearsal can package only its reviewed packages;
+it does not close the remaining packages. Keep every selected archive's bytes,
+checksum, contents, original and normalized manifests, shipped lock and genuine
+`.cargo_vcs_info.json`. Cargo's normal verification builds extracted sources.
+Do not bypass it with `--no-verify`, or use `--allow-dirty` as release evidence.
+Diagnostic dirty inspection, if used, is not qualification.
+
+Check README/licenses, Host declarations and notices, prelude/library assets,
+examples and tree-sitter sources against include lists and the selected source.
+Tool integration tests may use checkout fixtures and are not necessarily shipped;
+run them separately. No checkout-relative include or copied-in missing asset may
+rescue a package. A hosted member listing is not a retained archive checksum ledger.
+
+Rehearse an outside-checkout locked public consumer using only verified extracted
+packages. Explicit temporary extracted path/patch resolution is private rehearsal,
+not registry proof. After publication, repeat without path/Git/patch overrides
+and assert actual registry implementation paths and accepted archive checksums.
+For Standard, exercise public `load`/`Policy`/`Host::run` allowed writes, appends,
+removals, grant refusal and an unchanged outside sentinel.
+
+## Version and dependency pairing
+
+All workspace packages inherit a version and exact internal requirements. Review
+versions and root lock coherently even when selecting only two packages. A changed
+published package needs a new version; crates.io versions cannot be overwritten.
+The full dependency order is:
 
 1. `fipe`.
 2. `fipe-host`, `fipe-native-core`, `fipe-repl-core`, `fipe-lsp`, `tree-sitter-fipe`.
 3. `fipe-llvm`, `fipe-repl`, `fipe-dap`, `fipe-native-rt`.
 4. `fipe-native`, then `fipe-ffi` and `fipe-cli`.
 
-`fipe-ffi` uses the native and LLVM packages in its development graph, so
-include those edges when rehearsing the full workspace package set.
+Full rehearsal also includes `fipe-ffi`'s native/LLVM development edges and
+`fipe-native`'s LLVM development edge. Preserve external checksums. Review the
+standalone provider proof lock, linked-provider example lock and both `.in`
+manifests under `tools/ffi`, plus the custom-host fixture's exact Fipe pin and
+lock under `tests/fixtures/custom-host`. Validate each independent graph with
+`--locked`; root workspace lock success does not validate those locks.
 
-`fipe-native` also uses `fipe-llvm` in its development tests. Every internal
-Cargo dependency carries an exact version and a local path: the checkout uses
-the path, while the published manifest uses the registry version. Keep those
-versions in sync. A future release must use a new version for any package
-whose published contents change; crates.io versions cannot be overwritten.
+## Floor, platforms and independent consumers
 
-After publication, verify from outside the checkout:
+Use [compatibility and support](development.md#compatibility-and-support).
+Rust 1.98.1 is the selected floor. VM/tooling require actual Linux, Windows and
+both macOS architectures; installed terminal/editor behavior is separate from
+hosted tests. Native/LLVM executable support is x86-64 Linux only. Preserve the
+explicit unsupported-host diagnostic and separate no_std/platform feature checks.
+Missing target components are prerequisites, not passing negative tests.
+
+`cargo install --locked` tests shipped locks. Also resolve a fresh external
+consumer explicitly, then compile the actual graph:
 
 ```sh
-cargo install fipe-cli --version 0.2.0-dev.2 --locked
-cargo install fipe-lsp fipe-dap --version 0.2.0-dev.2 --locked
+cargo +1.98.1 generate-lockfile --config 'resolver.incompatible-rust-versions="fallback"'
+cargo +1.98.1 check --locked
 ```
 
-Create a separate Rust project with `fipe = "=0.2.0-dev.2"` and run the README's
-embedding example without path overrides. Native applications also need the
-matching [runtime archive](../tools/native/runtime/README.md).
+Fallback preference alone does not guarantee compatible dependencies. Record
+cache/index state and offline limits. Independently check a genuine no_std + alloc
+library using only Core and REPL-core on the host and an installed bare target;
+actual metadata/normal edges must show REPL→Core and Core→nothing, no Standard,
+provider or tool dependency. An allocator/executable/hardware run is a further gate.
+The alternate Linux REPL executable needs its exclusive feature and panic-abort
+policy; neither/both features must fail with the intended diagnostic.
 
-This process publishes Cargo packages. Editor configuration files and the
-language specification live in the repository; tree-sitter's npm metadata is
-not a Node binding or an npm release procedure.
+Native generated objects and the [runtime archive](../tools/native/runtime/README.md)
+must match the compiler's exact Fipe version. This is not a promise that every
+mismatch is mechanically refused. A Cargo runtime package is not itself an
+installed archive; build its static library with the documented panic-abort policy.
+Current native/LLVM APIs refuse checked resource programs and genuine Resource
+values, including nested captures/filled arguments. This is refusal support, not
+resource execution, a stable memory ABI or a new resource wire format.
 
-## Support qualification
+## Publish only the approved cut
 
-Use the [supported floor and target matrix](development.md#compatibility-and-support)
-when checking archives. Clean `cargo install --locked` checks the shipped lock;
-also check a fresh independent consumer on Rust 1.98.1 with Cargo's explicit
-Rust-compatible fallback preference, then compile its resolved graph. Neither
-path-only workspace checks nor resolver preference alone prove published package
-contents or dependency compatibility. Record offline cache limits. Native
-compiler/runtime artifacts require exact Fipe version pairing; Windows and both
-macOS architectures still need actual VM/tooling runtime qualification.
+This document authorizes no upload. Select exact packages and versions after
+source, archive, consumer, platform and compatibility review. Use standard Cargo
+and an approved credential method; never put tokens in source, argv or logs.
+From that selected source, replace the explicit package placeholder:
 
-## Consumer prerelease candidate
+```sh
+cargo +1.98.1 publish -p '<SELECTED_PACKAGE>' --registry crates-io --dry-run --locked
+cargo +1.98.1 publish -p '<SELECTED_PACKAGE>' --registry crates-io --locked
+```
 
-A bounded `0.2.0-dev.3` delivery can make current embedding and source continuation
-available for consumer testing before final `0.2.0` acceptance. Its minimum archive
-set is `fipe` followed by `fipe-repl-core`, with the latter's exact dependency on
-the same version. Existing direct Session/Machine consumers need only `fipe`;
-using `source_continuation` requires the second crate and a consumer-owned change.
-No Standard, native runtime, FFI or language-server dependency is required.
+The dry run is a separate preflight, not publication. Compare its actual archive
+with the accepted bytes. Do not recommend blanket workspace upload for a partial
+cut. Publish dependencies first and independently verify acceptance, checksum,
+index visibility and official download before the next dependent package.
+After timeout/interruption, reconcile registry state before any retry: unknown
+outcome does not mean failure, and an accepted version cannot be replaced.
+Then require a clean registry-only consumer before reporting availability.
 
-All workspace packages inherit one version and exact internal requirements, so
-prepare the version and lock coherently even when only these two archives are
-selected. A two-package delivery does not publish the remaining eleven packages,
-qualify native artifact pairing with an older version, or close final release
-and platform gates. The current native/LLVM resource refusal remains unchanged.
+Historical dev.2 tooling checks, **not commands for the new cut**, are:
+`cargo install fipe-cli --version 0.2.0-dev.2 --locked` and
+`cargo install fipe-lsp fipe-dap --version 0.2.0-dev.2 --locked`.
+New-cut install tests must name its approved available versions; no dev.3 native
+runtime/tool pair is implied by the two published dev.3 libraries.
 
-Before uploading, retain the reviewed source revision, archive hashes and contents,
-normalized registry manifests and exact dependency versions. Rehearse an extracted
-archive-only consumer and an independent no_std build; then review the credential
-method and explicit upload scope. Record each package's immutable version, archive
-hash, acceptance/checksum and index visibility separately. After an interruption,
-check registry state before retrying: a timeout does not establish upload failure,
-and a published version cannot be overwritten. Publish the core before its exact
-query dependency; verify the accepted bytes and clean registry-only consumer before
-reporting availability. No upload is authorized by this document.
+## Current dev.3 source migration and handoff
 
-### Prerelease source migration
+In the current source cut, native `lower`, `object`, `listing` and LLVM
+`module` return fallible `Result`s. Updating callers must handle those results;
+this does not imply that dev.3 native packages are published.
 
-The candidate deliberately changes public Rust source APIs from published dev.2:
+Published Core dev.3 has genuine `Value::Resource`, classification changes and
+private Tables identity state. Migrate exhaustive matches/literals and construct
+Tables through public defaults/checked APIs. Guard/Closure/frame iterative Drop
+can make owned-field moves/destructuring/struct update fail with E0509; borrow,
+preserve owners or use `core::mem::take`. See [embedding migration](api/09-embed.md#opaque-resource-references).
+Pending composite witnesses (`ResourceStep`, `ResourceError`,
+`Machine::pending_resource_type_at`) prove language identity, not grants/liveness.
+REPL-core dev.3 adoption includes its request-token/Start/End/Reset/acknowledgment
+contract; pure `source_continuation` performs no Session construction or I/O.
 
-- Genuine `Value::Resource` and resource classification fields/diagnostics require
-  downstream exhaustive matches and struct literals to migrate. Checked Tables
-  include private resource identity state; construct them through public defaults
-  and checked APIs rather than external full-field literals.
-- `Guard`, `Closure` and materialized frame ownership now use iterative drop.
-  Owned-field moves, destructuring and struct update can produce E0509; preserve
-  owners or use `core::mem::take` for an owned field. See the
-  [embedding migration](api/09-embed.md#opaque-resource-references).
-- The pending composite API uses `ResourceStep`, `ResourceError` and
-  `Machine::pending_resource_type_at`; witnesses prove language identity, not Host
-  permission or liveness. A Host still owns its payload and lifecycle ledger.
-- Adopting repl-core also requires its current request-token, Start/End/Reset and
-  acknowledgment contract, not the old automatic owner assumptions. Its pure
-  `source_continuation` query adds no Session construction or I/O.
-- Native lowering/object/listing and LLVM module generation return fallible
-  results and reject marked programs; this is not resource execution support.
-
-A consumer handoff names the exact registry version, source and archive checksums,
-API migration and measured limits. A registry upload does not prove the Reovim
-consumer has updated its pins, re-enabled its ignored marked-pipe cases, removed
-its workaround or passed grant/stale/cleanup/session checks. Those observations
-remain consumer-owned acceptance gates. Final `0.2.0` compatibility, complete
-workspace packaging and cross-platform release claims remain separately gated.
-
-### Standalone version-maintenance inventory
-
-A workspace prerelease bump must also review the standalone provider proof lock,
-linked-provider example lock and both `.in` manifests under `tools/ffi`, plus the
-custom-host fixture's exact Fipe pin and lock under `tests/fixtures/custom-host`.
-Update only matching local package versions and exact pins, preserve external
-checksums, and validate each copied/standalone graph with `--locked`. Root workspace
-lock success does not establish those independent locks are current. Keep examples
-explicit about source patches versus registry availability; an ABI number or a
-historical published-version command is not automatically part of this bump.
+A handoff names exact versions/source/checksums, migrations and measured limits.
+Publication does not prove Reovim adoption, ignored-case/workaround removal or
+consumer grant/stale/cleanup/Session acceptance. Pending future Core layout or
+import compatibility decisions are not implemented by this guide. Final 13-package,
+platform and installed-consumer gates remain distinct from the two-library cut.
+Editor configuration/specification remain repository assets; tree-sitter npm
+metadata is neither a Node binding nor an npm publication procedure.

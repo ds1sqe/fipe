@@ -8,10 +8,11 @@ distinguishes this boundary from an application Host and optional Standard.
 
 The [practical embedding walkthrough](../embedding.md) covers an independent
 project, pure execution, application-owned effects and the optional Standard
-choice. It uses the qualified but unpublished dev.3 candidate APIs; its
-registry-only walkthrough has not yet been verified. The introductory dev.2 examples
-below target the currently published baseline, not every later resource or REPL
-API in this checkout. Keep source, documentation and exact package versions matched.
+choice. It targets published Core dev.3, with registry-only custom-Host and
+no_std consumer qualification. The introductory dev.2 examples below retain the
+historical matching Core/Standard tooling baseline; Standard dev.3 is not published.
+They do not cover every dev.3 resource or REPL API. Keep source, documentation and
+exact package versions matched; see [publication status](../publishing.md).
 
 Add `fipe = "=0.2.0-dev.2"` to your Cargo dependencies. The
 [README](../../README.md#embed-in-rust) contains a minimal checked evaluation;
