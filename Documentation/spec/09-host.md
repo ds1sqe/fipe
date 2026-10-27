@@ -245,3 +245,19 @@ without being executable. Ordinary unmarked data remains supported. This
 describes current refusal, not a promise of future resource support or a
 settled broader platform policy; scalar FFI does not gain a resource wire
 representation. Host nondeterminism is open in H1.
+## Acquired Standard write roots
+
+Standard acquires directory handles when constructing `Policy`. Writes, appends
+and removals execute relative to these held grants; canonicalization prepares
+an address but does not authorize an ambient effect. Stable internal, absolute
+and cross-grant links are supported when both the entry and destination lie
+under granted roots. Removal unlinks a final link without deleting its target;
+nonempty directories are never removed recursively. Reads remain ambient.
+
+Policy clones share acquired authority. On Windows the backend locks granted
+directories against rename/deletion until the last owning Policy/Host clone is
+dropped. On Unix an acquired directory can survive a label rename; preparing a
+new address may fail, while a prepared effect remains bound to the original
+directory. Replacing the old label never acquires the replacement directory.
+These path grants do not promise exclusive inode ownership: hard links and
+concurrent moves of already-open files can expose the same inode elsewhere.

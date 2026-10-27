@@ -128,8 +128,13 @@ case "$mode" in
             --locked --offline ${profile_arg:+"$profile_arg"}
         cargo_ci test -p fipe -p fipe-repl-core -p fipe-lsp -p fipe-dap \
             --locked --offline ${profile_arg:+"$profile_arg"}
-        # Host run.rs has Unix-only source; CLI cli.rs also contains native tests.
+        # Keep Linux-native CLI cases filtered; Host suites run on every VM host.
         cargo_ci test -p fipe-host --test declarations --locked --offline ${profile_arg:+"$profile_arg"}
+        cargo_ci test -p fipe-host --lib --test run --test write_roots \
+            --locked --offline ${profile_arg:+"$profile_arg"}
+        cargo_ci clippy -p fipe-host --all-targets --locked --offline \
+            ${profile_arg:+"$profile_arg"} -- \
+            -D warnings -D clippy::all -D clippy::pedantic -D clippy::nursery
         cargo_ci test -p fipe-cli --test tour --test dogfood \
             --locked --offline ${profile_arg:+"$profile_arg"}
         for test in the_repl_shows_values_and_performs_effects_through_the_std_host \

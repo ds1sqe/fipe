@@ -6,10 +6,12 @@ rust-version.workspace = true
 description = "The std host: Fipe scripts against the real machine"
 license.workspace = true
 repository.workspace = true
-include = ["/src/**", "/build.rs", "/README.md", "/LICENSE-*", "/Cargo.lock", "/decl/**"]
+include = ["/src/**", "/build.rs", "/README.md", "/LICENSE-*", "/Cargo.lock", "/decl/**", "/THIRD-PARTY-NOTICES.md"]
 
 [dependencies]
 fipe.workspace = true
+cap-std = { version = "=4.0.3", default-features = false }
+cap-fs-ext = { version = "=4.0.3", default-features = false, features = ["std"] }
 
 [lints.rust]
 unsafe_code = "forbid"

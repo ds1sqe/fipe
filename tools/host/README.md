@@ -143,3 +143,20 @@ cargo clippy --locked --offline --all-targets -- -D warnings \
   -D clippy::all -D clippy::pedantic -D clippy::nursery
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --offline --no-deps
 ```
+
+## Acquired Standard write roots
+
+Standard acquires directory handles when constructing `Policy`. Writes, appends
+and removals execute relative to these held grants; canonicalization prepares
+an address but does not authorize an ambient effect. Stable internal, absolute
+and cross-grant links are supported when both the entry and destination lie
+under granted roots. Removal unlinks a final link without deleting its target;
+nonempty directories are never removed recursively. Reads remain ambient.
+
+Policy clones share acquired authority. On Windows the backend locks granted
+directories against rename/deletion until the last owning Policy/Host clone is
+dropped. On Unix an acquired directory can survive a label rename; preparing a
+new address may fail, while a prepared effect remains bound to the original
+directory. Replacing the old label never acquires the replacement directory.
+These path grants do not promise exclusive inode ownership: hard links and
+concurrent moves of already-open files can expose the same inode elsewhere.

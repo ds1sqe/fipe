@@ -75,10 +75,12 @@ install toolchains or system packages. Linux mode needs `cc` and `clang-23`
 components. Fetching dependencies requires network access unless already cached.
 
 The workflow separates debug/release scratch on Linux and native-host Windows,
-ARM64 macOS and Intel macOS runners. The foreign-OS VM baseline omits the Unix-only
-Host run suite and Linux-native CLI cases; full path/security/terminal/editor
-qualification remains a platform release gate. A workflow definition is not an
-observed CI pass or completed platform qualification. Hosted Linux provisioning
+ARM64 macOS and Intel macOS runners. The foreign-OS VM recipe includes the Host
+library, run, write-root and declaration suites, plus all-target Host strict
+checks in each profile. Linux-native CLI cases remain filtered; full
+path/security/terminal/editor qualification remains a platform release gate.
+A workflow definition is not an observed CI pass or completed platform
+qualification. Hosted Linux provisioning
 uses the official signed LLVM repository; running that installation outside the
 reviewed delivery requires explicit authorization.
 

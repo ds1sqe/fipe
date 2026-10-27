@@ -138,9 +138,22 @@ fn a_link_leaving_the_write_roots_is_refused() {
     let temp = Temp::new();
     let outside = temp.file("outside/target", "keep");
     fs::create_dir(temp.path("work")).unwrap();
-    std::os::unix::fs::symlink(temp.path("outside"), temp.path("work/dir"))
-        .unwrap();
-    std::os::unix::fs::symlink(&outside, temp.path("work/file")).unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(temp.path("outside"), temp.path("work/dir"))
+            .unwrap();
+        std::os::unix::fs::symlink(&outside, temp.path("work/file")).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(
+            temp.path("outside"),
+            temp.path("work/dir"),
+        )
+        .expect("actual directory-link privilege is required");
+        std::os::windows::fs::symlink_file(&outside, temp.path("work/file"))
+            .expect("actual file-link privilege is required");
+    }
     let work = temp.path("work");
     // Through a linked directory: rm is an `Err`, put a Fault.
     let ran = run(&work, "rm ./dir/target");

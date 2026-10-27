@@ -7,8 +7,7 @@ use fipe::{
     value::{Prelude, Record, Value},
 };
 use std::{
-    fs::{self, Metadata, OpenOptions},
-    io::Write as _,
+    fs::{self, Metadata},
     path::{Path, PathBuf},
     rc::Rc,
     time::SystemTime,
@@ -165,16 +164,7 @@ impl Host {
             self.policy
                 .writable(base, written, false)
                 .and_then(|target| {
-                    let meta =
-                        fs::symlink_metadata(&target).map_err(|error| {
-                            format!("cannot remove {written}: {error}")
-                        })?;
-                    let removed = if meta.is_dir() {
-                        fs::remove_dir(&target)
-                    } else {
-                        fs::remove_file(&target)
-                    };
-                    removed.map_err(|error| {
+                    target.remove().map_err(|error| {
                         format!("cannot remove {written}: {error}")
                     })
                 });
@@ -229,13 +219,8 @@ impl Host {
             return Ok(());
         }
         let target = self.policy.writable(base, sink, true)?;
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(replace)
-            .append(!replace)
-            .open(&target)
-            .and_then(|mut file| file.write_all(bytes))
+        target
+            .write(bytes, replace)
             .map_err(|error| format!("cannot write {sink}: {error}"))
     }
 }
