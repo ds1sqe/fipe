@@ -48,6 +48,15 @@ struct Ran {
     exit: u8,
 }
 
+/// Render an OS path as one Fipe string literal, including Windows prefixes.
+fn script_path(path: &Path) -> String {
+    fipe::token::Kind::Str {
+        value: path.to_str().expect("test path is UTF-8").to_owned(),
+        raw: false,
+    }
+    .to_string()
+}
+
 /// Run `script` written to `cwd/script.fipe`, `cwd` the working
 /// directory, with further write roots, arguments and input.
 fn run_with(
@@ -87,7 +96,7 @@ fn put_and_append_write_inside_the_roots() {
             "put ./out.txt \"ab\"\nappend ./out.txt \"cd\"\ncat ./out.txt\n\
              put {0} \"one\"\nappend {0} \"two\"\nput out \"done\\n\"\n\
              rm ./out.txt\n",
-            allowed.display()
+            script_path(&allowed)
         ),
         &[temp.path("allowed")],
         &[],
@@ -101,7 +110,7 @@ fn put_and_append_write_inside_the_roots() {
     // Without the allowance the same write is refused.
     let ran = run(
         &temp.path("work"),
-        &format!("put {} \"x\"", allowed.display()),
+        &format!("put {} \"x\"", script_path(&allowed)),
     );
     assert_eq!(ran.exit, 1);
     assert_eq!(fs::read(&allowed).unwrap(), b"onetwo");
@@ -126,14 +135,14 @@ fn an_absolute_path_outside_is_refused() {
     let victim = temp.file("elsewhere/victim", "keep");
     fs::create_dir(temp.path("work")).unwrap();
     let work = temp.path("work");
-    let ran = run(&work, &format!("rm {}", victim.display()));
+    let ran = run(&work, &format!("rm {}", script_path(&victim)));
     assert_eq!(ran.exit, 1);
     assert!(
         ran.error.contains("outside the write roots"),
         "{}",
         ran.error
     );
-    let ran = run(&work, &format!("put {} \"x\"", victim.display()));
+    let ran = run(&work, &format!("put {} \"x\"", script_path(&victim)));
     assert_eq!(ran.exit, 1);
     assert!(
         ran.error.contains("outside the write roots"),
@@ -142,7 +151,7 @@ fn an_absolute_path_outside_is_refused() {
     );
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
     // The working directory itself is never removed.
-    let ran = run(&work, &format!("rm {}", work.display()));
+    let ran = run(&work, &format!("rm {}", script_path(&work)));
     assert_eq!(ran.exit, 1);
     assert!(work.exists());
 }
