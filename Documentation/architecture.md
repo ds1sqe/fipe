@@ -45,8 +45,12 @@ execution are separate operations. Optionally, the application can use
 output, source and call events through its own driver.
 
 This describes the embedding boundary, not a verified Reovim integration.
-Resource representation and run/session resource lifetimes still need separate
-contract decisions; this page adds no resource or cleanup guarantees.
+Opaque resources use checked typed aliases; the Host owns private payloads,
+per-call permission and liveness checks, and its creation ledger. Drivers handle
+execution boundaries and Host cleanup under the
+[embedding resource and lifecycle contract](api/09-embed.md#opaque-resource-references)
+and [Host specification](spec/09-host.md#environment-and-resources).
+Dropping a language alias does not automatically dispose of its payload.
 
 ## Current tooling and support goals
 

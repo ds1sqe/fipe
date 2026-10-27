@@ -1,0 +1,10 @@
+pub type resource Buffer<T>
+pub type resource Other
+pub type Packet
+pub type Info { pub label: String, pub length: Integer }
+pub acquire: () -> Buffer<()>
+pub echo: Buffer<()> -> Buffer<()>
+pub wrong_argument: () -> Buffer<Integer>
+pub wrong_nominal: () -> Other
+pub info: Buffer<()> -> Info
+pub after: () -> Integer

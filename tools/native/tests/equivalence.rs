@@ -4823,3 +4823,588 @@ fn nonfinite_float_replies_refuse_before_later_effects() {
         }
     }
 }
+
+const RESOURCE_CONTRACT_MAIN: &str = "use api\nb = api.acquire ()\nalias = b\nmake: api.Buffer<()> -> (() -> api.Info) = x => (_ => api.info x)\nread = make alias\ni = read ()\n(i.label, i.length)";
+
+struct ResourceContractOwner {
+    domain: fipe::value::resource::ResourceDomain,
+    witness: fipe::value::resource::ResourceType,
+    key: std::rc::Rc<[u8]>,
+    payload: Option<String>,
+    live: bool,
+    acquisitions: usize,
+    accesses: usize,
+}
+impl ResourceContractOwner {
+    fn acquire(witness: fipe::value::resource::ResourceType) -> (Self, Value) {
+        let owner = Self {
+            domain: fipe::value::resource::ResourceDomain::new(),
+            witness,
+            key: std::rc::Rc::from(&b"one-never-reused-entry"[..]),
+            payload: Some(String::from("private buffer")),
+            live: true,
+            acquisitions: 1,
+            accesses: 0,
+        };
+        let value = owner.domain.issue(&owner.witness, owner.key.clone());
+        (owner, value)
+    }
+    fn info(
+        &mut self,
+        argument: &Value,
+        program: &Program,
+    ) -> Result<Value, String> {
+        let Value::Resource(reference) = argument else {
+            panic!("checked resource argument");
+        };
+        if reference.domain() != &self.domain {
+            return Err(String::from("foreign buffer owner"));
+        }
+        if reference.resource_type() != &self.witness
+            || reference.key() != self.key.as_ref()
+        {
+            return Err(String::from("wrong buffer entry"));
+        }
+        if !self.live {
+            return Err(String::from("revoked buffer entry"));
+        }
+        let payload = self.payload.as_ref().expect("live owner payload");
+        self.accesses += 1;
+        let tables = program.tables.borrow();
+        let found: Vec<_> = tables
+            .meanings
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                tables.namespaces[m.namespace] == "api" && m.label == "Info"
+            })
+            .collect();
+        let [(meaning, shape)] = found.as_slice() else {
+            panic!("one checked api.Info meaning");
+        };
+        assert!(!shape.resource);
+        assert_eq!(shape.constructors.len(), 1);
+        let fields = &shape.constructors[0].fields;
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].label, "label");
+        assert_eq!(fields[1].label, "length");
+        for (field, label) in fields.iter().zip(["String", "Integer"]) {
+            let fipe::ir::Type::Meaning { index, arguments } = &field.ty else {
+                panic!("concrete checked Info field");
+            };
+            assert!(arguments.is_empty());
+            assert_eq!(tables.meanings[*index].label, label);
+            assert_eq!(
+                tables.namespaces[tables.meanings[*index].namespace],
+                "prelude"
+            );
+        }
+        Ok(Value::Record(std::rc::Rc::new(fipe::value::Record {
+            meaning: *meaning,
+            constructor: 0,
+            fields: vec![
+                Value::text(payload),
+                Value::Int(i64::try_from(payload.len()).unwrap()),
+            ],
+        })))
+    }
+    fn revoke(&mut self) {
+        assert!(self.live);
+        self.live = false;
+        assert!(self.payload.take().is_some());
+    }
+}
+
+fn resource_contract_line(
+    session: &mut fipe::session::Session,
+    source: &str,
+) -> (fipe::session::Report, Program) {
+    let Outcome::Done(report) = session.line(source) else {
+        panic!("fixture has no file/provider requests");
+    };
+    assert!(
+        report.diagnostics.is_empty(),
+        "{source}: {:?}",
+        report.diagnostics
+    );
+    assert!(report.accepted.is_some());
+    let program = fipe::compile::compile(report.unit.as_ref().unwrap());
+    (report, program)
+}
+
+fn resource_contract_request(
+    outcome: Outcome<Result<Value, Fault>>,
+    machine: &Machine,
+    label: &str,
+) -> Vec<Value> {
+    let Outcome::Request(Request::Call {
+        declaration,
+        arguments,
+        ..
+    }) = outcome
+    else {
+        panic!("expected {label} request: {outcome:?}");
+    };
+    let tables = machine.program().unwrap().tables.borrow();
+    let declared = &tables.declarations[declaration];
+    assert_eq!(tables.namespaces[declared.namespace], "api");
+    assert_eq!(declared.label, label);
+    arguments
+}
+
+fn resource_contract_same_alias(left: &Value, right: &Value) {
+    let (Value::Resource(left), Value::Resource(right)) = (left, right) else {
+        panic!("actual resource aliases");
+    };
+    assert!(std::rc::Rc::ptr_eq(left, right));
+    assert_eq!(left.domain(), right.domain());
+    assert_eq!(left.resource_type(), right.resource_type());
+    assert_eq!(left.key(), right.key());
+}
+
+fn resource_contract_expressions(
+    module: &fipe::ast::Module,
+) -> Vec<&fipe::ast::Expr> {
+    use fipe::ast::{ArgumentKind, Entry, ExprKind};
+    let mut pending = Vec::new();
+    for entry in &module.entries {
+        if let Entry::Line(expression) = entry {
+            pending.push(*expression);
+        }
+    }
+    let mut expressions = Vec::new();
+    while let Some(id) = pending.pop() {
+        let expression = module.expr(id).expect("actual fixture expression");
+        expressions.push(expression);
+        match &expression.kind {
+            ExprKind::Bind { value, .. } | ExprKind::Field { value, .. } => {
+                pending.push(*value);
+            }
+            ExprKind::Call {
+                callee, arguments, ..
+            } => {
+                pending.push(*callee);
+                for argument in arguments {
+                    match &argument.kind {
+                        ArgumentKind::Positional(value) => pending.push(*value),
+                        ArgumentKind::Flag { value, .. } => {
+                            pending.extend(*value);
+                        }
+                    }
+                }
+            }
+            ExprKind::Group(parts) | ExprKind::Tuple(parts) => {
+                pending.extend(parts.iter().copied());
+            }
+            ExprKind::Arms(arms) => {
+                for arm in arms {
+                    pending.extend(arm.guard);
+                    pending.push(arm.body);
+                }
+            }
+            ExprKind::Name(_)
+            | ExprKind::Literal(_)
+            | ExprKind::Instance { .. } => {}
+            other => {
+                panic!("unexpected connected fixture expression: {other:?}")
+            }
+        }
+    }
+    expressions
+}
+
+fn resource_contract_site(
+    report: &fipe::session::Report,
+    program: &Program,
+    label: &str,
+) -> (fipe::token::Span, usize) {
+    use fipe::ast::ExprKind;
+    let module = report.module.as_ref().unwrap();
+    let mut sites = Vec::new();
+    for expression in resource_contract_expressions(module) {
+        let ExprKind::Call { callee, .. } = &expression.kind else {
+            continue;
+        };
+        let ExprKind::Name(name) = &module.expr(*callee).unwrap().kind else {
+            continue;
+        };
+        if name.segments.as_slice() == ["api", label] {
+            sites.push(expression.span);
+        }
+    }
+    let [span] = sites.as_slice() else {
+        panic!("one actual api.{label} AST call");
+    };
+    let tables = program.tables.borrow();
+    let nodes: Vec<_> = tables
+        .nodes
+        .iter()
+        .filter(|node| {
+            if node.span != *span {
+                return false;
+            }
+            let fipe::ir::Kind::Call { callee, .. } = node.kind else {
+                return false;
+            };
+            let fipe::ir::Kind::Declared(index) = tables.nodes[callee].kind
+            else {
+                return false;
+            };
+            let declared = &tables.declarations[index];
+            tables.namespaces[declared.namespace] == "api"
+                && declared.label == label
+        })
+        .collect();
+    let [node] = nodes.as_slice() else {
+        panic!("one actual checked api.{label} call");
+    };
+    (*span, node.namespace)
+}
+
+fn resource_contract_fault(
+    outcome: Outcome<Result<Value, Fault>>,
+    site: (fipe::token::Span, usize),
+    message: &str,
+) {
+    let Outcome::Done(Err(fault)) = outcome else {
+        panic!("located refusal: {outcome:?}");
+    };
+    assert_eq!((fault.span, fault.namespace), site);
+    assert_eq!(fault.reason, Reason::Host(message.to_owned()));
+}
+
+fn resource_contract_withdraw(
+    session: &mut fipe::session::Session,
+    machine: &mut Machine,
+    report: &fipe::session::Report,
+) {
+    let undo = session.withdraw(report.accepted.unwrap()).unwrap();
+    machine.withdraw(&undo);
+}
+
+fn resource_contract_wrong_replies(
+    session: &mut fipe::session::Session,
+    machine: &mut Machine,
+    owner: &ResourceContractOwner,
+    original: &Value,
+) {
+    for (label, message) in [
+        ("wrong_nominal", "the reply is not an Other"),
+        ("wrong_argument", "the reply is not a Buffer"),
+    ] {
+        let source = format!("_ = api.{label} ()\napi.after ()");
+        let (report, program) = resource_contract_line(session, &source);
+        let outcome = machine.run(&program);
+        assert_eq!(
+            resource_contract_request(outcome, machine, label),
+            [Value::Unit]
+        );
+        let site =
+            resource_contract_site(&report, machine.program().unwrap(), label);
+        assert_ne!(machine.pending_resource_type().unwrap(), owner.witness);
+        resource_contract_fault(
+            machine.reply(&program, Reply::Value(Ok(original.clone()))),
+            site,
+            message,
+        );
+        resource_contract_withdraw(session, machine, &report);
+        assert_eq!(owner.acquisitions, 1);
+        assert_eq!(owner.accesses, 1);
+    }
+}
+
+fn resource_contract_foreign(
+    session: &mut fipe::session::Session,
+    machine: &mut Machine,
+    owner: &mut ResourceContractOwner,
+    original: &Value,
+) {
+    let (report, program) =
+        resource_contract_line(session, "api.info (api.echo alias)");
+    let outcome = machine.run(&program);
+    let arguments = resource_contract_request(outcome, machine, "echo");
+    let [argument] = arguments.as_slice() else {
+        panic!("echo receiver");
+    };
+    resource_contract_same_alias(argument, original);
+    let site =
+        resource_contract_site(&report, machine.program().unwrap(), "info");
+    let pending = machine.pending_resource_type().unwrap();
+    assert_eq!(pending, owner.witness);
+    let foreign = fipe::value::resource::ResourceDomain::new()
+        .issue(&pending, owner.key.clone());
+    let outcome = machine.reply(&program, Reply::Value(Ok(foreign.clone())));
+    let arguments = resource_contract_request(outcome, machine, "info");
+    let [argument] = arguments.as_slice() else {
+        panic!("foreign receiver");
+    };
+    resource_contract_same_alias(argument, &foreign);
+    assert_eq!(
+        owner.info(argument, machine.program().unwrap()),
+        Err(String::from("foreign buffer owner"))
+    );
+    resource_contract_fault(
+        machine.reply(
+            &program,
+            Reply::Value(Err(String::from("foreign buffer owner"))),
+        ),
+        site,
+        "foreign buffer owner",
+    );
+    resource_contract_withdraw(session, machine, &report);
+    assert_eq!(owner.accesses, 1);
+
+    let (_, program) = resource_contract_line(session, "read ()");
+    let outcome = machine.run(&program);
+    let arguments = resource_contract_request(outcome, machine, "info");
+    let [argument] = arguments.as_slice() else {
+        panic!("healthy retained closure");
+    };
+    resource_contract_same_alias(argument, original);
+    let reply = owner.info(argument, machine.program().unwrap());
+    assert!(matches!(
+        machine.reply(&program, Reply::Value(reply)),
+        Outcome::Done(Ok(Value::Record(_)))
+    ));
+    assert_eq!(owner.accesses, 2);
+}
+
+fn resource_contract_revoked(
+    session: &mut fipe::session::Session,
+    machine: &mut Machine,
+    owner: &mut ResourceContractOwner,
+    original: &Value,
+    info_site: (fipe::token::Span, usize),
+) {
+    owner.revoke();
+    let (report, program) = resource_contract_line(session, "read ()");
+    let outcome = machine.run(&program);
+    let arguments = resource_contract_request(outcome, machine, "info");
+    let [argument] = arguments.as_slice() else {
+        panic!("revoked retained closure");
+    };
+    resource_contract_same_alias(argument, original);
+    let reply = owner.info(argument, machine.program().unwrap());
+    assert_eq!(reply, Err(String::from("revoked buffer entry")));
+    resource_contract_fault(
+        machine.reply(&program, Reply::Value(reply)),
+        info_site,
+        "revoked buffer entry",
+    );
+    resource_contract_withdraw(session, machine, &report);
+    assert_eq!(owner.acquisitions, 1);
+    assert_eq!(owner.accesses, 2);
+    assert!(owner.payload.is_none());
+}
+
+fn resource_contract_persistence(
+    declarations: &fipe::decl::Declarations,
+    source: &str,
+    program: &Program,
+    original: &Value,
+    saved: &Value,
+) {
+    let denied = fipe::parse::parse(fipe::lex::lex(
+        "use api\nx: api.Buffer<()> = b\"x\"",
+    ))
+    .unwrap();
+    assert!(fipe::check::check(
+        &denied,
+        declarations,
+        &[],
+        fipe::check::Options::default(),
+    )
+    .is_err());
+    let ordinary =
+        fipe::parse::parse(fipe::lex::lex("use api\np: api.Packet = b\"x\""))
+            .unwrap();
+    let unit = fipe::check::check(
+        &ordinary,
+        declarations,
+        &[],
+        fipe::check::Options::default(),
+    )
+    .unwrap();
+    assert!(unit.tables().nodes.iter().any(|node| matches!(
+        node.kind,
+        fipe::ir::Kind::Cast {
+            row: fipe::ir::CastRow::Codec,
+            ..
+        }
+    )));
+    resource_value_boundary_assert_roots(original);
+    // Done's displayed-function path must still scan the real capture.
+    resource_value_boundary_assert_roots(saved);
+    let unit = Unit {
+        sources: vec![
+            (String::from("main"), RESOURCE_CONTRACT_MAIN.to_owned()),
+            (String::from("api"), source.to_owned()),
+        ],
+        files: vec![],
+        fingerprint: codec::fingerprint(program),
+    };
+    let decoded = Unit::decode(&unit.encode()).unwrap();
+    assert_eq!(decoded, unit);
+    assert_eq!(decoded.source("api"), Some(source));
+    let expected = "native execution does not support resource declarations";
+    assert_eq!(
+        Unit::new(
+            RESOURCE_CONTRACT_MAIN,
+            vec![(String::from("api"), source.to_owned())],
+            vec![],
+        )
+        .unwrap_err(),
+        expected
+    );
+    assert_eq!(unit.compile().unwrap_err(), expected);
+    assert_eq!(decoded.compile().unwrap_err(), expected);
+    assert_eq!(codec::ensure_resource_free(program).unwrap_err(), expected);
+    assert_eq!(lower::lower(program).unwrap_err(), expected);
+    assert_eq!(lower::object(program, b"").unwrap_err(), expected);
+    assert_eq!(lower::listing(program).unwrap_err(), expected);
+    assert_eq!(fipe_llvm::module(program, b"").unwrap_err(), expected);
+    let (ordinary, control) = Unit::new(
+        "use api\np: api.Packet = b\"x\"\n7",
+        vec![(String::from("api"), String::from("pub type Packet"))],
+        vec![],
+    )
+    .unwrap();
+    assert!(!lower::lower(&control).unwrap().is_empty());
+    assert!(Unit::decode(&ordinary.encode()).unwrap().compile().is_ok());
+}
+
+fn resource_contract_bindings(
+    report: &fipe::session::Report,
+    machine: &Machine,
+    original: &Value,
+) -> Value {
+    let mut saved = None;
+    let mut alias_names = Vec::new();
+    for (index, value) in machine.globals() {
+        let tables = machine.program().unwrap().tables.borrow();
+        match tables.definitions[index].label.as_str() {
+            name @ ("b" | "alias") => {
+                resource_contract_same_alias(value, original);
+                alias_names.push(name.to_owned());
+            }
+            "read" => {
+                let Value::Function(closure) = value else {
+                    panic!("actual read closure");
+                };
+                let program = machine.program().unwrap();
+                let body = &program.bodies[closure.body];
+                assert_eq!(body.arity, 1);
+                assert_eq!(body.captures, closure.captures.len());
+                assert_eq!(body.captures, 1);
+                let node = &tables.nodes[body.node];
+                assert!(matches!(node.kind, fipe::ir::Kind::Function { .. }));
+                assert!(resource_contract_expressions(
+                    report.module.as_ref().unwrap()
+                )
+                .iter()
+                .any(|expression| expression.span == node.span
+                    && matches!(
+                        &expression.kind,
+                        fipe::ast::ExprKind::Arms(_)
+                    )));
+                let aliases: Vec<_> = closure
+                    .captures
+                    .iter()
+                    .chain(&closure.filled)
+                    .filter(|value| matches!(value, Value::Resource(_)))
+                    .collect();
+                let [alias] = aliases.as_slice() else {
+                    panic!("one real resource capture");
+                };
+                resource_contract_same_alias(alias, original);
+                saved = Some(value.clone());
+            }
+            _ => {}
+        }
+    }
+    alias_names.sort();
+    assert_eq!(alias_names, ["alias", "b"]);
+    saved.expect("stored original read closure")
+}
+
+#[test]
+fn resource_fipi_decision_integration_smoke() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/resource-contract.fipi");
+    let source = std::fs::read_to_string(path).unwrap();
+    assert_eq!(
+        source.as_bytes(),
+        include_bytes!("fixtures/resource-contract.fipi")
+    );
+    let mut declarations = fipe::decl::Declarations::new();
+    declarations.module("api", &source).unwrap();
+    let namespace = declarations.get_module("api").unwrap();
+    for (name, marked) in [("Buffer", true), ("Other", true), ("Packet", false)]
+    {
+        let declared =
+            namespace.types.iter().find(|ty| ty.name == name).unwrap();
+        assert!(
+            matches!(declared.kind, fipe::decl::Kind::Type { resource, .. } if resource == marked)
+        );
+    }
+    let mut session = fipe::session::Session::new(declarations.clone());
+    let (report, program) =
+        resource_contract_line(&mut session, RESOURCE_CONTRACT_MAIN);
+    assert_eq!(report.offset, 0);
+    let mut machine = Machine::new(Some(100_000));
+    let outcome = machine.run(&program);
+    assert_eq!(
+        resource_contract_request(outcome, &machine, "acquire"),
+        [Value::Unit]
+    );
+    let info_site =
+        resource_contract_site(&report, machine.program().unwrap(), "info");
+    let witness = machine.pending_resource_type().unwrap();
+    let (mut owner, original) = ResourceContractOwner::acquire(witness.clone());
+    assert_eq!(owner.witness, witness);
+    let outcome = machine.reply(&program, Reply::Value(Ok(original.clone())));
+    let arguments = resource_contract_request(outcome, &machine, "info");
+    let [argument] = arguments.as_slice() else {
+        panic!("info receiver");
+    };
+    resource_contract_same_alias(argument, &original);
+    let reply = owner.info(argument, machine.program().unwrap());
+    let encoded = codec::encode_reply(&reply).unwrap();
+    assert_eq!(codec::decode_reply(&encoded).unwrap(), reply);
+    let outcome = machine.reply(&program, Reply::Value(reply));
+    assert_eq!(
+        outcome,
+        Outcome::Done(Ok(Value::Tuple(std::rc::Rc::new(vec![
+            Value::text("private buffer"),
+            Value::Int(14),
+        ]))))
+    );
+    assert_eq!((owner.acquisitions, owner.accesses), (1, 1));
+    let saved = resource_contract_bindings(&report, &machine, &original);
+    resource_contract_persistence(
+        &declarations,
+        &source,
+        &program,
+        &original,
+        &saved,
+    );
+    resource_contract_wrong_replies(
+        &mut session,
+        &mut machine,
+        &owner,
+        &original,
+    );
+    resource_contract_foreign(
+        &mut session,
+        &mut machine,
+        &mut owner,
+        &original,
+    );
+    resource_contract_revoked(
+        &mut session,
+        &mut machine,
+        &mut owner,
+        &original,
+        info_site,
+    );
+}
